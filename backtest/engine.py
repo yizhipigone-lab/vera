@@ -253,9 +253,9 @@ class BacktestEngine:
         if len(raw) == 0:
             return pd.DataFrame()
         records = []
-        reason_map = {1.0: "signal", 2.0: "end_of_data",
-                      3.0: "cost_stop", 4.0: "trailing_stop",
-                      5.0: "ladder_tp", 6.0: "time_stop"}
+        reason_map = {1.0: "换股卖出", 2.0: "期末平仓",
+                      3.0: "成本止损", 4.0: "移动止损",
+                      5.0: "阶梯止盈", 6.0: "时间止损"}
         inv_col = {i: c for c, i in col_map.items()}
         for row in raw:
             ci = int(row[0])
@@ -264,7 +264,7 @@ class BacktestEngine:
             exit_i = int(row[2])
             entry_dt = dates[entry_i] if 0 <= entry_i < len(dates) else dates[0]
             exit_dt = dates[exit_i] if 0 <= exit_i < len(dates) else dates[-1]
-            reason = reason_map.get(row[8], "signal")
+            reason = reason_map.get(row[8], "换股卖出")
 
             # Overlay exit reason from StopManager — 三重匹配 (code + entry + exit)
             if not exit_info.empty:
@@ -275,6 +275,14 @@ class BacktestEngine:
                 ]
                 if not m.empty:
                     reason = m.iloc[0]["exit_reason"]
+                else:
+                    # 同一股票+同一日期有其他入场触发了止损 → 借用其标签
+                    m2 = exit_info[
+                        (exit_info["stock_code"] == code) &
+                        (pd.to_datetime(exit_info["exit_date"]) == exit_dt)
+                    ]
+                    if not m2.empty:
+                        reason = "换股卖出(同日" + m2.iloc[0]["exit_reason"] + ")"
 
             records.append({
                 "stock_code": code,
