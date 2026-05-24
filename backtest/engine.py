@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 @njit
-def _simulate_core(
+def _simulate_core_v3(
     price_np, entry_np,
     initial_capital, commission,
     min_buy_amount, max_buy_amount, lot_size, min_lots,
@@ -260,12 +260,13 @@ class BacktestEngine:
         ladder_profits = np.array([lv[i]["profit"] for i in range(len(lv))], dtype=np.float64)
         ladder_ratios = np.array([lv[i]["sell_ratio"] for i in range(len(lv))], dtype=np.float64)
 
-        logger.info("VeraCore: 资金=%s 每笔%s~%s元 %s股/手",
+        logger.info("VeraCore: 资金=%s 每笔%s~%s元 %s股/手 时间止损=%s天 条件=%s天/%s%%",
                      f"{self.initial_capital:,.0f}", f"{self.min_buy_amount:,.0f}",
-                     f"{self.max_buy_amount:,.0f}", self.lot_size)
+                     f"{self.max_buy_amount:,.0f}", self.lot_size,
+                     time_s.get("max_hold_days", "?"), cond_t.get("days", "?"), cond_t.get("profit", "?"))
 
         t0 = pd.Timestamp.now()
-        equity_arr, raw_trades = _simulate_core(
+        equity_arr, raw_trades = _simulate_core_v3(
             close.values.astype(np.float64), entries.values,
             float(self.initial_capital), float(self.commission),
             float(self.min_buy_amount), float(self.max_buy_amount),
