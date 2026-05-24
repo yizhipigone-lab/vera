@@ -284,13 +284,14 @@ class BacktestEngine:
 
         # 构建输出
         dates = close.index
+        logger.info("DEBUG bar7=%s bar70=%s", str(dates[7])[:10] if len(dates)>7 else '?', str(dates[min(70,len(dates)-1)])[:10] if len(dates)>70 else '?')
         equity_curve = pd.DataFrame({"date": dates, "equity": equity_arr})
         equity_curve.set_index("date", inplace=True)
         peak = equity_curve["equity"].expanding().max()
         equity_curve["drawdown"] = (equity_curve["equity"] - peak) / peak
         equity_curve.reset_index(inplace=True)
 
-        trades_df = self._build_trades(raw_trades, close.columns, dates, close_df=close)
+        trades_df = self._build_trades(raw_trades, close.columns, dates, close_np=close.values.astype(np.float64))
         trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
         trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
 
@@ -323,7 +324,7 @@ class BacktestEngine:
             "selections": selections, "stock_count": len(cols),
         }
 
-    def _build_trades(self, raw, columns, dates, close_df=None):
+    def _build_trades(self, raw, columns, dates, close_np=None):
         if len(raw) == 0: return pd.DataFrame()
         reason_map = {1.0: "换股卖出", 3.0: "成本止损",
                       4.0: "移动止损", 8.0: "移动止盈",
@@ -332,27 +333,22 @@ class BacktestEngine:
                       7.0: "cond_time_stop"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
-        # Build price→date lookup to fix bar index mismatch
-        if close_df is not None:
-            price_date_map = {}
-            for ci_idx, code in enumerate(columns):
-                price_date_map[code] = {}
-                for di in range(len(dates)):
-                    px = close_df.iloc[di, ci_idx]
-                    if not np.isnan(px):
-                        price_date_map[code][round(px, 2)] = dates[di]
         records = []
         for row in raw:
             ci = int(row[0]); code = inv_col.get(ci, str(ci))
             ei = int(row[1]); xi = int(row[2])
-            ed = dates[ei] if 0 <= ei < len(dates) else dates[0]
+            ep = round(float(row[3]), 4); xp = round(float(row[4]), 4)
+            # 从close_np反查入场日: 找到价格=ep且bar≤ei的最近交易日
+            if close_np is not None:
+                ed_i = ei
+                for di in range(ei, -1, -1):
+                    if ci < close_np.shape[1] and abs(close_np[di, ci] - ep) < 0.001:
+                        ed_i = di; break
+                ed = dates[ed_i] if 0 <= ed_i < len(dates) else dates[0]
+            else:
+                ed = dates[ei] if 0 <= ei < len(dates) else dates[0]
             xd = dates[xi] if 0 <= xi < len(dates) else dates[-1]
             ep = round(float(row[3]), 4); xp = round(float(row[4]), 4)
-            # Fix entry date by matching entry price
-            if close_df is not None and code in price_date_map:
-                p_round = round(ep, 2)
-                if p_round in price_date_map[code]:
-                    ed = price_date_map[code][p_round]
             sh = int(row[5])
             records.append({
                 "stock_code": code, "entry_date": ed, "exit_date": xd,
