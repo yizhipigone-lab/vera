@@ -188,11 +188,18 @@ async def run_pipeline(cfg: StrategyConfig):
         return {"success": False, "error": "选股公式名称不能为空"}
 
     try:
+        # 强制重载所有回测模块，避免 Python 缓存旧版本
+        import importlib
+        import backtest.stop_manager, backtest.metrics, backtest.engine
+        importlib.reload(backtest.stop_manager)
+        importlib.reload(backtest.metrics)
+        importlib.reload(backtest.engine)
+        from backtest.engine import BacktestEngine
+
         from core.connector import TdxConnector
         from selection.selector import StockSelector
         from selection.deduplicator import Deduplicator
         from selection.result_writer import ResultWriter
-        from backtest.engine import BacktestEngine
         from backtest.benchmark import BenchmarkComparator
         from report.report_generator import ReportGenerator
 
