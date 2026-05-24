@@ -118,6 +118,11 @@ class FormulaRunner:
                         date_str = str(entry.get("Date", ""))
                         if not date_str:
                             continue
+                        # TDX API 返回全部 bar 的匹配，需过滤到请求的时间范围
+                        if start_time and date_str < start_time:
+                            continue
+                        if end_time and date_str > end_time:
+                            continue
                         try:
                             dt = pd.to_datetime(date_str, format="%Y%m%d")
                         except (ValueError, TypeError):
