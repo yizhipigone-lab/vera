@@ -200,6 +200,7 @@ input:focus,select:focus{border-color:var(--accent)}
             <span id="sumCostStop">成本止损：亏损达到 <b>8%</b> 全仓卖出 <span class="saved-badge">已保存</span></span>
           </div>
           <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgCostStopEn" checked><label>启用成本止损</label></div>
             <div class="form-group"><label>亏损阈值 (%)</label><input id="cfgCostStopVal" value="8" type="number"></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCostStop')">保存</button></div>
@@ -210,6 +211,7 @@ input:focus,select:focus{border-color:var(--accent)}
             <span id="sumTrailing">移动止损：盈利 <b>5%</b> 激活后，回撤 <b>3%</b> 触发全仓卖出 <span class="saved-badge">已保存</span></span>
           </div>
           <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgTrailingEn" checked><label>启用移动止损</label></div>
             <div class="form-row">
               <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="5" type="number"></div>
               <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="3" type="number"></div>
@@ -223,6 +225,7 @@ input:focus,select:focus{border-color:var(--accent)}
             <span id="sumLadder">阶梯止盈：<b>10%→33%, 20%→33%, 30%→100%</b> <span class="saved-badge">已保存</span></span>
           </div>
           <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgLadderEn" checked><label>启用阶梯止盈</label></div>
             <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="10:33,20:33,30:100"></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkLadder')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkLadder')">保存</button></div>
@@ -233,6 +236,7 @@ input:focus,select:focus{border-color:var(--accent)}
             <span id="sumTime">时间止盈：持仓 <b>20</b> 天后无条件卖出 <span class="saved-badge">已保存</span></span>
           </div>
           <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgTimeEn" checked><label>启用时间止盈</label></div>
             <div class="form-group"><label>最大持仓 (天)</label><input id="cfgTimeVal" value="20" type="number"></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTime')">保存</button></div>
@@ -360,7 +364,10 @@ const CONFIG_IDS = [
   'cfgName', 'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
   'cfgStart', 'cfgEnd', 'cfgExcludeST',
   'cfgCapital', 'cfgCommission', 'cfgSlippage', 'cfgMaxPct',
-  'cfgCostStopVal', 'cfgTrailingAct', 'cfgTrailingDD', 'cfgLadderVal', 'cfgTimeVal',
+  'cfgCostStopEn', 'cfgCostStopVal',
+  'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
+  'cfgLadderEn', 'cfgLadderVal',
+  'cfgTimeEn', 'cfgTimeVal',
   'cfgBench',
 ];
 
@@ -466,10 +473,10 @@ function runPipeline() {
     slippage: parseFloat(getVal('cfgSlippage')),
     max_positions: 999,
     max_position_pct: parseFloat(getVal('cfgMaxPct')),
-    cost_stop_enabled: true, cost_stop_threshold: -pct('cfgCostStopVal'),
-    trailing_enabled: true, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
-    ladder_enabled: true, ladder_levels: ladderParts,
-    time_enabled: true, max_hold_days: parseInt(getVal('cfgTimeVal')),
+    cost_stop_enabled: document.getElementById('cfgCostStopEn').checked, cost_stop_threshold: -pct('cfgCostStopVal'),
+    trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
+    ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
+    time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: parseInt(getVal('cfgTimeVal')),
     benchmark_indices: bench,
   };
 
