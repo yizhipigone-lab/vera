@@ -679,9 +679,9 @@ function renderAllCharts(data) {
       series: [{ type: 'bar', data: holdKeys.map(k => holdBins[k]), itemStyle: { color: c.accent } }],
     }, true);
 
-    // Trade table — show most recent 100 trades
+    // Trade table — always update with fresh data
     document.getElementById('tradeTableBox').style.display = '';
-    document.getElementById('tradeCount').textContent = '(共 '+data.trade_count+' 笔, 显示最近100笔)';
+    document.getElementById('tradeCount').textContent = '(本次回测: '+data.trade_count+' 笔, 显示最近100笔)';
     const tbody = document.getElementById('tradeTableBody');
     tbody.innerHTML = data.trades.slice(-100).reverse().map(t => {
       const pnl = (t.profit_pct || t.return || 0) * 100;
@@ -710,12 +710,16 @@ document.getElementById('statusDot').className = 'status-dot on';
 loadConfig();
 addLog('前端就绪，等待执行回测', 'info');
 
-// 加载上次回测结果
+// 加载上次回测结果（仅显示，执行新回测后会被覆盖）
 fetch('/api/last_result').then(r => r.json()).then(data => {
-  if (data.success) {
-    addLog('已加载上次回测结果 ('+data.trade_count+'笔交易)', 'ok');
+  if (data.success && data.trade_count > 0) {
+    addLog('已加载历史回测结果 ('+data.trade_count+'笔交易)', 'ok');
     lastResult = data;
-    setTimeout(() => renderAllCharts(data), 300);  // 等 DOM 渲染完
+    setTimeout(() => {
+      document.getElementById('tradeTableBox').style.display = '';
+      document.getElementById('tradeCount').textContent = '(历史结果, 共 '+data.trade_count+' 笔)';
+      renderAllCharts(data);
+    }, 300);
   }
 }).catch(() => {});
 
