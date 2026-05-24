@@ -662,13 +662,7 @@ function renderAllCharts(data) {
     const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', '换股卖出': '换股卖出' };
     const reasonCount = {};
     data.trades.forEach(t => {
-      let reasons = (t.exit_reason || '换股卖出').split('+');
-      // Handle 换股卖出(同日xxx) — extract inner reasons
-      const parenMatch = (t.exit_reason||'').match(/^换股卖出\(同日(.+)\)$/);
-      if (parenMatch) {
-        reasons = parenMatch[1].split('+');
-        reasonCount['换股卖出'] = (reasonCount['换股卖出'] || 0) + 1;
-      }
+      const reasons = (t.exit_reason || '换股卖出').split('+');
       reasons.forEach(r => {
         const label = reasonMap[r] || r;
         reasonCount[label] = (reasonCount[label] || 0) + 1;
@@ -725,11 +719,7 @@ function renderAllCharts(data) {
     };
     function fmtReason(r) {
       if (!r) return '—';
-      const parenMatch = r.match(/^换股卖出\(同日(.+)\)$/);
-      if (parenMatch) {
-        const inner = parenMatch[1].split('+').map(s => reasonDetail[s] || s).join('；');
-        return '换股卖出 — 同日另一笔入场触发：' + inner;
-      }
+      if (r === '换股卖出') return reasonDetail['换股卖出'] || r;
       const parts = r.split('+').map(s => reasonDetail[s] || s);
       return parts.join('；');
     }

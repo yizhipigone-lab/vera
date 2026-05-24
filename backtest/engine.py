@@ -266,14 +266,7 @@ class BacktestEngine:
                 ]
                 if not m.empty:
                     reason = m.iloc[0]["exit_reason"]
-                else:
-                    # 同一股票+同一日期有其他入场触发了止损 → 借用其标签
-                    m2 = exit_info[
-                        (exit_info["stock_code"] == code) &
-                        (pd.to_datetime(exit_info["exit_date"]) == exit_dt)
-                    ]
-                    if not m2.empty:
-                        reason = "换股卖出(同日" + m2.iloc[0]["exit_reason"] + ")"
+                # else: 同日同股有止损但入场日不匹配 → 保持"换股卖出"
 
             ep = round(float(row[3]), 4)
             xp = round(float(row[4]), 4)
