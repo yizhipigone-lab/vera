@@ -574,13 +574,13 @@ function renderAllCharts(data) {
         lineStyle: { color: c.down, width: 1 }, areaStyle: { color: c.down+'22' },
         symbol: 'none' },
     ];
-    // Benchmark: align to equity dates, fill gaps with null
+    // Benchmark: align to equity dates
     if (data.benchmarks) {
       const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
       const bmColors = ['#f0883e', '#d2a8ff', '#58a6ff', '#3fb950'];
       let ci = 0;
       for (const [name, bm] of Object.entries(data.benchmarks)) {
-        if (!bm || !bm.length) continue;
+        if (!bm || !bm.length) { addLog('基准'+name+': 无数据', 'info'); continue; }
         // Build date→value map from benchmark
         const bmMap = {};
         bm.forEach(r => {
@@ -589,6 +589,9 @@ function renderAllCharts(data) {
         });
         // Align to equity dates
         const bmVals = dates.map(d => bmMap[d] !== undefined ? bmMap[d] : null);
+        const validPts = bmVals.filter(v => v !== null).length;
+        addLog('基准'+bmNames[name]+': '+validPts+'/'+bmVals.length+' 点对齐', validPts > 0 ? 'ok' : 'info');
+        if (validPts === 0) continue;
         series.push({ name: bmNames[name]||name, type: 'line', data: bmVals,
           lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none',
           connectNulls: false });
