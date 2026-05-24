@@ -1,0 +1,43 @@
+# 示例策略配置
+# 此文件覆写 default.yaml 中的对应字段，未覆写的继承默认值
+
+strategy:
+  name: "均线金叉突破策略"
+  version: "1.0.0"
+  description: "MA5上穿MA20 成交量放大 阶梯止盈"
+
+# === 选股配置 ===
+selection:
+  formula_name: "UPN"           # TDX 条件选股公式名
+  formula_arg: "3"              # 公式参数
+  universe:
+    type: "50"                  # 沪深A股
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1
+
+# === 时间范围 ===
+time_range:
+  start: "20240101"
+  end: "20250630"
+
+# === 回测覆写 ===
+backtest:
+  initial_capital: 200000.0
+  position_sizing:
+    max_positions: 8
+
+# === 止损止盈覆写 ===
+stop_loss:
+  cost_stop:
+    threshold: -0.10
+  trailing_stop:
+    drawdown: 0.04
+  time_stop:
+    max_hold_days: 15
+
+# === 基准指数 ===
+benchmark:
+  indices:
+    - "shanghai"
+    - "chuangyeban"

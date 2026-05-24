@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280">
+<title>VERA — 量化回测系统</title>
+<style>
+/* ====== CSS Variables ====== */
+:root {
+  --bg: #0d1117; --surface: #161b22; --card: #21262d;
+  --border: #30363d; --text: #e6edf3; --text2: #8b949e;
+  --up: #ef4444; --down: #22c55e; --accent: #58a6ff;
+  --accent2: #d2a8ff; --warn: #f0883e;
+  --radius: 6px; --font: 'Inter', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+[data-theme="light"] {
+  --bg: #ffffff; --surface: #f6f8fa; --card: #f6f8fa;
+  --border: #d0d7de; --text: #24292f; --text2: #656d76;
+  --up: #d1242f; --down: #1a7f37; --accent: #0969da;
+  --accent2: #8250df; --warn: #bf4b00;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;line-height:1.5;min-width:1280px}
+a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ====== Layout ====== */
+.app{display:flex;min-height:100vh}
+.sidebar{width:380px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;max-height:100vh;position:sticky;top:0}
+.main{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px}
+.sidebar-header{border-bottom:1px solid var(--border);padding:20px 20px 16px}
+.sidebar-body{flex:1;overflow-y:auto;padding:16px 20px}
+.sidebar-footer{border-top:1px solid var(--border);padding:12px 20px}
+
+/* ====== Header ====== */
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;color:#fff}
+.logo-text h1{font-size:18px;font-weight:700;letter-spacing:-0.3px}
+.logo-text span{font-size:11px;color:var(--text2);display:block}
+.status-bar{display:flex;align-items:center;gap:8px;margin-top:12px;padding:8px 12px;background:var(--card);border-radius:var(--radius);font-size:11px}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--text2);flex-shrink:0}
+.status-dot.on{background:var(--down);box-shadow:0 0 6px var(--down)}
+.status-dot.busy{background:var(--warn);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
+/* ====== Forms ====== */
+.form-section{margin-bottom:16px}
+.form-section-title{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:8px;font-weight:600}
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:11px;color:var(--text2);margin-bottom:3px}
+.form-row{display:flex;gap:8px}
+.form-row .form-group{flex:1}
+input,select{width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:var(--mono);outline:none;transition:border .15s}
+input:focus,select:focus{border-color:var(--accent)}
+.checkbox-group{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.checkbox-group input[type=checkbox]{width:auto;accent-color:var(--accent)}
+.checkbox-group label{color:var(--text);font-size:12px;margin:0}
+
+/* ====== Buttons ====== */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--radius);font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--border);transition:all .15s;font-family:var(--font)}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover{filter:brightness(1.1)}
+.btn-secondary{background:var(--card);color:var(--text)}
+.btn-secondary:hover{background:var(--border)}
+.btn-danger{background:var(--up);color:#fff;border-color:var(--up)}
+.btn-sm{padding:4px 10px;font-size:11px}
+.btn-block{width:100%;justify-content:center}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+
+/* ====== KPI Cards ====== */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:4px}
+.kpi-value{font-size:22px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.kpi-value.pos{color:var(--up)} .kpi-value.neg{color:var(--down)}
+
+/* ====== Chart Section ====== */
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.chart-box.full{grid-column:1/-1}
+.chart-box-header{padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text2);display:flex;justify-content:space-between;align-items:center}
+.chart-box-body{padding:4px;min-height:340px}
+.chart-box-body.tall{min-height:420px}
+.chart-box-body.short{min-height:260px}
+
+/* ====== Trade Table ====== */
+.trade-table-wrap{max-height:360px;overflow-y:auto}
+.trade-table{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
+.trade-table th{position:sticky;top:0;background:var(--card);color:var(--text2);font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:0.3px;padding:8px 10px;text-align:right;border-bottom:2px solid var(--border);z-index:1}
+.trade-table td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--border)}
+.trade-table td:first-child,.trade-table th:first-child{text-align:left}
+.trade-table tr:hover td{background:var(--surface)}
+.td-up{color:var(--up)} .td-down{color:var(--down)}
+
+/* ====== Progress ====== */
+.progress-bar{height:3px;background:var(--border);border-radius:2px;margin-top:8px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.progress-text{font-size:10px;color:var(--text2);margin-top:4px}
+
+/* ====== Theme Toggle ====== */
+.theme-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:20px;width:56px;position:relative}
+.theme-toggle-knob{width:20px;height:20px;border-radius:50%;background:var(--accent);transition:transform .2s}
+[data-theme="light"] .theme-toggle-knob{transform:translateX(24px)}
+
+/* ====== Empty State ====== */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;color:var(--text2);text-align:center;gap:8px}
+.empty-state .icon{font-size:36px;opacity:0.4}
+
+/* ====== Summary Box ====== */
+.summary-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:120px;overflow-y:auto}
+/* ====== Edit/Save Toggle ====== */
+.config-block{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;transition:border .2s}
+.config-block.editing{border-color:var(--accent)}
+.config-block .cfg-summary{font-size:11px;color:var(--text);line-height:1.6}
+.config-block .cfg-summary b{color:var(--accent);margin:0 2px}
+.config-block .cfg-summary .saved-badge{display:inline-block;background:var(--down);color:#fff;font-size:10px;padding:1px 8px;border-radius:10px;margin-left:6px}
+.config-block .cfg-fields{display:none;margin-top:8px}
+.config-block.editing .cfg-fields{display:block}
+.config-block.editing .cfg-summary{display:none}
+.config-block .cfg-actions{margin-top:6px;display:flex;gap:6px}
+.config-block .cfg-actions button{font-size:11px;padding:3px 10px}
+.config-block .cfg-fields .form-row{margin-bottom:0}
+.config-block .cfg-fields .form-group{margin-bottom:6px}
+.config-block .cfg-fields input{font-size:11px;padding:4px 6px}
+/* ====== Log Panel ====== */
+.log-panel{background:var(--bg);border-radius:var(--radius);padding:8px 12px;font-family:var(--mono);font-size:10px;color:var(--text2);max-height:160px;overflow-y:auto;line-height:1.6}
+.log-info{color:var(--text2)} .log-ok{color:var(--down)} .log-error{color:var(--up)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ===== 左侧配置面板 ===== -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <div class="logo-icon">V</div>
+        <div class="logo-text"><h1>VERA</h1><span>量化回测系统 v1.0</span></div>
+      </div>
+      <div class="status-bar">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">就绪</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="toggleTheme()">
+          <svg id="themeIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <span style="font-size:11px;color:var(--text2)">主题</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="sidebar-body">
+      <!-- 策略信息 -->
+      <div class="form-section">
+        <div class="form-section-title">策略基本信息</div>
+        <div class="form-group"><label>策略名称</label><input id="cfgName" value="均线金叉策略"></div>
+      </div>
+
+      <!-- 选股配置 -->
+      <div class="form-section">
+        <div class="form-section-title">选股设置</div>
+        <div class="form-row">
+          <div class="form-group"><label>选股公式</label><input id="cfgFormula" value="UPN"></div>
+          <div class="form-group"><label>公式参数</label><input id="cfgFormulaArg" value="3"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>股票池</label><select id="cfgUniverse">
+            <option value="50">沪深A股</option><option value="5">全部A股</option>
+            <option value="23">沪深300</option><option value="24">中证500</option>
+            <option value="28">中证A500</option>
+            <option value="51">创业板</option><option value="52">科创板</option>
+          </select></div>
+          <div class="form-group"><label>K线周期</label><select id="cfgPeriod"><option value="1d">日线</option><option value="1w">周线</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD"></div>
+          <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD"></div>
+        </div>
+        <div class="checkbox-group"><input type="checkbox" id="cfgExcludeST" checked><label>排除ST股票</label></div>
+      </div>
+
+      <!-- 资金与仓位 -->
+      <div class="form-section">
+        <div class="form-section-title">资金与仓位</div>
+        <div class="form-row">
+          <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="200000" type="number"></div>
+          <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"></div>
+        </div>
+        <div class="form-group"><label>单票最大仓位</label><input id="cfgMaxPct" value="0.15" step="0.01"></div>
+      </div>
+
+      <!-- 止损止盈 (编辑/保存模式) -->
+      <div class="form-section">
+        <div class="form-section-title">止损止盈策略</div>
+        <!-- 成本止损 -->
+        <div class="config-block" id="blkCostStop">
+          <div class="cfg-summary">
+            <span id="sumCostStop">成本止损：亏损达到 <b>8%</b> 全仓卖出 <span class="saved-badge">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="form-group"><label>亏损阈值 (%)</label><input id="cfgCostStopVal" value="8" type="number"></div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCostStop')">保存</button></div>
+        </div>
+        <!-- 移动止损 -->
+        <div class="config-block" id="blkTrailing">
+          <div class="cfg-summary">
+            <span id="sumTrailing">移动止损：盈利 <b>5%</b> 激活后，回撤 <b>3%</b> 触发全仓卖出 <span class="saved-badge">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="form-row">
+              <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="5" type="number"></div>
+              <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="3" type="number"></div>
+            </div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTrailing')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTrailing')">保存</button></div>
+        </div>
+        <!-- 阶梯止盈 -->
+        <div class="config-block" id="blkLadder">
+          <div class="cfg-summary">
+            <span id="sumLadder">阶梯止盈：<b>10%→33%, 20%→33%, 30%→100%</b> <span class="saved-badge">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="10:33,20:33,30:100"></div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkLadder')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkLadder')">保存</button></div>
+        </div>
+        <!-- 时间止盈 -->
+        <div class="config-block" id="blkTime">
+          <div class="cfg-summary">
+            <span id="sumTime">时间止盈：持仓 <b>20</b> 天后无条件卖出 <span class="saved-badge">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="form-group"><label>最大持仓 (天)</label><input id="cfgTimeVal" value="20" type="number"></div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTime')">保存</button></div>
+        </div>
+      </div>
+
+      <!-- 基准指数 -->
+      <div class="form-section">
+        <div class="form-section-title">基准对比指数</div>
+        <select id="cfgBench" multiple style="height:80px">
+          <option value="shanghai" selected>上证指数</option>
+          <option value="chuangyeban" selected>创业板指</option>
+          <option value="kechuang50" selected>科创50</option>
+          <option value="zhongzhengA500" selected>中证A500</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="btn btn-primary btn-block" id="btnRun" onclick="runPipeline()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        执行回测
+      </button>
+      <div class="progress-bar" style="display:none" id="progressBar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+      <div class="progress-text" id="progressText"></div>
+    </div>
+  </aside>
+
+  <!-- ===== 右侧主内容区 ===== -->
+  <main class="main" id="mainContent">
+    <!-- KPI 仪表盘 -->
+    <div class="kpi-grid" id="kpiGrid">
+      <div class="kpi-card"><div class="kpi-label">累计收益</div><div class="kpi-value" id="kpiCumRet">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">年化收益</div><div class="kpi-value" id="kpiAnnRet">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">最大回撤</div><div class="kpi-value" id="kpiMaxDD">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">胜率</div><div class="kpi-value" id="kpiWinRate">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="kpiPLR">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">交易笔数</div><div class="kpi-value" id="kpiTrades">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div></div>
+    </div>
+
+    <!-- 权益曲线 -->
+    <div class="chart-box full">
+      <div class="chart-box-header">权益曲线 &amp; 基准对比</div>
+      <div class="chart-box-body tall" id="chartEquity"></div>
+    </div>
+
+    <!-- 图表行 -->
+    <div class="chart-row">
+      <div class="chart-box">
+        <div class="chart-box-header">月度收益热力图</div>
+        <div class="chart-box-body" id="chartMonthly"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-header">交易盈亏分布</div>
+        <div class="chart-box-body" id="chartTrade"></div>
+      </div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box">
+        <div class="chart-box-header">退出原因分布</div>
+        <div class="chart-box-body short" id="chartExit"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-header">持仓天数分布</div>
+        <div class="chart-box-body short" id="chartHold"></div>
+      </div>
+    </div>
+
+    <!-- 止损配置摘要 -->
+    <div class="chart-box full" id="summaryBox" style="display:none">
+      <div class="chart-box-header">止损止盈配置</div>
+      <div class="summary-box" id="summaryContent"></div>
+    </div>
+
+    <!-- 系统日志 -->
+    <div class="chart-box full">
+      <div class="chart-box-header">系统日志</div>
+      <div class="log-panel" id="logContent"></div>
+    </div>
+
+    <!-- 交易明细 -->
+    <div class="chart-box full" id="tradeTableBox" style="display:none">
+      <div class="chart-box-header">交易明细 <span style="font-weight:400;color:var(--text2)" id="tradeCount"></span></div>
+      <div class="trade-table-wrap">
+        <table class="trade-table">
+          <thead><tr>
+            <th>股票</th><th>入场日</th><th>入场价</th><th>出场日</th><th>出场价</th><th>数量</th><th>盈亏%</th><th>原因</th>
+          </tr></thead>
+          <tbody id="tradeTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script>
+// ====== Theme ======
+const themeIcon = document.getElementById('themeIcon');
+const sunIcon = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
+const moonIcon = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+
+function getTheme() { return document.documentElement.getAttribute('data-theme'); }
+function getColors() {
+  const s = getComputedStyle(document.documentElement);
+  return { up: s.getPropertyValue('--up').trim(), down: s.getPropertyValue('--down').trim(),
+    accent: s.getPropertyValue('--accent').trim(), accent2: s.getPropertyValue('--accent2').trim(),
+    text: s.getPropertyValue('--text').trim(), text2: s.getPropertyValue('--text2').trim(),
+    bg: s.getPropertyValue('--bg').trim(), border: s.getPropertyValue('--border').trim() };
+}
+
+function toggleTheme() {
+  const next = getTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  themeIcon.innerHTML = next === 'dark' ? sunIcon : moonIcon;
+  if (lastResult) renderAllCharts(lastResult);
+}
+themeIcon.innerHTML = sunIcon; // default light → show sun
+
+// ====== Config Persistence (all fields) ======
+const STORAGE_KEY = 'vera_all_config';
+const CONFIG_IDS = [
+  'cfgName', 'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
+  'cfgStart', 'cfgEnd', 'cfgExcludeST',
+  'cfgCapital', 'cfgCommission', 'cfgSlippage', 'cfgMaxPct',
+  'cfgCostStopVal', 'cfgTrailingAct', 'cfgTrailingDD', 'cfgLadderVal', 'cfgTimeVal',
+  'cfgBench',
+];
+
+function loadConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (saved) {
+      CONFIG_IDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el || !(id in saved)) return;
+        if (el.type === 'checkbox') el.checked = saved[id];
+        else if (el.tagName === 'SELECT') { try { el.value = saved[id]; } catch(e) {} }
+        else el.value = saved[id];
+      });
+    }
+  } catch(e) {}
+  refreshAllSummaries();
+}
+
+function saveAllConfig() {
+  const data = {};
+  CONFIG_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.type === 'checkbox') data[id] = el.checked;
+    else data[id] = el.value;
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function refreshAllSummaries() {
+  const cs = document.getElementById('cfgCostStopVal').value;
+  document.getElementById('sumCostStop').innerHTML = '成本止损：亏损达到 <b>'+cs+'%</b> 全仓卖出 <span class="saved-badge">已保存</span>';
+  const ta = document.getElementById('cfgTrailingAct').value;
+  const td = document.getElementById('cfgTrailingDD').value;
+  document.getElementById('sumTrailing').innerHTML = '移动止损：盈利 <b>'+ta+'%</b> 激活后，回撤 <b>'+td+'%</b> 触发全仓卖出 <span class="saved-badge">已保存</span>';
+  const lv = document.getElementById('cfgLadderVal').value.replace(/,/g, ', ');
+  document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>'+lv+'</b> <span class="saved-badge">已保存</span>';
+  const tv = document.getElementById('cfgTimeVal').value;
+  document.getElementById('sumTime').innerHTML = '时间止盈：持仓 <b>'+tv+'</b> 天后无条件卖出 <span class="saved-badge">已保存</span>';
+}
+
+function toggleEdit(blockId) { document.getElementById(blockId).classList.add('editing'); }
+
+function saveBlock(blockId) {
+  document.getElementById(blockId).classList.remove('editing');
+  saveAllConfig();
+  refreshAllSummaries();
+  addLog('全部配置已保存到浏览器', 'ok');
+}
+
+// ====== System Log ======
+const logLines = [];
+function addLog(msg, type) {
+  const now = new Date().toLocaleTimeString();
+  logLines.push(`<span class="log-${type||'info'}">[${now}] ${msg}</span>`);
+  if (logLines.length > 100) logLines.shift();
+  const el = document.getElementById('logContent');
+  if (el) el.innerHTML = logLines.join('<br>');
+}
+
+let lastResult = null;
+let charts = {};
+
+function echartsInit(id) {
+  const dom = document.getElementById(id);
+  if (!dom) return null;
+  if (charts[id]) charts[id].dispose();
+  const c = echarts.init(dom, getTheme() === 'dark' ? null : 'light');
+  charts[id] = c;
+  return c;
+}
+
+function runPipeline() {
+  saveAllConfig(); // 自动保存所有配置
+  const btn = document.getElementById('btnRun');
+  btn.disabled = true; btn.innerHTML = '运行中...';
+  document.getElementById('progressBar').style.display = 'block';
+  document.getElementById('statusDot').className = 'status-dot busy';
+  document.getElementById('statusText').textContent = '运行中';
+  document.getElementById('progressText').textContent = '';
+  addLog('开始执行回测管线...', 'info');
+
+  const getVal = id => document.getElementById(id).value;
+  const bench = Array.from(document.getElementById('cfgBench').selectedOptions).map(o=>o.value).join(',');
+
+  // Convert percentage inputs to decimals for backend
+  const pct = (id) => parseFloat(getVal(id)) / 100;
+  const ladderRaw = getVal('cfgLadderVal');
+  const ladderParts = ladderRaw.split(',').map(s => {
+    const [profit, ratio] = s.trim().split(':');
+    return (parseFloat(profit)/100).toFixed(2) + ':' + (parseFloat(ratio)/100).toFixed(2);
+  }).join(',');
+
+  const config = {
+    strategy_name: getVal('cfgName'),
+    formula_name: getVal('cfgFormula'), formula_arg: getVal('cfgFormulaArg'),
+    universe_type: getVal('cfgUniverse'), exclude_st: document.getElementById('cfgExcludeST').checked,
+    start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
+    period: getVal('cfgPeriod'), dividend_type: 1,
+    initial_capital: parseFloat(getVal('cfgCapital')),
+    commission: parseFloat(getVal('cfgCommission')),
+    slippage: parseFloat(getVal('cfgSlippage')),
+    max_positions: 999,
+    max_position_pct: parseFloat(getVal('cfgMaxPct')),
+    cost_stop_enabled: true, cost_stop_threshold: -pct('cfgCostStopVal'),
+    trailing_enabled: true, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
+    ladder_enabled: true, ladder_levels: ladderParts,
+    time_enabled: true, max_hold_days: parseInt(getVal('cfgTimeVal')),
+    benchmark_indices: bench,
+  };
+
+  addLog('配置: '+config.formula_name+' '+config.start_time+'~'+config.end_time, 'info');
+
+  let pollActive = true;
+  let poll = setInterval(async () => {
+    if (!pollActive) return;
+    try {
+      const r = await fetch('/api/status'); const s = await r.json();
+      if (!pollActive) return;
+      document.getElementById('progressFill').style.width = s.progress + '%';
+      document.getElementById('progressText').textContent = s.step;
+      document.getElementById('statusText').textContent = s.step;
+      if (s.step) addLog(s.step + ' ('+s.progress+'%)', 'info');
+      if (!s.running && s.progress > 0 && s.has_result) { pollActive = false; clearInterval(poll); }
+    } catch(e) {}
+  }, 800);
+
+  fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) })
+    .then(r => r.json())
+    .then(data => {
+      pollActive = false; clearInterval(poll);
+      document.getElementById('progressBar').style.display = 'none';
+      document.getElementById('progressText').textContent = '';
+      document.getElementById('statusDot').className = 'status-dot on';
+      document.getElementById('statusText').textContent = '就绪';
+      btn.disabled = false; btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
+      if (!data.success) {
+        addLog('失败: ' + (data.error || '未知错误'), 'error');
+        alert('回测失败: ' + (data.error || '未知错误'));
+        return;
+      }
+      addLog('回测完成: '+data.trade_count+'笔交易', 'ok');
+      lastResult = data;
+      renderAllCharts(data);
+    })
+    .catch(e => {
+      pollActive = false; clearInterval(poll); btn.disabled = false;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
+      document.getElementById('statusDot').className = 'status-dot on';
+      document.getElementById('statusText').textContent = '错误';
+      addLog('网络错误: '+e.message, 'error');
+    });
+}
+
+function renderAllCharts(data) {
+  const c = getColors();
+  const m = data.metrics || {};
+
+  // KPI cards
+  const setKpi = (id, val, fmt) => {
+    const el = document.getElementById(id);
+    el.textContent = fmt(val); el.className = 'kpi-value';
+    if (typeof val === 'number') { if (val > 0) el.classList.add('pos'); else if (val < 0) el.classList.add('neg'); }
+  };
+  setKpi('kpiCumRet', m.cumulative_return, v => v != null ? (v*100).toFixed(2)+'%' : '--');
+  setKpi('kpiAnnRet', m.annualized_return, v => v != null ? (v*100).toFixed(2)+'%' : '--');
+  setKpi('kpiMaxDD', m.max_drawdown, v => v != null ? (v*100).toFixed(2)+'%' : '--');
+  setKpi('kpiSharpe', m.sharpe_ratio, v => v != null ? v.toFixed(2) : '--');
+  setKpi('kpiWinRate', m.win_rate, v => v != null ? (v*100).toFixed(1)+'%' : '--');
+  setKpi('kpiPLR', m.profit_loss_ratio, v => v != null ? v.toFixed(2) : '--');
+  setKpi('kpiTrades', m.total_trades, v => v != null ? v : '--');
+  setKpi('kpiCalmar', m.calmar_ratio, v => v != null ? v.toFixed(2) : '--');
+
+  // === ECharts: Equity curve ===
+  if (data.equity && data.equity.length > 0) {
+    const chart = echartsInit('chartEquity');
+    const dates = data.equity.map(r => r.date.slice(0,10));
+    const equity = data.equity.map(r => r.equity);
+    const dd = data.equity.map(r => (r.drawdown || 0) * 100);
+    const series = [
+      { name: '策略权益', type: 'line', data: equity, smooth: true, lineStyle: { color: c.accent, width: 2 },
+        itemStyle: { color: c.accent }, symbol: 'none' },
+      { name: '回撤%', type: 'line', yAxisIndex: 1, data: dd, lineStyle: { color: c.down, width: 1 },
+        areaStyle: { color: c.down+'33' }, itemStyle: { color: c.down }, symbol: 'none' },
+    ];
+    // Benchmark lines
+    if (data.benchmarks) {
+      const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: 'A500' };
+      for (const [name, bm] of Object.entries(data.benchmarks)) {
+        if (!bm || !bm.length) continue;
+        const bmVals = bm.map(r => r.strategy_equity != null ? r.strategy_equity : null);
+        series.push({ name: bmNames[name]||name, type: 'line', data: bmVals,
+          lineStyle: { color: c.accent2, width: 1, type: 'dashed' }, symbol: 'none' });
+      }
+    }
+    chart.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
+      grid: { left: 60, right: 60, top: 10, bottom: 40 },
+      xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 10 } },
+      yAxis: [
+        { type: 'value', name: '权益', nameTextStyle: { color: c.text2 }, axisLabel: { color: c.text2, fontSize: 10 }, splitLine: { lineStyle: { color: c.border } } },
+        { type: 'value', name: '回撤%', nameTextStyle: { color: c.text2 }, axisLabel: { color: c.text2, fontSize: 10, formatter: '{value}%' }, splitLine: { show: false } },
+      ],
+      series: series,
+    }, true);
+    window.addEventListener('resize', () => chart.resize());
+  }
+
+  // === ECharts: Monthly heatmap ===
+  if (data.equity && data.equity.length > 1) {
+    const chart = echartsInit('chartMonthly');
+    const monthly = {};
+    for (let i = 1; i < data.equity.length; i++) {
+      if (data.equity[i-1].equity > 0) {
+        const d = new Date(data.equity[i].date);
+        const k = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+        const r = (data.equity[i].equity - data.equity[i-1].equity) / data.equity[i-1].equity;
+        if (!monthly[k]) monthly[k] = []; monthly[k].push(r);
+      }
+    }
+    const years = [...new Set(Object.keys(monthly).map(k=>parseInt(k.split('-')[0])))].sort();
+    const data2d = [], xAxis = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+    const maxAbs = Math.max(...Object.values(monthly).flat().map(v=>Math.abs(v)), 0.01);
+    years.forEach(y => {
+      for (let m = 1; m <= 12; m++) {
+        const k = y+'-'+String(m).padStart(2,'0');
+        const vals = monthly[k];
+        data2d.push([m-1, years.indexOf(y), vals ? vals.reduce((a,b)=>a+b,0)/vals.length : '-']);
+      }
+    });
+    chart.setOption({
+      tooltip: { formatter: p => p.value[2] !== '-' ? (p.value[2]*100).toFixed(2)+'%' : '无数据' },
+      grid: { left: 60, right: 20, top: 10, bottom: 30 },
+      xAxis: { type: 'category', data: xAxis, axisLabel: { color: c.text2, fontSize: 10 }, axisLine: { lineStyle: { color: c.border } } },
+      yAxis: { type: 'category', data: years, axisLabel: { color: c.text2, fontSize: 10 }, axisLine: { lineStyle: { color: c.border } } },
+      visualMap: { min: -maxAbs, max: maxAbs, inRange: { color: [c.down, c.bg, c.up] }, show: false },
+      series: [{ type: 'heatmap', data: data2d, label: { show: true, fontSize: 9, formatter: p => p.value[2] !== '-' ? (p.value[2]*100).toFixed(1)+'%' : '' }, emphasis: { itemStyle: { shadowBlur: 10 } } }],
+    }, true);
+    window.addEventListener('resize', () => chart.resize());
+  }
+
+  // === Trade Details ===
+  if (data.trades && data.trades.length > 0) {
+    // P&L histogram
+    const chart1 = echartsInit('chartTrade');
+    const pnlVals = data.trades.map(t => ((t.profit_pct || t.return || 0) * 100).toFixed(1)).map(Number).filter(v => !isNaN(v));
+    const bins = {}; pnlVals.forEach(v => { const b = Math.round(v); bins[b] = (bins[b]||0)+1; });
+    const binKeys = Object.keys(bins).map(Number).sort((a,b)=>a-b);
+    chart1.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { left: 50, right: 10, top: 10, bottom: 30 },
+      xAxis: { type: 'category', data: binKeys, axisLabel: { color: c.text2, fontSize: 9 }, name: '收益率%', nameTextStyle: { color: c.text2, fontSize: 10 } },
+      yAxis: { type: 'value', axisLabel: { color: c.text2, fontSize: 10 }, splitLine: { lineStyle: { color: c.border } } },
+      series: [{ type: 'bar', data: binKeys.map(k => ({ value: bins[k], itemStyle: { color: k >= 0 ? c.up : c.down } })) }],
+    }, true);
+
+    // Exit reasons pie
+    const chart2 = echartsInit('chartExit');
+    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', signal: '信号', end_of_data: '平仓' };
+    const reasonCount = {};
+    data.trades.forEach(t => { const r = reasonMap[t.exit_reason] || t.exit_reason || '其他'; reasonCount[r] = (reasonCount[r]||0)+1; });
+    chart2.setOption({
+      tooltip: { trigger: 'item' },
+      legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
+      series: [{ type: 'pie', radius: ['35%','60%'], center: ['50%','45%'],
+        data: Object.entries(reasonCount).map(([name,value]) => ({ name, value })),
+        label: { color: c.text, fontSize: 10 }, }],
+    }, true);
+
+    // Hold days histogram
+    const chart3 = echartsInit('chartHold');
+    const hold = data.trades.map(t => { if (t.entry_date && t.exit_date) return Math.round((new Date(t.exit_date)-new Date(t.entry_date))/86400000); return null; }).filter(v => v != null);
+    const holdBins = {}; hold.forEach(v => { const b = Math.round(v/5)*5; holdBins[b] = (holdBins[b]||0)+1; });
+    const holdKeys = Object.keys(holdBins).map(Number).sort((a,b)=>a-b);
+    chart3.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { left: 50, right: 10, top: 10, bottom: 30 },
+      xAxis: { type: 'category', data: holdKeys, axisLabel: { color: c.text2, fontSize: 9 }, name: '持仓天数', nameTextStyle: { color: c.text2, fontSize: 10 } },
+      yAxis: { type: 'value', axisLabel: { color: c.text2, fontSize: 10 }, splitLine: { lineStyle: { color: c.border } } },
+      series: [{ type: 'bar', data: holdKeys.map(k => holdBins[k]), itemStyle: { color: c.accent } }],
+    }, true);
+
+    // Trade table — show most recent 100 trades
+    document.getElementById('tradeTableBox').style.display = '';
+    document.getElementById('tradeCount').textContent = '(共 '+data.trade_count+' 笔, 显示最近100笔)';
+    const tbody = document.getElementById('tradeTableBody');
+    tbody.innerHTML = data.trades.slice(-100).reverse().map(t => {
+      const pnl = (t.profit_pct || t.return || 0) * 100;
+      const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
+      const eDate = String(t.entry_date||'').slice(0,10);
+      const xDate = String(t.exit_date||'').slice(0,10);
+      const name = t.stock_name || t.stock_code || '';
+      return `<tr>
+        <td title="${t.stock_code||''}">${name}</td>
+        <td>${eDate}</td><td>${t.entry_price||''}</td>
+        <td>${xDate}</td><td>${t.exit_price||''}</td>
+        <td>${t.shares||''}</td>
+        <td class="${cls}">${pnl.toFixed(2)}%</td>
+        <td>${t.exit_reason||''}</td></tr>`;
+    }).join('');
+  }
+
+  if (data.stop_config_summary) {
+    document.getElementById('summaryBox').style.display = '';
+    document.getElementById('summaryContent').textContent = data.stop_config_summary;
+  }
+}
+
+// ====== Init ======
+document.getElementById('statusDot').className = 'status-dot on';
+loadConfig();
+addLog('前端就绪，等待执行回测', 'info');
+window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+</script>
+</body>
+</html>

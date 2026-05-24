@@ -1,0 +1,87 @@
+# VERA 量化回测系统 — 默认全局配置
+# 所有策略继承此配置，策略文件可覆写任意字段
+
+# === Strategy Identity ===
+strategy:
+  name: "VERA"
+  version: "1.0.0"
+  description: ""
+
+# === TDX Connection ===
+tdx:
+  install_path: "E:/1target/tdx"
+  tqcenter_path: "E:/1target/tdx/PYPlugins/user/tqcenter.py"
+
+# === Selection ===
+selection:
+  formula_name: "UPN"
+  formula_arg: "3"
+  universe:
+    type: "50"                  # 沪深A股
+    exclude_st: true
+    exclude_new_listings_days: 60
+  period: "1d"
+  dividend_type: 1              # 前复权
+
+# === Time Range (策略文件覆盖) ===
+time_range:
+  start: "20240101"
+  end: "20251231"
+
+# === Backtest ===
+backtest:
+  initial_capital: 100000.0
+  commission: 0.0003            # 万三
+  slippage: 0.001               # 0.1%
+  freq: "1d"
+  position_sizing:
+    method: "equal_weight"
+    max_positions: 10
+    max_position_pct: 0.15      # 单票最大仓位 15%
+
+# === Stop-Profit / Stop-Loss ===
+stop_loss:
+  cost_stop:
+    enabled: true
+    threshold: -0.08
+  trailing_stop:
+    enabled: true
+    activation: 0.05
+    drawdown: 0.03
+  ladder_tp:
+    enabled: true
+    levels:
+      - profit: 0.10
+        sell_ratio: 0.33
+      - profit: 0.20
+        sell_ratio: 0.33
+      - profit: 0.30
+        sell_ratio: 1.00
+  time_stop:
+    enabled: true
+    max_hold_days: 20
+
+# === Benchmark ===
+benchmark:
+  indices:
+    - "shanghai"
+    - "chuangyeban"
+    - "kechuang50"
+    - "zhongzhengA500"
+  normalize_start: true
+
+# === Report ===
+report:
+  formats: ["html", "json"]
+  include_trade_log: true
+  include_benchmark_chart: true
+  plot_engine: "plotly"         # plotly | matplotlib | both
+  dpi: 300
+  output_dir: ""                # 空则使用 output/reports/
+
+# === Logging ===
+logging:
+  level: "INFO"
+  file: ""                      # 空则仅控制台
+  max_size_mb: 100
+  backup_count: 5
