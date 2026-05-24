@@ -26,6 +26,7 @@ def _simulate_core(
     trailing_enabled, trailing_activation, trailing_drawdown,
     ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
     time_enabled, max_hold_days,
+    cond_time_enabled, cond_time_days, cond_time_profit,
 ):
     n_dates = price_np.shape[0]
     n_stocks = price_np.shape[1]
@@ -84,9 +85,12 @@ def _simulate_core(
                         if ladder_ratios[li] >= 1.0:
                             triggered = 5
                         break
-            # 时间止盈
+            # 时间止盈（无条件）
             if triggered < 0 and time_enabled and hold_days >= max_hold_days:
                 triggered = 6
+            # 条件时间止盈：持仓N天后盈利≥X%清仓
+            if triggered < 0 and cond_time_enabled and hold_days >= cond_time_days and pp >= cond_time_profit:
+                triggered = 7
 
             if triggered >= 0:
                 shares = pos_shares[p]
@@ -209,6 +213,7 @@ class BacktestEngine:
         trail = stop.get("trailing_stop", {})
         ladder = stop.get("ladder_tp", {})
         time_s = stop.get("time_stop", {})
+        cond_t = stop.get("cond_time_stop", {})
 
         codes = selections["stock_code"].unique().tolist()
         close = self._fetch_prices(codes, start_time, end_time)
@@ -241,6 +246,7 @@ class BacktestEngine:
             float(trail.get("drawdown", 0.03)),
             ladder.get("enabled", True), ladder_profits, ladder_ratios, len(lv),
             time_s.get("enabled", True), int(time_s.get("max_hold_days", 20)),
+            cond_t.get("enabled", False), int(cond_t.get("days", 7)), float(cond_t.get("profit", 0.01)),
         )
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         logger.info("VeraCore: %s笔交易 %.2fs", len(raw_trades), elapsed)
@@ -289,7 +295,7 @@ class BacktestEngine:
     def _build_trades(self, raw, columns, dates):
         if len(raw) == 0: return pd.DataFrame()
         reason_map = {1.0: "换股卖出", 3.0: "成本止损", 4.0: "移动止损",
-                      5.0: "阶梯止盈", 6.0: "时间止损"}
+                      5.0: "阶梯止盈", 6.0: "时间止损", 7.0: "条件时间止盈"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
         records = []

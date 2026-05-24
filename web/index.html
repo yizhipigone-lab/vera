@@ -244,10 +244,24 @@ input:focus,select:focus{border-color:var(--accent)}
             <span id="sumTime">时间止盈：持仓 <b>20</b> 天后无条件卖出 <span class="saved-badge">已保存</span></span>
           </div>
           <div class="cfg-fields">
-            <div class="checkbox-group"><input type="checkbox" id="cfgTimeEn" checked><label>启用时间止盈</label></div>
+            <div class="checkbox-group"><input type="checkbox" id="cfgTimeEn" checked><label>启用无条件时间止盈</label></div>
             <div class="form-group"><label>最大持仓 (天)</label><input id="cfgTimeVal" value="20" type="number"></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTime')">保存</button></div>
+        </div>
+        <!-- 条件时间止盈 -->
+        <div class="config-block" id="blkCondTime">
+          <div class="cfg-summary">
+            <span id="sumCondTime">条件时间止盈：持仓 <b>7</b> 天后盈利 <b>≥1%</b> 清仓 <span class="saved-badge">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgCondTimeEn"><label>启用条件时间止盈</label></div>
+            <div class="form-row">
+              <div class="form-group"><label>持仓天数</label><input id="cfgCondTimeDays" value="7" type="number"></div>
+              <div class="form-group"><label>盈利阈值 (%)</label><input id="cfgCondTimeProfit" value="1" type="number"></div>
+            </div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCondTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCondTime')">保存</button></div>
         </div>
       </div>
 
@@ -369,6 +383,7 @@ const CONFIG_IDS = [
   'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
   'cfgLadderEn', 'cfgLadderVal',
   'cfgTimeEn', 'cfgTimeVal',
+  'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit',
 ];
 
 function loadConfig() {
@@ -410,6 +425,9 @@ function refreshAllSummaries() {
   document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>'+lv+'</b> <span class="saved-badge">已保存</span>';
   const tv = document.getElementById('cfgTimeVal').value;
   document.getElementById('sumTime').innerHTML = '时间止盈：持仓 <b>'+tv+'</b> 天后无条件卖出 <span class="saved-badge">已保存</span>';
+  const cd = document.getElementById('cfgCondTimeDays').value;
+  const cp = document.getElementById('cfgCondTimeProfit').value;
+  document.getElementById('sumCondTime').innerHTML = '条件时间止盈：持仓 <b>'+cd+'</b> 天后盈利 <b>>='+cp+'%</b> 清仓 <span class="saved-badge">已保存</span>';
 }
 
 function toggleEdit(blockId) { document.getElementById(blockId).classList.add('editing'); }
@@ -482,6 +500,9 @@ function runPipeline() {
     trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
     ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
     time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: parseInt(getVal('cfgTimeVal')),
+    cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
+    cond_time_days: parseInt(getVal('cfgCondTimeDays')),
+    cond_time_profit: parseFloat(getVal('cfgCondTimeProfit')) / 100,
     benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
   };
 

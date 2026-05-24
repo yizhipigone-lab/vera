@@ -64,6 +64,9 @@ class StrategyConfig(BaseModel):
     ladder_levels: str = "0.10:0.33,0.20:0.33,0.30:1.00"
     time_enabled: bool = True
     max_hold_days: int = 20
+    cond_time_enabled: bool = False
+    cond_time_days: int = 7
+    cond_time_profit: float = 0.01
     benchmark_indices: str = "shanghai,chuangyeban,kechuang50,zhongzhengA500"
 
 
@@ -121,6 +124,7 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.trailing_activation, "drawdown": cfg.trailing_drawdown},
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.max_hold_days},
+            "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.cond_time_days, "profit": cfg.cond_time_profit},
         },
         "benchmark": {"indices": [s.strip() for s in cfg.benchmark_indices.split(",") if s.strip()]},
     }
