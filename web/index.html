@@ -28,7 +28,11 @@ a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
 
 /* ====== Layout ====== */
 .app{display:flex;min-height:100vh}
-.sidebar{width:380px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;max-height:100vh;position:sticky;top:0}
+.sidebar{width:380px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;max-height:100vh;position:sticky;top:0;transition:width .25s}
+.sidebar.collapsed{width:0;overflow:hidden;border-right:none}
+.sidebar-toggle{position:sticky;top:50%;z-index:10;width:18px;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--surface);border:1px solid var(--border);border-left:none;border-radius:0 4px 4px 0;margin-left:-1px;transition:background .2s}
+.sidebar-toggle:hover{background:var(--card)}
+.sidebar-toggle svg{width:12px;height:12px;color:var(--text2)}
 .main{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px}
 .sidebar-header{border-bottom:1px solid var(--border);padding:20px 20px 16px}
 .sidebar-body{flex:1;overflow-y:auto;padding:16px 20px}
@@ -277,6 +281,11 @@ input:focus,select:focus{border-color:var(--accent)}
     </div>
   </aside>
 
+  <!-- Sidebar Toggle -->
+  <div class="sidebar-toggle" onclick="toggleSidebar()" title="收起/展开侧边栏">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+  </div>
+
   <!-- ===== 右侧主内容区 ===== -->
   <main class="main" id="mainContent">
     <!-- KPI 仪表盘 -->
@@ -370,7 +379,24 @@ function toggleTheme() {
   themeIcon.innerHTML = next === 'dark' ? sunIcon : moonIcon;
   if (lastResult) renderAllCharts(lastResult);
 }
-themeIcon.innerHTML = sunIcon; // default light → show sun
+themeIcon.innerHTML = sunIcon;
+
+function toggleSidebar() {
+  const sb = document.querySelector('.sidebar');
+  const btn = document.querySelector('.sidebar-toggle svg');
+  sb.classList.toggle('collapsed');
+  const closed = sb.classList.contains('collapsed');
+  localStorage.setItem('vera_sidebar', closed ? '0' : '1');
+  btn.innerHTML = closed
+    ? '<polyline points="9 18 15 12 9 6"/>'
+    : '<polyline points="15 18 9 12 15 6"/>';
+  setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300);
+}
+// 恢复侧边栏状态
+if (localStorage.getItem('vera_sidebar') === '0') {
+  document.querySelector('.sidebar').classList.add('collapsed');
+  document.querySelector('.sidebar-toggle svg').innerHTML = '<polyline points="9 18 15 12 9 6"/>';
+} // default light → show sun
 
 // ====== Config Persistence (all fields) ======
 const STORAGE_KEY = 'vera_all_config';
