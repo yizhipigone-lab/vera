@@ -70,7 +70,7 @@ input:focus,select:focus{border-color:var(--accent)}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 
 /* ====== KPI Cards ====== */
-.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
 .kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}
 .kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:4px}
 .kpi-value{font-size:22px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
@@ -81,9 +81,9 @@ input:focus,select:focus{border-color:var(--accent)}
 .chart-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .chart-box.full{grid-column:1/-1}
 .chart-box-header{padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text2);display:flex;justify-content:space-between;align-items:center}
-.chart-box-body{padding:4px;min-height:340px}
-.chart-box-body.tall{min-height:420px}
-.chart-box-body.short{min-height:260px}
+.chart-box-body{padding:4px;height:340px}
+.chart-box-body.tall{height:440px}
+.chart-box-body.short{height:260px}
 
 /* ====== Trade Table ====== */
 .trade-table-wrap{max-height:360px;overflow-y:auto}
@@ -277,6 +277,8 @@ input:focus,select:focus{border-color:var(--accent)}
       <div class="kpi-card"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="kpiPLR">--</div></div>
       <div class="kpi-card"><div class="kpi-label">交易笔数</div><div class="kpi-value" id="kpiTrades">--</div></div>
       <div class="kpi-card"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">盈利因子</div><div class="kpi-value" id="kpiProfitF">--</div></div>
+      <div class="kpi-card"><div class="kpi-label">最大单笔盈</div><div class="kpi-value" id="kpiBest">--</div></div>
     </div>
 
     <!-- 权益曲线 -->
@@ -436,7 +438,7 @@ function echartsInit(id) {
   const dom = document.getElementById(id);
   if (!dom) return null;
   if (charts[id]) charts[id].dispose();
-  const c = echarts.init(dom, getTheme() === 'dark' ? null : 'light');
+  const c = echarts.init(dom);
   charts[id] = c;
   return c;
 }
@@ -541,6 +543,8 @@ function renderAllCharts(data) {
   setKpi('kpiPLR', m.profit_loss_ratio, v => v != null ? v.toFixed(2) : '--');
   setKpi('kpiTrades', m.total_trades, v => v != null ? v : '--');
   setKpi('kpiCalmar', m.calmar_ratio, v => v != null ? v.toFixed(2) : '--');
+  setKpi('kpiProfitF', m.profit_factor, v => v != null ? v.toFixed(2) : '--');
+  setKpi('kpiBest', m.max_single_gain, v => v != null ? (v*100).toFixed(2)+'%' : '--');
 
   // === ECharts: Equity curve ===
   if (data.equity && data.equity.length > 0) {

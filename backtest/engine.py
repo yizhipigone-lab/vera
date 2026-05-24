@@ -203,8 +203,8 @@ class BacktestEngine:
         # 3. 对齐
         cols = close.columns.intersection(entries.columns).intersection(exits.columns)
         close = close[cols].ffill().bfill()
-        entries = entries.reindex_like(close, fill_value=False)
-        exits = exits.reindex_like(close, fill_value=False)
+        entries = entries.reindex(index=close.index, columns=close.columns, fill_value=False)
+        exits = exits.reindex(index=close.index, columns=close.columns, fill_value=False)
 
         # 4. VeraCore 核心 (Numba JIT)
         col_map = {c: i for i, c in enumerate(close.columns)}
