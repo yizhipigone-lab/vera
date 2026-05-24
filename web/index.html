@@ -157,12 +157,6 @@ input:focus,select:focus{border-color:var(--accent)}
         </select>
       </div>
 
-      <!-- 策略信息 -->
-      <div class="form-section">
-        <div class="form-section-title">策略基本信息</div>
-        <div class="form-group"><label>策略名称（可选）</label><input id="cfgName" value="" placeholder="如：QUANTQQ策略"></div>
-      </div>
-
       <!-- 选股配置 -->
       <div class="form-section">
         <div class="form-section-title">选股设置</div>
@@ -367,7 +361,7 @@ themeIcon.innerHTML = sunIcon; // default light → show sun
 // ====== Config Persistence (all fields) ======
 const STORAGE_KEY = 'vera_all_config';
 const CONFIG_IDS = [
-  'cfgName', 'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
+  'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
   'cfgStart', 'cfgEnd', 'cfgExcludeST',
   'cfgCapital', 'cfgCommission', 'cfgSlippage',
   'cfgMinBuy', 'cfgMaxBuy', 'cfgLotSize', 'cfgMinLots',
@@ -470,7 +464,7 @@ function runPipeline() {
   }).join(',');
 
   const config = {
-    strategy_name: getVal('cfgName'),
+    strategy_name: '',
     formula_name: getVal('cfgFormula'), formula_arg: getVal('cfgFormulaArg'),
     universe_type: getVal('cfgUniverse'), exclude_st: document.getElementById('cfgExcludeST').checked,
     start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
