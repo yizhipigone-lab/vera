@@ -266,10 +266,11 @@ class BacktestEngine:
             exit_dt = dates[exit_i] if 0 <= exit_i < len(dates) else dates[-1]
             reason = reason_map.get(row[8], "signal")
 
-            # Overlay exit reason from StopManager
+            # Overlay exit reason from StopManager — 三重匹配 (code + entry + exit)
             if not exit_info.empty:
                 m = exit_info[
                     (exit_info["stock_code"] == code) &
+                    (pd.to_datetime(exit_info["entry_date"]) == entry_dt) &
                     (pd.to_datetime(exit_info["exit_date"]) == exit_dt)
                 ]
                 if not m.empty:
