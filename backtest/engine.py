@@ -75,15 +75,14 @@ def _simulate_core(
                 dd = (xp - hp) / hp if hp > 0.0 else 0.0
                 if dd <= -trailing_drawdown:
                     triggered = 4
-            # 阶梯止盈
+            # 阶梯止盈（任意档位触发，部分/全卖在下方处理）
             if triggered < 0 and ladder_enabled:
                 mask = pos_ladder_done[p]
                 for li in range(n_ladder):
                     if (mask >> li) & 1: continue
                     if pp >= ladder_profits[li]:
                         pos_ladder_done[p] = mask | (1 << li)
-                        if ladder_ratios[li] >= 1.0:
-                            triggered = 5
+                        triggered = 5
                         break
             # 时间止盈（无条件）
             if triggered < 0 and time_enabled and hold_days >= max_hold_days:
@@ -93,8 +92,38 @@ def _simulate_core(
                 triggered = 7
 
             if triggered >= 0:
-                shares = pos_shares[p]
-                gross = shares * xp * (1.0 - commission)
+                total_sh = pos_shares[p]
+                # 阶梯止盈：根据触发档位的比例决定部分/全卖
+                if triggered == 5:
+                    # 找当前触发档位的比例
+                    sell_ratio = 1.0
+                    mask = pos_ladder_done[p]
+                    for li in range(n_ladder):
+                        if (mask >> li) & 1 and pp >= ladder_profits[li]:
+                            sell_ratio = ladder_ratios[li]
+                    if sell_ratio < 1.0:
+                        # 部分卖出
+                        sell_sh = int(total_sh * sell_ratio)
+                        sell_sh = max((sell_sh // lot_size) * lot_size, lot_size)
+                        if sell_sh < total_sh:
+                            gross = sell_sh * xp * (1.0 - commission)
+                            cash += gross
+                            if trade_count < max_trades:
+                                trades[trade_count, 0] = float(ci)
+                                trades[trade_count, 1] = float(pos_entry_idx[p])
+                                trades[trade_count, 2] = float(i)
+                                trades[trade_count, 3] = ep
+                                trades[trade_count, 4] = xp
+                                trades[trade_count, 5] = float(sell_sh)
+                                trades[trade_count, 6] = gross - sell_sh * ep
+                                trades[trade_count, 7] = pp
+                                trades[trade_count, 8] = 5.0
+                                trade_count += 1
+                            pos_shares[p] = total_sh - sell_sh
+                            p += 1; continue  # 保留仓位，继续检查
+
+                # 全卖（所有非部分卖出场景）
+                gross = total_sh * xp * (1.0 - commission)
                 cash += gross
                 if trade_count < max_trades:
                     trades[trade_count, 0] = float(ci)
@@ -102,8 +131,8 @@ def _simulate_core(
                     trades[trade_count, 2] = float(i)
                     trades[trade_count, 3] = ep
                     trades[trade_count, 4] = xp
-                    trades[trade_count, 5] = shares
-                    trades[trade_count, 6] = gross - shares * ep
+                    trades[trade_count, 5] = total_sh
+                    trades[trade_count, 6] = gross - total_sh * ep
                     trades[trade_count, 7] = pp
                     trades[trade_count, 8] = float(triggered)
                     trade_count += 1
