@@ -390,6 +390,10 @@ function loadConfig() {
         let val = saved[id];
         // 迁移：旧版仓位用小数(0.15)，新版用百分比(15)
           if (el.type === 'checkbox') el.checked = val;
+        else if (el.tagName === 'SELECT' && el.multiple) {
+          const vals = String(val).split(',');
+          Array.from(el.options).forEach(o => { o.selected = vals.includes(o.value); });
+        }
         else if (el.tagName === 'SELECT') { try { el.value = val; } catch(e) {} }
         else el.value = val;
       });
@@ -404,6 +408,8 @@ function saveAllConfig() {
     const el = document.getElementById(id);
     if (!el) return;
     if (el.type === 'checkbox') data[id] = el.checked;
+    else if (el.tagName === 'SELECT' && el.multiple)
+      data[id] = Array.from(el.selectedOptions).map(o=>o.value).join(',');
     else data[id] = el.value;
   });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
