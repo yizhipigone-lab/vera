@@ -185,8 +185,9 @@ class StopManager:
                 if self.cost_stop_enabled and profit_pct <= self.cost_stop_threshold:
                     triggered.append((ExitReason.COST_STOP, 1.0))
 
-                # 移动止损
-                if self.trailing_enabled and profit_pct >= self.trailing_activation:
+                # 移动止损: 最高价曾盈利≥激活% → 已激活; 回撤≥阈值 → 触发
+                highest_profit = (highest_price - entry_price) / entry_price
+                if self.trailing_enabled and highest_profit >= self.trailing_activation:
                     drawdown_pct = (current_price - highest_price) / highest_price
                     if drawdown_pct <= -self.trailing_drawdown:
                         triggered.append((ExitReason.TRAILING_STOP, 1.0))
