@@ -150,10 +150,10 @@ input:focus,select:focus{border-color:var(--accent)}
 
     <div class="sidebar-body">
       <!-- 历史回测 -->
-      <div class="form-section" id="historySection" style="display:none">
-        <div class="form-section-title">历史回测 <span style="font-weight:400;color:var(--text2);font-size:10px" id="historyCount"></span></div>
+      <div class="form-section" id="historySection">
+        <div class="form-section-title">历史回测 <span style="font-weight:400;color:var(--text2);font-size:10px" id="historyCount">(暂无)</span></div>
         <select id="historySelect" onchange="loadHistory(this.value)" style="font-size:11px">
-          <option value="">-- 选择历史回测 --</option>
+          <option value="">-- 暂无历史记录 --</option>
         </select>
       </div>
 
@@ -773,9 +773,9 @@ addLog('前端就绪，等待执行回测', 'info');
 // 加载历史回测列表
 fetch('/api/results').then(r => r.json()).then(list => {
   if (list && list.length > 0) {
-    document.getElementById('historySection').style.display = '';
     document.getElementById('historyCount').textContent = '('+list.length+'条)';
     const sel = document.getElementById('historySelect');
+    sel.innerHTML = '<option value="">-- 选择历史回测 --</option>';
     list.forEach(item => {
       const o = document.createElement('option');
       o.value = item.id;
