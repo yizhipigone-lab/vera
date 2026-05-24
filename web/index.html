@@ -290,21 +290,21 @@ input:focus,select:focus{border-color:var(--accent)}
     <!-- 图表行 -->
     <div class="chart-row">
       <div class="chart-box">
-        <div class="chart-box-header">月度收益热力图</div>
+        <div class="chart-box-header">月度收益 (每月累计涨跌幅)</div>
         <div class="chart-box-body" id="chartMonthly"></div>
       </div>
       <div class="chart-box">
-        <div class="chart-box-header">交易盈亏分布</div>
+        <div class="chart-box-header">盈亏分布 (每笔交易赚/亏多少)</div>
         <div class="chart-box-body" id="chartTrade"></div>
       </div>
     </div>
     <div class="chart-row">
       <div class="chart-box">
-        <div class="chart-box-header">退出原因分布</div>
+        <div class="chart-box-header">卖出原因 (什么条件触发了卖出)</div>
         <div class="chart-box-body short" id="chartExit"></div>
       </div>
       <div class="chart-box">
-        <div class="chart-box-header">持仓天数分布</div>
+        <div class="chart-box-header">持仓天数 (持有多久才卖出)</div>
         <div class="chart-box-body short" id="chartHold"></div>
       </div>
     </div>
@@ -605,78 +605,102 @@ function renderAllCharts(data) {
     window.addEventListener('resize', () => chart.resize());
   }
 
-  // === ECharts: Monthly heatmap ===
+  // === ECharts: Monthly returns bar chart ===
   if (data.equity && data.equity.length > 1) {
     const chart = echartsInit('chartMonthly');
     const monthly = {};
     for (let i = 1; i < data.equity.length; i++) {
       if (data.equity[i-1].equity > 0) {
         const d = new Date(data.equity[i].date);
-        const k = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+        const k = d.getFullYear()+'年'+String(d.getMonth()+1).padStart(2,'0')+'月';
         const r = (data.equity[i].equity - data.equity[i-1].equity) / data.equity[i-1].equity;
         if (!monthly[k]) monthly[k] = []; monthly[k].push(r);
       }
     }
-    const years = [...new Set(Object.keys(monthly).map(k=>parseInt(k.split('-')[0])))].sort();
-    const data2d = [], xAxis = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-    const maxAbs = Math.max(...Object.values(monthly).flat().map(v=>Math.abs(v)), 0.01);
-    years.forEach(y => {
-      for (let m = 1; m <= 12; m++) {
-        const k = y+'-'+String(m).padStart(2,'0');
-        const vals = monthly[k];
-        data2d.push([m-1, years.indexOf(y), vals ? vals.reduce((a,b)=>a+b,0)/vals.length : '-']);
-      }
-    });
+    const months = Object.keys(monthly).sort();
+    const mData = months.map(m => ({ name: m, value: (monthly[m].reduce((a,b)=>a+b,0)*100).toFixed(2) }));
     chart.setOption({
-      tooltip: { formatter: p => p.value[2] !== '-' ? (p.value[2]*100).toFixed(2)+'%' : '无数据' },
-      grid: { left: 60, right: 20, top: 10, bottom: 30 },
-      xAxis: { type: 'category', data: xAxis, axisLabel: { color: c.text2, fontSize: 10 }, axisLine: { lineStyle: { color: c.border } } },
-      yAxis: { type: 'category', data: years, axisLabel: { color: c.text2, fontSize: 10 }, axisLine: { lineStyle: { color: c.border } } },
-      visualMap: { min: -maxAbs, max: maxAbs, inRange: { color: [c.down, c.bg, c.up] }, show: false },
-      series: [{ type: 'heatmap', data: data2d, label: { show: true, fontSize: 9, formatter: p => p.value[2] !== '-' ? (p.value[2]*100).toFixed(1)+'%' : '' }, emphasis: { itemStyle: { shadowBlur: 10 } } }],
+      tooltip: { trigger: 'axis', formatter: p => p[0].name+'<br/>月收益: <b>'+p[0].value+'%</b>' },
+      grid: { left: 50, right: 20, top: 10, bottom: 60 },
+      xAxis: { type: 'category', data: months, axisLabel: { color: c.text2, fontSize: 9, rotate: 45 }, axisLine: { lineStyle: { color: c.border } } },
+      yAxis: { type: 'value', name: '月收益 %', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
+      series: [{ type: 'bar', data: mData.map(d => ({ value: parseFloat(d.value), itemStyle: { color: parseFloat(d.value) >= 0 ? c.up : c.down } })) }],
     }, true);
     window.addEventListener('resize', () => chart.resize());
   }
 
-  // === Trade Details ===
+  // === Trade Analysis Charts ===
   if (data.trades && data.trades.length > 0) {
-    // P&L histogram
+    // P&L 分布 — 按区间分组
     const chart1 = echartsInit('chartTrade');
-    const pnlVals = data.trades.map(t => ((t.profit_pct || t.return || 0) * 100).toFixed(1)).map(Number).filter(v => !isNaN(v));
-    const bins = {}; pnlVals.forEach(v => { const b = Math.round(v); bins[b] = (bins[b]||0)+1; });
-    const binKeys = Object.keys(bins).map(Number).sort((a,b)=>a-b);
+    const ranges = [
+      { label: '< -10%', min: -Infinity, max: -10, color: '#dc2626' },
+      { label: '-10%~-5%', min: -10, max: -5, color: '#ef4444' },
+      { label: '-5%~0%', min: -5, max: 0, color: '#f87171' },
+      { label: '0%~5%', min: 0, max: 5, color: '#4ade80' },
+      { label: '5%~10%', min: 5, max: 10, color: '#22c55e' },
+      { label: '10%~20%', min: 10, max: 20, color: '#16a34a' },
+      { label: '> 20%', min: 20, max: Infinity, color: '#15803d' },
+    ];
+    const rangeCount = ranges.map(r => {
+      const cnt = data.trades.filter(t => {
+        const v = (t.profit_pct || t.return || 0) * 100;
+        return v >= r.min && v < r.max;
+      }).length;
+      return { name: r.label, value: cnt, itemStyle: { color: r.color } };
+    });
     chart1.setOption({
-      tooltip: { trigger: 'axis' },
-      grid: { left: 50, right: 10, top: 10, bottom: 30 },
-      xAxis: { type: 'category', data: binKeys, axisLabel: { color: c.text2, fontSize: 9 }, name: '收益率%', nameTextStyle: { color: c.text2, fontSize: 10 } },
-      yAxis: { type: 'value', axisLabel: { color: c.text2, fontSize: 10 }, splitLine: { lineStyle: { color: c.border } } },
-      series: [{ type: 'bar', data: binKeys.map(k => ({ value: bins[k], itemStyle: { color: k >= 0 ? c.up : c.down } })) }],
+      tooltip: { trigger: 'axis', formatter: p => p[0].name+'<br/>交易笔数: <b>'+p[0].value+'</b>' },
+      grid: { left: 50, right: 20, top: 10, bottom: 40 },
+      xAxis: { type: 'category', data: rangeCount.map(d=>d.name), axisLabel: { color: c.text2, fontSize: 9, rotate: 30 }, axisLine: { lineStyle: { color: c.border } } },
+      yAxis: { type: 'value', name: '笔数', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9 }, splitLine: { lineStyle: { color: c.border } } },
+      series: [{ type: 'bar', data: rangeCount }],
     }, true);
 
-    // Exit reasons pie
+    // 退出原因分布 — 拆分复合原因计数
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', signal: '信号', end_of_data: '平仓' };
+    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', signal: '信号卖出', end_of_data: '期末平仓' };
     const reasonCount = {};
-    data.trades.forEach(t => { const r = reasonMap[t.exit_reason] || t.exit_reason || '其他'; reasonCount[r] = (reasonCount[r]||0)+1; });
+    data.trades.forEach(t => {
+      const reasons = (t.exit_reason || 'signal').split('+');
+      reasons.forEach(r => {
+        const label = reasonMap[r] || r;
+        reasonCount[label] = (reasonCount[label] || 0) + 1;
+      });
+    });
+    const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
+    const pieColors = ['#ef4444','#f0883e','#22c55e','#d2a8ff','#58a6ff','#8b949e'];
     chart2.setOption({
-      tooltip: { trigger: 'item' },
+      tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
       legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
-      series: [{ type: 'pie', radius: ['35%','60%'], center: ['50%','45%'],
-        data: Object.entries(reasonCount).map(([name,value]) => ({ name, value })),
-        label: { color: c.text, fontSize: 10 }, }],
+      series: [{ type: 'pie', radius: ['35%','60%'], center: ['50%','45%'], data: pieData,
+        label: { color: c.text, fontSize: 10, formatter: '{b}\n{d}%' },
+        itemStyle: { color: params => pieColors[params.dataIndex % pieColors.length] } }],
     }, true);
 
-    // Hold days histogram
+    // 持仓天数分布 — 按自然区间分组
     const chart3 = echartsInit('chartHold');
-    const hold = data.trades.map(t => { if (t.entry_date && t.exit_date) return Math.round((new Date(t.exit_date)-new Date(t.entry_date))/86400000); return null; }).filter(v => v != null);
-    const holdBins = {}; hold.forEach(v => { const b = Math.round(v/5)*5; holdBins[b] = (holdBins[b]||0)+1; });
-    const holdKeys = Object.keys(holdBins).map(Number).sort((a,b)=>a-b);
+    const holdDays = data.trades.map(t => {
+      if (t.entry_date && t.exit_date) return Math.round((new Date(t.exit_date)-new Date(t.entry_date))/86400000);
+      return null;
+    }).filter(v => v != null);
+    const holdRanges = [
+      { label: '1天', min: 0, max: 2 },
+      { label: '2-3天', min: 2, max: 4 },
+      { label: '4-7天', min: 4, max: 8 },
+      { label: '8-14天', min: 8, max: 15 },
+      { label: '15-20天', min: 15, max: 21 },
+      { label: '20天+', min: 21, max: Infinity },
+    ];
+    const holdData = holdRanges.map(r => ({
+      name: r.label, value: holdDays.filter(d => d >= r.min && d < r.max).length
+    }));
     chart3.setOption({
-      tooltip: { trigger: 'axis' },
-      grid: { left: 50, right: 10, top: 10, bottom: 30 },
-      xAxis: { type: 'category', data: holdKeys, axisLabel: { color: c.text2, fontSize: 9 }, name: '持仓天数', nameTextStyle: { color: c.text2, fontSize: 10 } },
-      yAxis: { type: 'value', axisLabel: { color: c.text2, fontSize: 10 }, splitLine: { lineStyle: { color: c.border } } },
-      series: [{ type: 'bar', data: holdKeys.map(k => holdBins[k]), itemStyle: { color: c.accent } }],
+      tooltip: { trigger: 'axis', formatter: p => '持仓'+p[0].name+'<br/>笔数: <b>'+p[0].value+'</b>' },
+      grid: { left: 50, right: 20, top: 10, bottom: 30 },
+      xAxis: { type: 'category', data: holdData.map(d=>d.name), axisLabel: { color: c.text2, fontSize: 9 }, axisLine: { lineStyle: { color: c.border } } },
+      yAxis: { type: 'value', name: '笔数', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9 }, splitLine: { lineStyle: { color: c.border } } },
+      series: [{ type: 'bar', data: holdData, itemStyle: { color: c.accent } }],
     }, true);
 
     // Trade table — always update with fresh data
