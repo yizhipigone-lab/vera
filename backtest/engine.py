@@ -23,12 +23,16 @@ logger = get_logger(__name__)
 
 @njit(cache=True)
 def _simulate_core(
-    price_np,          # (n_dates, n_stocks) float64
-    entry_np,          # (n_dates, n_stocks) bool
-    exit_np,           # (n_dates, n_stocks) bool
-    initial_capital,   # float64
-    commission,        # float64
-    max_position_pct,  # float64
+    price_np,
+    entry_np,
+    exit_np,
+    initial_capital,
+    commission,
+    max_position_pct,
+    min_buy_amount,
+    max_buy_amount,
+    lot_size,
+    min_lots,
 ):
     """
     VeraCore 回测核心。纯 Numba JIT，速度接近 C。
@@ -102,9 +106,15 @@ def _simulate_core(
                 bp = price_np[i, ci]
                 if np.isnan(bp) or bp <= 0.0:
                     continue
-                max_cost = cash * max_position_pct
-                shares = int(max_cost / bp)
-                if shares <= 0:
+                # 买入金额 = min(cash×仓位%, 最高买入额)，但不低于最低买入额
+                buy_amount = min(cash * max_position_pct, max_buy_amount)
+                if buy_amount < min_buy_amount:
+                    continue
+                # 按手数取整（A股100股/手）
+                raw_shares = int(buy_amount / bp)
+                shares = (raw_shares // lot_size) * lot_size
+                min_shares = lot_size * min_lots
+                if shares < min_shares:
                     continue
                 cost = shares * bp * (1.0 + commission)
                 if cost <= cash and pos_count < MAX_POS:
@@ -173,9 +183,12 @@ class BacktestEngine:
         self.initial_capital = float(config.get("initial_capital", 100000.0))
         self.commission = float(config.get("commission", 0.0003))
         self.slippage = float(config.get("slippage", 0.001))
-        self.max_position_pct = float(
-            config.get("position_sizing", {}).get("max_position_pct", 0.15)
-        )
+        ps = config.get("position_sizing", {})
+        self.max_position_pct = float(ps.get("max_position_pct", 0.15))
+        self.min_buy_amount = float(ps.get("min_buy_amount", 2000.0))
+        self.max_buy_amount = float(ps.get("max_buy_amount", 10000.0))
+        self.lot_size = int(ps.get("lot_size", 100))
+        self.min_lots = int(ps.get("min_lots", 1))
 
     def run(self, selections, start_time="", end_time="", stop_config=None):
         if selections.empty:
@@ -218,6 +231,10 @@ class BacktestEngine:
             float(self.initial_capital),
             float(self.commission),
             float(self.max_position_pct),
+            float(self.min_buy_amount),
+            float(self.max_buy_amount),
+            int(self.lot_size),
+            int(self.min_lots),
         )
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         logger.info(f"VeraCore 完成: {len(raw_trades)} 笔交易, {elapsed:.2f}s")
