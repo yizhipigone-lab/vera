@@ -187,8 +187,6 @@ input:focus,select:focus{border-color:var(--accent)}
         </div>
         <div class="form-row">
           <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"></div>
-          <div class="form-group"><label>单票仓位上限%</label><input id="cfgMaxPct" value="15" type="number"></div>
-        </div>
         <div class="form-row">
           <div class="form-group"><label>最低买入额</label><input id="cfgMinBuy" value="2000" type="number"></div>
           <div class="form-group"><label>最高买入额</label><input id="cfgMaxBuy" value="10000" type="number"></div>
@@ -373,7 +371,7 @@ const STORAGE_KEY = 'vera_all_config';
 const CONFIG_IDS = [
   'cfgName', 'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
   'cfgStart', 'cfgEnd', 'cfgExcludeST',
-  'cfgCapital', 'cfgCommission', 'cfgSlippage', 'cfgMaxPct',
+  'cfgCapital', 'cfgCommission', 'cfgSlippage',
   'cfgMinBuy', 'cfgMaxBuy', 'cfgLotSize', 'cfgMinLots',
   'cfgCostStopEn', 'cfgCostStopVal',
   'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
@@ -391,8 +389,7 @@ function loadConfig() {
         if (!el || !(id in saved)) return;
         let val = saved[id];
         // 迁移：旧版仓位用小数(0.15)，新版用百分比(15)
-        if (id === 'cfgMaxPct' && parseFloat(val) < 1) val = Math.round(parseFloat(val) * 100);
-        if (el.type === 'checkbox') el.checked = val;
+          if (el.type === 'checkbox') el.checked = val;
         else if (el.tagName === 'SELECT') { try { el.value = val; } catch(e) {} }
         else el.value = val;
       });
@@ -486,7 +483,7 @@ function runPipeline() {
     commission: parseFloat(getVal('cfgCommission')),
     slippage: parseFloat(getVal('cfgSlippage')),
     max_positions: 999,
-    max_position_pct: pct('cfgMaxPct'),
+    max_position_pct: 1.0,
     min_buy_amount: parseFloat(getVal('cfgMinBuy')),
     max_buy_amount: parseFloat(getVal('cfgMaxBuy')),
     lot_size: parseInt(getVal('cfgLotSize')),
@@ -727,12 +724,11 @@ function renderAllCharts(data) {
 
     // Trade table — always update with fresh data
     document.getElementById('tradeTableBox').style.display = '';
-    const maxPct = parseFloat(document.getElementById('cfgMaxPct').value) || 15;
     const minBuy = document.getElementById('cfgMinBuy').value || 2000;
     const maxBuy = document.getElementById('cfgMaxBuy').value || 10000;
     const lot = document.getElementById('cfgLotSize').value || 100;
     document.getElementById('tradeCount').textContent =
-      '(本次回测: '+data.trade_count+' 笔 | 买入'+minBuy+'~'+maxBuy+'元, 仓位≤'+maxPct+'%, '+lot+'股/手)';
+      '(本次回测: '+data.trade_count+' 笔 | 每笔'+minBuy+'~'+maxBuy+'元, '+lot+'股/手)';
     const reasonDetail = {
       'cost_stop': '成本止损 — 亏损触及止损线，全仓卖出',
       'trailing_stop': '移动止损 — 从最高点回撤触及阈值，全仓卖出',

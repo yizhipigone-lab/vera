@@ -51,7 +51,6 @@ class StrategyConfig(BaseModel):
     commission: float = 0.0003
     slippage: float = 0.001
     max_positions: int = 999
-    max_position_pct: float = 0.15
     min_buy_amount: float = 2000.0
     max_buy_amount: float = 10000.0
     lot_size: int = 100
@@ -111,7 +110,6 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             "slippage": cfg.slippage,
             "position_sizing": {
                 "max_positions": cfg.max_positions,
-                "max_position_pct": cfg.max_position_pct,
                 "min_buy_amount": cfg.min_buy_amount,
                 "max_buy_amount": cfg.max_buy_amount,
                 "lot_size": cfg.lot_size,

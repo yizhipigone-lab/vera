@@ -28,7 +28,6 @@ def _simulate_core(
     exit_np,
     initial_capital,
     commission,
-    max_position_pct,
     min_buy_amount,
     max_buy_amount,
     lot_size,
@@ -106,8 +105,8 @@ def _simulate_core(
                 bp = price_np[i, ci]
                 if np.isnan(bp) or bp <= 0.0:
                     continue
-                # 买入金额 = min(cash×仓位%, 最高买入额)，但不低于最低买入额
-                buy_amount = min(cash * max_position_pct, max_buy_amount)
+                # 买入金额 = min(可用现金, 最高买入额)，但不低于最低买入额
+                buy_amount = min(cash, max_buy_amount)
                 if buy_amount < min_buy_amount:
                     continue
                 # 按手数取整（A股100股/手）
@@ -184,7 +183,6 @@ class BacktestEngine:
         self.commission = float(config.get("commission", 0.0003))
         self.slippage = float(config.get("slippage", 0.001))
         ps = config.get("position_sizing", {})
-        self.max_position_pct = float(ps.get("max_position_pct", 0.15))
         self.min_buy_amount = float(ps.get("min_buy_amount", 2000.0))
         self.max_buy_amount = float(ps.get("max_buy_amount", 10000.0))
         self.lot_size = int(ps.get("lot_size", 100))
@@ -196,7 +194,7 @@ class BacktestEngine:
 
         logger.info("=" * 60)
         logger.info(f"VeraCore 回测: 资金={self.initial_capital:,.0f} "
-                     f"费率={self.commission:.4f} 仓位上限={self.max_position_pct:.0%}")
+                     f"费率={self.commission:.4f} 每笔{self.min_buy_amount:,.0f}~{self.max_buy_amount:,.0f}元")
 
         # 1. 获取价格
         codes = selections["stock_code"].unique().tolist()
@@ -230,7 +228,6 @@ class BacktestEngine:
             exits.values,
             float(self.initial_capital),
             float(self.commission),
-            float(self.max_position_pct),
             float(self.min_buy_amount),
             float(self.max_buy_amount),
             int(self.lot_size),
