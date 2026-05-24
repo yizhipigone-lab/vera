@@ -327,7 +327,7 @@ input:focus,select:focus{border-color:var(--accent)}
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
-            <th>股票</th><th>入场日</th><th>入场价</th><th>出场日</th><th>出场价</th><th>数量</th><th>盈亏%</th><th>原因</th>
+            <th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>出场日</th><th>出场价</th><th>数量</th><th>盈亏%</th><th>退出原因</th>
           </tr></thead>
           <tbody id="tradeTableBody"></tbody>
         </table>
@@ -657,12 +657,18 @@ function renderAllCharts(data) {
       series: [{ type: 'bar', data: rangeCount }],
     }, true);
 
-    // 退出原因分布 — 拆分复合原因计数
+    // 退出原因分布 — 拆分复合原因计数，使用详细中文标签
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', signal: '信号卖出', end_of_data: '期末平仓' };
+    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', end_of_data: '期末平仓', '换股卖出': '换股卖出' };
     const reasonCount = {};
     data.trades.forEach(t => {
-      const reasons = (t.exit_reason || 'signal').split('+');
+      let reasons = (t.exit_reason || '换股卖出').split('+');
+      // Handle 换股卖出(同日xxx) — extract inner reasons
+      const parenMatch = (t.exit_reason||'').match(/^换股卖出\(同日(.+)\)$/);
+      if (parenMatch) {
+        reasons = parenMatch[1].split('+');
+        reasonCount['换股卖出'] = (reasonCount['换股卖出'] || 0) + 1;
+      }
       reasons.forEach(r => {
         const label = reasonMap[r] || r;
         reasonCount[label] = (reasonCount[label] || 0) + 1;
@@ -706,20 +712,44 @@ function renderAllCharts(data) {
     // Trade table — always update with fresh data
     document.getElementById('tradeTableBox').style.display = '';
     document.getElementById('tradeCount').textContent = '(本次回测: '+data.trade_count+' 笔, 显示最近100笔)';
+    const reasonDetail = {
+      'cost_stop': '成本止损 — 亏损触及止损线，全仓卖出',
+      'trailing_stop': '移动止损 — 从最高点回撤触及阈值，全仓卖出',
+      'ladder_tp': '阶梯止盈 — 盈利达到目标档位，分批卖出',
+      'time_stop': '时间止盈 — 持仓天数达到上限，全仓卖出',
+      'end_of_data': '期末平仓 — 回测区间结束，强制平仓',
+      '换股卖出': '换股卖出 — 同一股票出现新买入信号，替换旧持仓',
+    };
+    function fmtReason(r) {
+      if (!r) return '—';
+      // Handle compound reasons like 'cost_stop+time_stop' or '换股卖出(同日cost_stop)'
+      let detail = r;
+      // Try to match parenthetical first: 换股卖出(同日xxx)
+      const parenMatch = r.match(/^换股卖出\(同日(.+)\)$/);
+      if (parenMatch) {
+        const inner = parenMatch[1].split('+').map(s => reasonDetail[s] || s).join('；');
+        return '换股卖出 — 同日另一笔入场触发：' + inner;
+      }
+      // Split compound reasons
+      const parts = r.split('+').map(s => reasonDetail[s] || s);
+      return parts.join('；');
+    }
     const tbody = document.getElementById('tradeTableBody');
     tbody.innerHTML = data.trades.slice(-100).reverse().map(t => {
       const pnl = (t.profit_pct || t.return || 0) * 100;
       const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
       const eDate = String(t.entry_date||'').slice(0,10);
       const xDate = String(t.exit_date||'').slice(0,10);
-      const name = t.stock_name || t.stock_code || '';
+      const name = t.stock_name || '';
+      const code = t.stock_code || '';
       return `<tr>
-        <td title="${t.stock_code||''}">${name}</td>
+        <td style="font-family:var(--mono);font-size:10px">${code}</td>
+        <td title="${code}">${name}</td>
         <td>${eDate}</td><td>${t.entry_price||''}</td>
         <td>${xDate}</td><td>${t.exit_price||''}</td>
         <td>${t.shares||''}</td>
         <td class="${cls}">${pnl.toFixed(2)}%</td>
-        <td>${t.exit_reason||''}</td></tr>`;
+        <td style="font-size:10px;max-width:200px" title="${fmtReason(t.exit_reason)}">${fmtReason(t.exit_reason)}</td></tr>`;
     }).join('');
   }
 
