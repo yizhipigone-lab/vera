@@ -682,7 +682,7 @@ function renderAllCharts(data) {
 
     // 退出原因分布 — 拆分复合原因计数，使用详细中文标签
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', '换股卖出': '换股卖出' };
+    const reasonMap = { cost_stop: '成本止损', trailing_stop: '移动止损', ladder_tp: '阶梯止盈', time_stop: '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出' };
     const reasonCount = {};
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
@@ -738,6 +738,7 @@ function renderAllCharts(data) {
       'trailing_stop': '移动止损 — 从最高点回撤触及阈值，全仓卖出',
       'ladder_tp': '阶梯止盈 — 盈利达到目标档位，分批卖出',
       'time_stop': '时间止盈 — 持仓天数达到上限，全仓卖出',
+      'cond_time_stop': '条件时间止盈 — 持仓N天后盈利达标，全仓卖出',
       '换股卖出': '换股卖出 — 同一股票出现新买入信号，替换旧持仓',
     };
     function fmtReason(r) {

@@ -324,7 +324,7 @@ class BacktestEngine:
     def _build_trades(self, raw, columns, dates):
         if len(raw) == 0: return pd.DataFrame()
         reason_map = {1.0: "换股卖出", 3.0: "成本止损", 4.0: "移动止损",
-                      5.0: "阶梯止盈", 6.0: "时间止损", 7.0: "条件时间止盈"}
+                      5.0: "阶梯止盈", 6.0: "时间止损", 7.0: "cond_time_stop"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
         records = []
