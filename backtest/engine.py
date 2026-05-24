@@ -250,7 +250,7 @@ class BacktestEngine:
         close = self._ensure_index(close)
 
         entries = self._build_entry_signals(selections, close)
-        cols = close.columns.intersection(entries.columns)
+        cols = sorted(close.columns.intersection(entries.columns))
         close = close[cols].ffill().bfill()
         entries = entries.reindex(index=close.index, columns=cols, fill_value=False)
 
@@ -260,10 +260,11 @@ class BacktestEngine:
         ladder_profits = np.array([lv[i]["profit"] for i in range(len(lv))], dtype=np.float64)
         ladder_ratios = np.array([lv[i]["sell_ratio"] for i in range(len(lv))], dtype=np.float64)
 
-        logger.info("VeraCore: 资金=%s 每笔%s~%s元 %s股/手 时间止损=%s天 条件=%s天/%s%%",
+        logger.info("VeraCore: 资金=%s 每笔%s~%s元 %s股/手 时间=%s天 条件=%s天/%s%% %s stocks",
                      f"{self.initial_capital:,.0f}", f"{self.min_buy_amount:,.0f}",
                      f"{self.max_buy_amount:,.0f}", self.lot_size,
-                     time_s.get("max_hold_days", "?"), cond_t.get("days", "?"), cond_t.get("profit", "?"))
+                     time_s.get("max_hold_days", "?"), cond_t.get("days", "?"), cond_t.get("profit", "?"),
+                     len(codes))
 
         t0 = pd.Timestamp.now()
         equity_arr, raw_trades = _simulate_core_v3(
@@ -289,7 +290,7 @@ class BacktestEngine:
         equity_curve["drawdown"] = (equity_curve["equity"] - peak) / peak
         equity_curve.reset_index(inplace=True)
 
-        trades_df = self._build_trades(raw_trades, close.columns, dates)
+        trades_df = self._build_trades(raw_trades, close.columns, dates, close_df=close)
         trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
         trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
 
@@ -322,7 +323,7 @@ class BacktestEngine:
             "selections": selections, "stock_count": len(cols),
         }
 
-    def _build_trades(self, raw, columns, dates):
+    def _build_trades(self, raw, columns, dates, close_df=None):
         if len(raw) == 0: return pd.DataFrame()
         reason_map = {1.0: "换股卖出", 3.0: "成本止损",
                       4.0: "移动止损", 8.0: "移动止盈",
@@ -331,6 +332,15 @@ class BacktestEngine:
                       7.0: "cond_time_stop"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
+        # Build price→date lookup to fix bar index mismatch
+        if close_df is not None:
+            price_date_map = {}
+            for ci_idx, code in enumerate(columns):
+                price_date_map[code] = {}
+                for di in range(len(dates)):
+                    px = close_df.iloc[di, ci_idx]
+                    if not np.isnan(px):
+                        price_date_map[code][round(px, 2)] = dates[di]
         records = []
         for row in raw:
             ci = int(row[0]); code = inv_col.get(ci, str(ci))
@@ -338,6 +348,11 @@ class BacktestEngine:
             ed = dates[ei] if 0 <= ei < len(dates) else dates[0]
             xd = dates[xi] if 0 <= xi < len(dates) else dates[-1]
             ep = round(float(row[3]), 4); xp = round(float(row[4]), 4)
+            # Fix entry date by matching entry price
+            if close_df is not None and code in price_date_map:
+                p_round = round(ep, 2)
+                if p_round in price_date_map[code]:
+                    ed = price_date_map[code][p_round]
             sh = int(row[5])
             records.append({
                 "stock_code": code, "entry_date": ed, "exit_date": xd,
