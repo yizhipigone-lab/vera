@@ -38,7 +38,7 @@ app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")
 
 class StrategyConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
-    strategy_name: str = "VERA"
+    strategy_name: str = ""
     formula_name: str = "UPN"
     formula_arg: str = "3"
     universe_type: str = "50"
@@ -92,7 +92,7 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
                 })
 
     return {
-        "strategy": {"name": cfg.strategy_name},
+        "strategy": {"name": cfg.strategy_name or "回测"},
         "selection": {
             "formula_name": cfg.formula_name,
             "formula_arg": cfg.formula_arg,
@@ -338,23 +338,7 @@ async def run_pipeline(cfg: StrategyConfig):
 
         pipeline_status.progress = 100
         pipeline_status.step = "完成"
-        pipeline_status.result = {
-            "metrics": metrics_clean,
-            "equity": equity_data,
-            "trades": trades_data,
-            "benchmarks": benchmark_data,
-            "stop_config_summary": backtest_result.get("stop_config_summary", ""),
-            "report_url": report_outputs.get("html", ""),
-            "trade_count": len(trades),
-        }
-
-        try:
-            TdxConnector.close()
-        except Exception:
-            pass
-
-        pipeline_status.running = False
-        return {
+        response_data = {
             "success": True,
             "metrics": metrics_clean,
             "equity": equity_data,
@@ -364,6 +348,25 @@ async def run_pipeline(cfg: StrategyConfig):
             "report_url": report_outputs.get("html", ""),
             "trade_count": len(trades),
         }
+        pipeline_status.result = response_data
+
+        # 持久化到磁盘
+        try:
+            import json as _json
+            persist_path = _PROJECT_ROOT / "output" / "last_result.json"
+            persist_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(persist_path, "w", encoding="utf-8") as f:
+                _json.dump(response_data, f, ensure_ascii=False, default=str)
+        except Exception:
+            pass
+
+        try:
+            TdxConnector.close()
+        except Exception:
+            pass
+
+        pipeline_status.running = False
+        return response_data
 
     except Exception as e:
         pipeline_status.error = str(e)
@@ -376,6 +379,17 @@ async def run_pipeline(cfg: StrategyConfig):
         except Exception:
             pass
         return {"success": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.get("/api/last_result")
+async def get_last_result():
+    """获取上次回测的持久化结果。"""
+    persist_path = _PROJECT_ROOT / "output" / "last_result.json"
+    if persist_path.exists():
+        import json as _json
+        with open(persist_path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    return {"success": False, "error": "暂无历史回测结果"}
 
 
 # ====== 主页面 ======

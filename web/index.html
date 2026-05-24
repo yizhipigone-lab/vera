@@ -152,7 +152,7 @@ input:focus,select:focus{border-color:var(--accent)}
       <!-- 策略信息 -->
       <div class="form-section">
         <div class="form-section-title">策略基本信息</div>
-        <div class="form-group"><label>策略名称</label><input id="cfgName" value="均线金叉策略"></div>
+        <div class="form-group"><label>策略名称（可选）</label><input id="cfgName" value="" placeholder="如：QUANTQQ策略"></div>
       </div>
 
       <!-- 选股配置 -->
@@ -686,6 +686,16 @@ function renderAllCharts(data) {
 document.getElementById('statusDot').className = 'status-dot on';
 loadConfig();
 addLog('前端就绪，等待执行回测', 'info');
+
+// 加载上次回测结果
+fetch('/api/last_result').then(r => r.json()).then(data => {
+  if (data.success) {
+    addLog('已加载上次回测结果 ('+data.trade_count+'笔交易)', 'ok');
+    lastResult = data;
+    setTimeout(() => renderAllCharts(data), 300);  // 等 DOM 渲染完
+  }
+}).catch(() => {});
+
 window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
 </script>
 </body>
