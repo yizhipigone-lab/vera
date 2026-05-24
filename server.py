@@ -356,11 +356,32 @@ async def run_pipeline(cfg: StrategyConfig):
         }
         pipeline_status.result = response_data
 
-        # 持久化到磁盘
+        # 持久化到磁盘（历史记录 + last_result）
         try:
             import json as _json
+            results_dir = _PROJECT_ROOT / "output" / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+            # 保存完整结果
+            result_path = results_dir / f"{ts}.json"
+            meta = {
+                "id": ts, "time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "formula": cfg.formula_name, "date_range": f"{cfg.start_time}~{cfg.end_time}",
+                "trade_count": len(trades), "cumulative_return": metrics_clean.get("cumulative_return", 0),
+            }
+            with open(result_path, "w", encoding="utf-8") as f:
+                _json.dump({"meta": meta, "data": response_data}, f, ensure_ascii=False, default=str)
+            # 更新索引
+            index_path = results_dir / "index.json"
+            index_data = []
+            if index_path.exists():
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index_data = _json.load(f)
+            index_data.insert(0, meta)
+            with open(index_path, "w", encoding="utf-8") as f:
+                _json.dump(index_data[:50], f, ensure_ascii=False)  # 保留最近50条
+            # 同时更新 last_result
             persist_path = _PROJECT_ROOT / "output" / "last_result.json"
-            persist_path.parent.mkdir(parents=True, exist_ok=True)
             with open(persist_path, "w", encoding="utf-8") as f:
                 _json.dump(response_data, f, ensure_ascii=False, default=str)
         except Exception:
@@ -396,6 +417,28 @@ async def get_last_result():
         with open(persist_path, "r", encoding="utf-8") as f:
             return _json.load(f)
     return {"success": False, "error": "暂无历史回测结果"}
+
+
+@app.get("/api/results")
+async def list_results():
+    """获取历史回测列表。"""
+    index_path = _PROJECT_ROOT / "output" / "results" / "index.json"
+    if index_path.exists():
+        import json as _json
+        with open(index_path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    return []
+
+
+@app.get("/api/results/{result_id}")
+async def get_result(result_id: str):
+    """加载指定历史回测结果。"""
+    result_path = _PROJECT_ROOT / "output" / "results" / f"{result_id}.json"
+    if result_path.exists():
+        import json as _json
+        with open(result_path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    return {"success": False, "error": "结果不存在"}
 
 
 # ====== 主页面 ======
