@@ -30,9 +30,10 @@ a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
 .app{display:flex;min-height:100vh}
 .sidebar{width:380px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;max-height:100vh;position:sticky;top:0;transition:width .25s}
 .sidebar.collapsed{width:0;overflow:hidden;border-right:none}
-.sidebar-toggle{position:sticky;top:50%;z-index:10;width:18px;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--surface);border:1px solid var(--border);border-left:none;border-radius:0 4px 4px 0;margin-left:-1px;transition:background .2s}
-.sidebar-toggle:hover{background:var(--card)}
-.sidebar-toggle svg{width:12px;height:12px;color:var(--text2)}
+.sidebar-toggle{position:sticky;top:50%;z-index:10;width:20px;height:56px;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--accent);border:none;border-radius:0 6px 6px 0;margin-left:-1px;transition:all .2s}
+.sidebar-toggle:hover{filter:brightness(1.15)}
+.sidebar-toggle svg{width:14px;height:14px;color:#fff;transition:transform .2s}
+.collapsed+.sidebar-toggle+.main .sidebar-toggle svg,.sidebar.collapsed~.sidebar-toggle svg{transform:rotate(180deg)}
 .main{flex:1;overflow-y:auto;padding:24px 28px;display:flex;flex-direction:column;gap:16px}
 
 /* ====== Sidebar ====== */
