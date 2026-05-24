@@ -284,13 +284,18 @@ class BacktestEngine:
                     if not m2.empty:
                         reason = "换股卖出(同日" + m2.iloc[0]["exit_reason"] + ")"
 
+            ep = round(float(row[3]), 4)
+            xp = round(float(row[4]), 4)
+            sh = int(row[5])
             records.append({
                 "stock_code": code,
                 "entry_date": entry_dt,
                 "exit_date": exit_dt,
-                "entry_price": round(float(row[3]), 4),
-                "exit_price": round(float(row[4]), 4),
-                "shares": int(row[5]),
+                "entry_price": ep,
+                "exit_price": xp,
+                "shares": sh,
+                "entry_amount": round(ep * sh, 2),
+                "exit_amount": round(xp * sh, 2),
                 "pnl": round(float(row[6]), 2),
                 "return": round(float(row[7]), 4),
                 "profit_pct": round(float(row[7]), 4),
