@@ -546,36 +546,54 @@ function renderAllCharts(data) {
   setKpi('kpiProfitF', m.profit_factor, v => v != null ? v.toFixed(2) : '--');
   setKpi('kpiBest', m.max_single_gain, v => v != null ? (v*100).toFixed(2)+'%' : '--');
 
-  // === ECharts: Equity curve ===
+  // === ECharts: Equity curve (归一化为百分比) ===
   if (data.equity && data.equity.length > 0) {
     const chart = echartsInit('chartEquity');
     const dates = data.equity.map(r => r.date.slice(0,10));
-    const equity = data.equity.map(r => r.equity);
+    const eq0 = data.equity[0].equity || 1;
+    const eqPct = data.equity.map(r => (r.equity / eq0 - 1) * 100);
     const dd = data.equity.map(r => (r.drawdown || 0) * 100);
     const series = [
-      { name: '策略权益', type: 'line', data: equity, smooth: true, lineStyle: { color: c.accent, width: 2 },
-        itemStyle: { color: c.accent }, symbol: 'none' },
-      { name: '回撤%', type: 'line', yAxisIndex: 1, data: dd, lineStyle: { color: c.down, width: 1 },
-        areaStyle: { color: c.down+'33' }, itemStyle: { color: c.down }, symbol: 'none' },
+      { name: '策略', type: 'line', data: eqPct, smooth: true,
+        lineStyle: { color: c.accent, width: 2.5 }, symbol: 'none',
+        markLine: { silent: true, data: [{ yAxis: 0, lineStyle: { color: c.text2, type: 'dashed', width: 1 } }] } },
+      { name: '回撤', type: 'line', yAxisIndex: 1, data: dd,
+        lineStyle: { color: c.down, width: 1 }, areaStyle: { color: c.down+'22' },
+        symbol: 'none' },
     ];
-    // Benchmark lines
+    // Benchmark: show index_close (归一化后的指数)
     if (data.benchmarks) {
-      const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: 'A500' };
+      const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
+      const bmColors = ['#f0883e', '#d2a8ff', '#58a6ff', '#3fb950'];
+      let ci = 0;
       for (const [name, bm] of Object.entries(data.benchmarks)) {
         if (!bm || !bm.length) continue;
-        const bmVals = bm.map(r => r.strategy_equity != null ? r.strategy_equity : null);
+        const bmVals = bm.map(r => {
+          const v = r.index_close != null ? (r.index_close - 1) * 100 : null;
+          return v;
+        });
         series.push({ name: bmNames[name]||name, type: 'line', data: bmVals,
-          lineStyle: { color: c.accent2, width: 1, type: 'dashed' }, symbol: 'none' });
+          lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none' });
+        ci++;
       }
     }
     chart.setOption({
-      tooltip: { trigger: 'axis' },
+      tooltip: { trigger: 'axis', formatter: function(params) {
+        let s = params[0].axisValue + '<br/>';
+        params.forEach(p => {
+          s += '<span style=\"display:inline-block;width:10px;height:10px;border-radius:50%;background:'+p.color+';margin-right:5px\"></span>';
+          s += p.seriesName + ': <b>' + (p.value != null ? p.value.toFixed(2)+'%' : '-') + '</b><br/>';
+        });
+        return s;
+      }},
       legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
-      grid: { left: 60, right: 60, top: 10, bottom: 40 },
-      xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 10 } },
+      grid: { left: 60, right: 70, top: 15, bottom: 45 },
+      xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
       yAxis: [
-        { type: 'value', name: '权益', nameTextStyle: { color: c.text2 }, axisLabel: { color: c.text2, fontSize: 10 }, splitLine: { lineStyle: { color: c.border } } },
-        { type: 'value', name: '回撤%', nameTextStyle: { color: c.text2 }, axisLabel: { color: c.text2, fontSize: 10, formatter: '{value}%' }, splitLine: { show: false } },
+        { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
+          axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
+        { type: 'value', name: '回撤 %', nameTextStyle: { color: c.text2, fontSize: 10 },
+          axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
       ],
       series: series,
     }, true);
