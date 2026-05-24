@@ -351,7 +351,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
-            <th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>盈亏%</th><th>退出原因</th>
+            <th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓天</th><th>盈亏%</th><th>退出原因</th>
           </tr></thead>
           <tbody id="tradeTableBody"></tbody>
         </table>
@@ -787,20 +787,19 @@ function renderAllCharts(data) {
       const shares = t.shares || 0;
       const ep = t.entry_price || 0;
       const xp = t.exit_price || 0;
-      // 入场量 = floor(可用资金 × 仓位% / 入场价)
-      const entryAmt = shares;
-      const exitAmt = shares;  // 全仓卖出时出场量=入场量；阶梯止盈时可能更小
+      const holdDays = eDate && xDate ? Math.round((new Date(xDate)-new Date(eDate))/86400000) : '';
       return `<tr>
         <td style="font-family:var(--mono);font-size:10px">${code}</td>
         <td title="${code}">${name}</td>
         <td>${eDate}</td>
         <td>${ep}</td>
-        <td>${entryAmt} 股</td>
+        <td>${shares} 股</td>
         <td>${xDate}</td>
         <td>${xp}</td>
-        <td>${exitAmt} 股</td>
+        <td>${shares} 股</td>
+        <td>${holdDays}</td>
         <td class="${cls}">${pnl.toFixed(2)}%</td>
-        <td style="font-size:10px;max-width:200px" title="${fmtReason(t.exit_reason)}">${fmtReason(t.exit_reason)}</td></tr>`;
+        <td style="font-size:10px;max-width:180px" title="${fmtReason(t.exit_reason)}">${fmtReason(t.exit_reason)}</td></tr>`;
     }).join('');
   }
 
