@@ -284,7 +284,6 @@ class BacktestEngine:
 
         # 构建输出
         dates = close.index
-        logger.info("DEBUG bar7=%s bar70=%s", str(dates[7])[:10] if len(dates)>7 else '?', str(dates[min(70,len(dates)-1)])[:10] if len(dates)>70 else '?')
         equity_curve = pd.DataFrame({"date": dates, "equity": equity_arr})
         equity_curve.set_index("date", inplace=True)
         peak = equity_curve["equity"].expanding().max()
