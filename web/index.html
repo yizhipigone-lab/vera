@@ -249,16 +249,6 @@ input:focus,select:focus{border-color:var(--accent)}
         </div>
       </div>
 
-      <!-- 基准指数 -->
-      <div class="form-section">
-        <div class="form-section-title">基准对比指数</div>
-        <select id="cfgBench" multiple style="height:80px">
-          <option value="shanghai" selected>上证指数</option>
-          <option value="chuangyeban" selected>创业板指</option>
-          <option value="kechuang50" selected>科创50</option>
-          <option value="zhongzhengA500" selected>中证A500</option>
-        </select>
-      </div>
     </div>
 
     <div class="sidebar-footer">
@@ -377,7 +367,6 @@ const CONFIG_IDS = [
   'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
   'cfgLadderEn', 'cfgLadderVal',
   'cfgTimeEn', 'cfgTimeVal',
-  'cfgBench',
 ];
 
 function loadConfig() {
@@ -390,10 +379,6 @@ function loadConfig() {
         let val = saved[id];
         // 迁移：旧版仓位用小数(0.15)，新版用百分比(15)
           if (el.type === 'checkbox') el.checked = val;
-        else if (el.tagName === 'SELECT' && el.multiple) {
-          const vals = String(val).split(',');
-          Array.from(el.options).forEach(o => { o.selected = vals.includes(o.value); });
-        }
         else if (el.tagName === 'SELECT') { try { el.value = val; } catch(e) {} }
         else el.value = val;
       });
@@ -408,8 +393,6 @@ function saveAllConfig() {
     const el = document.getElementById(id);
     if (!el) return;
     if (el.type === 'checkbox') data[id] = el.checked;
-    else if (el.tagName === 'SELECT' && el.multiple)
-      data[id] = Array.from(el.selectedOptions).map(o=>o.value).join(',');
     else data[id] = el.value;
   });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -469,7 +452,6 @@ function runPipeline() {
   addLog('开始执行回测管线...', 'info');
 
   const getVal = id => document.getElementById(id).value;
-  const bench = Array.from(document.getElementById('cfgBench').selectedOptions).map(o=>o.value).join(',');
 
   // Convert percentage inputs to decimals for backend
   const pct = (id) => parseFloat(getVal(id)) / 100;
@@ -498,7 +480,7 @@ function runPipeline() {
     trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
     ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
     time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: parseInt(getVal('cfgTimeVal')),
-    benchmark_indices: bench,
+    benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
   };
 
   addLog('配置: '+config.formula_name+' '+config.start_time+'~'+config.end_time, 'info');
@@ -586,18 +568,14 @@ function renderAllCharts(data) {
       const bmColors = ['#f0883e', '#d2a8ff', '#58a6ff', '#3fb950'];
       let ci = 0;
       for (const [name, bm] of Object.entries(data.benchmarks)) {
-        if (!bm || !bm.length) { addLog('基准'+name+': 无数据', 'info'); continue; }
-        // Build date→value map from benchmark
+        if (!bm || !bm.length) continue;
         const bmMap = {};
         bm.forEach(r => {
           const d = String(r.date || '').slice(0, 10);
           if (r.index_close != null) bmMap[d] = (r.index_close - 1) * 100;
         });
-        // Align to equity dates
         const bmVals = dates.map(d => bmMap[d] !== undefined ? bmMap[d] : null);
-        const validPts = bmVals.filter(v => v !== null).length;
-        addLog('基准'+bmNames[name]+': '+validPts+'/'+bmVals.length+' 点对齐', validPts > 0 ? 'ok' : 'info');
-        if (validPts === 0) continue;
+        if (bmVals.every(v => v === null)) continue;
         series.push({ name: bmNames[name]||name, type: 'line', data: bmVals,
           lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none',
           connectNulls: false });
