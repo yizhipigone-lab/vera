@@ -35,7 +35,6 @@ class ExitReason:
     TRAILING_STOP = "trailing_stop"
     LADDER_TP = "ladder_tp"
     TIME_STOP = "time_stop"
-    END_OF_DATA = "end_of_data"
 
 
 class StopManager:
@@ -237,21 +236,7 @@ class StopManager:
                         remaining_ratio = 1.0
                         ladder_level_triggered = set()
 
-        # 数据结束，还在持仓中 → 强制平仓
-        if in_position and not np.isnan(prices[-1]):
-            exits[-1] = True
-            profit_pct = (prices[-1] - entry_price) / entry_price
-            records.append({
-                "stock_code": stock_code,
-                "entry_date": entry_date,
-                "exit_date": date_index[-1],
-                "entry_price": round(entry_price, 4),
-                "exit_price": round(prices[-1], 4),
-                "exit_reason": ExitReason.END_OF_DATA,
-                "sell_ratio": 1.0,
-                "profit_pct": round(profit_pct, 4),
-            })
-
+        # 数据结束仍持仓 → 不平仓，按市值计入最终权益
         return exits, records
 
     def get_config_summary(self) -> str:
