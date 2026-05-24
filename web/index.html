@@ -561,19 +561,24 @@ function renderAllCharts(data) {
         lineStyle: { color: c.down, width: 1 }, areaStyle: { color: c.down+'22' },
         symbol: 'none' },
     ];
-    // Benchmark: show index_close (归一化后的指数)
+    // Benchmark: align to equity dates, fill gaps with null
     if (data.benchmarks) {
       const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
       const bmColors = ['#f0883e', '#d2a8ff', '#58a6ff', '#3fb950'];
       let ci = 0;
       for (const [name, bm] of Object.entries(data.benchmarks)) {
         if (!bm || !bm.length) continue;
-        const bmVals = bm.map(r => {
-          const v = r.index_close != null ? (r.index_close - 1) * 100 : null;
-          return v;
+        // Build date→value map from benchmark
+        const bmMap = {};
+        bm.forEach(r => {
+          const d = String(r.date || '').slice(0, 10);
+          if (r.index_close != null) bmMap[d] = (r.index_close - 1) * 100;
         });
+        // Align to equity dates
+        const bmVals = dates.map(d => bmMap[d] !== undefined ? bmMap[d] : null);
         series.push({ name: bmNames[name]||name, type: 'line', data: bmVals,
-          lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none' });
+          lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none',
+          connectNulls: false });
         ci++;
       }
     }
