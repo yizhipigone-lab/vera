@@ -134,7 +134,7 @@ def _simulate_core(
                     pos_value += pos_shares[p] * px
         equity_arr[i] = cash + pos_value
 
-    # ── 4. 期末强平 ──
+    # ── 4. 期末强平（跳过最后一天买入的持仓，按市值计入权益即可）──
     last = n_dates - 1
     p = 0
     while p < pos_count:
@@ -144,20 +144,24 @@ def _simulate_core(
             if not (np.isnan(fp) or fp <= 0.0):
                 shares = pos_shares[p]
                 ep = pos_entry_px[p]
-                gross = shares * fp * (1.0 - commission)
-                cash += gross
-                pp = (fp - ep) / ep if ep > 0.0 else 0.0
-                if trade_count < max_trades:
-                    trades[trade_count, 0] = float(ci)
-                    trades[trade_count, 1] = float(pos_entry_idx[p])
-                    trades[trade_count, 2] = float(last)
-                    trades[trade_count, 3] = ep
-                    trades[trade_count, 4] = fp
-                    trades[trade_count, 5] = shares
-                    trades[trade_count, 6] = gross - shares * ep
-                    trades[trade_count, 7] = pp
-                    trades[trade_count, 8] = 2.0  # reason_code: 2=end_of_data
-                    trade_count += 1
+                # 最后一天买入的不平仓，按收盘价计入权益
+                if pos_entry_idx[p] == last:
+                    cash += 0.0  # 不卖，不产生手续费
+                else:
+                    gross = shares * fp * (1.0 - commission)
+                    cash += gross
+                    pp = (fp - ep) / ep if ep > 0.0 else 0.0
+                    if trade_count < max_trades:
+                        trades[trade_count, 0] = float(ci)
+                        trades[trade_count, 1] = float(pos_entry_idx[p])
+                        trades[trade_count, 2] = float(last)
+                        trades[trade_count, 3] = ep
+                        trades[trade_count, 4] = fp
+                        trades[trade_count, 5] = shares
+                        trades[trade_count, 6] = gross - shares * ep
+                        trades[trade_count, 7] = pp
+                        trades[trade_count, 8] = 2.0
+                        trade_count += 1
         pos_count -= 1
         if p < pos_count:
             pos_code[p] = pos_code[pos_count]
@@ -166,7 +170,15 @@ def _simulate_core(
             pos_entry_idx[p] = pos_entry_idx[pos_count]
         p += 1
 
-    equity_arr[last] = cash
+    # 最终权益 = 现金 + 持仓市值
+    pos_value = 0.0
+    for p in range(pos_count):
+        ci = pos_code[p]
+        if ci >= 0:
+            px = price_np[last, ci]
+            if not np.isnan(px):
+                pos_value += pos_shares[p] * px
+    equity_arr[last] = cash + pos_value
     return equity_arr, trades[:trade_count]
 
 
