@@ -99,12 +99,43 @@ def _simulate_core(
                     continue  # 不递增 p，因为当前位置已被交换
             p += 1
 
-        # ── 2. 买入 ──
+        # ── 2. 买入（若已持有同股票，先卖出旧仓位）──
         for ci in range(n_stocks):
             if entry_np[i, ci]:
                 bp = price_np[i, ci]
                 if np.isnan(bp) or bp <= 0.0:
                     continue
+                # 检查是否已持有该股票 → 先卖出旧仓位（换股）
+                for p in range(pos_count):
+                    if pos_code[p] == ci:
+                        old_shares = pos_shares[p]
+                        old_ep = pos_entry_px[p]
+                        old_entry_idx = pos_entry_idx[p]
+                        xp = bp  # 以当前价卖出
+                        if not (np.isnan(xp) or xp <= 0.0):
+                            gross = old_shares * xp * (1.0 - commission)
+                            cash += gross
+                            pp = (xp - old_ep) / old_ep if old_ep > 0.0 else 0.0
+                            if trade_count < max_trades:
+                                trades[trade_count, 0] = float(ci)
+                                trades[trade_count, 1] = float(old_entry_idx)
+                                trades[trade_count, 2] = float(i)
+                                trades[trade_count, 3] = old_ep
+                                trades[trade_count, 4] = xp
+                                trades[trade_count, 5] = old_shares
+                                trades[trade_count, 6] = gross - old_shares * old_ep
+                                trades[trade_count, 7] = pp
+                                trades[trade_count, 8] = 1.0  # 换股卖出
+                                trade_count += 1
+                        # 移除旧仓位
+                        pos_count -= 1
+                        if p < pos_count:
+                            pos_code[p] = pos_code[pos_count]
+                            pos_shares[p] = pos_shares[pos_count]
+                            pos_entry_px[p] = pos_entry_px[pos_count]
+                            pos_entry_idx[p] = pos_entry_idx[pos_count]
+                        pos_code[pos_count] = -1
+                        break  # 只移除一个
                 # 买入金额 = min(可用现金, 最高买入额)，但不低于最低买入额
                 buy_amount = min(cash, max_buy_amount)
                 if buy_amount < min_buy_amount:
