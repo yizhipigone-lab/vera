@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 # VeraCore Numba JIT 核心 — 内置止盈止损，不依赖外部 exit_np
 # ═══════════════════════════════════════════════════════════════
 
-@njit(cache=True)
+@njit
 def _simulate_core(
     price_np, entry_np,
     initial_capital, commission,
@@ -70,11 +70,11 @@ def _simulate_core(
             # 成本止损
             if cost_stop_enabled and pp <= cost_stop_threshold:
                 triggered = 3
-            # 移动止损
+            # 移动止损/止盈 (根据盈亏区分)
             if triggered < 0 and trailing_enabled and hp_profit >= trailing_activation:
                 dd = (xp - hp) / hp if hp > 0.0 else 0.0
                 if dd <= -trailing_drawdown:
-                    triggered = 4
+                    triggered = 8 if pp > 0 else 4  # 8=移动止盈 4=移动止损
             # 阶梯止盈（任意档位触发，部分/全卖在下方处理）
             if triggered < 0 and ladder_enabled:
                 mask = pos_ladder_done[p]
@@ -84,9 +84,9 @@ def _simulate_core(
                         pos_ladder_done[p] = mask | (1 << li)
                         triggered = 5
                         break
-            # 时间止盈（无条件）
+            # 时间止损/止盈 (根据盈亏区分)
             if triggered < 0 and time_enabled and hold_days >= max_hold_days:
-                triggered = 6
+                triggered = 9 if pp > 0 else 6  # 9=时间止盈 6=时间止损
             # 条件时间止盈：持仓N天后盈利≥X%清仓
             if triggered < 0 and cond_time_enabled and hold_days >= cond_time_days and pp >= cond_time_profit:
                 triggered = 7
@@ -323,8 +323,11 @@ class BacktestEngine:
 
     def _build_trades(self, raw, columns, dates):
         if len(raw) == 0: return pd.DataFrame()
-        reason_map = {1.0: "换股卖出", 3.0: "成本止损", 4.0: "移动止损",
-                      5.0: "阶梯止盈", 6.0: "时间止损", 7.0: "cond_time_stop"}
+        reason_map = {1.0: "换股卖出", 3.0: "成本止损",
+                      4.0: "移动止损", 8.0: "移动止盈",
+                      5.0: "阶梯止盈",
+                      6.0: "时间止损", 9.0: "时间止盈",
+                      7.0: "cond_time_stop"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
         records = []
