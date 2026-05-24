@@ -191,12 +191,11 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <!-- 资金与仓位 -->
       <div class="form-section">
         <div class="form-section-title">资金与仓位</div>
+        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="200000" type="number"></div>
         <div class="form-row">
-          <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="200000" type="number"></div>
           <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001"></div>
-        </div>
-        <div class="form-row">
           <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"></div>
+        </div>
         <div class="form-row">
           <div class="form-group"><label>最低买入额</label><input id="cfgMinBuy" value="2000" type="number"></div>
           <div class="form-group"><label>最高买入额</label><input id="cfgMaxBuy" value="10000" type="number"></div>
