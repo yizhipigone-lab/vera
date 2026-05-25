@@ -340,7 +340,7 @@ async def run_pipeline(cfg: StrategyConfig):
 
         trades_data = []
         if not trades.empty:
-            for _, row in trades.tail(100).iterrows():
+            for _, row in trades.iterrows():
                 d = {}
                 for col in trades.columns:
                     d[col] = safe_serialize(row[col])
