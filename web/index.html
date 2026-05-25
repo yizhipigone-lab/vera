@@ -351,7 +351,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
-            <th>#</th><th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓天</th><th>盈亏%</th><th>退出原因</th>
+            <th>#</th><th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓(交易日)</th><th>盈亏%</th><th>退出原因</th>
           </tr></thead>
           <tbody id="tradeTableBody"></tbody>
         </table>
@@ -732,10 +732,7 @@ function renderAllCharts(data) {
 
     // 持仓天数分布 — 按自然区间分组
     const chart3 = echartsInit('chartHold');
-    const holdDays = data.trades.map(t => {
-      if (t.entry_date && t.exit_date) return Math.round((new Date(t.exit_date)-new Date(t.entry_date))/86400000);
-      return null;
-    }).filter(v => v != null);
+    const holdDays = data.trades.map(t => t.hold_days).filter(v => v != null && v >= 0);
     const holdRanges = [
       { label: '1天', min: 0, max: 2 },
       { label: '2-3天', min: 2, max: 4 },
@@ -790,7 +787,7 @@ function renderAllCharts(data) {
       const shares = t.shares || 0;
       const ep = t.entry_price || 0;
       const xp = t.exit_price || 0;
-      const holdDays = eDate && xDate ? Math.round((new Date(xDate)-new Date(eDate))/86400000) : '';
+      const holdDays = t.hold_days != null ? t.hold_days : '';
       return `<tr>
         <td style="color:var(--text2);font-size:10px">${totalTrades - i}</td>
         <td style="font-family:var(--mono);font-size:10px">${code}</td>

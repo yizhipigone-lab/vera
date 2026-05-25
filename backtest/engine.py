@@ -356,6 +356,7 @@ class BacktestEngine:
                 "pnl": round(float(row[6]), 2), "return": round(float(row[7]), 4),
                 "profit_pct": round(float(row[7]), 4),
                 "exit_reason": reason_map.get(row[8], "换股卖出"),
+                "hold_days": int(row[2]) - int(row[1]),
             })
         return pd.DataFrame(records)
 
