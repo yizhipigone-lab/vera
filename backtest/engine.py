@@ -3,8 +3,6 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Any
-from numba import njit
-
 from backtest.stop_manager import StopManager
 from backtest.metrics import MetricsCalculator
 from core.data_fetcher import DataFetcher
@@ -17,7 +15,6 @@ logger = get_logger(__name__)
 # VeraCore Numba JIT 核心 — 内置止盈止损，不依赖外部 exit_np
 # ═══════════════════════════════════════════════════════════════
 
-@njit
 def _simulate_core_v3(
     price_np, entry_np,
     initial_capital, commission,
