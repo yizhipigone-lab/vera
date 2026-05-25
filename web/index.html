@@ -655,7 +655,6 @@ function renderAllCharts(data) {
       ],
       series: series,
     }, true);
-    window.addEventListener('resize', () => chart.resize());
   }
 
   // === ECharts: Monthly returns bar chart ===
@@ -679,7 +678,6 @@ function renderAllCharts(data) {
       yAxis: { type: 'value', name: '月收益 %', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
       series: [{ type: 'bar', data: mData.map(d => ({ value: parseFloat(d.value), itemStyle: { color: parseFloat(d.value) >= 0 ? c.up : c.down } })) }],
     }, true);
-    window.addEventListener('resize', () => chart.resize());
   }
 
   // === Trade Analysis Charts ===
