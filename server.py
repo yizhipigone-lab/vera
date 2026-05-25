@@ -188,8 +188,18 @@ async def run_pipeline(cfg: StrategyConfig):
         return {"success": False, "error": "选股公式名称不能为空"}
 
     try:
-        # 强制重载所有回测模块，避免 Python 缓存旧版本
-        import importlib
+        # 强制清 Numba JIT 缓存 + 重载
+        import importlib, numba, shutil, os, glob
+        nc = os.path.expanduser('~/__pycache__')
+        for p in glob.glob(f'{nc}/**_simulate_core*', recursive=True):
+            try: os.remove(p)
+            except: pass
+        # 清除项目内缓存
+        for root, dirs, files in os.walk('.'):
+            for f in files:
+                if '_simulate_core' in f or f.endswith('.nbc') or f.endswith('.nbi'):
+                    try: os.remove(os.path.join(root, f))
+                    except: pass
         import backtest.stop_manager, backtest.metrics, backtest.engine
         importlib.reload(backtest.stop_manager)
         importlib.reload(backtest.metrics)

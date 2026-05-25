@@ -351,7 +351,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
-            <th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓天</th><th>盈亏%</th><th>退出原因</th>
+            <th>#</th><th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓天</th><th>盈亏%</th><th>退出原因</th>
           </tr></thead>
           <tbody id="tradeTableBody"></tbody>
         </table>
@@ -779,7 +779,8 @@ function renderAllCharts(data) {
       return parts.join('；');
     }
     const tbody = document.getElementById('tradeTableBody');
-    tbody.innerHTML = data.trades.slice().reverse().map(t => {
+    const totalTrades = data.trades.length;
+    tbody.innerHTML = data.trades.slice().reverse().map((t, i) => {
       const pnl = (t.profit_pct || t.return || 0) * 100;
       const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
       const eDate = String(t.entry_date||'').slice(0,10);
@@ -791,6 +792,7 @@ function renderAllCharts(data) {
       const xp = t.exit_price || 0;
       const holdDays = eDate && xDate ? Math.round((new Date(xDate)-new Date(eDate))/86400000) : '';
       return `<tr>
+        <td style="color:var(--text2);font-size:10px">${totalTrades - i}</td>
         <td style="font-family:var(--mono);font-size:10px">${code}</td>
         <td title="${code}">${name}</td>
         <td>${eDate}</td>
