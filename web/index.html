@@ -686,13 +686,13 @@ function renderAllCharts(data) {
     // P&L 分布 — 按区间分组
     const chart1 = echartsInit('chartTrade');
     const ranges = [
-      { label: '< -10%', min: -Infinity, max: -10, color: '#dc2626' },
-      { label: '-10%~-5%', min: -10, max: -5, color: '#ef4444' },
-      { label: '-5%~0%', min: -5, max: 0, color: '#f87171' },
-      { label: '0%~5%', min: 0, max: 5, color: '#4ade80' },
-      { label: '5%~10%', min: 5, max: 10, color: '#22c55e' },
-      { label: '10%~20%', min: 10, max: 20, color: '#16a34a' },
-      { label: '> 20%', min: 20, max: Infinity, color: '#15803d' },
+      { label: '< -10%', min: -Infinity, max: -10, color: '#16a34a' },
+      { label: '-10%~-5%', min: -10, max: -5, color: '#22c55e' },
+      { label: '-5%~0%', min: -5, max: 0, color: '#4ade80' },
+      { label: '0%~5%', min: 0, max: 5, color: '#f87171' },
+      { label: '5%~10%', min: 5, max: 10, color: '#ef4444' },
+      { label: '10%~20%', min: 10, max: 20, color: '#dc2626' },
+      { label: '> 20%', min: 20, max: Infinity, color: '#b91c1c' },
     ];
     const rangeCount = ranges.map(r => {
       const cnt = data.trades.filter(t => {
