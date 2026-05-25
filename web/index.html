@@ -487,6 +487,7 @@ function echartsInit(id) {
   if (charts[id]) charts[id].dispose();
   const c = echarts.init(dom);
   charts[id] = c;
+  c.resize();
   return c;
 }
 
