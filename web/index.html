@@ -844,18 +844,6 @@ function loadHistory(id) {
   }).catch(e => addLog('加载失败: '+e.message, 'error'));
 }
 
-// 页面加载时自动加载最近一次结果
-fetch('/api/last_result').then(r => r.json()).then(data => {
-  if (data.success && data.trade_count > 0) {
-    addLog('已加载最近回测 ('+data.trade_count+'笔交易)', 'ok');
-    lastResult = data;
-    setTimeout(() => {
-      document.getElementById('tradeTableBox').style.display = '';
-      document.getElementById('tradeCount').textContent = '(历史结果, 共 '+data.trade_count+' 笔)';
-      renderAllCharts(data);
-    }, 300);
-  }
-}).catch(() => {});
 
 window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
 </script>

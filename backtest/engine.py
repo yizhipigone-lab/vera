@@ -10,6 +10,9 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# ENGINE VERSION: increment to bust Python .pyc cache
+ENGINE_VERSION = "v3.0-pure-python-20260530"
+
 
 # ═══════════════════════════════════════════════════════════════
 # VeraCore Numba JIT 核心 — 内置止盈止损，不依赖外部 exit_np
@@ -257,12 +260,15 @@ class BacktestEngine:
         ladder_profits = np.array([lv[i]["profit"] for i in range(len(lv))], dtype=np.float64)
         ladder_ratios = np.array([lv[i]["sell_ratio"] for i in range(len(lv))], dtype=np.float64)
 
-        logger.info("VeraCore: 资金=%s 每笔%s~%s元 %s股/手 时间=%s天 条件=%s天/%s%% %s stocks",
+        logger.info("VeraCore %s: 资金=%s 每笔%s~%s元 %s股/手 时间=%s天 条件=%s天/%s%% %s stocks",
+                     ENGINE_VERSION,
                      f"{self.initial_capital:,.0f}", f"{self.min_buy_amount:,.0f}",
                      f"{self.max_buy_amount:,.0f}", self.lot_size,
                      time_s.get("max_hold_days", "?"), cond_t.get("days", "?"), cond_t.get("profit", "?"),
                      len(codes))
 
+        mhd = int(time_s.get("max_hold_days", 20))
+        logger.info("ENGINE_DEBUG max_hold_days=%d time_enabled=%s", mhd, time_s.get("enabled", True))
         t0 = pd.Timestamp.now()
         equity_arr, raw_trades = _simulate_core_v3(
             close.values.astype(np.float64), entries.values,
