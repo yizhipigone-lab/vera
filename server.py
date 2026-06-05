@@ -47,27 +47,45 @@ class StrategyConfig(BaseModel):
     end_time: str = "20250630"
     period: str = "1d"
     dividend_type: int = 1
-    initial_capital: float = 200000.0
-    commission: float = 0.0003
-    slippage: float = 0.001
+    initial_capital: Optional[float] = None
+    commission: Optional[float] = None
+    slippage: Optional[float] = None
     max_positions: int = 999
-    min_buy_amount: float = 2000.0
-    max_buy_amount: float = 10000.0
-    lot_size: int = 100
-    min_lots: int = 1
+    min_buy_amount: Optional[float] = None
+    max_buy_amount: Optional[float] = None
+    lot_size: Optional[int] = None
+    min_lots: Optional[int] = None
     cost_stop_enabled: bool = True
-    cost_stop_threshold: float = -0.08
+    cost_stop_threshold: Optional[float] = None
     trailing_enabled: bool = True
-    trailing_activation: float = 0.05
-    trailing_drawdown: float = 0.03
+    trailing_activation: Optional[float] = None
+    trailing_drawdown: Optional[float] = None
     ladder_enabled: bool = True
-    ladder_levels: str = "0.10:0.33,0.20:0.33,0.30:1.00"
+    ladder_levels: str = "6:30,15:30"
     time_enabled: bool = True
-    max_hold_days: int = 20
+    max_hold_days: Optional[int] = None
     cond_time_enabled: bool = False
-    cond_time_days: int = 7
-    cond_time_profit: float = 0.01
+    cond_time_days: Optional[int] = None
+    cond_time_profit: Optional[float] = None
+    first_day_enabled: bool = False
+    first_day_target: Optional[float] = None
     benchmark_indices: str = "shanghai,chuangyeban,kechuang50,zhongzhengA500"
+
+    def get(self, key: str, default=None):
+        """安全获取字段值，None 时返回默认值。"""
+        DEFAULTS = {
+            "initial_capital": 1000000.0, "commission": 0.0003, "slippage": 0.001,
+            "min_buy_amount": 2000.0, "max_buy_amount": 20000.0,
+            "lot_size": 100, "min_lots": 1,
+            "cost_stop_threshold": -0.12, "trailing_activation": 0.08,
+            "trailing_drawdown": 0.05, "max_hold_days": 20,
+            "cond_time_days": 7, "cond_time_profit": 0.02,
+            "first_day_target": 0.03,
+        }
+        val = getattr(self, key, None)
+        if val is None:
+            return DEFAULTS.get(key, default)
+        return val
 
 
 class PipelineStatus:
@@ -97,34 +115,42 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
                     "sell_ratio": float(parts[1]),
                 })
 
+    # 选股始终用日线，回测层可用5m
+    if cfg.period == "5m":
+        sel_period, bt_period = "1d", "5m"
+    else:
+        sel_period = bt_period = cfg.period
+
     return {
         "strategy": {"name": cfg.strategy_name or "回测"},
         "selection": {
             "formula_name": cfg.formula_name,
             "formula_arg": cfg.formula_arg,
             "universe": {"type": cfg.universe_type, "exclude_st": cfg.exclude_st},
-            "period": cfg.period,
+            "period": sel_period,
             "dividend_type": cfg.dividend_type,
         },
         "time_range": {"start": cfg.start_time, "end": cfg.end_time},
         "backtest": {
-            "initial_capital": cfg.initial_capital,
-            "commission": cfg.commission,
-            "slippage": cfg.slippage,
+            "initial_capital": cfg.get("initial_capital", 200000.0),
+            "commission": cfg.get("commission", 0.0003),
+            "slippage": cfg.get("slippage", 0.001),
+            "period": bt_period,
             "position_sizing": {
                 "max_positions": cfg.max_positions,
-                "min_buy_amount": cfg.min_buy_amount,
-                "max_buy_amount": cfg.max_buy_amount,
-                "lot_size": cfg.lot_size,
-                "min_lots": cfg.min_lots,
+                "min_buy_amount": cfg.get("min_buy_amount", 2000.0),
+                "max_buy_amount": cfg.get("max_buy_amount", 10000.0),
+                "lot_size": cfg.get("lot_size", 100),
+                "min_lots": cfg.get("min_lots", 1),
             },
         },
         "stop_loss": {
-            "cost_stop": {"enabled": cfg.cost_stop_enabled, "threshold": cfg.cost_stop_threshold},
-            "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.trailing_activation, "drawdown": cfg.trailing_drawdown},
+            "cost_stop": {"enabled": cfg.cost_stop_enabled, "threshold": cfg.get("cost_stop_threshold", -0.08)},
+            "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.get("trailing_activation", 0.05), "drawdown": cfg.get("trailing_drawdown", 0.03)},
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
-            "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.max_hold_days},
-            "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.cond_time_days, "profit": cfg.cond_time_profit},
+            "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},
+            "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.get("cond_time_days", 7), "profit": cfg.get("cond_time_profit", 0.01)},
+            "first_day": {"enabled": cfg.first_day_enabled, "target": cfg.get("first_day_target", 0.03)},
         },
         "benchmark": {"indices": [s.strip() for s in cfg.benchmark_indices.split(",") if s.strip()]},
     }
@@ -269,6 +295,9 @@ async def run_pipeline(cfg: StrategyConfig):
         pipeline_status.step = "基准对比"
         pipeline_status.progress = 70
         bench_cfg = config_dict.get("benchmark", {})
+        # 传入回测周期，让基准对齐5m
+        if "period" in config_dict.get("backtest", {}) and "period" not in bench_cfg:
+            bench_cfg = {**bench_cfg, "period": config_dict["backtest"]["period"]}
         comparator = BenchmarkComparator(bench_cfg)
         equity_curve = backtest_result.get("equity_curve", pd.DataFrame())
 

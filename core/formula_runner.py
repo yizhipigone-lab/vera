@@ -67,6 +67,11 @@ class FormulaRunner:
         batch_errors = 0
         total_batches = (len(str_codes) - 1) // BATCH_SIZE + 1
 
+        # count 决定 TDX 从 end_time 往前扫多少根 bar
+        # 500 根 ≈ 2年，2022-2025 跨越 ~1000 个交易日，需足够大
+        # 保守取 3000（覆盖 ~12年日线），让 TDX 扫全量历史数据
+        count = 3000
+
         for batch_start in range(0, len(str_codes), BATCH_SIZE):
             batch = str_codes[batch_start:batch_start + BATCH_SIZE]
             batch_num = batch_start // BATCH_SIZE + 1
@@ -82,7 +87,7 @@ class FormulaRunner:
                     stock_period=stock_period,
                     start_time=start_time,
                     end_time=end_time,
-                    count=500,
+                    count=count,
                     dividend_type=dividend_type,
                 )
 
@@ -126,7 +131,10 @@ class FormulaRunner:
                         try:
                             dt = pd.to_datetime(date_str, format="%Y%m%d")
                         except (ValueError, TypeError):
-                            continue
+                            try:
+                                dt = pd.to_datetime(date_str, format="%Y%m%d%H%M%S")
+                            except (ValueError, TypeError):
+                                continue
                         all_records.append({
                             "stock_code": stock_code,
                             "select_date": dt,

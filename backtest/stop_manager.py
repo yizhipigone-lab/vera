@@ -1,13 +1,13 @@
-"""多维度止损止盈管理器 — 叠加模式。
+"""多维度止损止盈管理器 — 叠加模式，基于 OHLC 日内价格检测。
 
-四个机制全部独立检查（基于收盘价），可独立启用/禁用：
+四个机制全部独立检查（基于High/Low检测日内触发，收盘价执行）：
 
-    1. 成本止损    — (收盘价-成本)/成本 ≤ -X%，全仓卖出
-    2. 移动止损    — 盈利>激活% 且 (最高价-收盘)/最高价 ≥ Y%，全仓卖出
-    3. 阶梯止盈    — 盈利达 Z₁%→卖P₁%, Z₂%→卖P₂%, ...（分批）
+    1. 成本止损    — Low触及止损线，全仓卖出
+    2. 阶梯止盈    — High触及 Z₁%→卖P₁%, Z₂%→卖P₂%, ...（分批）
+    3. 移动止损    — 最高High盈利>激活% 且 Low回撤≥Y%，全仓卖出
     4. 时间止盈    — 持仓天数 ≥ N 天，全仓卖出
 
-同一 bar 上若多个触发，取最大卖出比例执行（成本=100% > 移动=100%=时间=100% > 阶梯=部分）。
+优先级：成本 > 阶梯 > 移动 > 时间（成本止损为最高安全优先级，阶梯为主动止盈策略）。
 退出原因记录所有触发的条件，以 + 连接（如 cost_stop+trailing_stop）。
 
 所有参数从配置读取，无需修改代码。
@@ -96,6 +96,8 @@ class StopManager:
         self,
         close_prices: pd.DataFrame,
         entry_signals: pd.DataFrame,
+        high_prices: Optional[pd.DataFrame] = None,
+        low_prices: Optional[pd.DataFrame] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         计算每只股票每天的卖出信号。
@@ -103,6 +105,8 @@ class StopManager:
         Args:
             close_prices: 收盘价 DataFrame，index=日期, columns=股票代码
             entry_signals: 买入信号 DataFrame，index=日期, columns=股票代码，True=买入
+            high_prices: 最高价 DataFrame（可选，用于检测日内触发）
+            low_prices: 最低价 DataFrame（可选，用于检测日内触发）
 
         Returns:
             (exit_signals, exit_info):
@@ -120,8 +124,17 @@ class StopManager:
             price_arr = close.iloc[:, col_idx].values
             entry_arr = entries.iloc[:, col_idx].values if col_idx < entries.shape[1] else np.zeros(n_dates, dtype=bool)
 
+            # 获取high/low数组
+            high_arr = None
+            low_arr = None
+            if high_prices is not None and stock_code in high_prices.columns:
+                high_arr = high_prices[stock_code].values.astype(np.float64)
+            if low_prices is not None and stock_code in low_prices.columns:
+                low_arr = low_prices[stock_code].values.astype(np.float64)
+
             exits, records = self._compute_single_stock(
                 stock_code, price_arr, entry_arr, close.index,
+                high_arr=high_arr, low_arr=low_arr,
             )
             exit_signal.iloc[:, col_idx] = exits
             exit_records.extend(records)
@@ -139,6 +152,8 @@ class StopManager:
         prices: np.ndarray,
         entries: np.ndarray,
         date_index: pd.DatetimeIndex,
+        high_arr: Optional[np.ndarray] = None,
+        low_arr: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, list]:
         """单只股票的止损止盈计算。"""
         n = len(prices)
@@ -150,7 +165,8 @@ class StopManager:
         entry_price = 0.0
         entry_date = None
         entry_idx = -1
-        highest_price = 0.0
+        highest_price = 0.0  # 持仓期间最高收盘价
+        highest_hi = 0.0      # 持仓期间实际最高价
         remaining_ratio = 1.0  # 剩余仓位比例（阶梯止盈使用）
         ladder_level_triggered = set()  # 已触发的阶梯档位
 
@@ -165,6 +181,7 @@ class StopManager:
                 entry_date = date_index[i]
                 entry_idx = i
                 highest_price = prices[i]
+                highest_hi = prices[i]
                 remaining_ratio = 1.0
                 ladder_level_triggered = set()
                 continue  # 入场当天不检查止损
@@ -177,31 +194,39 @@ class StopManager:
                 if current_price > highest_price:
                     highest_price = current_price
 
+                # 获取当前bar的high/low
+                bar_high = high_arr[i] if high_arr is not None else current_price
+                bar_low = low_arr[i] if low_arr is not None else current_price
+                if bar_high > highest_hi:
+                    highest_hi = bar_high
+                hi_profit = (bar_high - entry_price) / entry_price
+                lo_profit = (bar_low - entry_price) / entry_price
+                peak_hi_profit = (highest_hi - entry_price) / entry_price
+
                 # 收集所有触发的条件
                 triggered = []  # (reason, sell_ratio)
 
-                # 成本止损
-                if self.cost_stop_enabled and profit_pct <= self.cost_stop_threshold:
+                # 成本止损：检查Low是否跌破止损线（最高优先级）
+                if self.cost_stop_enabled and lo_profit <= self.cost_stop_threshold:
                     triggered.append((ExitReason.COST_STOP, 1.0))
 
-                # 移动止损: 最高价曾盈利≥激活% → 已激活; 回撤≥阈值 → 触发
-                highest_profit = (highest_price - entry_price) / entry_price
-                if self.trailing_enabled and highest_profit >= self.trailing_activation:
-                    drawdown_pct = (current_price - highest_price) / highest_price
-                    if drawdown_pct <= -self.trailing_drawdown:
-                        triggered.append((ExitReason.TRAILING_STOP, 1.0))
-
-                # 阶梯止盈（检查所有未触发的档位）
+                # 阶梯止盈：检查High是否触及目标档位（主动策略优先）
                 if self.ladder_enabled and self.ladder_levels:
                     for lv_idx, level in enumerate(self.ladder_levels):
                         if lv_idx in ladder_level_triggered:
                             continue
-                        if profit_pct >= level["profit"]:
+                        if hi_profit >= level["profit"]:
                             ratio = min(level.get("sell_ratio", 1.0), remaining_ratio)
                             if ratio > 0:
                                 ladder_level_triggered.add(lv_idx)
                                 triggered.append((ExitReason.LADDER_TP, ratio))
                                 remaining_ratio -= ratio
+
+                # 移动止损: 基于实际最高价峰值，Close回撤触发（次级保护）
+                if self.trailing_enabled and peak_hi_profit >= self.trailing_activation:
+                    drawdown_pct = (current_price - highest_hi) / highest_hi
+                    if drawdown_pct <= -self.trailing_drawdown:
+                        triggered.append((ExitReason.TRAILING_STOP, 1.0))
 
                 # 时间止盈
                 if self.time_enabled:
@@ -233,6 +258,7 @@ class StopManager:
                         entry_date = None
                         entry_idx = -1
                         highest_price = 0.0
+                        highest_hi = 0.0
                         remaining_ratio = 1.0
                         ladder_level_triggered = set()
 
@@ -243,15 +269,15 @@ class StopManager:
         """获取止损止盈配置摘要。"""
         lines = []
         if self.cost_stop_enabled:
-            lines.append(f"成本止损: {self.cost_stop_threshold:.1%}")
-        if self.trailing_enabled:
-            lines.append(f"移动止损: 盈利{self.trailing_activation:.1%}激活, 回撤{self.trailing_drawdown:.1%}")
+            lines.append(f"成本止损: {self.cost_stop_threshold:.1%}（Low触发, stop_price执行）")
         if self.ladder_enabled and self.ladder_levels:
             levels_str = " → ".join(
                 f"盈利{lv['profit']:.0%}卖{lv['sell_ratio']:.0%}"
                 for lv in self.ladder_levels
             )
-            lines.append(f"阶梯止盈: {levels_str}")
+            lines.append(f"阶梯止盈: {levels_str}（High触发, ladder_price执行）")
+        if self.trailing_enabled:
+            lines.append(f"移动止损: 盈利{self.trailing_activation:.1%}激活, 回撤{self.trailing_drawdown:.1%}（High激活, Close回撤）")
         if self.time_enabled:
-            lines.append(f"时间止损: {self.max_hold_days}天")
+            lines.append(f"时间止损: {self.max_hold_days}天（Close执行）")
         return "\n".join(lines)

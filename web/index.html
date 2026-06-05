@@ -179,7 +179,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
             <option value="28">中证A500</option>
             <option value="51">创业板</option><option value="52">科创板</option>
           </select></div>
-          <div class="form-group"><label>K线周期</label><select id="cfgPeriod"><option value="1d">日线</option><option value="1w">周线</option></select></div>
+          <div class="form-group"><label>K线周期</label><select id="cfgPeriod"><option value="1d">日线</option><option value="1w">周线</option><option value="5m">5分线</option></select></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD"></div>
@@ -191,14 +191,14 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <!-- 资金与仓位 -->
       <div class="form-section">
         <div class="form-section-title">资金与仓位</div>
-        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="200000" type="number"></div>
+        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="1000000" type="number"></div>
         <div class="form-row">
           <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001"></div>
           <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>最低买入额</label><input id="cfgMinBuy" value="2000" type="number"></div>
-          <div class="form-group"><label>最高买入额</label><input id="cfgMaxBuy" value="10000" type="number"></div>
+          <div class="form-group"><label>最高买入额</label><input id="cfgMaxBuy" value="20000" type="number"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>每手股数</label><input id="cfgLotSize" value="100" type="number"></div>
@@ -216,7 +216,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgCostStopEn" checked><label>启用成本止损</label></div>
-            <div class="form-group"><label>亏损阈值 (%)</label><input id="cfgCostStopVal" value="8" type="number"></div>
+            <div class="form-group"><label>亏损阈值 (%)</label><input id="cfgCostStopVal" value="12" type="number"></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCostStop')">保存</button></div>
         </div>
@@ -228,8 +228,8 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgTrailingEn" checked><label>启用移动止损</label></div>
             <div class="form-row">
-              <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="5" type="number"></div>
-              <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="3" type="number"></div>
+              <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="8" type="number"></div>
+              <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="5" type="number"></div>
             </div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTrailing')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTrailing')">保存</button></div>
@@ -237,11 +237,11 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
         <!-- 阶梯止盈 -->
         <div class="config-block" id="blkLadder">
           <div class="cfg-summary">
-            <span id="sumLadder">阶梯止盈：<b>10%→33%, 20%→33%, 30%→100%</b> <span class="saved-badge">已保存</span></span>
+            <span id="sumLadder">阶梯止盈：<b>3%→20%, 5%→30%</b> <span class="saved-badge">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgLadderEn" checked><label>启用阶梯止盈</label></div>
-            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="10:33,20:33,30:100"></div>
+            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="6:30,15:30"></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkLadder')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkLadder')">保存</button></div>
         </div>
@@ -265,10 +265,23 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
             <div class="checkbox-group"><input type="checkbox" id="cfgCondTimeEn"><label>启用条件时间止盈</label></div>
             <div class="form-row">
               <div class="form-group"><label>持仓天数</label><input id="cfgCondTimeDays" value="7" type="number"></div>
-              <div class="form-group"><label>盈利阈值 (%)</label><input id="cfgCondTimeProfit" value="1" type="number"></div>
+              <div class="form-group"><label>盈利阈值 (%)</label><input id="cfgCondTimeProfit" value="2" type="number"></div>
             </div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCondTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCondTime')">保存</button></div>
+        </div>
+        <!-- 首日未达标卖出 -->
+        <div class="config-block" id="blkFirstDay">
+          <div class="cfg-summary">
+            <span id="sumFirstDay">首日未达标卖出：买入次日最高价涨幅未达 <b>3%</b> 则收盘卖出 <span class="saved-badge">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgFirstDayEn"><label>启用首日未达标卖出</label></div>
+            <div class="form-row">
+              <div class="form-group"><label>目标涨幅 (%)</label><input id="cfgFirstDayTarget" value="3" type="number"></div>
+            </div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkFirstDay')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkFirstDay')">保存</button></div>
         </div>
       </div>
 
@@ -413,6 +426,7 @@ const CONFIG_IDS = [
   'cfgLadderEn', 'cfgLadderVal',
   'cfgTimeEn', 'cfgTimeVal',
   'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit',
+  'cfgFirstDayEn', 'cfgFirstDayTarget',
 ];
 
 function loadConfig() {
@@ -457,6 +471,8 @@ function refreshAllSummaries() {
   const cd = document.getElementById('cfgCondTimeDays').value;
   const cp = document.getElementById('cfgCondTimeProfit').value;
   document.getElementById('sumCondTime').innerHTML = '条件时间止盈：持仓 <b>'+cd+'</b> 天后盈利 <b>>='+cp+'%</b> 清仓 <span class="saved-badge">已保存</span>';
+  const fd = document.getElementById('cfgFirstDayTarget').value;
+  document.getElementById('sumFirstDay').innerHTML = '首日未达标卖出：买入次日最高价涨幅未达 <b>'+fd+'%</b> 则收盘卖出 <span class="saved-badge">已保存</span>';
 }
 
 function toggleEdit(blockId) { document.getElementById(blockId).classList.add('editing'); }
@@ -533,6 +549,8 @@ function runPipeline() {
     cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
     cond_time_days: parseInt(getVal('cfgCondTimeDays')),
     cond_time_profit: parseFloat(getVal('cfgCondTimeProfit')) / 100,
+    first_day_enabled: document.getElementById('cfgFirstDayEn').checked,
+    first_day_target: parseFloat(getVal('cfgFirstDayTarget')) / 100,
     benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
   };
 
@@ -710,7 +728,7 @@ function renderAllCharts(data) {
 
     // 退出原因分布 — 拆分复合原因计数，使用详细中文标签
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出' };
+    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标' };
     const reasonCount = {};
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
@@ -766,6 +784,7 @@ function renderAllCharts(data) {
       '时间止损': '时间止损 — 持仓天数达到上限，亏损清仓',
       '时间止盈': '时间止盈 — 持仓天数达到上限，盈利清仓',
       'cond_time_stop': '条件时间止盈 — 持仓N天后盈利达标，全仓卖出',
+      '首日未达标': '首日未达标 — 买入次日最高价涨幅未达目标，收盘强制卖出',
       '换股卖出': '换股卖出 — 同一股票出现新买入信号，替换旧持仓',
     };
     function fmtReason(r) {
@@ -813,6 +832,17 @@ function renderAllCharts(data) {
 document.getElementById('statusDot').className = 'status-dot on';
 loadConfig();
 addLog('前端就绪，等待执行回测', 'info');
+
+// 自动加载上次回测结果（含权益曲线图）
+fetch('/api/last_result').then(r => r.json()).then(data => {
+  if (data && data.success && data.trade_count > 0) {
+    lastResult = data;
+    document.getElementById('tradeTableBox').style.display = '';
+    document.getElementById('tradeCount').textContent = '(上次回测 '+data.trade_count+' 笔)';
+    renderAllCharts(data);
+    addLog('已加载上次回测结果 ('+data.trade_count+'笔)', 'ok');
+  }
+}).catch(() => addLog('暂无上次回测结果', 'info'));
 
 // 加载历史回测列表
 fetch('/api/results').then(r => r.json()).then(list => {

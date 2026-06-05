@@ -30,33 +30,32 @@ time_range:
 
 # === Backtest ===
 backtest:
-  initial_capital: 100000.0
+  initial_capital: 1000000.0
   commission: 0.0003            # 万三
   slippage: 0.001               # 0.1%
   freq: "1d"
   position_sizing:
-    method: "equal_weight"
-    max_positions: 10
-    max_position_pct: 0.15      # 单票最大仓位 15%
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
 
 # === Stop-Profit / Stop-Loss ===
 stop_loss:
   cost_stop:
     enabled: true
-    threshold: -0.08
+    threshold: -0.12
   trailing_stop:
     enabled: true
-    activation: 0.05
-    drawdown: 0.03
+    activation: 0.08
+    drawdown: 0.05
   ladder_tp:
     enabled: true
     levels:
-      - profit: 0.10
-        sell_ratio: 0.33
-      - profit: 0.20
-        sell_ratio: 0.33
-      - profit: 0.30
-        sell_ratio: 1.00
+      - profit: 0.06
+        sell_ratio: 0.30
+      - profit: 0.15
+        sell_ratio: 0.30
   time_stop:
     enabled: true
     max_hold_days: 20
