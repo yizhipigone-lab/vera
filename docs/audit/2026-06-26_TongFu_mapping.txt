@@ -1,0 +1,7 @@
+共同富裕系列公式 TXT文件对应表
+
+idx=174: 共同富裕             | gs_1_TongFu.txt               | DMA=0 | ann=+140.4% | CLEAN
+idx=175: 共同富裕X            | gs_1_TongFuX.txt              | DMA=1 | ann=+443.8% | FATAL
+idx=176: 共同富裕宽X版         | gs_1_TongFuKuanXBan.txt       | DMA=1 | ann=+711.1% | FATAL
+
+Only idx=174 is clean (no DMA/DYNAINFO).

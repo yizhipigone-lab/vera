@@ -5,6 +5,8 @@ sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd,numpy as np
 from core.connector import TdxConnector
 from core.data_fetcher import DataFetcher
+from utils.logger import get_logger
+logger = get_logger(__name__)
 TdxConnector.ensure_connected()
 all_codes=DataFetcher.get_stock_universe('50')
 k=DataFetcher.get_kline(all_codes[:10],'20240601','20260603',dividend_type="front",period="1d")
@@ -23,7 +25,7 @@ for fi,fname in enumerate(files):
     fp=os.path.join(gongshi_dir,fname)
     try:
         with open(fp,'r',encoding='utf-8')as f:content=f.read()
-    except:continue
+    except Exception as e: logger.warning("Read file failed: %s", e);continue
     cm=re.search(r'\`\`\`\s*\n(.*?)\n\`\`\`',content,re.DOTALL)
     if not cm:continue
 

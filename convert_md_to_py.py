@@ -9,6 +9,8 @@
 import sys,os,re,warnings,time
 warnings.filterwarnings('ignore')
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
+from utils.logger import get_logger
+logger = get_logger(__name__)
 
 gongshi_dir = r'E:\gongshi'
 output_dir = r'E:\gongshi\py_strategies'
@@ -90,13 +92,7 @@ ENGINE_CFG = {{
     'position_sizing':{{'min_buy_amount':2000.0,'max_buy_amount':10000.0,'lot_size':100,'min_lots':1}},
 }}
 
-STOP_CONFIG = {{
-    'cost_stop':{{'enabled':True,'threshold':-0.08}},
-    'trailing_stop':{{'enabled':True,'activation':0.05,'drawdown':0.03}},
-    'ladder_tp':{{'enabled':True,'levels':[{{'profit':0.05,'sell_ratio':0.3}},{{'profit':0.12,'sell_ratio':0.3}}]}},
-    'time_stop':{{'enabled':True,'max_hold_days':20}},
-    'cond_time_stop':{{'enabled':True,'days':7,'profit':0.02}},
-}}
+STOP_CONFIG = load_stop_config()}
 
 # === Standalone Runner ===
 if __name__=='__main__':
@@ -104,6 +100,7 @@ if __name__=='__main__':
     from core.connector import TdxConnector
     from core.data_fetcher import DataFetcher
     from backtest.engine import BacktestEngine
+from backtest.stop_config import load_stop_config
 
     TdxConnector.ensure_connected()
     codes=DataFetcher.get_stock_universe('50')
@@ -154,7 +151,8 @@ for fname in files:
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-    except:
+    except Exception as e:
+        logger.warning("Read file failed: %s", e)
         continue
 
     # Extract title

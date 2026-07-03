@@ -1,0 +1,39 @@
+strategy:
+  name: "UPN测试2024Q1"
+  version: "1.0.0"
+
+selection:
+  formula_name: "UPN"
+  formula_arg: "3"
+  universe:
+    type: "50"
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1
+
+time_range:
+  start: "20240101"
+  end: "20240328"
+
+backtest:
+  initial_capital: 1000000.0
+  position_sizing:
+    min_buy_amount: 5000.0
+    max_buy_amount: 50000.0
+
+stop_loss:
+  cost_stop:
+    enabled: true
+    threshold: -0.06
+  trailing_stop:
+    enabled: true
+    activation: 0.05
+    drawdown: 0.03
+  ladder_tp:
+    enabled: true
+    levels:
+      - profit: 0.03
+        sell_ratio: 0.30
+  time_stop:
+    enabled: true
+    max_hold_days: 10

@@ -28,7 +28,7 @@ from utils.logger import setup_logger, get_logger
 logger = setup_logger("VERA-Server", level="INFO")
 
 app = FastAPI(title="VERA 量化回测系统", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"], allow_methods=["*"], allow_headers=["*"])
 
 # 静态文件
 app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
@@ -69,7 +69,7 @@ class StrategyConfig(BaseModel):
     cond_time_profit: Optional[float] = None
     first_day_enabled: bool = False
     first_day_target: Optional[float] = None
-    benchmark_indices: str = "shanghai,chuangyeban,kechuang50,zhongzhengA500"
+    benchmark_indices: str = "shanghai,hs300,zz500,chuangyeban,kechuang50,zhongzhengA500"
 
     def get(self, key: str, default=None):
         """安全获取字段值，None 时返回默认值。"""
@@ -132,21 +132,21 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
         },
         "time_range": {"start": cfg.start_time, "end": cfg.end_time},
         "backtest": {
-            "initial_capital": cfg.get("initial_capital", 200000.0),
+            "initial_capital": cfg.get("initial_capital", 1000000.0),
             "commission": cfg.get("commission", 0.0003),
             "slippage": cfg.get("slippage", 0.001),
             "period": bt_period,
             "position_sizing": {
                 "max_positions": cfg.max_positions,
                 "min_buy_amount": cfg.get("min_buy_amount", 2000.0),
-                "max_buy_amount": cfg.get("max_buy_amount", 10000.0),
+                "max_buy_amount": cfg.get("max_buy_amount", 20000.0),
                 "lot_size": cfg.get("lot_size", 100),
                 "min_lots": cfg.get("min_lots", 1),
             },
         },
         "stop_loss": {
-            "cost_stop": {"enabled": cfg.cost_stop_enabled, "threshold": cfg.get("cost_stop_threshold", -0.08)},
-            "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.get("trailing_activation", 0.05), "drawdown": cfg.get("trailing_drawdown", 0.03)},
+            "cost_stop": {"enabled": cfg.cost_stop_enabled, "threshold": cfg.get("cost_stop_threshold", -0.12)},
+            "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.get("trailing_activation", 0.08), "drawdown": cfg.get("trailing_drawdown", 0.05)},
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},
             "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.get("cond_time_days", 7), "profit": cfg.get("cond_time_profit", 0.01)},
@@ -189,8 +189,8 @@ async def get_status():
 
 
 @app.post("/api/run")
-async def run_pipeline(cfg: StrategyConfig):
-    """执行完整回测管线。"""
+def run_pipeline(cfg: StrategyConfig):
+    """执行完整回测管线。P2-1: 改为同步路由，FastAPI 自动丢线程池，不再阻塞事件循环。"""
     global pipeline_status
 
     if pipeline_status.running:
@@ -214,18 +214,7 @@ async def run_pipeline(cfg: StrategyConfig):
         return {"success": False, "error": "选股公式名称不能为空"}
 
     try:
-        # 强制清 Numba JIT 缓存 + 重载
-        import importlib, numba, shutil, os, glob
-        nc = os.path.expanduser('~/__pycache__')
-        for p in glob.glob(f'{nc}/**_simulate_core*', recursive=True):
-            try: os.remove(p)
-            except: pass
-        # 清除项目内缓存
-        for root, dirs, files in os.walk('.'):
-            for f in files:
-                if '_simulate_core' in f or f.endswith('.nbc') or f.endswith('.nbi'):
-                    try: os.remove(os.path.join(root, f))
-                    except: pass
+        import importlib
         import backtest.stop_manager, backtest.metrics, backtest.engine
         importlib.reload(backtest.stop_manager)
         importlib.reload(backtest.metrics)
@@ -482,7 +471,10 @@ async def list_results():
 
 @app.get("/api/results/{result_id}")
 async def get_result(result_id: str):
-    """加载指定历史回测结果。"""
+    """加载指定历史回测结果。P2-2: result_id 正则校验防路径遍历。"""
+    import re
+    if not re.match(r'^\d{8}_\d{6}$', result_id):
+        return JSONResponse(status_code=400, content={"success": False, "error": "result_id 格式错误"})
     result_path = _PROJECT_ROOT / "output" / "results" / f"{result_id}.json"
     if result_path.exists():
         import json as _json
@@ -498,6 +490,12 @@ async def index():
     html_path = _PROJECT_ROOT / "web" / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
+
+@app.get("/favicon.ico")
+async def favicon():
+    """重定向到 SVG 图标，消除 404 日志噪音。"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/web/favicon.svg")
     return "<h1>VERA Web 前端未找到，请创建 web/index.html</h1>"
 
 
@@ -513,4 +511,4 @@ if __name__ == "__main__":
 
     logger.info(f"VERA 量化回测系统 Web 服务器启动")
     logger.info(f"访问: http://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, access_log=False)

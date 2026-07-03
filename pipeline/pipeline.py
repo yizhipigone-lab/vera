@@ -94,6 +94,12 @@ class Pipeline:
         time_cfg = self.config.get("time_range", {})
         self.stop_config = self.config.get("stop_loss", {})
 
+        # P1-7: 校验选股/回测复权口径一致（engine 硬编码 "front"）
+        from core.dividend_type import assert_consistent
+        sel_cfg = self.config.get("selection", {})
+        sel_adj = sel_cfg.get("dividend_type", 1)
+        assert_consistent(sel_adj, "front")
+
         self.backtest_engine = BacktestEngine(bt_cfg)
 
         start = time_cfg.get("start", "")
@@ -112,6 +118,10 @@ class Pipeline:
         """基准对比。"""
         bench_cfg = self.config.get("benchmark", {})
         time_cfg = self.config.get("time_range", {})
+        # 传入回测周期，让基准对齐
+        bt_cfg = self.config.get("backtest", {})
+        if "period" in bt_cfg and "period" not in bench_cfg:
+            bench_cfg = {**bench_cfg, "period": bt_cfg["period"]}
 
         comparator = BenchmarkComparator(bench_cfg)
         equity_curve = backtest_result.get("equity_curve", pd.DataFrame())

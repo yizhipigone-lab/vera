@@ -9,8 +9,8 @@ strategy:
 
 # === TDX Connection ===
 tdx:
-  install_path: "E:/1target/tdx"
-  tqcenter_path: "E:/1target/tdx/PYPlugins/user/tqcenter.py"
+  install_path: "E:/NEW_TDX"
+  tqcenter_path: "E:/NEW_TDX/PYPlugins/user/tqcenter.py"
 
 # === Selection ===
 selection:
@@ -33,6 +33,8 @@ backtest:
   initial_capital: 1000000.0
   commission: 0.0003            # 万三
   slippage: 0.001               # 0.1%
+  stamp_tax: 0.0005             # A股卖出单边印花税
+  enable_realistic_costs: true  # 默认含印花税+滑点（老脚本可传 false 复现零成本基线）
   freq: "1d"
   position_sizing:
     min_buy_amount: 2000.0
@@ -64,6 +66,8 @@ stop_loss:
 benchmark:
   indices:
     - "shanghai"
+    - "hs300"
+    - "zz500"
     - "chuangyeban"
     - "kechuang50"
     - "zhongzhengA500"

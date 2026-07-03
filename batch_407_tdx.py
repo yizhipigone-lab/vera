@@ -7,6 +7,8 @@ from core.connector import TdxConnector
 from core.data_fetcher import DataFetcher
 from core.formula_runner import FormulaRunner
 from backtest.engine import BacktestEngine
+from utils.logger import get_logger
+logger = get_logger(__name__)
 
 TdxConnector.ensure_connected()
 START,END='20260101','20260605'
@@ -14,7 +16,7 @@ print("="*80);print("  407 TDX Formulas Batch Backtest");print("="*80)
 
 # 1. Read formula names
 print("\n[1] Reading formula names...",flush=True)
-txt_dir=r'E:\1target\tdx\T0001\export\gs_txt'
+txt_dir=os.path.join(os.environ.get('TDX_HOME', r'E:\NEW_TDX'), r'T0001\export\gs_txt')
 files=sorted([f for f in os.listdir(txt_dir) if f.endswith('.txt')])
 formulas=[]
 for fname in files:
@@ -44,7 +46,7 @@ for fi,(fname,formula_name) in enumerate(formulas):
     # TDX selection
     try:
         sel_df=FormulaRunner.run_stock_selection_with_dates(formula_name=formula_name,formula_arg='',stock_list=codes_all,start_time=START,end_time=END,stock_period='1d',dividend_type=1)
-    except:err+=1;continue
+    except Exception as e: logger.warning("FormulaRunner failed: %s", e);err+=1;continue
     if sel_df.empty or len(sel_df)<10:no_sig+=1
     if fi%10==0:elapsed=max(time.time()-t0,1);print(f"  [{fi+1}/{len(formulas)}] OK:{ok} NS:{no_sig} Err:{err} | ~{((fi+1)/elapsed*60):.0f}/min",flush=True)
     if sel_df.empty or len(sel_df)<10:continue
@@ -69,7 +71,7 @@ for fi,(fname,formula_name) in enumerate(formulas):
         m=brs['metrics']
         results.append({'name':formula_name,'file':fname,'signals':len(sel_df),'cumret':brs['cumulative_return'],'annret':m['annualized_return'],'maxdd':m['max_drawdown'],'sharpe':m['sharpe_ratio'],'winrate':m['win_rate'],'trades':len(brs['trades'])})
         ok+=1
-    except:err+=1
+    except Exception as e: logger.warning("Backtest failed: %s", e);err+=1
 
 # 5. Output
 print(f"\n[4] Done! OK:{ok} NoSig:{no_sig} Err:{err}",flush=True)

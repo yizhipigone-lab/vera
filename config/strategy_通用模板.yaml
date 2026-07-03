@@ -1,0 +1,54 @@
+strategy:
+  name: "GS_AUTO_LONGTERM"
+
+# === 选股 ===
+selection:
+  formula_name: "GP1014"         # 先生定: 从 4 个中选第一个
+  formula_arg: "3"
+  universe:
+    type: "50"
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1
+
+# === 区间 (先生定: 2020.1.1 ~ 2026.7.3) ===
+time_range:
+  start: "20200101"
+  end: "20260703"
+
+# === 回测 ===
+backtest:
+  initial_capital: 1000000.0
+  commission: 0.0003
+  slippage: 0.001
+  position_sizing:
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
+
+# === 止损止盈 (先生前端最新配置) ===
+stop_loss:
+  cost_stop:
+    enabled: true
+    threshold: -0.046       # 先生前端: 亏损 4.6% 全仓卖出
+  trailing_stop:
+    enabled: true
+    activation: 0.039       # 先生前端: 盈利 3.9% 激活
+    drawdown: 0.017         # 先生前端: 回撤 1.7% 卖出
+  ladder_tp:
+    enabled: true
+    levels:
+      - profit: 0.03
+        sell_ratio: 0.20    # 先生前端: 3% 涨 卖 20%
+      - profit: 0.13
+        sell_ratio: 0.60    # 先生前端: 13% 涨 卖 60%
+  time_stop:
+    enabled: true
+    max_hold_days: 12
+  cond_time_stop:
+    enabled: true
+    days: 7
+    profit: 0.015
+  first_day:
+    enabled: false

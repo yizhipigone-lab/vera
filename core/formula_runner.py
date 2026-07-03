@@ -62,7 +62,9 @@ class FormulaRunner:
         )
 
         # 分批执行，避免 "返回数据过大" 错误
-        BATCH_SIZE = 300
+        # A2 修复: 300 → 100, GUPIAO_012 实测 17/18 批报"返回数据过大",
+        # 信号被截断导致累计收益被低估. 100 只/批牺牲时间换稳定性.
+        BATCH_SIZE = 100
         all_records = []
         batch_errors = 0
         total_batches = (len(str_codes) - 1) // BATCH_SIZE + 1

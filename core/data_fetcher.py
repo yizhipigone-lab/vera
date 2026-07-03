@@ -13,12 +13,14 @@ logger = get_logger(__name__)
 class DataFetcher:
     """TDX 数据获取统一门面。所有调用前自动确保连接就绪。"""
 
-    # 基准指数代码
+    # 基准指数代码（P1-6: 补沪深300/中证500）
     INDEX_CODES = {
         "shanghai": "999999.SH",       # 上证指数
+        "hs300": "000300.SH",          # 沪深300
+        "zz500": "000905.SH",          # 中证500
         "chuangyeban": "399006.SZ",    # 创业板指
         "kechuang50": "000688.SH",     # 科创50
-        "zhongzhengA500": "000510.SH", # 中证A500
+        "zhongzhengA500": "000510.SH", # 中证A500（代码待 TDX 核实）
     }
 
     @staticmethod
@@ -156,10 +158,12 @@ class DataFetcher:
         start_time: str = "",
         end_time: str = "",
         dividend_type: str = "front",
+        period: str = "1d",
     ) -> pd.DataFrame:
-        """获取收盘价 DataFrame（VectorBT 回测核心输入）。"""
+        """获取收盘价 DataFrame（回测核心输入）。period 可指定 1d/1w/5m 等。"""
         data = cls.get_kline(
-            stock_list, start_time, end_time, dividend_type=dividend_type,
+            stock_list, start_time, end_time,
+            dividend_type=dividend_type, period=period,
         )
         if "Close" not in data:
             return pd.DataFrame()
@@ -172,11 +176,12 @@ class DataFetcher:
         start_time: str = "",
         end_time: str = "",
         dividend_type: str = "none",
+        period: str = "1d",
     ) -> pd.DataFrame:
         """获取指数 K 线数据。"""
         code = cls.INDEX_CODES.get(index_name, index_name)
         return cls.get_kline_single(
-            code, start_time, end_time, dividend_type=dividend_type,
+            code, start_time, end_time, dividend_type=dividend_type, period=period,
         )
 
     @classmethod

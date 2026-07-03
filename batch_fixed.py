@@ -8,6 +8,8 @@ import pandas as pd,numpy as np
 from core.connector import TdxConnector
 from core.data_fetcher import DataFetcher
 from backtest.engine import BacktestEngine
+from utils.logger import get_logger
+logger = get_logger(__name__)
 TdxConnector.ensure_connected()
 
 # DATA
@@ -263,7 +265,7 @@ for fi,fname in enumerate(files):
     fp=os.path.join(gongshi_dir,fname)
     try:
         with open(fp,'r',encoding='utf-8')as f:content=f.read()
-    except:pf+=1;continue
+    except Exception as e: logger.warning("Read file failed: %s", e);pf+=1;continue
     nm=re.search(r'^#\s*(.+)',content,re.MULTILINE)
     title=nm.group(1).strip()[:60]if nm else fname.replace('.md','')[:60]
     cm=re.search(r'\`\`\`\s*\n(.*?)\n\`\`\`',content,re.DOTALL)
@@ -295,7 +297,7 @@ for fi,fname in enumerate(files):
         if not isinstance(result,pd.DataFrame):pf+=1;continue
         if result.dtypes.iloc[0]!=bool:result=result>0.5
         result=result.astype(bool)
-    except:pf+=1;continue
+    except Exception as e: logger.warning("Read file failed: %s", e);pf+=1;continue
 
     sig_bt=result.loc['20260101':]
     ts=int(sig_bt.sum().sum())
@@ -332,7 +334,7 @@ for fi,fname in enumerate(files):
             'winrate':m['win_rate'],'trades':len(brs['trades']),
         })
         ok+=1
-    except:bf+=1
+    except Exception as e: logger.warning("Backtest failed: %s", e);bf+=1
 
 # OUTPUT
 print(f"\n[3] Done! OK:{ok} Parse:{pf} Sig:{sf} BT:{bf}",flush=True)

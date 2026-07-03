@@ -1,0 +1,19 @@
+# 通信解盘 单公式回测配置 (先生 2026-07-03)
+# 仅覆写 公式名 + 时间区间, 其他全部继承 default.yaml
+
+strategy:
+  name: "通信解盘_单跑"
+
+selection:
+  formula_name: "通信解盘"        # 先生指定的干净公式 (#1)
+  formula_arg: "3"               # server.py 默认值 (先生前端也是这样)
+  universe:
+    type: "50"
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1
+
+# 先生定: 时间 2026.01.01 至今 (2026-07-03)
+time_range:
+  start: "20260101"
+  end: "20260703"

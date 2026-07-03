@@ -1,0 +1,22 @@
+# VERA — 通达信量化回测系统依赖
+# 安装: pip install -r requirements.txt
+
+# === 核心依赖 (必需) ===
+pandas>=1.5.0
+numpy>=1.24.0
+pyyaml>=6.0
+
+# === Web 服务 (必需) ===
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# === 可视化 (必需) ===
+plotly>=5.15.0
+matplotlib>=3.7.0
+
+# === 平台依赖 (非 pip 安装) ===
+# tqcenter — 通达信 TQ 策略框架插件
+#   位置: {TDX_HOME}/PYPlugins/user/tqcenter.py
+#   通过环境变量 TDX_HOME 指定通达信安装路径
+#   默认路径: E:\NEW_TDX

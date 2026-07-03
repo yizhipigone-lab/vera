@@ -10,6 +10,8 @@ import numpy as np
 from core.connector import TdxConnector
 from core.data_fetcher import DataFetcher
 from backtest.engine import BacktestEngine
+from utils.logger import get_logger
+logger = get_logger(__name__)
 
 TdxConnector.ensure_connected()
 START, END = '20220101', '20251231'
@@ -52,7 +54,7 @@ def run_bt(close_df, high_df, low_df, sig_df, codes_list, stop_config, ladder_p,
         result = engine.run_cached(cs, entries, hs.values.astype(np.float64),
                                    ls.values.astype(np.float64), stop_config, sel,
                                    ladder_p, ladder_r, n_ladder, skip_sm=True)
-    except: return None
+    except Exception as e: logger.warning("run_cached failed: %s", e); return None
     m = result['metrics']
     return {
         'cumret': result['cumulative_return'], 'annret': m['annualized_return'],

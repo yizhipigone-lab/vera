@@ -1,0 +1,33 @@
+[project]
+name = "vera"
+version = "3.3.0"
+description = "VERA 量化回测系统 — AI 驱动策略平台"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+    "pyyaml>=6.0",
+    "matplotlib>=3.7",
+    "plotly>=5.15",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = ["output/", ".claude/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-q --tb=short"

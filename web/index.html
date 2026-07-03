@@ -2,23 +2,31 @@
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
 <meta name="viewport" content="width=1280">
+<!-- P3-3: 在 CSS 解析前设置主题，消除 FOUC 白屏闪烁 -->
+<script>(function(){var t=localStorage.getItem('vera_theme')||'light';document.documentElement.setAttribute('data-theme',t);})();</script>
+<!-- P3-4: 非阻塞字体加载 -->
+<link rel="dns-prefetch" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <title>VERA — 量化回测系统</title>
 <style>
-/* ====== CSS Variables ====== */
+/* ====== CSS Variables — P3-3: :root 默认 light，dark 覆盖 ====== */
 :root {
-  --bg: #0d1117; --surface: #161b22; --card: #21262d;
-  --border: #30363d; --text: #e6edf3; --text2: #8b949e;
-  --up: #ef4444; --down: #22c55e; --accent: #58a6ff;
-  --accent2: #d2a8ff; --warn: #f0883e;
-  --radius: 6px; --font: 'Inter', 'Segoe UI', 'Microsoft YaHei', sans-serif;
-  --mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
-}
-[data-theme="light"] {
   --bg: #ffffff; --surface: #f6f8fa; --card: #f6f8fa;
   --border: #d0d7de; --text: #24292f; --text2: #656d76;
   --up: #d1242f; --down: #1a7f37; --accent: #0969da;
   --accent2: #8250df; --warn: #bf4b00;
+  --radius: 6px; --font: 'Inter', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+[data-theme="dark"] {
+  --bg: #0d1117; --surface: #161b22; --card: #21262d;
+  --border: #30363d; --text: #e6edf3; --text2: #8b949e;
+  --up: #ef4444; --down: #22c55e; --accent: #58a6ff;
+  --accent2: #d2a8ff; --warn: #f0883e;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;line-height:1.5;min-width:1280px}
@@ -42,6 +50,9 @@ a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
 .logo-icon{width:34px;height:34px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;color:#fff}
 .logo-text h1{font-size:18px;font-weight:700;letter-spacing:-0.3px}
 .logo-text span{font-size:10px;color:var(--text2);display:block;margin-top:2px}
+/* P3-2: 主题按钮重定位到 logo 右侧 */
+.theme-btn{margin-left:auto;width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:var(--bg);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
+.theme-btn:hover{border-color:var(--accent);background:var(--card)}
 .status-bar{display:flex;align-items:center;gap:8px;margin-top:14px;padding:7px 12px;background:var(--bg);border-radius:var(--radius);font-size:11px;color:var(--text2)}
 .status-dot{width:7px;height:7px;border-radius:50%;background:var(--text2);flex-shrink:0}
 .status-dot.on{background:var(--down);box-shadow:0 0 5px var(--down)}
@@ -76,13 +87,24 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .btn-block{width:100%;justify-content:center}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 
-/* ====== KPI Cards ====== */
-.kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+/* ====== KPI Cards — P3-1: 分级布局 ====== */
+.kpi-grid{display:flex;flex-direction:column;gap:10px}
+.kpi-row{display:grid;gap:10px}
+.kpi-row-primary{grid-template-columns:repeat(3,1fr)}
+.kpi-row-secondary{grid-template-columns:repeat(5,1fr);gap:8px}
+.kpi-row-tertiary{grid-template-columns:repeat(2,1fr);gap:8px;max-width:50%}
 .kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;transition:border .2s}
 .kpi-card:hover{border-color:color-mix(in srgb,var(--accent) 30%,var(--border))}
 .kpi-label{font-size:10px;color:var(--text2);margin-bottom:5px;font-weight:500;letter-spacing:.2px}
 .kpi-value{font-size:22px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
 .kpi-value.pos{color:var(--up)} .kpi-value.neg{color:var(--down)}
+/* 核心指标放大 */
+.kpi-row-primary .kpi-card{padding:20px 22px}
+.kpi-row-primary .kpi-value{font-size:28px}
+.kpi-row-primary .kpi-label{font-size:12px}
+/* 交易统计缩小 */
+.kpi-row-tertiary .kpi-card{padding:12px 14px}
+.kpi-row-tertiary .kpi-value{font-size:18px}
 
 /* ====== Chart Section ====== */
 .chart-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -102,15 +124,13 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .trade-table tr:hover td{background:var(--surface)}
 .td-up{color:var(--up)} .td-down{color:var(--down)}
 
+/* P4-1: 交易筛选工具栏 */
+.trade-toolbar{display:flex;gap:8px;padding:8px 16px;align-items:center;border-bottom:1px solid var(--border)}
+
 /* ====== Progress ====== */
 .progress-bar{height:3px;background:var(--border);border-radius:2px;margin-top:8px;overflow:hidden}
 .progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
 .progress-text{font-size:10px;color:var(--text2);margin-top:4px}
-
-/* ====== Theme Toggle ====== */
-.theme-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:20px;width:56px;position:relative}
-.theme-toggle-knob{width:20px;height:20px;border-radius:50%;background:var(--accent);transition:transform .2s}
-[data-theme="light"] .theme-toggle-knob{transform:translateX(24px)}
 
 /* ====== Empty State ====== */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;color:var(--text2);text-align:center;gap:8px}
@@ -118,13 +138,16 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 
 /* ====== Summary Box ====== */
 .summary-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:120px;overflow-y:auto}
-/* ====== Edit/Save Toggle ====== */
+
+/* ====== Edit/Save/Cancel Toggle — P1-1: 增加取消按钮 ====== */
 .config-block{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;transition:all .2s}
 .config-block:hover{border-color:color-mix(in srgb,var(--accent) 30%,var(--border))}
 .config-block.editing{border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 15%,transparent)}
 .config-block .cfg-summary{font-size:11px;color:var(--text);line-height:1.6}
 .config-block .cfg-summary b{color:var(--accent);font-weight:600}
-.config-block .cfg-summary .saved-badge{display:inline-block;background:color-mix(in srgb,var(--down) 20%,transparent);color:var(--down);font-size:10px;padding:1px 7px;border-radius:8px;margin-left:5px;font-weight:500}
+.config-block .cfg-summary .saved-badge{display:inline-block;font-size:10px;padding:1px 7px;border-radius:8px;margin-left:5px;font-weight:500;transition:all .2s}
+.config-block .cfg-summary .saved-badge.saved{background:color-mix(in srgb,var(--down) 20%,transparent);color:var(--down)}
+.config-block .cfg-summary .saved-badge.unsaved{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
 .config-block .cfg-fields{display:none;margin-top:10px}
 .config-block.editing .cfg-fields{display:block}
 .config-block.editing .cfg-summary{display:none}
@@ -132,9 +155,23 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .config-block .cfg-actions button{font-size:11px;padding:4px 12px;border-radius:5px}
 .config-block .cfg-fields .form-group{margin-bottom:6px}
 .config-block .cfg-fields input{font-size:11px;padding:5px 8px;background:var(--surface)}
+
 /* ====== Log Panel ====== */
 .log-panel{background:var(--bg);border-radius:var(--radius);padding:8px 12px;font-family:var(--mono);font-size:10px;color:var(--text2);max-height:160px;overflow-y:auto;line-height:1.6}
 .log-info{color:var(--text2)} .log-ok{color:var(--down)} .log-error{color:var(--up)}
+
+/* P1-4: Toast 通知 */
+.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{padding:12px 20px;border-radius:8px;font-size:12px;color:#fff;max-width:400px;pointer-events:auto;
+  animation:toastIn .3s ease,toastOut .3s ease 2.7s forwards;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.toast-error{background:var(--up)}.toast-ok{background:var(--down)}.toast-info{background:var(--accent)}
+@keyframes toastIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:translateX(0)}}
+@keyframes toastOut{from{opacity:1}to{opacity:0}}
+
+/* P1-5: 表单即时校验 */
+input.invalid{border-color:var(--up)!important}
+.input-error{color:var(--up);font-size:10px;margin-top:2px;display:none}
+input.invalid~.input-error{display:block}
 </style>
 </head>
 <body>
@@ -145,14 +182,14 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <div class="logo">
         <div class="logo-icon">V</div>
         <div class="logo-text"><h1>VERA</h1><span>量化回测系统 v1.0</span></div>
+        <!-- P3-2: 主题切换重定位到 logo 右侧 -->
+        <button class="theme-btn" onclick="toggleTheme()" title="切换明暗主题">
+          <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
       </div>
       <div class="status-bar">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText">就绪</span>
-        <span style="margin-left:auto;display:flex;align-items:center;gap:6px;cursor:pointer" onclick="toggleTheme()">
-          <svg id="themeIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
-          <span style="font-size:11px;color:var(--text2)">主题</span>
-        </span>
       </div>
     </div>
 
@@ -182,8 +219,9 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
           <div class="form-group"><label>K线周期</label><select id="cfgPeriod"><option value="1d">日线</option><option value="1w">周线</option><option value="5m">5分线</option></select></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD"></div>
-          <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD"></div>
+          <!-- P1-5: 加即时校验 -->
+          <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD" oninput="validateDate(this)"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
+          <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD" oninput="validateDate(this)"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
         </div>
         <div class="checkbox-group"><input type="checkbox" id="cfgExcludeST" checked><label>排除ST股票</label></div>
       </div>
@@ -191,10 +229,11 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <!-- 资金与仓位 -->
       <div class="form-section">
         <div class="form-section-title">资金与仓位</div>
-        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="1000000" type="number"></div>
+        <!-- P1-5: 初始资金加即时校验 -->
+        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="1000000" type="number" oninput="validatePositive(this)"><div class="input-error">必须大于 0</div></div>
         <div class="form-row">
-          <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001"></div>
-          <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"></div>
+          <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001" oninput="validateNonNeg(this)"><div class="input-error">不能为负数</div></div>
+          <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001" oninput="validateNonNeg(this)"><div class="input-error">不能为负数</div></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>最低买入额</label><input id="cfgMinBuy" value="2000" type="number"></div>
@@ -206,24 +245,24 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
         </div>
       </div>
 
-      <!-- 止损止盈 (编辑/保存模式) -->
+      <!-- 止损止盈 (编辑/保存/取消模式) — P1-1: 加取消按钮 -->
       <div class="form-section">
         <div class="form-section-title">止损止盈策略</div>
         <!-- 成本止损 -->
         <div class="config-block" id="blkCostStop">
           <div class="cfg-summary">
-            <span id="sumCostStop">成本止损：亏损达到 <b>8%</b> 全仓卖出 <span class="saved-badge">已保存</span></span>
+            <span id="sumCostStop">成本止损：亏损达到 <b>12%</b> 全仓卖出 <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgCostStopEn" checked><label>启用成本止损</label></div>
             <div class="form-group"><label>亏损阈值 (%)</label><input id="cfgCostStopVal" value="12" type="number"></div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCostStop')">保存</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkCostStop')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkCostStop')" style="display:none">取消</button></div>
         </div>
         <!-- 移动止损 -->
         <div class="config-block" id="blkTrailing">
           <div class="cfg-summary">
-            <span id="sumTrailing">移动止损：盈利 <b>5%</b> 激活后，回撤 <b>3%</b> 触发全仓卖出 <span class="saved-badge">已保存</span></span>
+            <span id="sumTrailing">移动止损：盈利 <b>8%</b> 激活后，回撤 <b>5%</b> 触发全仓卖出 <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgTrailingEn" checked><label>启用移动止损</label></div>
@@ -232,34 +271,35 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
               <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="5" type="number"></div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTrailing')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTrailing')">保存</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkTrailing')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkTrailing')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkTrailing')" style="display:none">取消</button></div>
         </div>
         <!-- 阶梯止盈 -->
         <div class="config-block" id="blkLadder">
           <div class="cfg-summary">
-            <span id="sumLadder">阶梯止盈：<b>3%→20%, 5%→30%</b> <span class="saved-badge">已保存</span></span>
+            <span id="sumLadder">阶梯止盈：<b>3%→20%, 5%→30%</b> <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgLadderEn" checked><label>启用阶梯止盈</label></div>
-            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="6:30,15:30"></div>
+            <!-- P1-5: 阶梯格式校验 -->
+            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="6:30,15:30" oninput="validateLadder(this)"><div class="input-error">格式：盈利%:卖出%，如 6:30,15:30</div></div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkLadder')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkLadder')">保存</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkLadder')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkLadder')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkLadder')" style="display:none">取消</button></div>
         </div>
         <!-- 时间止盈 -->
         <div class="config-block" id="blkTime">
           <div class="cfg-summary">
-            <span id="sumTime">时间止盈：持仓 <b>20</b> 天后无条件卖出 <span class="saved-badge">已保存</span></span>
+            <span id="sumTime">时间止盈：持仓 <b>20</b> 天后无条件卖出 <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgTimeEn" checked><label>启用无条件时间止盈</label></div>
             <div class="form-group"><label>最大持仓 (天)</label><input id="cfgTimeVal" value="20" type="number"></div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkTime')">保存</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkTime')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkTime')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkTime')" style="display:none">取消</button></div>
         </div>
         <!-- 条件时间止盈 -->
         <div class="config-block" id="blkCondTime">
           <div class="cfg-summary">
-            <span id="sumCondTime">条件时间止盈：持仓 <b>7</b> 天后盈利 <b>≥1%</b> 清仓 <span class="saved-badge">已保存</span></span>
+            <span id="sumCondTime">条件时间止盈：持仓 <b>7</b> 天后盈利 <b>≥2%</b> 清仓 <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgCondTimeEn"><label>启用条件时间止盈</label></div>
@@ -268,12 +308,12 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
               <div class="form-group"><label>盈利阈值 (%)</label><input id="cfgCondTimeProfit" value="2" type="number"></div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkCondTime')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkCondTime')">保存</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkCondTime')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkCondTime')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkCondTime')" style="display:none">取消</button></div>
         </div>
         <!-- 首日未达标卖出 -->
         <div class="config-block" id="blkFirstDay">
           <div class="cfg-summary">
-            <span id="sumFirstDay">首日未达标卖出：买入次日最高价涨幅未达 <b>3%</b> 则收盘卖出 <span class="saved-badge">已保存</span></span>
+            <span id="sumFirstDay">首日未达标卖出：买入次日最高价涨幅未达 <b>3%</b> 则收盘卖出 <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgFirstDayEn"><label>启用首日未达标卖出</label></div>
@@ -281,7 +321,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
               <div class="form-group"><label>目标涨幅 (%)</label><input id="cfgFirstDayTarget" value="3" type="number"></div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary" onclick="toggleEdit('blkFirstDay')">编辑</button> <button class="btn btn-sm btn-primary" onclick="saveBlock('blkFirstDay')">保存</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkFirstDay')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkFirstDay')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkFirstDay')" style="display:none">取消</button></div>
         </div>
       </div>
 
@@ -292,6 +332,8 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         执行回测
       </button>
+      <!-- P1-2: 恢复默认配置按钮（调后端 API） -->
+      <button class="btn btn-secondary btn-block btn-sm" onclick="resetDefaults()" style="margin-top:6px">恢复默认配置</button>
       <div class="progress-bar" style="display:none" id="progressBar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
       <div class="progress-text" id="progressText"></div>
     </div>
@@ -304,30 +346,36 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 
   <!-- ===== 右侧主内容区 ===== -->
   <main class="main" id="mainContent">
-    <!-- KPI 仪表盘 -->
+    <!-- P3-1 + P2-4: KPI 分级布局 + tooltip -->
     <div class="kpi-grid" id="kpiGrid">
-      <div class="kpi-card"><div class="kpi-label">累计收益</div><div class="kpi-value" id="kpiCumRet">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">年化收益</div><div class="kpi-value" id="kpiAnnRet">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">最大回撤</div><div class="kpi-value" id="kpiMaxDD">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">胜率</div><div class="kpi-value" id="kpiWinRate">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="kpiPLR">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">交易笔数</div><div class="kpi-value" id="kpiTrades">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">盈利因子</div><div class="kpi-value" id="kpiProfitF">--</div></div>
-      <div class="kpi-card"><div class="kpi-label">最大单笔盈</div><div class="kpi-value" id="kpiBest">--</div></div>
+      <div class="kpi-row kpi-row-primary">
+        <div class="kpi-card" title="从初始资金到最终的涨跌比例"><div class="kpi-label">累计收益</div><div class="kpi-value" id="kpiCumRet">--</div></div>
+        <div class="kpi-card" title="从最高点到最低点的最大跌幅"><div class="kpi-label">最大回撤</div><div class="kpi-value" id="kpiMaxDD">--</div></div>
+        <div class="kpi-card" title="每承担1份风险获得的超额收益，>1 为优"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div></div>
+      </div>
+      <div class="kpi-row kpi-row-secondary">
+        <div class="kpi-card" title="按复利折算的年化收益率"><div class="kpi-label">年化收益</div><div class="kpi-value" id="kpiAnnRet">--</div></div>
+        <div class="kpi-card" title="盈利交易笔数 / 总交易笔数"><div class="kpi-label">胜率</div><div class="kpi-value" id="kpiWinRate">--</div></div>
+        <div class="kpi-card" title="平均每笔盈利 / 平均每笔亏损"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="kpiPLR">--</div></div>
+        <div class="kpi-card" title="总盈利金额 / 总亏损金额，>1 为盈利"><div class="kpi-label">盈利因子</div><div class="kpi-value" id="kpiProfitF">--</div></div>
+        <div class="kpi-card" title="年化收益 / 最大回撤，衡量风险调整后收益"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div></div>
+      </div>
+      <div class="kpi-row kpi-row-tertiary">
+        <div class="kpi-card" title="回测期间的总交易次数"><div class="kpi-label">交易笔数</div><div class="kpi-value" id="kpiTrades">--</div></div>
+        <div class="kpi-card" title="所有交易中单笔最大收益率"><div class="kpi-label">最大单笔盈</div><div class="kpi-value" id="kpiBest">--</div></div>
+      </div>
     </div>
 
-    <!-- 权益曲线 -->
+    <!-- 权益曲线 — P2-3: header 加 id -->
     <div class="chart-box full">
-      <div class="chart-box-header">权益曲线 &amp; 基准对比</div>
+      <div class="chart-box-header" id="equityChartHeader">权益曲线 &amp; 基准对比</div>
       <div class="chart-box-body tall" id="chartEquity"></div>
     </div>
 
     <!-- 图表行 -->
     <div class="chart-row">
       <div class="chart-box">
-        <div class="chart-box-header">月度收益 (每月累计涨跌幅)</div>
+        <div class="chart-box-header" id="monthlyChartHeader">月度收益 (每月累计涨跌幅)</div>
         <div class="chart-box-body" id="chartMonthly"></div>
       </div>
       <div class="chart-box">
@@ -358,9 +406,21 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
       <div class="log-panel" id="logContent"></div>
     </div>
 
-    <!-- 交易明细 -->
+    <!-- 交易明细 — P4-1: 加筛选工具栏 -->
     <div class="chart-box full" id="tradeTableBox" style="display:none">
       <div class="chart-box-header">交易明细 <span style="font-weight:400;color:var(--text2)" id="tradeCount"></span></div>
+      <div class="trade-toolbar">
+        <input id="tradeSearch" placeholder="搜索代码/名称" style="width:160px;font-size:11px;padding:4px 8px" oninput="filterTrades()">
+        <select id="tradeFilter" style="font-size:11px;padding:4px 8px" onchange="filterTrades()">
+          <option value="all">全部交易</option>
+          <option value="win">仅盈利</option>
+          <option value="loss">仅亏损</option>
+        </select>
+        <select id="tradeReason" style="font-size:11px;padding:4px 8px" onchange="filterTrades()">
+          <option value="">所有退出原因</option>
+        </select>
+        <span id="tradeFiltered" style="font-size:10px;color:var(--text2);margin-left:auto"></span>
+      </div>
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
@@ -373,509 +433,10 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
   </main>
 </div>
 
+<!-- P1-4: Toast 容器 -->
+<div class="toast-container" id="toastContainer"></div>
+
 <script src="/web/echarts.min.js"></script>
-<script>
-// ====== Theme ======
-const themeIcon = document.getElementById('themeIcon');
-const sunIcon = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
-const moonIcon = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
-
-function getTheme() { return document.documentElement.getAttribute('data-theme'); }
-function getColors() {
-  const s = getComputedStyle(document.documentElement);
-  return { up: s.getPropertyValue('--up').trim(), down: s.getPropertyValue('--down').trim(),
-    accent: s.getPropertyValue('--accent').trim(), accent2: s.getPropertyValue('--accent2').trim(),
-    text: s.getPropertyValue('--text').trim(), text2: s.getPropertyValue('--text2').trim(),
-    bg: s.getPropertyValue('--bg').trim(), border: s.getPropertyValue('--border').trim() };
-}
-
-function toggleTheme() {
-  const next = getTheme() === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  themeIcon.innerHTML = next === 'dark' ? sunIcon : moonIcon;
-  if (lastResult) renderAllCharts(lastResult);
-}
-themeIcon.innerHTML = sunIcon;
-
-function toggleSidebar() {
-  const sb = document.querySelector('.sidebar');
-  const btn = document.querySelector('.sidebar-toggle svg');
-  sb.classList.toggle('collapsed');
-  const closed = sb.classList.contains('collapsed');
-  localStorage.setItem('vera_sidebar', closed ? '0' : '1');
-  btn.innerHTML = closed
-    ? '<polyline points="9 18 15 12 9 6"/>'
-    : '<polyline points="15 18 9 12 15 6"/>';
-  setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300);
-}
-// 恢复侧边栏状态
-if (localStorage.getItem('vera_sidebar') === '0') {
-  document.querySelector('.sidebar').classList.add('collapsed');
-  document.querySelector('.sidebar-toggle svg').innerHTML = '<polyline points="9 18 15 12 9 6"/>';
-} // default light → show sun
-
-// ====== Config Persistence (all fields) ======
-const STORAGE_KEY = 'vera_all_config';
-const CONFIG_IDS = [
-  'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
-  'cfgStart', 'cfgEnd', 'cfgExcludeST',
-  'cfgCapital', 'cfgCommission', 'cfgSlippage',
-  'cfgMinBuy', 'cfgMaxBuy', 'cfgLotSize', 'cfgMinLots',
-  'cfgCostStopEn', 'cfgCostStopVal',
-  'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
-  'cfgLadderEn', 'cfgLadderVal',
-  'cfgTimeEn', 'cfgTimeVal',
-  'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit',
-  'cfgFirstDayEn', 'cfgFirstDayTarget',
-];
-
-function loadConfig() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved) {
-      CONFIG_IDS.forEach(id => {
-        const el = document.getElementById(id);
-        if (!el || !(id in saved)) return;
-        let val = saved[id];
-        // 迁移：旧版仓位用小数(0.15)，新版用百分比(15)
-          if (el.type === 'checkbox') el.checked = val;
-        else if (el.tagName === 'SELECT') { try { el.value = val; } catch(e) {} }
-        else el.value = val;
-      });
-    }
-  } catch(e) {}
-  refreshAllSummaries();
-}
-
-function saveAllConfig() {
-  const data = {};
-  CONFIG_IDS.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    if (el.type === 'checkbox') data[id] = el.checked;
-    else data[id] = el.value;
-  });
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
-
-function refreshAllSummaries() {
-  const cs = document.getElementById('cfgCostStopVal').value;
-  document.getElementById('sumCostStop').innerHTML = '成本止损：亏损达到 <b>'+cs+'%</b> 全仓卖出 <span class="saved-badge">已保存</span>';
-  const ta = document.getElementById('cfgTrailingAct').value;
-  const td = document.getElementById('cfgTrailingDD').value;
-  document.getElementById('sumTrailing').innerHTML = '移动止损：盈利 <b>'+ta+'%</b> 激活后，回撤 <b>'+td+'%</b> 触发全仓卖出 <span class="saved-badge">已保存</span>';
-  const lv = document.getElementById('cfgLadderVal').value.replace(/,/g, ', ');
-  document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>'+lv+'</b> <span class="saved-badge">已保存</span>';
-  const tv = document.getElementById('cfgTimeVal').value;
-  document.getElementById('sumTime').innerHTML = '时间止盈：持仓 <b>'+tv+'</b> 天后无条件卖出 <span class="saved-badge">已保存</span>';
-  const cd = document.getElementById('cfgCondTimeDays').value;
-  const cp = document.getElementById('cfgCondTimeProfit').value;
-  document.getElementById('sumCondTime').innerHTML = '条件时间止盈：持仓 <b>'+cd+'</b> 天后盈利 <b>>='+cp+'%</b> 清仓 <span class="saved-badge">已保存</span>';
-  const fd = document.getElementById('cfgFirstDayTarget').value;
-  document.getElementById('sumFirstDay').innerHTML = '首日未达标卖出：买入次日最高价涨幅未达 <b>'+fd+'%</b> 则收盘卖出 <span class="saved-badge">已保存</span>';
-}
-
-function toggleEdit(blockId) { document.getElementById(blockId).classList.add('editing'); }
-
-function saveBlock(blockId) {
-  document.getElementById(blockId).classList.remove('editing');
-  saveAllConfig();
-  refreshAllSummaries();
-  addLog('全部配置已保存到浏览器', 'ok');
-}
-
-// ====== System Log ======
-const logLines = [];
-function addLog(msg, type) {
-  const now = new Date().toLocaleTimeString();
-  logLines.push(`<span class="log-${type||'info'}">[${now}] ${msg}</span>`);
-  if (logLines.length > 100) logLines.shift();
-  const el = document.getElementById('logContent');
-  if (el) el.innerHTML = logLines.join('<br>');
-}
-
-let lastResult = null;
-let charts = {};
-
-function echartsInit(id) {
-  const dom = document.getElementById(id);
-  if (!dom) return null;
-  if (charts[id]) charts[id].dispose();
-  const c = echarts.init(dom);
-  charts[id] = c;
-  c.resize();
-  return c;
-}
-
-function runPipeline() {
-  saveAllConfig(); // 自动保存所有配置
-  const btn = document.getElementById('btnRun');
-  btn.disabled = true; btn.innerHTML = '运行中...';
-  document.getElementById('progressBar').style.display = 'block';
-  document.getElementById('statusDot').className = 'status-dot busy';
-  document.getElementById('statusText').textContent = '运行中';
-  document.getElementById('progressText').textContent = '';
-  addLog('开始执行回测管线...', 'info');
-
-  const getVal = id => document.getElementById(id).value;
-
-  // Convert percentage inputs to decimals for backend
-  const pct = (id) => parseFloat(getVal(id)) / 100;
-  const ladderRaw = getVal('cfgLadderVal');
-  const ladderParts = ladderRaw.split(',').map(s => {
-    const [profit, ratio] = s.trim().split(':');
-    return (parseFloat(profit)/100).toFixed(2) + ':' + (parseFloat(ratio)/100).toFixed(2);
-  }).join(',');
-
-  const config = {
-    strategy_name: '',
-    formula_name: getVal('cfgFormula'), formula_arg: getVal('cfgFormulaArg'),
-    universe_type: getVal('cfgUniverse'), exclude_st: document.getElementById('cfgExcludeST').checked,
-    start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
-    period: getVal('cfgPeriod'), dividend_type: 1,
-    initial_capital: parseFloat(getVal('cfgCapital')),
-    commission: parseFloat(getVal('cfgCommission')),
-    slippage: parseFloat(getVal('cfgSlippage')),
-    max_positions: 999,
-    max_position_pct: 1.0,
-    min_buy_amount: parseFloat(getVal('cfgMinBuy')),
-    max_buy_amount: parseFloat(getVal('cfgMaxBuy')),
-    lot_size: parseInt(getVal('cfgLotSize')),
-    min_lots: parseInt(getVal('cfgMinLots')),
-    cost_stop_enabled: document.getElementById('cfgCostStopEn').checked, cost_stop_threshold: -pct('cfgCostStopVal'),
-    trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
-    ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
-    time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: parseInt(getVal('cfgTimeVal')),
-    cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
-    cond_time_days: parseInt(getVal('cfgCondTimeDays')),
-    cond_time_profit: parseFloat(getVal('cfgCondTimeProfit')) / 100,
-    first_day_enabled: document.getElementById('cfgFirstDayEn').checked,
-    first_day_target: parseFloat(getVal('cfgFirstDayTarget')) / 100,
-    benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
-  };
-
-  addLog('配置: '+config.formula_name+' '+config.start_time+'~'+config.end_time, 'info');
-
-  let pollActive = true;
-  let poll = setInterval(async () => {
-    if (!pollActive) return;
-    try {
-      const r = await fetch('/api/status'); const s = await r.json();
-      if (!pollActive) return;
-      document.getElementById('progressFill').style.width = s.progress + '%';
-      document.getElementById('progressText').textContent = s.step;
-      document.getElementById('statusText').textContent = s.step;
-      if (s.step) addLog(s.step + ' ('+s.progress+'%)', 'info');
-      if (!s.running && s.progress > 0 && s.has_result) { pollActive = false; clearInterval(poll); }
-    } catch(e) {}
-  }, 800);
-
-  fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) })
-    .then(r => r.json())
-    .then(data => {
-      pollActive = false; clearInterval(poll);
-      document.getElementById('progressBar').style.display = 'none';
-      document.getElementById('progressText').textContent = '';
-      document.getElementById('statusDot').className = 'status-dot on';
-      document.getElementById('statusText').textContent = '就绪';
-      btn.disabled = false; btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
-      if (!data.success) {
-        addLog('失败: ' + (data.error || '未知错误'), 'error');
-        alert('回测失败: ' + (data.error || '未知错误'));
-        return;
-      }
-      addLog('回测完成: '+data.trade_count+'笔交易', 'ok');
-      lastResult = data;
-      renderAllCharts(data);
-    })
-    .catch(e => {
-      pollActive = false; clearInterval(poll); btn.disabled = false;
-      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
-      document.getElementById('statusDot').className = 'status-dot on';
-      document.getElementById('statusText').textContent = '错误';
-      addLog('网络错误: '+e.message, 'error');
-    });
-}
-
-function renderAllCharts(data) {
-  const c = getColors();
-  const m = data.metrics || {};
-
-  // KPI cards
-  const setKpi = (id, val, fmt) => {
-    const el = document.getElementById(id);
-    el.textContent = fmt(val); el.className = 'kpi-value';
-    if (typeof val === 'number') { if (val > 0) el.classList.add('pos'); else if (val < 0) el.classList.add('neg'); }
-  };
-  setKpi('kpiCumRet', m.cumulative_return, v => v != null ? (v*100).toFixed(2)+'%' : '--');
-  setKpi('kpiAnnRet', m.annualized_return, v => v != null ? (v*100).toFixed(2)+'%' : '--');
-  setKpi('kpiMaxDD', m.max_drawdown, v => v != null ? (v*100).toFixed(2)+'%' : '--');
-  setKpi('kpiSharpe', m.sharpe_ratio, v => v != null ? v.toFixed(2) : '--');
-  setKpi('kpiWinRate', m.win_rate, v => v != null ? (v*100).toFixed(1)+'%' : '--');
-  setKpi('kpiPLR', m.profit_loss_ratio, v => v != null ? v.toFixed(2) : '--');
-  setKpi('kpiTrades', m.total_trades, v => v != null ? v : '--');
-  setKpi('kpiCalmar', m.calmar_ratio, v => v != null ? v.toFixed(2) : '--');
-  setKpi('kpiProfitF', m.profit_factor, v => v != null ? v.toFixed(2) : '--');
-  setKpi('kpiBest', m.max_single_gain, v => v != null ? (v*100).toFixed(2)+'%' : '--');
-
-  // === ECharts: Equity curve (归一化为百分比) ===
-  if (data.equity && data.equity.length > 0) {
-    const chart = echartsInit('chartEquity');
-    const dates = data.equity.map(r => r.date.slice(0,10));
-    const eq0 = data.equity[0].equity || 1;
-    const eqPct = data.equity.map(r => (r.equity / eq0 - 1) * 100);
-    const dd = data.equity.map(r => (r.drawdown || 0) * 100);
-    const series = [
-      { name: '策略', type: 'line', data: eqPct, smooth: true,
-        lineStyle: { color: c.accent, width: 2.5 }, symbol: 'none',
-        markLine: { silent: true, data: [{ yAxis: 0, lineStyle: { color: c.text2, type: 'dashed', width: 1 } }] } },
-      { name: '回撤', type: 'line', yAxisIndex: 1, data: dd,
-        lineStyle: { color: c.down, width: 1 }, areaStyle: { color: c.down+'22' },
-        symbol: 'none' },
-    ];
-    // Benchmark: align to equity dates
-    if (data.benchmarks) {
-      const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
-      const bmColors = ['#f0883e', '#d2a8ff', '#58a6ff', '#3fb950'];
-      let ci = 0;
-      for (const [name, bm] of Object.entries(data.benchmarks)) {
-        if (!bm || !bm.length) continue;
-        const bmMap = {};
-        bm.forEach(r => {
-          const d = String(r.date || '').slice(0, 10);
-          if (r.index_close != null) bmMap[d] = (r.index_close - 1) * 100;
-        });
-        const bmVals = dates.map(d => bmMap[d] !== undefined ? bmMap[d] : null);
-        if (bmVals.every(v => v === null)) continue;
-        series.push({ name: bmNames[name]||name, type: 'line', data: bmVals,
-          lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none',
-          connectNulls: false });
-        ci++;
-      }
-    }
-    chart.setOption({
-      tooltip: { trigger: 'axis', formatter: function(params) {
-        let s = params[0].axisValue + '<br/>';
-        params.forEach(p => {
-          s += '<span style=\"display:inline-block;width:10px;height:10px;border-radius:50%;background:'+p.color+';margin-right:5px\"></span>';
-          s += p.seriesName + ': <b>' + (p.value != null ? p.value.toFixed(2)+'%' : '-') + '</b><br/>';
-        });
-        return s;
-      }},
-      legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
-      grid: { left: 60, right: 70, top: 15, bottom: 45 },
-      xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
-      yAxis: [
-        { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
-          axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
-        { type: 'value', name: '回撤 %', nameTextStyle: { color: c.text2, fontSize: 10 },
-          axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
-      ],
-      series: series,
-    }, true);
-  }
-
-  // === ECharts: Monthly returns bar chart ===
-  if (data.equity && data.equity.length > 1) {
-    const chart = echartsInit('chartMonthly');
-    const monthly = {};
-    for (let i = 1; i < data.equity.length; i++) {
-      if (data.equity[i-1].equity > 0) {
-        const d = new Date(data.equity[i].date);
-        const k = d.getFullYear()+'年'+String(d.getMonth()+1).padStart(2,'0')+'月';
-        const r = (data.equity[i].equity - data.equity[i-1].equity) / data.equity[i-1].equity;
-        if (!monthly[k]) monthly[k] = []; monthly[k].push(r);
-      }
-    }
-    const months = Object.keys(monthly).sort();
-    const mData = months.map(m => ({ name: m, value: (monthly[m].reduce((a,b)=>a+b,0)*100).toFixed(2) }));
-    chart.setOption({
-      tooltip: { trigger: 'axis', formatter: p => p[0].name+'<br/>月收益: <b>'+p[0].value+'%</b>' },
-      grid: { left: 50, right: 20, top: 10, bottom: 60 },
-      xAxis: { type: 'category', data: months, axisLabel: { color: c.text2, fontSize: 9, rotate: 45 }, axisLine: { lineStyle: { color: c.border } } },
-      yAxis: { type: 'value', name: '月收益 %', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
-      series: [{ type: 'bar', data: mData.map(d => ({ value: parseFloat(d.value), itemStyle: { color: parseFloat(d.value) >= 0 ? c.up : c.down } })) }],
-    }, true);
-  }
-
-  // === Trade Analysis Charts ===
-  if (data.trades && data.trades.length > 0) {
-    // P&L 分布 — 按区间分组
-    const chart1 = echartsInit('chartTrade');
-    const ranges = [
-      { label: '< -10%', min: -Infinity, max: -10, color: '#16a34a' },
-      { label: '-10%~-5%', min: -10, max: -5, color: '#22c55e' },
-      { label: '-5%~0%', min: -5, max: 0, color: '#4ade80' },
-      { label: '0%~5%', min: 0, max: 5, color: '#f87171' },
-      { label: '5%~10%', min: 5, max: 10, color: '#ef4444' },
-      { label: '10%~20%', min: 10, max: 20, color: '#dc2626' },
-      { label: '> 20%', min: 20, max: Infinity, color: '#b91c1c' },
-    ];
-    const rangeCount = ranges.map(r => {
-      const cnt = data.trades.filter(t => {
-        const v = (t.profit_pct || t.return || 0) * 100;
-        return v >= r.min && v < r.max;
-      }).length;
-      return { name: r.label, value: cnt, itemStyle: { color: r.color } };
-    });
-    chart1.setOption({
-      tooltip: { trigger: 'axis', formatter: p => p[0].name+'<br/>交易笔数: <b>'+p[0].value+'</b>' },
-      grid: { left: 50, right: 20, top: 10, bottom: 40 },
-      xAxis: { type: 'category', data: rangeCount.map(d=>d.name), axisLabel: { color: c.text2, fontSize: 9, rotate: 30 }, axisLine: { lineStyle: { color: c.border } } },
-      yAxis: { type: 'value', name: '笔数', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9 }, splitLine: { lineStyle: { color: c.border } } },
-      series: [{ type: 'bar', data: rangeCount }],
-    }, true);
-
-    // 退出原因分布 — 拆分复合原因计数，使用详细中文标签
-    const chart2 = echartsInit('chartExit');
-    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标' };
-    const reasonCount = {};
-    data.trades.forEach(t => {
-      const reasons = (t.exit_reason || '换股卖出').split('+');
-      reasons.forEach(r => {
-        const label = reasonMap[r] || r;
-        reasonCount[label] = (reasonCount[label] || 0) + 1;
-      });
-    });
-    const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
-    const pieColors = ['#ef4444','#f0883e','#22c55e','#d2a8ff','#58a6ff','#8b949e'];
-    chart2.setOption({
-      tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
-      legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
-      series: [{ type: 'pie', radius: ['35%','60%'], center: ['50%','45%'], data: pieData,
-        label: { color: c.text, fontSize: 10, formatter: '{b}\n{d}%' },
-        itemStyle: { color: params => pieColors[params.dataIndex % pieColors.length] } }],
-    }, true);
-
-    // 持仓天数分布 — 按自然区间分组
-    const chart3 = echartsInit('chartHold');
-    const holdDays = data.trades.map(t => t.hold_days).filter(v => v != null && v >= 0);
-    const holdRanges = [
-      { label: '1天', min: 0, max: 2 },
-      { label: '2-3天', min: 2, max: 4 },
-      { label: '4-7天', min: 4, max: 8 },
-      { label: '8-14天', min: 8, max: 15 },
-      { label: '15-20天', min: 15, max: 21 },
-      { label: '20天+', min: 21, max: Infinity },
-    ];
-    const holdData = holdRanges.map(r => ({
-      name: r.label, value: holdDays.filter(d => d >= r.min && d < r.max).length
-    }));
-    chart3.setOption({
-      tooltip: { trigger: 'axis', formatter: p => '持仓'+p[0].name+'<br/>笔数: <b>'+p[0].value+'</b>' },
-      grid: { left: 50, right: 20, top: 10, bottom: 30 },
-      xAxis: { type: 'category', data: holdData.map(d=>d.name), axisLabel: { color: c.text2, fontSize: 9 }, axisLine: { lineStyle: { color: c.border } } },
-      yAxis: { type: 'value', name: '笔数', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9 }, splitLine: { lineStyle: { color: c.border } } },
-      series: [{ type: 'bar', data: holdData, itemStyle: { color: c.accent } }],
-    }, true);
-
-    // Trade table — always update with fresh data
-    document.getElementById('tradeTableBox').style.display = '';
-    const minBuy = document.getElementById('cfgMinBuy').value || 2000;
-    const maxBuy = document.getElementById('cfgMaxBuy').value || 10000;
-    const lot = document.getElementById('cfgLotSize').value || 100;
-    document.getElementById('tradeCount').textContent =
-      '(本次回测: '+data.trade_count+' 笔 | 每笔'+minBuy+'~'+maxBuy+'元, '+lot+'股/手)';
-    const reasonDetail = {
-      '成本止损': '成本止损 — 亏损触及止损线，全仓卖出',
-      '移动止损': '移动止损 — 从最高点回撤触及阈值，亏损清仓',
-      '移动止盈': '移动止盈 — 从最高点回撤触及阈值，盈利清仓',
-      '阶梯止盈': '阶梯止盈 — 盈利达到目标档位，分批卖出',
-      '时间止损': '时间止损 — 持仓天数达到上限，亏损清仓',
-      '时间止盈': '时间止盈 — 持仓天数达到上限，盈利清仓',
-      'cond_time_stop': '条件时间止盈 — 持仓N天后盈利达标，全仓卖出',
-      '首日未达标': '首日未达标 — 买入次日最高价涨幅未达目标，收盘强制卖出',
-      '换股卖出': '换股卖出 — 同一股票出现新买入信号，替换旧持仓',
-    };
-    function fmtReason(r) {
-      if (!r) return '—';
-      if (r === '换股卖出') return reasonDetail['换股卖出'] || r;
-      const parts = r.split('+').map(s => reasonDetail[s] || s);
-      return parts.join('；');
-    }
-    const tbody = document.getElementById('tradeTableBody');
-    const totalTrades = data.trades.length;
-    tbody.innerHTML = data.trades.slice().reverse().map((t, i) => {
-      const pnl = (t.profit_pct || t.return || 0) * 100;
-      const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
-      const eDate = String(t.entry_date||'').slice(0,10);
-      const xDate = String(t.exit_date||'').slice(0,10);
-      const name = t.stock_name || '';
-      const code = t.stock_code || '';
-      const shares = t.shares || 0;
-      const ep = t.entry_price || 0;
-      const xp = t.exit_price || 0;
-      const holdDays = t.hold_days != null ? t.hold_days : '';
-      return `<tr>
-        <td style="color:var(--text2);font-size:10px">${totalTrades - i}</td>
-        <td style="font-family:var(--mono);font-size:10px">${code}</td>
-        <td title="${code}">${name}</td>
-        <td>${eDate}</td>
-        <td>${ep}</td>
-        <td>${shares} 股</td>
-        <td>${xDate}</td>
-        <td>${xp}</td>
-        <td>${shares} 股</td>
-        <td>${holdDays}</td>
-        <td class="${cls}">${pnl.toFixed(2)}%</td>
-        <td style="font-size:10px;max-width:180px" title="${fmtReason(t.exit_reason)}">${fmtReason(t.exit_reason)}</td></tr>`;
-    }).join('');
-  }
-
-  if (data.stop_config_summary) {
-    document.getElementById('summaryBox').style.display = '';
-    document.getElementById('summaryContent').textContent = data.stop_config_summary;
-  }
-}
-
-// ====== Init ======
-document.getElementById('statusDot').className = 'status-dot on';
-loadConfig();
-addLog('前端就绪，等待执行回测', 'info');
-
-// 自动加载上次回测结果（含权益曲线图）
-fetch('/api/last_result').then(r => r.json()).then(data => {
-  if (data && data.success && data.trade_count > 0) {
-    lastResult = data;
-    document.getElementById('tradeTableBox').style.display = '';
-    document.getElementById('tradeCount').textContent = '(上次回测 '+data.trade_count+' 笔)';
-    renderAllCharts(data);
-    addLog('已加载上次回测结果 ('+data.trade_count+'笔)', 'ok');
-  }
-}).catch(() => addLog('暂无上次回测结果', 'info'));
-
-// 加载历史回测列表
-fetch('/api/results').then(r => r.json()).then(list => {
-  if (list && list.length > 0) {
-    document.getElementById('historyCount').textContent = '('+list.length+'条)';
-    const sel = document.getElementById('historySelect');
-    sel.innerHTML = '<option value="">-- 选择历史回测 --</option>';
-    list.forEach(item => {
-      const o = document.createElement('option');
-      o.value = item.id;
-      o.textContent = item.time + ' | '+item.formula+' '+item.date_range+' | '+item.trade_count+'笔 '+(item.cumulative_return*100).toFixed(1)+'%';
-      sel.appendChild(o);
-    });
-  }
-}).catch(() => {});
-
-function loadHistory(id) {
-  if (!id) return;
-  addLog('加载历史回测: '+id, 'info');
-  fetch('/api/results/'+id).then(r => r.json()).then(result => {
-    const data = result.data || result;
-    if (data.success || data.trade_count != null) {
-      lastResult = data;
-      document.getElementById('tradeTableBox').style.display = '';
-      document.getElementById('tradeCount').textContent = '(历史 '+data.trade_count+' 笔)';
-      renderAllCharts(data);
-      addLog('已加载历史回测 ('+data.trade_count+'笔)', 'ok');
-    }
-  }).catch(e => addLog('加载失败: '+e.message, 'error'));
-}
-
-
-window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
-</script>
+<script src="/web/vera-ui.js"></script>
 </body>
 </html>

@@ -1,0 +1,52 @@
+strategy:
+  name: "GS_QUANTQQ_LONGTERM"
+
+selection:
+  formula_name: "QUANTQQ"
+  formula_arg: ""
+  universe:
+    type: "50"
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1
+
+# 区间: 2020.1.1 ~ 2026.7.3
+time_range:
+  start: "20200101"
+  end: "20260703"
+
+backtest:
+  initial_capital: 1000000.0
+  commission: 0.0003
+  slippage: 0.001
+  position_sizing:
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
+
+# 先生前端最新参数
+stop_loss:
+  cost_stop:
+    enabled: true
+    threshold: -0.046
+  trailing_stop:
+    enabled: true
+    activation: 0.039
+    drawdown: 0.017
+  ladder_tp:
+    enabled: true
+    levels:
+      - profit: 0.03
+        sell_ratio: 0.20
+      - profit: 0.13
+        sell_ratio: 0.60
+  time_stop:
+    enabled: true
+    max_hold_days: 12
+  cond_time_stop:
+    enabled: true
+    days: 7
+    profit: 0.015
+  first_day:
+    enabled: false

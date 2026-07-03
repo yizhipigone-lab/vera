@@ -1,7 +1,8 @@
 """TDX 选股连通性诊断脚本 — 逐层测试选股链路。"""
 import sys, os
-sys.path.insert(0, r"E:\1target\tdx\PYPlugins\user")
-sys.path.insert(0, r"d:\targetone\VERA")
+TDX_HOME = os.environ.get('TDX_HOME', r'E:\NEW_TDX')
+sys.path.insert(0, os.path.join(TDX_HOME, r"PYPlugins\user"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tqcenter import tq
 
@@ -9,7 +10,7 @@ from tqcenter import tq
 print("=" * 60)
 print("Step 1: 初始化 TDX 连接")
 print("=" * 60)
-tq.initialize(r"E:\1target\tdx\PYPlugins\user\tqcenter.py")
+tq.initialize(os.path.join(TDX_HOME, r"PYPlugins\user\tqcenter.py"))
 print(f"  run_id={tq.run_id}, initialized={tq._initialized}")
 
 # 2. 获取股票列表

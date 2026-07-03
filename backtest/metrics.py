@@ -16,30 +16,27 @@ class MetricsCalculator:
     def compute_all(
         equity_curve: pd.DataFrame,
         trades: pd.DataFrame,
-        initial_capital: float = 100000.0,
+        initial_capital: float = 1000000.0,
         risk_free: float = 0.015,
+        periods_per_year: int = 252,
     ) -> dict:
         metrics = {}
         equity = equity_curve.get("equity", pd.Series(dtype=float))
         if equity.empty or len(equity) < 2:
             return metrics
 
-        # 获取日期范围
-        dates = equity_curve.get("date")
-        if dates is not None and not dates.empty:
-            trading_days = (pd.to_datetime(dates.iloc[-1]) - pd.to_datetime(dates.iloc[0])).days
-        else:
-            trading_days = len(equity) - 1
+        # P1-4: 年化用 periods_per_year（替换字面量 252），5m/1w 周期不再失真
+        n_periods = len(equity)
 
         metrics["cumulative_return"] = float((equity.iloc[-1] - initial_capital) / initial_capital)
-        if trading_days > 0:
+        if n_periods > 1:
             metrics["annualized_return"] = float(
-                (1 + metrics["cumulative_return"]) ** (365.0 / max(trading_days, 1)) - 1
+                (1 + metrics["cumulative_return"]) ** (periods_per_year / n_periods) - 1
             )
         else:
             metrics["annualized_return"] = 0.0
         metrics["max_drawdown"] = float((equity / equity.expanding().max() - 1).min())
-        metrics["sharpe_ratio"] = MetricsCalculator._sharpe(equity, risk_free)
+        metrics["sharpe_ratio"] = MetricsCalculator._sharpe(equity, risk_free, periods_per_year)
         metrics["calmar_ratio"] = (
             metrics["annualized_return"] / abs(metrics["max_drawdown"])
             if abs(metrics["max_drawdown"]) > 0.0001 else 0.0
@@ -74,12 +71,12 @@ class MetricsCalculator:
         return metrics
 
     @staticmethod
-    def _sharpe(equity: pd.Series, risk_free: float = 0.015) -> float:
+    def _sharpe(equity: pd.Series, risk_free: float = 0.015, periods_per_year: int = 252) -> float:
         returns = equity.pct_change().dropna()
         if len(returns) < 2 or returns.std() == 0:
             return 0.0
-        excess = returns - risk_free / 252
-        return float(excess.mean() / excess.std() * np.sqrt(252))
+        excess = returns - risk_free / periods_per_year
+        return float(excess.mean() / excess.std() * np.sqrt(periods_per_year))
 
     @staticmethod
     def max_drawdown(equity: pd.Series) -> float:
@@ -91,18 +88,18 @@ class MetricsCalculator:
         return float(drawdown.min())
 
     @staticmethod
-    def sharpe_ratio(equity: pd.Series, risk_free: float = 0.015) -> float:
+    def sharpe_ratio(equity: pd.Series, risk_free: float = 0.015, periods_per_year: int = 252) -> float:
         """夏普比率。"""
         if len(equity) < 2:
             return 0.0
         returns = equity.pct_change().dropna()
         if len(returns) < 2:
             return 0.0
-        daily_rf = risk_free / 252
+        daily_rf = risk_free / periods_per_year
         excess = returns - daily_rf
         if excess.std() == 0:
             return 0.0
-        return float(excess.mean() / excess.std() * np.sqrt(252))
+        return float(excess.mean() / excess.std() * np.sqrt(periods_per_year))
 
     @staticmethod
     def win_rate(trades: pd.DataFrame) -> float:

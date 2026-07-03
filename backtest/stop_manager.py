@@ -72,13 +72,13 @@ class StopManager:
         # 成本止损
         cost_cfg = config.get("cost_stop", {})
         self.cost_stop_enabled = cost_cfg.get("enabled", True)
-        self.cost_stop_threshold = cost_cfg.get("threshold", -0.08)
+        self.cost_stop_threshold = cost_cfg.get("threshold", -0.12)
 
         # 移动止损
         trail_cfg = config.get("trailing_stop", {})
         self.trailing_enabled = trail_cfg.get("enabled", True)
-        self.trailing_activation = trail_cfg.get("activation", 0.05)
-        self.trailing_drawdown = trail_cfg.get("drawdown", 0.03)
+        self.trailing_activation = trail_cfg.get("activation", 0.08)
+        self.trailing_drawdown = trail_cfg.get("drawdown", 0.05)
 
         # 阶梯止盈
         ladder_cfg = config.get("ladder_tp", {})

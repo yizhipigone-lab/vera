@@ -1,0 +1,22 @@
+name: Lint & Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install ruff pytest pandas numpy
+      - name: Lint
+        run: ruff check . --exclude output --exclude .claude
+      - name: Test
+        run: pytest tests/ -q --tb=short

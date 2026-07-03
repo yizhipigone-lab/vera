@@ -6,6 +6,7 @@ from datetime import datetime
 
 from core.data_fetcher import DataFetcher
 from core.formula_runner import FormulaRunner
+from core.stock_filter import filter_stocks
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
 
@@ -59,9 +60,12 @@ class StockSelector:
             logger.warning(f"股票池 {utype} 返回空，请检查 TDX 客户端数据")
             return []
 
-        # 过滤 ST
+        # 过滤 ST / 退市 / 港股（P0-3: 改用 TDX IsSTGP 真实判定，原字符串过滤对纯代码恒 True）
         if u.get("exclude_st", False):
-            stocks = [s for s in stocks if "ST" not in s and "*ST" not in s]
+            before = len(stocks)
+            stocks, excluded = filter_stocks(stocks)
+            if excluded:
+                logger.info(f"ST/退市/港股过滤: {before} → {len(stocks)}（剔除 {len(excluded)} 只）")
 
         # 过滤次新股
         exclude_new = u.get("exclude_new_listings_days", 0)
