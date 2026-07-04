@@ -388,9 +388,16 @@ def run_pipeline(cfg: StrategyConfig):
             for d in trades_data:
                 for k, v in list(d.items()):
                     d[k] = safe_serialize(v)
-                # 补充股票简称 — 用代码本身当名称（不再额外调 TDX 拉 5200 只简称）
+            # 查全量简称表 (带进程级缓存, 首次 ~1s, 后续 O(1))
+            try:
+                from core.data_fetcher import DataFetcher
+                name_map = DataFetcher.get_name_map()
+            except Exception:
+                name_map = {}
+            for d in trades_data:
                 code = d.get("stock_code", "")
-                d["stock_name"] = code
+                # 真实简称优先; 查不到回退空 (前端会显示代码)
+                d["stock_name"] = name_map.get(code, "")
 
         benchmark_data = {}
         for name, bm_df in benchmark_results.items():

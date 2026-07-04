@@ -204,6 +204,120 @@ class DataFetcher:
                 codes.append(s)
         return [c for c in codes if c]
 
+    # P-v3.4: 行业板块支持 — 板块列表 + 成份股, 均带进程级缓存
+    _SECTOR_CACHE: List[dict] = []                      # 128 个板块列表 [{code, name}]
+    _SECTOR_STOCKS_CACHE: dict = {}                     # {sector_code: [成份股代码]}
+
+    @classmethod
+    def get_sector_list(cls) -> List[dict]:
+        """
+        获取 128 个细分行业板块 (list_type=11), 带进程级缓存.
+
+        Returns:
+            [{"code": "881319.SH", "name": "半导体"}, ...]
+        """
+        if cls._SECTOR_CACHE:
+            return cls._SECTOR_CACHE
+        cls._ensure_ready()
+        from tqcenter import tq
+        raw = tq.get_stock_list('11', list_type=1)
+        cls._SECTOR_CACHE = [
+            {"code": s["Code"], "name": s["Name"].strip()}
+            for s in raw if isinstance(s, dict) and s.get("Code")
+        ]
+        return cls._SECTOR_CACHE
+
+    @classmethod
+    def get_sector_stocks(cls, sector_code: str) -> List[str]:
+        """
+        拉板块成份股 (支持板块代码如 '881319.SH' 或中文名如 '半导体'), 带进程级缓存.
+
+        Returns: 纯代码字符串列表, 失败返回空列表不抛异常.
+        """
+        if sector_code in cls._SECTOR_STOCKS_CACHE:
+            return cls._SECTOR_STOCKS_CACHE[sector_code]
+        cls._ensure_ready()
+        from tqcenter import tq
+        try:
+            raw = tq.get_stock_list_in_sector(sector_code, list_type=0)
+            stocks = []
+            for s in raw:
+                if isinstance(s, str):
+                    stocks.append(s)
+                elif isinstance(s, dict):
+                    stocks.append(s.get("Code", ""))
+            stocks = [s for s in stocks if s]
+            cls._SECTOR_STOCKS_CACHE[sector_code] = stocks
+            return stocks
+        except Exception as e:
+            from utils.logger import get_logger
+            get_logger(__name__).warning(f"拉板块成份股失败 [{sector_code}]: {e}")
+            return []
+
+    @classmethod
+    def clear_sector_cache(cls):
+        """清空板块缓存 (板块成份股更新时手动调)."""
+        cls._SECTOR_CACHE.clear()
+        cls._SECTOR_STOCKS_CACHE.clear()
+
+    # === 全量股票代码→简称 进程级缓存 (修复交易表显示问题) ===
+    _NAME_MAP_CACHE: dict = {}        # {code: name}
+
+    @staticmethod
+    def _fix_tq_name(s: str) -> str:
+        """TDX TQ Name 字段错位修复: TQ 把 utf-8 字节重新打包到 Unicode 私有区 codepoint,
+        把每个字符 UTF-8 编码后拼字节再解码."""
+        try:
+            bs = b''
+            for c in s:
+                bs += c.encode('utf-8')
+            return bs.decode('utf-8')
+        except Exception:
+            return s
+
+    @classmethod
+    def get_name_map(cls, refresh: bool = False) -> dict:
+        """获取 {stock_code: name} 全量映射, 进程级缓存.
+
+        Args:
+            refresh: True 强制重拉 (股票简称变更后手动调)
+        Returns:
+            {'601872.SH': '招商轮船', ...} 共约 5200 条
+        """
+        if cls._NAME_MAP_CACHE and not refresh:
+            return cls._NAME_MAP_CACHE
+        cls._ensure_ready()
+        from tqcenter import tq
+        result: dict = {}
+        # list_type='50' = 沪深A股, list_type=1 = 每只用 dict 返回 (含 Name 字段)
+        for market in ('5', '50'):
+            try:
+                raw = tq.get_stock_list(market, list_type=1)
+            except Exception:
+                continue
+            for s in raw:
+                if not isinstance(s, dict):
+                    continue
+                code = str(s.get("Code", "")).strip()
+                name_raw = str(s.get("Name", "")).strip()
+                if not code or not name_raw:
+                    continue
+                result[code] = cls._fix_tq_name(name_raw)
+        cls._NAME_MAP_CACHE = result
+        logger.info(f"全量简称缓存已构建: {len(result)} 条")
+        return result
+
+    @classmethod
+    def get_stock_name(cls, code: str, fallback: str = "") -> str:
+        """查单只股票简称; 命中返回真实名, 未命中返回 fallback (默认空字符串)."""
+        m = cls.get_name_map()
+        return m.get(code, fallback)
+
+    @classmethod
+    def clear_name_cache(cls):
+        """清空简称缓存"""
+        cls._NAME_MAP_CACHE.clear()
+
     @classmethod
     def get_trading_dates(
         cls,

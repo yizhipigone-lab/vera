@@ -861,7 +861,7 @@ function renderTradeTable(trades) {
     const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
     const eDate = esc(String(t.entry_date||'').slice(0,10));
     const xDate = esc(String(t.exit_date||'').slice(0,10));
-    const name = esc(t.stock_name || '');
+    const name = esc(t.stock_name || t.stock_code || '');
     const code = esc(t.stock_code || '');
     const shares = t.shares || 0;
     const ep = t.entry_price || 0;
