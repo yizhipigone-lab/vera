@@ -40,6 +40,8 @@ def _simulate_core_v3(
     slippage=0.0, stamp_tax=0.0,
     tradable_np=None, last_tradable_idx=None,
     open_np=None,
+    # P-v3.4: 公式卖出机制 (formula_sell) — TDX 信号驱动, 最高优先级 (reason 12)
+    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
 ):
     n_dates = price_np.shape[0]
     n_stocks = price_np.shape[1]
@@ -116,7 +118,7 @@ def _simulate_core_v3(
             if np.isnan(xp) or xp <= 0.0:
                 p += 1; continue
 
-            # T+1：当日买入不可当日卖出（A股交易规则）
+            # A 股 T+1 交易制度: 当日买入不可当日卖出 (国内交易所规则)
             if (i // bpday) == (pos_entry_idx[p] // bpday):
                 # 同在一天，只更新最高价，不检查卖出
                 if high_np is not None:
@@ -151,6 +153,15 @@ def _simulate_core_v3(
             triggered = -1  # reason code, -1 = none
 
             ladder_sell_ratio = 0.0  # 本 bar 阶梯止盈的卖出比例（默认 0 = 不触发）
+
+            # P-v3.4: 公式卖出 (formula_sell, reason=12) — 最高优先级, 早于 cost_stop
+            # 信号日 T+1 触发 (与 entry 同套规则): 查 formula_exit_np[i - lag, ci]
+            # i >= formula_exit_lag_bars 防止 i<1 时越界
+            if (formula_exit_np is not None
+                    and i >= formula_exit_lag_bars
+                    and 0 <= ci < formula_exit_np.shape[1]
+                    and bool(formula_exit_np[i - formula_exit_lag_bars, ci])):
+                triggered = 12
 
             # 成本止损：检查Low是否跌破止损线（最高优先级）
             if cost_stop_enabled and lo_pp <= cost_stop_threshold:
@@ -254,6 +265,31 @@ def _simulate_core_v3(
                             pos_shares[p] = total_sh - sell_sh
                             p += 1; continue  # 保留仓位，继续检查
 
+                # P-v3.4: 公式卖出 (triggered=12) — 按 formula_exit_ratio 部分卖出
+                # sell_ratio=1.0 → 全卖 (走下方"全卖"路径); <1.0 → 部分卖 (类似 ladder)
+                if triggered == 12 and formula_exit_ratio < 1.0:
+                    sell_ratio = float(formula_exit_ratio)
+                    sell_sh = int(total_sh * sell_ratio)
+                    sell_sh = max((sell_sh // lot_size) * lot_size, lot_size)
+                    if sell_sh < total_sh and sell_sh > 0:
+                        sell_eff = sell_price * (1.0 - slippage)
+                        gross = sell_sh * sell_eff * (1.0 - commission - stamp_tax)
+                        cash += gross
+                        if trade_count >= max_trades:
+                            _grow_trades()
+                        trades[trade_count, 0] = float(ci)
+                        trades[trade_count, 1] = float(pos_entry_idx[p])
+                        trades[trade_count, 2] = float(i)
+                        trades[trade_count, 3] = ep
+                        trades[trade_count, 4] = sell_price
+                        trades[trade_count, 5] = float(sell_sh)
+                        trades[trade_count, 6] = gross - sell_sh * ep
+                        trades[trade_count, 7] = actual_ret
+                        trades[trade_count, 8] = 12.0   # formula_sell
+                        trade_count += 1
+                        pos_shares[p] = total_sh - sell_sh
+                        p += 1; continue  # 保留仓位，继续检查
+
                 # 全卖（所有非部分卖出场景）
                 # C1 修复: 卖出叠加滑点 + 印花税 (eff_*=0 时等价于旧版)
                 sell_eff = sell_price * (1.0 - slippage)
@@ -285,26 +321,24 @@ def _simulate_core_v3(
 
         # ── 2. 买入（同股先卖旧）──
         for ci in range(n_stocks):
-            # P1-2: T+1 开盘买入 — 有 open_np 时，信号日次日开盘成交
-            #   entry_np[i, ci]=True → 信号日 i，次日 i+1 开盘买入
-            #   无 open_np 时（run_cached 批量路径）→ 旧行为：信号日收盘成交
-            if open_np is not None:
-                # T+1: 在 bar i 检查 i-1 的信号，以 open[i] 买入
-                if i < 1 or not entry_np[i - 1, ci]:
-                    continue
-                bp = open_np[i, ci]
-                if np.isnan(bp) or bp <= 0.0:
-                    # 次日停牌，无法成交，跳过该信号
-                    continue
-                entry_i = i  # 实际买入 bar = i（信号日 i-1 的次日）
-            else:
-                # 旧路径：信号日收盘成交（run_cached / 无 Open 数据）
-                if not entry_np[i, ci]:
-                    continue
-                bp = price_np[i, ci]
-                if np.isnan(bp) or bp <= 0.0:
-                    continue
-                entry_i = i
+            # 基本原则: 尾盘选股 → 信号日收盘价买入 (T 日成交)
+            #   entry_np[i, ci]=True → 信号日 i, 以当日收盘价 price_np[i] 成交
+            #   (原 P1-2 的 T+1 次日开盘买入路径违背该原则, 已废止 — 2026-07-04)
+            #
+            # 为什么不构成"未来函数" / 偷看:
+            #   1. 选股公式 QUANTQQ 是按历史 K 线算的趋势触发, 信号本身只用 i 之前的数据
+            #   2. A 股 14:57 集合竞价可按当日收盘价成交, 真实可交易
+            #   3. 出场判断全部基于 entry 之后的 bar, 无未来
+            if not entry_np[i, ci]:
+                continue
+            # 信号日停牌 → skip (避免用 ffill 假价成交)
+            if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
+                continue
+            bp = price_np[i, ci]
+            if np.isnan(bp) or bp <= 0.0:
+                # 信号日无收盘价 / 退市价, 无法成交, 跳过
+                continue
+            entry_i = i  # 实际买入 bar = 信号日 i
             # 已持有同股票 → 卖出旧仓位
             for old_p in range(pos_count):
                 if pos_code[old_p] == ci:
@@ -350,7 +384,7 @@ def _simulate_core_v3(
                 pos_code[pos_count] = ci
                 pos_shares[pos_count] = float(sh)
                 pos_entry_px[pos_count] = bp
-                pos_entry_idx[pos_count] = entry_i  # P1-2: T+1 时 entry_i=i（信号日次日）
+                pos_entry_idx[pos_count] = entry_i  # 信号日 i（收盘价买入日）
                 pos_high_px[pos_count] = bp
                 pos_high_hi[pos_count] = bp
                 pos_ladder_done[pos_count] = 0
@@ -473,6 +507,73 @@ class BacktestEngine:
         ladder_profits = np.array([lv[i]["profit"] for i in range(len(lv))], dtype=np.float64)
         ladder_ratios = np.array([lv[i]["sell_ratio"] for i in range(len(lv))], dtype=np.float64)
 
+        # P-v3.4: 公式卖出 (formula_sell) — 一次性预计算信号矩阵
+        formula_exit_np = None
+        formula_exit_ratio = 1.0
+        fs_cfg = stop.get("formula_sell", {})
+        if fs_cfg.get("enabled", False):
+            formula_name = str(fs_cfg.get("formula_name", "")).strip()
+            formula_arg = str(fs_cfg.get("formula_arg", ""))
+            formula_exit_ratio = float(fs_cfg.get("sell_ratio", 1.0))
+            if formula_name and start_time and end_time:
+                try:
+                    from backtest.formula_exit import (
+                        FormulaExitResult,
+                        build_formula_exit_matrix,
+                        cache_key,
+                        load_cached_formula_exit,
+                        save_cached_formula_exit,
+                    )
+                    from core.formula_runner import FormulaRunner
+
+                    key = cache_key(
+                        formula_name, formula_arg,
+                        tuple(cols), start_time, end_time, period=self.period,
+                    )
+                    cached = load_cached_formula_exit(key)
+                    if cached is not None:
+                        formula_exit_np = cached.matrix
+                        logger.info(
+                            "formula_sell: 命中缓存 [%s] (信号=%d, shape=%s)",
+                            formula_name, int(formula_exit_np.sum()), formula_exit_np.shape,
+                        )
+                    else:
+                        logger.info("formula_sell: 调 TDX 取信号 [%s]...", formula_name)
+                        sig_df = FormulaRunner.run_stock_selection_with_dates(
+                            formula_name=formula_name,
+                            formula_arg=formula_arg,
+                            stock_list=list(cols),
+                            start_time=start_time,
+                            end_time=end_time,
+                            stock_period=self.period,
+                        )
+                        formula_exit_np = build_formula_exit_matrix(
+                            sig_df, close.index, close.columns,
+                        )
+                        save_cached_formula_exit(
+                            key,
+                            FormulaExitResult(
+                                matrix=formula_exit_np,
+                                meta={
+                                    "formula_name": formula_name,
+                                    "formula_arg": formula_arg,
+                                    "fetched_at": pd.Timestamp.now().isoformat(),
+                                    "total_signals": int(formula_exit_np.sum()),
+                                },
+                            ),
+                        )
+                        logger.info(
+                            "formula_sell: 写入缓存 [%s] (信号=%d)",
+                            formula_name, int(formula_exit_np.sum()),
+                        )
+                except Exception as e:
+                    logger.error("formula_sell 构造失败, 回退禁用: %s", e)
+                    formula_exit_np = None
+            elif not formula_name:
+                logger.warning("formula_sell: enabled=true 但 formula_name 为空, 跳过")
+            else:
+                logger.warning("formula_sell: 缺 start_time/end_time, 跳过")
+
         cond_profit_pct = cond_t.get("profit", 0.01)
         logger.info("VeraCore %s: 资金=%s 每笔%s~%s元 %s股/手 时间=%s天 条件=%s天/%.1f%% %s stocks",
                      ENGINE_VERSION,
@@ -506,14 +607,14 @@ class BacktestEngine:
             first_day_enabled=first_day.get("enabled", False),
             first_day_target=float(first_day.get("target", 0.03)),
             first_day_n_bars=fd_bars,
-            high_np=high_np,
-            low_np=low_np,
-            bpday=bpday,
-            slippage=float(self.eff_slippage),
-            stamp_tax=float(self.eff_stamp_tax),
-            tradable_np=tradable_np,
-            last_tradable_idx=last_tradable_idx,
+            high_np=high_np, low_np=low_np, bpday=bpday,
+            slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
+            tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
             open_np=open_np,
+            # P-v3.4: 公式卖出矩阵 + 卖出比例
+            formula_exit_np=formula_exit_np,
+            formula_exit_ratio=formula_exit_ratio,
+            formula_exit_lag_bars=1,
         )
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         # DEBUG: check raw bar differences from Numba output directly
@@ -529,8 +630,9 @@ class BacktestEngine:
         equity_curve.reset_index(inplace=True)
 
         trades_df = self._build_trades(raw_trades, close.columns, dates, bpday)
-        trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
-        trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
+        if not trades_df.empty:
+            trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
+            trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
 
         # 使用 StopManager 仅生成 exit_info 用于增强标签
         sm = StopManager(stop_config)
@@ -608,8 +710,9 @@ class BacktestEngine:
         equity_curve.reset_index(inplace=True)
 
         trades_df = self._build_trades(raw_trades, close.columns, dates, bpday)
-        trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
-        trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
+        if not trades_df.empty:
+            trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
+            trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
 
         # StopManager for labels (skip in batch mode for speed)
         if not skip_sm:
@@ -647,7 +750,8 @@ class BacktestEngine:
                       6.0: "时间止损", 9.0: "时间止盈",
                       7.0: "cond_time_stop",
                       10.0: "首日未达标",
-                      11.0: "退市"}
+                      11.0: "退市",
+                      12.0: "formula_sell"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
         records = []

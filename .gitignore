@@ -11,3 +11,4 @@ Thumbs.db
 .env
 .venv/
 *.pkl
+dump.rdb

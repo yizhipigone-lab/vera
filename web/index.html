@@ -161,10 +161,12 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .log-info{color:var(--text2)} .log-ok{color:var(--down)} .log-error{color:var(--up)}
 
 /* P1-4: Toast 通知 */
-.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-.toast{padding:12px 20px;border-radius:8px;font-size:12px;color:#fff;max-width:400px;pointer-events:auto;
+.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}.toast{padding:12px 20px;border-radius:8px;font-size:12px;color:#fff;max-width:400px;pointer-events:auto;
   animation:toastIn .3s ease,toastOut .3s ease 2.7s forwards;box-shadow:0 4px 12px rgba(0,0,0,.15)}
 .toast-error{background:var(--up)}.toast-ok{background:var(--down)}.toast-info{background:var(--accent)}
+/* U1 (审计): 旧版引擎结果提示条 */
+.legacy-warning{padding:10px 16px;margin-bottom:12px;background:var(--warn);color:#fff;border-radius:var(--radius);font-size:12px;font-weight:500;line-height:1.5}
+[data-theme="dark"] .legacy-warning{background:#7a3600}
 @keyframes toastIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:translateX(0)}}
 @keyframes toastOut{from{opacity:1}to{opacity:0}}
 
@@ -172,6 +174,25 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 input.invalid{border-color:var(--up)!important}
 .input-error{color:var(--up);font-size:10px;margin-top:2px;display:none}
 input.invalid~.input-error{display:block}
+
+/* P-v3.4: 行业板块多选 — 2 列网格 + 搜索 + 已选标签 */
+.sector-section{margin-top:10px;border-top:1px dashed var(--border);padding-top:10px}
+.sector-title{font-size:11px;color:var(--text2);font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.sector-title::before{content:'';display:inline-block;width:3px;height:12px;background:var(--accent2);border-radius:2px}
+.sector-toolbar{display:flex;gap:6px;margin-bottom:6px;align-items:center}
+.sector-toolbar input{flex:1;padding:5px 8px;font-size:11px}
+.sector-toolbar button{font-size:10px;padding:4px 10px}
+.sector-selected{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:20px}
+.sector-tag{display:inline-flex;align-items:center;gap:3px;background:color-mix(in srgb,var(--accent2) 15%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 40%,transparent);border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer}
+.sector-tag:hover{background:color-mix(in srgb,var(--up) 20%,transparent);color:var(--up);border-color:var(--up)}
+.sector-tag .x{font-weight:700}
+.sector-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:5px;padding:6px;background:var(--bg)}
+.sector-item{display:flex;align-items:center;gap:4px;font-size:10px;padding:2px 4px;border-radius:3px;cursor:pointer}
+.sector-item:hover{background:var(--surface)}
+.sector-item input{width:auto;accent-color:var(--accent2);cursor:pointer}
+.sector-item label{cursor:pointer;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sector-item.hidden{display:none}
+.sector-empty{font-size:10px;color:var(--text2);padding:12px;text-align:center}
 </style>
 </head>
 <body>
@@ -224,6 +245,22 @@ input.invalid~.input-error{display:block}
           <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD" oninput="validateDate(this)"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
         </div>
         <div class="checkbox-group"><input type="checkbox" id="cfgExcludeST" checked><label>排除ST股票</label></div>
+        <!-- P-v3.4: ETF 开关 — list_type=31 (含 51/56/58/511, 排除 501/508 LOF) -->
+        <div class="checkbox-group"><input type="checkbox" id="cfgIncludeEtf"><label>包含ETF（A股 + ETF 混合）</label></div>
+        <div class="checkbox-group"><input type="checkbox" id="cfgEtfOnly"><label>仅ETF（只 ETF，不要 A股）</label></div>
+
+        <!-- P-v3.4: 行业板块多选 (2 列网格 + 搜索) -->
+        <div class="sector-section">
+          <div class="sector-title">行业板块（可多选，与上方 ETF 叠加。勾选"仅ETF"时板块被忽略）</div>
+          <div class="sector-toolbar">
+            <input id="sectorSearch" placeholder="搜索板块名称..." oninput="filterSectors()">
+            <button class="btn btn-sm btn-secondary" onclick="clearSectors()">清空</button>
+          </div>
+          <div class="sector-selected" id="sectorSelected"></div>
+          <div class="sector-grid" id="sectorGrid">
+            <div class="sector-empty" id="sectorEmpty">加载板块列表中...</div>
+          </div>
+        </div>
       </div>
 
       <!-- 资金与仓位 -->
@@ -323,6 +360,21 @@ input.invalid~.input-error{display:block}
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkFirstDay')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkFirstDay')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkFirstDay')" style="display:none">取消</button></div>
         </div>
+        <!-- P-v3.4: 公式止损 (formula_sell) — TDX 信号驱动, 最高优先级 -->
+        <div class="config-block" id="blkFormulaSell">
+          <div class="cfg-summary">
+            <span id="sumFormulaSell">公式止损：未启用 <span class="saved-badge saved">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="checkbox-group"><input type="checkbox" id="cfgFormulaSellEn"><label>启用公式止损（TDX 信号驱动）</label></div>
+            <div class="form-group"><label>公式名称（通达信公式管理器中的公式名）</label><input id="cfgFormulaSellName" value="卖出XG"></div>
+            <div class="form-group"><label>卖出比例 (%) — 100=全卖，40=卖40%</label><input id="cfgFormulaSellRatio" value="100" type="number" min="1" max="100"></div>
+            <div style="font-size:10px;color:var(--text2);background:var(--surface);padding:6px 8px;border-radius:4px;margin-top:4px">
+              ⭐ 优先级最高（早于成本止损触发）。需要 TDX 客户端在线，公式命中即止损，不看盈亏。
+            </div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkFormulaSell')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkFormulaSell')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkFormulaSell')" style="display:none">取消</button></div>
+        </div>
       </div>
 
     </div>
@@ -365,6 +417,9 @@ input.invalid~.input-error{display:block}
         <div class="kpi-card" title="所有交易中单笔最大收益率"><div class="kpi-label">最大单笔盈</div><div class="kpi-value" id="kpiBest">--</div></div>
       </div>
     </div>
+
+    <!-- U1 (审计): 旧版引擎结果提示条 -->
+    <div id="legacyEngineWarning" class="legacy-warning" style="display:none"></div>
 
     <!-- 权益曲线 — P2-3: header 加 id -->
     <div class="chart-box full">

@@ -29,6 +29,21 @@ function showToast(msg, type) {
   setTimeout(() => { if (toast.parentNode) toast.remove(); }, 3000);
 }
 
+// ====== U1 (审计): 检测旧版引擎结果并显示黄条警告 ======
+const CURRENT_ENGINE_VERSION = 'signal-day-close';
+function checkEngineVersion(data) {
+  const ev = data && data.engine_version;
+  const banner = document.getElementById('legacyEngineWarning');
+  if (!banner) return;
+  if (!ev || ev !== CURRENT_ENGINE_VERSION) {
+    // 旧版本 (t+1-open) 或未标记
+    banner.textContent = `⚠️ 此回测结果基于 ${ev || '旧版'} 引擎（买入价 = 次日开盘价）。当前默认采用 ${CURRENT_ENGINE_VERSION}（买入价 = 信号日收盘价）。请重跑以反映新口径。`;
+    banner.style.display = 'block';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
 // ====== P1-5: 表单即时校验 ======
 function validateDate(el) {
   const v = el.value.trim();
@@ -92,6 +107,8 @@ const STORAGE_KEY = 'vera_all_config';
 const CONFIG_IDS = [
   'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
   'cfgStart', 'cfgEnd', 'cfgExcludeST',
+  // P-v3.4: ETF 开关
+  'cfgIncludeEtf', 'cfgEtfOnly',
   'cfgCapital', 'cfgCommission', 'cfgSlippage',
   'cfgMinBuy', 'cfgMaxBuy', 'cfgLotSize', 'cfgMinLots',
   'cfgCostStopEn', 'cfgCostStopVal',
@@ -100,6 +117,8 @@ const CONFIG_IDS = [
   'cfgTimeEn', 'cfgTimeVal',
   'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit',
   'cfgFirstDayEn', 'cfgFirstDayTarget',
+  // P-v3.4: 公式卖出 (formula_sell)
+  'cfgFormulaSellEn', 'cfgFormulaSellName', 'cfgFormulaSellRatio',
 ];
 
 function loadConfig() {
@@ -135,6 +154,115 @@ function saveAllConfig() {
   }
 }
 
+// P-v3.4: 行业板块多选 — 单独 localStorage key 存代码数组
+const SECTORS_KEY = 'vera_selected_sectors';
+let _allSectors = [];        // [{code, name}] 全部 128 个板块
+let _selectedSectors = [];   // ["881319.SH", ...] 已选代码
+
+async function loadSectors() {
+  // 从后端拉 128 个板块列表
+  const grid = document.getElementById('sectorGrid');
+  const empty = document.getElementById('sectorEmpty');
+  try {
+    const resp = await fetch('/api/sectors');
+    const result = await resp.json();
+    if (!result.success || !result.sectors || result.sectors.length === 0) {
+      empty.innerHTML = '板块列表加载失败：' + (result.error || '未知错误') + '（请检查通达信客户端）<br><button class="btn btn-sm btn-secondary" onclick="loadSectors()" style="margin-top:6px">重试</button>';
+      empty.style.color = 'var(--up)';
+      return;
+    }
+    _allSectors = result.sectors;
+  } catch (e) {
+    empty.innerHTML = '板块列表加载失败：' + e.message + '<br><button class="btn btn-sm btn-secondary" onclick="loadSectors()" style="margin-top:6px">重试</button>';
+    empty.style.color = 'var(--up)';
+    return;
+  }
+  // 加载成功 — 恢复正常样式
+  empty.style.display = 'none';
+  // 读 localStorage 已选
+  try {
+    _selectedSectors = JSON.parse(localStorage.getItem(SECTORS_KEY) || '[]');
+  } catch (e) { _selectedSectors = []; }
+  renderSectors();
+  updateSectorSummary();
+  toggleUniverseDropdown();
+}
+
+function renderSectors() {
+  const grid = document.getElementById('sectorGrid');
+  const empty = document.getElementById('sectorEmpty');
+  if (_allSectors.length === 0) { empty.textContent = '无板块数据'; return; }
+  empty.style.display = 'none';
+  // 构造 128 个 checkbox item
+  grid.innerHTML = _allSectors.map(s => {
+    const checked = _selectedSectors.includes(s.code) ? 'checked' : '';
+    return '<div class="sector-item" data-name="' + esc(s.name) + '">' +
+      '<input type="checkbox" value="' + esc(s.code) + '" ' + checked + ' onchange="onSectorToggle(this)">' +
+      '<label title="' + esc(s.code) + '">' + esc(s.code) + ' ' + esc(s.name) + '</label>' +
+      '</div>';
+  }).join('');
+}
+
+function filterSectors() {
+  const kw = (document.getElementById('sectorSearch').value || '').trim().toLowerCase();
+  document.querySelectorAll('.sector-item').forEach(item => {
+    const name = (item.dataset.name || '').toLowerCase();
+    item.classList.toggle('hidden', kw && !name.includes(kw));
+  });
+}
+
+function onSectorToggle(cb) {
+  const code = cb.value;
+  if (cb.checked) {
+    if (!_selectedSectors.includes(code)) _selectedSectors.push(code);
+  } else {
+    _selectedSectors = _selectedSectors.filter(c => c !== code);
+  }
+  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
+  updateSectorSummary();
+  toggleUniverseDropdown();
+}
+
+function clearSectors() {
+  _selectedSectors = [];
+  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
+  document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => cb.checked = false);
+  updateSectorSummary();
+  toggleUniverseDropdown();
+}
+
+function updateSectorSummary() {
+  const box = document.getElementById('sectorSelected');
+  if (_selectedSectors.length === 0) { box.innerHTML = '<span style="font-size:10px;color:var(--text2)">未选板块</span>'; return; }
+  // 用代码找名称
+  box.innerHTML = _selectedSectors.map(code => {
+    const s = _allSectors.find(x => x.code === code);
+    const name = s ? s.name : code;
+    return '<span class="sector-tag" onclick="removeSector(\'' + code + '\')" title="点击取消">' +
+      esc(name) + ' <span class="x">×</span></span>';
+  }).join('') + '<span style="font-size:10px;color:var(--text2);align-self:center;margin-left:4px">(' + _selectedSectors.length + ' 个)</span>';
+}
+
+function removeSector(code) {
+  _selectedSectors = _selectedSectors.filter(c => c !== code);
+  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
+  // 同步取消 checkbox
+  const cb = document.querySelector('#sectorGrid input[value="' + code + '"]');
+  if (cb) cb.checked = false;
+  updateSectorSummary();
+  toggleUniverseDropdown();
+}
+
+// 选了板块后, "股票池"下拉框变灰 (板块优先, 下拉框被忽略)
+function toggleUniverseDropdown() {
+  const sel = document.getElementById('cfgUniverse');
+  if (!sel) return;
+  const disabled = _selectedSectors.length > 0;
+  sel.disabled = disabled;
+  sel.title = disabled ? '已选行业板块，下拉框被忽略' : '';
+  sel.style.opacity = disabled ? '0.5' : '1';
+}
+
 // C2 修正：refreshAllSummaries — 所有用户输入经 esc() 转义后再插入 innerHTML
 function refreshAllSummaries() {
   const cs = esc(document.getElementById('cfgCostStopVal').value);
@@ -151,6 +279,13 @@ function refreshAllSummaries() {
   document.getElementById('sumCondTime').innerHTML = '条件时间止盈：持仓 <b>'+cd+'</b> 天后盈利 <b>>='+cp+'%</b> 清仓 <span class="saved-badge saved">已保存</span>';
   const fd = esc(document.getElementById('cfgFirstDayTarget').value);
   document.getElementById('sumFirstDay').innerHTML = '首日未达标卖出：买入次日最高价涨幅未达 <b>'+fd+'%</b> 则收盘卖出 <span class="saved-badge saved">已保存</span>';
+  // P-v3.4: 公式止损 summary
+  const fsEn = document.getElementById('cfgFormulaSellEn').checked;
+  const fsName = esc(document.getElementById('cfgFormulaSellName').value || '卖出XG');
+  const fsRatio = esc(document.getElementById('cfgFormulaSellRatio').value);
+  const fsState = fsEn ? '命中即止损' : '未启用';
+  document.getElementById('sumFormulaSell').innerHTML =
+    '公式止损：<b>['+fsName+']</b> '+fsState+' '+fsRatio+'% <span class="saved-badge saved">已保存</span>';
 }
 
 // P1-1: toggleEdit 加快照 guard + 编辑时隐藏编辑按钮
@@ -240,6 +375,9 @@ async function resetDefaults() {
     };
     const checkboxMapping = {
       cfgExcludeST: cfg.selection?.universe?.exclude_st,
+      // P-v3.4: ETF 开关
+      cfgIncludeEtf: cfg.selection?.universe?.include_etf,
+      cfgEtfOnly: cfg.selection?.universe?.etf_only,
       cfgCostStopEn: cfg.stop_loss?.cost_stop?.enabled,
       cfgTrailingEn: cfg.stop_loss?.trailing_stop?.enabled,
       cfgLadderEn: cfg.stop_loss?.ladder_tp?.enabled,
@@ -260,6 +398,14 @@ async function resetDefaults() {
       // checkbox 无需 fallback，保持当前状态即可
     }
     localStorage.removeItem(STORAGE_KEY);
+    // P-v3.4: 恢复默认时清空板块勾选
+    try { localStorage.removeItem(SECTORS_KEY); } catch(e) {}
+    _selectedSectors = [];
+    if (_allSectors.length > 0) {
+      document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => cb.checked = false);
+      updateSectorSummary();
+      toggleUniverseDropdown();
+    }
     refreshAllSummaries();
     showToast('已恢复默认配置', 'ok');
   } catch(e) {
@@ -339,6 +485,11 @@ function runPipeline() {
     strategy_name: '',
     formula_name: getVal('cfgFormula'), formula_arg: getVal('cfgFormulaArg'),
     universe_type: getVal('cfgUniverse'), exclude_st: document.getElementById('cfgExcludeST').checked,
+    // P-v3.4: ETF 开关 — 仅ETF 优先于 包含ETF (后端 selector 同款逻辑)
+    include_etf: document.getElementById('cfgIncludeEtf').checked,
+    etf_only: document.getElementById('cfgEtfOnly').checked,
+    // P-v3.4: 行业板块代码 (逗号分隔字符串, 跟 ladder_levels 同风格)
+    sectors: _selectedSectors.join(','),
     start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
     period: getVal('cfgPeriod'), dividend_type: 1,
     initial_capital: safeFloat('cfgCapital'),
@@ -360,6 +511,10 @@ function runPipeline() {
     cond_time_profit: safeFloat('cfgCondTimeProfit') / 100,
     first_day_enabled: document.getElementById('cfgFirstDayEn').checked,
     first_day_target: safeFloat('cfgFirstDayTarget') / 100,
+    // P-v3.4: 公式卖出 — 钳位 [0, 100] 防呆
+    formula_sell_enabled: document.getElementById('cfgFormulaSellEn').checked,
+    formula_sell_name: document.getElementById('cfgFormulaSellName').value.trim(),
+    formula_sell_ratio: Math.max(0, Math.min(100, safeFloat('cfgFormulaSellRatio'))) / 100,
     benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
   };
 
@@ -402,6 +557,7 @@ function runPipeline() {
       addLog('回测完成: '+data.trade_count+'笔交易', 'ok');
       lastResult = data;
       renderAllCharts(data);
+      checkEngineVersion(data);
     })
     .catch(e => {
       clearTimeout(timeout);
@@ -495,7 +651,7 @@ function renderAllCharts(data) {
         });
         return s;
       }},
-      legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
+      legend: { top: 0, textStyle: { color: c.text, fontSize: 10 } },
       // P2-1: 加 dataZoom 缩放
       dataZoom: [
         { type: 'inside', xAxisIndex: 0, start: 0, end: 100 },
@@ -503,7 +659,7 @@ function renderAllCharts(data) {
           borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
           textStyle: { color: c.text2, fontSize: 9 } },
       ],
-      grid: { left: 60, right: 70, top: 15, bottom: 70 },
+      grid: { left: 60, right: 70, top: 35, bottom: 60 },
       xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
       yAxis: [
         { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
@@ -581,7 +737,7 @@ function renderAllCharts(data) {
 
     // 退出原因分布 — P2-2: 饼图颜色跟随主题
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标' };
+    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损', '退市': '退市' };
     const reasonCount = {};
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
@@ -591,13 +747,28 @@ function renderAllCharts(data) {
       });
     });
     const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
-    const pieColors = [c.up, c.warn, c.down, c.accent2, c.accent, c.text2];
+    // P-v3.4 修复: 每种 reason 固定颜色 (不再按 index 循环), 移动止损用橙色避免撞背景
+    const reasonColorMap = {
+      '成本止损': c.up,        // 红 (亏损)
+      '移动止损': c.warn,      // 橙 (亏损) — 原来撞背景, 改醒目橙
+      '移动止盈': c.down,      // 绿 (盈利)
+      '阶梯止盈': c.accent,    // 蓝 (盈利)
+      '时间止损': c.accent2,   // 紫 (亏损)
+      '时间止盈': 'color-mix(in srgb, ' + c.down + ' 50%, ' + c.accent + ')',
+      '条件时间止盈': 'color-mix(in srgb, ' + c.accent2 + ' 50%, ' + c.warn + ')',
+      '换股卖出': 'color-mix(in srgb, ' + c.up + ' 50%, ' + c.accent2 + ')',
+      '首日未达标': 'color-mix(in srgb, ' + c.warn + ' 50%, ' + c.text + ')',
+      '公式止损': 'color-mix(in srgb, ' + c.accent + ' 50%, ' + c.up + ')',
+      '退市': c.text2,
+    };
     chart2.setOption({
       tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
       legend: { bottom: 0, textStyle: { color: c.text, fontSize: 10 } },
-      series: [{ type: 'pie', radius: ['35%','60%'], center: ['50%','45%'], data: pieData,
-        label: { color: c.text, fontSize: 10, formatter: '{b}\n{d}%' },
-        itemStyle: { color: params => pieColors[params.dataIndex % pieColors.length] } }],
+      series: [{ type: 'pie', radius: ['35%','60%'], center: ['50%','45%'], data: pieData.map(d => ({
+        ...d,
+        itemStyle: { color: reasonColorMap[d.name] || c.text2, borderColor: c.bg, borderWidth: 2 },
+      })),
+        label: { color: c.text, fontSize: 10, formatter: '{b}\n{d}%' } }],
     }, true);
 
     // 持仓天数分布
@@ -664,8 +835,10 @@ const reasonDetail = {
   'cond_time_stop': '条件时间止盈 — 持仓N天后盈利达标，全仓卖出',
   '首日未达标': '首日未达标 — 买入次日最高价涨幅未达目标，收盘强制卖出',
   '换股卖出': '换股卖出 — 同一股票出现新买入信号，替换旧持仓',
+  // P-v3.4: 公式卖出
+  'formula_sell': '公式止损 — TDX 公式信号命中，按比例止损（不看盈亏，最高优先级）',
 };
-const reasonShortMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标' };
+const reasonShortMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
 
 function fmtReasonShort(r) {
   if (!r) return '—';
@@ -711,6 +884,24 @@ function renderTradeTable(trades) {
       '<td style="font-size:10px;max-width:120px" title="'+reasonFull+'">'+reasonShort+'</td></tr>';
   }).join('');
   document.getElementById('tradeFiltered').textContent = '显示 ' + trades.length + ' / ' + allTrades.length + ' 笔';
+  // P-v3.4: 动态补 "退出原因" 下拉选项 — 让 formula_sell 等新 reason 可被筛出
+  const reasonSelect = document.getElementById('tradeReason');
+  if (reasonSelect) {
+    const existing = Array.from(reasonSelect.options).map(o => o.value);
+    const seenReasons = new Set();
+    allTrades.forEach(t => {
+      if (!t.exit_reason) return;
+      t.exit_reason.split('+').forEach(r => { if (r) seenReasons.add(r); });
+    });
+    seenReasons.forEach(r => {
+      if (!existing.includes(r)) {
+        const opt = document.createElement('option');
+        opt.value = r;
+        opt.textContent = reasonShortMap[r] || r;
+        reasonSelect.appendChild(opt);
+      }
+    });
+  }
 }
 
 // P4-1: 筛选逻辑
@@ -719,7 +910,7 @@ function filterTrades() {
   const search = (document.getElementById('tradeSearch').value || '').toLowerCase();
   const filter = document.getElementById('tradeFilter').value;
   const reason = document.getElementById('tradeReason').value;
-  const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标' };
+  const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
   const filtered = allTrades.filter(t => {
     const pnl = (t.profit_pct || t.return || 0) * 100;
     if (search) {
@@ -741,6 +932,7 @@ function filterTrades() {
 // ====== Init ======
 document.getElementById('statusDot').className = 'status-dot on';
 loadConfig();
+loadSectors();   // P-v3.4: 加载行业板块列表
 addLog('前端就绪，等待执行回测', 'info');
 
 // 加载历史回测列表
@@ -770,6 +962,7 @@ function loadHistory(id) {
       document.getElementById('tradeTableBox').style.display = '';
       document.getElementById('tradeCount').textContent = '(历史 '+data.trade_count+' 笔)';
       renderAllCharts(data);
+      checkEngineVersion(data);
       addLog('已加载历史回测 ('+data.trade_count+'笔)', 'ok');
     }
   }).catch(e => addLog('加载失败: '+e.message, 'error'));

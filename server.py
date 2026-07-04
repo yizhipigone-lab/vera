@@ -70,6 +70,11 @@ class StrategyConfig(BaseModel):
     first_day_enabled: bool = False
     first_day_target: Optional[float] = None
     benchmark_indices: str = "shanghai,hs300,zz500,chuangyeban,kechuang50,zhongzhengA500"
+    # P-v3.4: ETF 开关 (混合选股 / 仅ETF)
+    include_etf: bool = False
+    etf_only: bool = False
+    # P-v3.4: 行业板块 (逗号分隔代码, 如 "881319.SH,881326.SH")
+    sectors: str = ""
 
     def get(self, key: str, default=None):
         """安全获取字段值，None 时返回默认值。"""
@@ -126,7 +131,15 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
         "selection": {
             "formula_name": cfg.formula_name,
             "formula_arg": cfg.formula_arg,
-            "universe": {"type": cfg.universe_type, "exclude_st": cfg.exclude_st},
+            "universe": {
+                "type": cfg.universe_type,
+                "exclude_st": cfg.exclude_st,
+                # P-v3.4: ETF 开关
+                "include_etf": bool(getattr(cfg, "include_etf", False)),
+                "etf_only": bool(getattr(cfg, "etf_only", False)),
+                # P-v3.4: 行业板块代码列表 (逗号分隔字符串 → list)
+                "sectors": [s.strip() for s in str(getattr(cfg, "sectors", "") or "").split(",") if s.strip()],
+            },
             "period": sel_period,
             "dividend_type": cfg.dividend_type,
         },
@@ -151,6 +164,14 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},
             "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.get("cond_time_days", 7), "profit": cfg.get("cond_time_profit", 0.01)},
             "first_day": {"enabled": cfg.first_day_enabled, "target": cfg.get("first_day_target", 0.03)},
+            # P-v3.4: 公式卖出 (formula_sell) — 前端配置透传到 engine.run(stop_config=...)
+            "formula_sell": {
+                "enabled": bool(cfg.get("formula_sell_enabled", False)),
+                "formula_name": str(cfg.get("formula_sell_name", "")),
+                "formula_arg": "",
+                "sell_ratio": float(cfg.get("formula_sell_ratio", 1.0)),
+                "priority": 0,
+            },
         },
         "benchmark": {"indices": [s.strip() for s in cfg.benchmark_indices.split(",") if s.strip()]},
     }
@@ -164,6 +185,18 @@ async def get_default_config():
         return {"success": True, "config": cfg}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/sectors")
+async def get_sectors():
+    """P-v3.4: 获取 128 个细分行业板块列表 (list_type=11), 带进程级缓存."""
+    try:
+        from core.data_fetcher import DataFetcher
+        sectors = DataFetcher.get_sector_list()
+        return {"success": True, "count": len(sectors), "sectors": sectors}
+    except Exception as e:
+        logger.error(f"获取行业板块列表失败: {e}")
+        return {"success": False, "error": str(e), "sectors": [], "count": 0}
 
 
 @app.post("/api/config/validate")
@@ -310,21 +343,13 @@ def run_pipeline(cfg: StrategyConfig):
             date_range=date_range,
         )
 
-        # 准备返回数据
+        # P3-2 加速: 报告已生成即通知前端(95%), 序列化+写盘不挡轮询
+        pipeline_status.progress = 95
+        pipeline_status.step = "准备返回数据"
+
         metrics = backtest_result.get("metrics", {})
         trades = backtest_result.get("trades", pd.DataFrame())
         equity_curve = backtest_result.get("equity_curve", pd.DataFrame())
-
-        # 获取股票简称映射
-        stock_names = {}
-        try:
-            from tqcenter import tq
-            raw = tq.get_stock_list("50", list_type=1)
-            for s in raw:
-                if isinstance(s, dict) and s.get("Code"):
-                    stock_names[s["Code"]] = s.get("Name", "")
-        except Exception:
-            pass
 
         # 序列化 (处理 NaN/Inf)
         def safe_serialize(obj):
@@ -356,16 +381,16 @@ def run_pipeline(cfg: StrategyConfig):
                     "drawdown": safe_serialize(row.get("drawdown", 0)),
                 })
 
+        # P3-2 加速: trades 序列化 — iterrows 5180 行极慢, 改 to_dict + 批量处理
         trades_data = []
         if not trades.empty:
-            for _, row in trades.iterrows():
-                d = {}
-                for col in trades.columns:
-                    d[col] = safe_serialize(row[col])
-                # 补充股票简称
+            trades_data = trades.to_dict(orient="records")
+            for d in trades_data:
+                for k, v in list(d.items()):
+                    d[k] = safe_serialize(v)
+                # 补充股票简称 — 用代码本身当名称（不再额外调 TDX 拉 5200 只简称）
                 code = d.get("stock_code", "")
-                d["stock_name"] = stock_names.get(code, code)
-                trades_data.append(d)
+                d["stock_name"] = code
 
         benchmark_data = {}
         for name, bm_df in benchmark_results.items():
@@ -407,7 +432,13 @@ def run_pipeline(cfg: StrategyConfig):
                 "id": ts, "time": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "formula": cfg.formula_name, "date_range": f"{cfg.start_time}~{cfg.end_time}",
                 "trade_count": len(trades), "cumulative_return": metrics_clean.get("cumulative_return", 0),
+                # F2 回归保护: 标记买入语义 (signal-day-close: 信号日收盘价 / t+1-open: 已废止)
+                "engine_version": "signal-day-close", "entry_price_basis": "close_on_signal_day",
             }
+            # data 顶层也加一份, 前端 fetch response 直接读到
+            if isinstance(response_data, dict):
+                response_data["engine_version"] = "signal-day-close"
+                response_data["entry_price_basis"] = "close_on_signal_day"
             with open(result_path, "w", encoding="utf-8") as f:
                 _json.dump({"meta": meta, "data": response_data}, f, ensure_ascii=False, default=str)
             # 更新索引

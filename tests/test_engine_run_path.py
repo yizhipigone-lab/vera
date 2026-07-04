@@ -52,11 +52,17 @@ class TestSimulateCoreV3Signature:
         required_keywords = [
             'first_day_enabled', 'first_day_target', 'first_day_n_bars',
             'slippage', 'stamp_tax', 'high_np', 'low_np', 'bpday',
+            # P-v3.4: 公式卖出 (formula_sell) 新增的 3 个 keyword
+            'formula_exit_np', 'formula_exit_ratio', 'formula_exit_lag_bars',
         ]
         for kw in required_keywords:
             assert kw in sig.parameters, (
                 f"_simulate_core_v3 缺少关键字参数 [{kw}]. "
                 f"如需重命名, 请同步更新两个调用点."
+            )
+            p = sig.parameters[kw]
+            assert p.default != inspect.Parameter.empty, (
+                f"{kw} 必须有默认值 (默认 None/1.0/1), 否则调用方被强制要求传."
             )
 
     def test_slippage_and_stamp_tax_have_defaults(self):
@@ -67,6 +73,13 @@ class TestSimulateCoreV3Signature:
             assert p.default != inspect.Parameter.empty, (
                 f"{kw} 必须有默认值, 否则 engine 调用方会被强制要求传."
             )
+
+    def test_formula_exit_new_params_have_safe_defaults(self):
+        """P-v3.4: formula_exit_* 三个新参数的默认值必须保证"不启用"语义"""
+        sig = inspect.signature(_simulate_core_v3)
+        assert sig.parameters['formula_exit_np'].default is None, "formula_exit_np 默认应 None (不启用)"
+        assert sig.parameters['formula_exit_ratio'].default == 1.0, "formula_exit_ratio 默认 1.0"
+        assert sig.parameters['formula_exit_lag_bars'].default == 1, "formula_exit_lag_bars 默认 1 (T+1)"
 
 
 # === 2. _simulate_core_v3 直接调用契约测试 ===
@@ -145,6 +158,80 @@ class TestSimulateCoreV3DirectCall:
         assert equity_arr[-1] > 0  # 净值是正数
         # 验证 raw_trades 是 numpy array (空数组也算合法)
         assert isinstance(raw_trades, np.ndarray)
+
+    def test_entry_uses_signal_day_close_not_next_day_open(self):
+        """【HIGH-T1 回归锁】 信号日收盘价买入: entry_bar == 信号日,
+        不允许未来又改回 T+1 次日开盘买入."""
+        # 固定低价 (5 元/股), max_buy=5000 能买 1000 股, 开 time_stop=3 强制平仓拿到 1 笔 trade
+        n_dates, n_stocks = 20, 1
+        dates = pd.bdate_range('2024-01-02', periods=n_dates)
+        columns = ['600519.SH']
+        close = pd.DataFrame(np.full((n_dates, n_stocks), 5.0), index=dates, columns=columns)
+        high = close * 1.02; low = close * 0.98
+        entries = pd.DataFrame(False, index=dates, columns=close.columns)
+        entries.iloc[5, 0] = True  # 信号日 = bar 5
+
+        _, raw_trades = _simulate_core_v3(
+            price_np=close.values.astype(np.float64),
+            entry_np=entries.values,
+            initial_capital=100_000.0,
+            commission=0.0003,
+            min_buy_amount=1000.0,
+            max_buy_amount=5000.0,
+            lot_size=100,
+            min_lots=1,
+            cost_stop_enabled=False, cost_stop_threshold=-0.30,
+            trailing_enabled=False, trailing_activation=0.05, trailing_drawdown=0.03,
+            ladder_enabled=False, ladder_profits=np.array([]), ladder_ratios=np.array([]), n_ladder=0,
+            # time_stop 强制 3 天后平仓 → 保证 raw_trades 至少 1 笔
+            time_enabled=True, max_hold_days=3,
+            cond_time_enabled=False, cond_time_days=9999, cond_time_profit=0.99,
+            first_day_enabled=False, first_day_target=0.99, first_day_n_bars=1,
+            high_np=high.values.astype(np.float64),
+            low_np=low.values.astype(np.float64),
+            bpday=1,
+            slippage=0.0, stamp_tax=0.0,
+        )
+        assert len(raw_trades) >= 1, "应至少 1 笔交易 (time_stop 强制平仓)"
+        entry_bar = int(raw_trades[0][1])
+        assert entry_bar == 5, (
+            f"违反 F1 原则: 买入 bar 必须=信号日 (5). 实际 {entry_bar}. "
+            f"如非 5, 说明有人把代码改回了 T+1 次日开盘买入."
+        )
+
+    def test_signal_day_suspended_skip_buy(self):
+        """【F1 + T1】信号日停牌 → 必须 skip, 不能用 ffill 假价成交."""
+        n_dates, n_stocks = 20, 1
+        dates = pd.bdate_range('2024-01-02', periods=n_dates)
+        columns = ['600519.SH']
+        close = pd.DataFrame(np.full((n_dates, n_stocks), 5.0), index=dates, columns=columns)
+        high = close * 1.02; low = close * 0.98
+        entries = pd.DataFrame(False, index=dates, columns=close.columns)
+        entries.iloc[5, 0] = True
+        # tradable_np: bar 5 这只股票停牌
+        tradable = np.ones((n_dates, n_stocks), dtype=bool)
+        tradable[5, 0] = False
+
+        _, raw_trades = _simulate_core_v3(
+            price_np=close.values.astype(np.float64),
+            entry_np=entries.values,
+            initial_capital=100_000.0, commission=0.0003,
+            min_buy_amount=1000.0, max_buy_amount=5000.0,
+            lot_size=100, min_lots=1,
+            cost_stop_enabled=False, cost_stop_threshold=-0.30,
+            trailing_enabled=False, trailing_activation=0.05, trailing_drawdown=0.03,
+            ladder_enabled=False, ladder_profits=np.array([]), ladder_ratios=np.array([]), n_ladder=0,
+            time_enabled=True, max_hold_days=3,  # 同上, 让正常情况有 trade; 停牌时无
+            cond_time_enabled=False, cond_time_days=9999, cond_time_profit=0.99,
+            first_day_enabled=False, first_day_target=0.99, first_day_n_bars=1,
+            high_np=high.values.astype(np.float64),
+            low_np=low.values.astype(np.float64),
+            tradable_np=tradable,
+            bpday=1, slippage=0.0, stamp_tax=0.0,
+        )
+        assert len(raw_trades) == 0, (
+            f"信号日停牌必须 skip, 不能用 ffill 假价成交. 实际有 {len(raw_trades)} 笔"
+        )
 
     def test_call_without_slippage_stamp_tax_uses_defaults(self):
         """slippage/stamp_tax 走默认值 (不传) 必须能跑, 默认 slippage=0/stamp_tax=0"""
