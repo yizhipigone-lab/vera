@@ -1,0 +1,34 @@
+# 黑马起步 / 日线 / 创业板 / 2019-06-01 至今
+# 2026-07-10: 用户回测请求。止损/资金继承 default.yaml (trailing_first 等)。
+# 日线已诊断验证: count=3000 覆盖全 7 年, 黑马起步公式存在 (5只样板7年34条信号)。
+
+strategy:
+  name: "黑马起步_日线_创业板_2019至今"
+  version: "1.0.0"
+  description: "黑马起步 TDX条件选股 日线 创业板 2019-06-01~2026-07-10"
+
+selection:
+  formula_name: "黑马起步"
+  formula_arg: ""               # 公式无显式参数 (诊断时空 arg 正常返回信号)
+  universe:
+    type: "51"                  # 创业板 (~1300 只)
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1              # 前复权
+
+time_range:
+  start: "20190601"
+  end: "20260710"
+
+backtest:
+  initial_capital: 1000000.0
+  position_sizing:
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
+
+benchmark:
+  indices:
+    - "chuangyeban"
+    - "shanghai"
