@@ -25,6 +25,7 @@ def load_stop_config(default_path: Optional[str] = None) -> Dict[str, Any]:
     Returns:
         dict 形如:
         {
+          'priority':      'trailing_first' | 'ladder_tp_first' | 'stop_first',  # 2026-07-05: 优先级
           'cost_stop':     {'enabled': True, 'threshold': -0.12},
           'trailing_stop': {'enabled': True, 'activation': 0.08, 'drawdown': 0.05},
           'ladder_tp': {
@@ -72,6 +73,14 @@ def load_stop_config_or_default() -> Dict[str, Any]:
             'time_stop':      {'enabled': True, 'max_hold_days': 20},
             'cond_time_stop': {'enabled': False},
             'first_day':      {'enabled': False},
+            # P-v3.4: 公式卖出兜底 (默认关, 安全优先)
+            'formula_sell': {
+                'enabled': False,
+                'formula_name': '',
+                'formula_arg': '',
+                'sell_ratio': 1.0,
+                'priority': 0,
+            },
         }
 
 

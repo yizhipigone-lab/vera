@@ -52,15 +52,46 @@ class StockSelector:
             stocks = u.get("stocks", [])
             return normalize_list(stocks)
 
-        # 预定义类型映射
-        list_type = UNIVERSE_TYPE_MAP.get(str(utype), utype)
-        stocks = DataFetcher.get_stock_universe(list_type)
+        # P-v3.4: ETF 开关 — 仅ETF 优先于 包含ETF
+        #   list_type='31' = ETF 基金 (TDX 原生分类, 天然含 51/56/58/511, 排除 501/508 LOF)
+        etf_only = bool(u.get("etf_only", False))
+        include_etf = bool(u.get("include_etf", False))
+        # P-v3.4: 行业板块 (可多选, 代码列表) — 与 ETF 开关叠加
+        sectors = u.get("sectors", []) or []
+
+        if etf_only:
+            # 仅 ETF 池 (优先级最高, 忽略 sectors)
+            stocks = DataFetcher.get_stock_universe("31")
+            logger.info(f"仅ETF模式: list_type=31, 拉到 {len(stocks)} 只 ETF")
+        elif sectors:
+            # 选了行业板块 — 拉每个板块成份股并集
+            stocks = []
+            for i, code in enumerate(sectors):
+                sector_stocks = DataFetcher.get_sector_stocks(code)
+                logger.info(f"拉取板块成份股 [{i+1}/{len(sectors)}]: {code} ({len(sector_stocks)} 只)")
+                stocks.extend(sector_stocks)
+            stocks = list(set(stocks))  # 并集去重
+            logger.info(f"板块并集: {len(stocks)} 只 (来自 {len(sectors)} 个板块)")
+            # ETF 叠加
+            if include_etf:
+                etf_stocks = DataFetcher.get_stock_universe("31")
+                stocks = list(set(stocks) | set(etf_stocks))
+                logger.info(f"叠加 ETF: {len(stocks)} 只")
+        else:
+            # A股池 (下拉框)
+            list_type = UNIVERSE_TYPE_MAP.get(str(utype), utype)
+            stocks = DataFetcher.get_stock_universe(list_type)
+            if include_etf:
+                etf_stocks = DataFetcher.get_stock_universe("31")
+                stocks = list(set(stocks) | set(etf_stocks))
+                logger.info(f"包含ETF模式: A股 + ETF → 合并 {len(stocks)}")
 
         if not stocks:
             logger.warning(f"股票池 {utype} 返回空，请检查 TDX 客户端数据")
             return []
 
         # 过滤 ST / 退市 / 港股（P0-3: 改用 TDX IsSTGP 真实判定，原字符串过滤对纯代码恒 True）
+        # 注: ETF 的 IsSTGP=0, 不会被误删; ST 过滤保持现状
         if u.get("exclude_st", False):
             before = len(stocks)
             stocks, excluded = filter_stocks(stocks)
@@ -73,7 +104,8 @@ class StockSelector:
             logger.warning(f"exclude_new_listings_days={exclude_new} "
                            "— TDX get_stock_list 暂不支持按上市天数过滤，此选项被忽略")
 
-        logger.info(f"解析股票池: {len(stocks)} 只股票 (type={utype})")
+        mode = "仅ETF" if etf_only else ("板块" + ("+ETF" if include_etf and sectors else "") if sectors else ("A股+ETF" if include_etf else "A股"))
+        logger.info(f"解析股票池: {len(stocks)} 只股票 (type={utype}, mode={mode})")
         return normalize_list(stocks)
 
     def run(

@@ -4,10 +4,12 @@
 
     1. 成本止损    — Low触及止损线，全仓卖出
     2. 阶梯止盈    — High触及 Z₁%→卖P₁%, Z₂%→卖P₂%, ...（分批）
-    3. 移动止损    — 最高High盈利>激活% 且 Low回撤≥Y%，全仓卖出
+    3. 移动止损    — High盈利>激活% 且 盘中Low触及回撤线, 按回撤线价全仓卖出 (2026-07-05 v3)
     4. 时间止盈    — 持仓天数 ≥ N 天，全仓卖出
 
-优先级：成本 > 阶梯 > 移动 > 时间（成本止损为最高安全优先级，阶梯为主动止盈策略）。
+默认优先级 (priority=stop_first, 历史): 成本止损 > 阶梯止盈 > 移动 > 时间 (成本止损为最高安全优先级, 阶梯为主动止盈策略)
+priority=ladder_tp_first 模式: 阶梯止盈 > 成本止损 > 移动 > 时间
+  (详见 config/default.yaml['stop_loss']['priority'] 与 StopManager.ladder_tp_first)
 退出原因记录所有触发的条件，以 + 连接（如 cost_stop+trailing_stop）。
 
 所有参数从配置读取，无需修改代码。
@@ -24,6 +26,7 @@ logger = get_logger(__name__)
 
 
 class StopPriority(IntEnum):
+    FORMULA_SELL = 0    # 最高优先级 (P-v3.4: 公式卖出)
     COST_STOP = 1
     TRAILING_STOP = 2
     LADDER_TP = 3
@@ -31,6 +34,7 @@ class StopPriority(IntEnum):
 
 
 class ExitReason:
+    FORMULA_SELL = "formula_sell"   # P-v3.4
     COST_STOP = "cost_stop"
     TRAILING_STOP = "trailing_stop"
     LADDER_TP = "ladder_tp"
@@ -92,12 +96,29 @@ class StopManager:
         self.time_enabled = time_cfg.get("enabled", True)
         self.max_hold_days = time_cfg.get("max_hold_days", 20)
 
+        # P-v3.4: 公式卖出 (formula_sell) — TDX 信号驱动, 最高优先级
+        fs_cfg = config.get("formula_sell", {})
+        self.formula_sell_enabled = bool(fs_cfg.get("enabled", False))
+        self.formula_sell_ratio = float(fs_cfg.get("sell_ratio", 1.0))
+        self.formula_sell_priority = int(fs_cfg.get("priority", 0))
+        self.formula_sell_formula_name = str(fs_cfg.get("formula_name", ""))
+
+        # 2026-07-05: 优先级 (与 engine._simulate_core_v3 保持一致)
+        #   ladder_tp_first=True   → ladder_tp 先于 cost_stop
+        #   trailing_first=True    → ladder_tp > trailing > cost_stop
+        #   stop_first (默认)      → cost_stop > ladder_tp > trailing
+        # 仅影响 best_reason 标签选择, 不影响成交价 (成交决策由 engine 完成)
+        self.ladder_tp_first = (str(config.get("priority", "stop_first")) == "ladder_tp_first")
+        self.trailing_first = (str(config.get("priority", "stop_first")) == "trailing_first")
+
     def compute_exit_signals(
         self,
         close_prices: pd.DataFrame,
         entry_signals: pd.DataFrame,
         high_prices: Optional[pd.DataFrame] = None,
         low_prices: Optional[pd.DataFrame] = None,
+        *,
+        formula_exit_np: Optional[np.ndarray] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         计算每只股票每天的卖出信号。
@@ -107,6 +128,7 @@ class StopManager:
             entry_signals: 买入信号 DataFrame，index=日期, columns=股票代码，True=买入
             high_prices: 最高价 DataFrame（可选，用于检测日内触发）
             low_prices: 最低价 DataFrame（可选，用于检测日内触发）
+            formula_exit_np: P-v3.4 公式卖出矩阵，shape (n_dates, n_stocks), dtype=bool
 
         Returns:
             (exit_signals, exit_info):
@@ -119,6 +141,22 @@ class StopManager:
         n_dates, n_stocks = close.shape
         exit_signal = pd.DataFrame(False, index=close.index, columns=close.columns)
         exit_records = []
+
+        # P-v3.4: 公式卖出矩阵可能与 close.columns 数量不一致, 强制对齐 (找不到的列视为无信号)
+        formula_exit_aligned = None
+        if formula_exit_np is not None:
+            try:
+                # 用列名匹配重索引
+                if formula_exit_np.shape[0] == n_dates:
+                    formula_exit_aligned = formula_exit_np
+                else:
+                    logger.warning(
+                        "formula_exit_np 行数 (%d) 与 close 行数 (%d) 不匹配, 跳过",
+                        formula_exit_np.shape[0], n_dates,
+                    )
+            except Exception as e:
+                logger.warning("formula_exit_np 对齐失败, 跳过: %s", e)
+                formula_exit_aligned = None
 
         for col_idx, stock_code in enumerate(close.columns):
             price_arr = close.iloc[:, col_idx].values
@@ -135,6 +173,7 @@ class StopManager:
             exits, records = self._compute_single_stock(
                 stock_code, price_arr, entry_arr, close.index,
                 high_arr=high_arr, low_arr=low_arr,
+                formula_exit_arr=formula_exit_aligned, code_idx=col_idx,
             )
             exit_signal.iloc[:, col_idx] = exits
             exit_records.extend(records)
@@ -154,6 +193,8 @@ class StopManager:
         date_index: pd.DatetimeIndex,
         high_arr: Optional[np.ndarray] = None,
         low_arr: Optional[np.ndarray] = None,
+        formula_exit_arr: Optional[np.ndarray] = None,    # P-v3.4: 公式卖出矩阵
+        code_idx: int = -1,                                # P-v3.4: 公式卖出矩阵的列索引
     ) -> Tuple[np.ndarray, list]:
         """单只股票的止损止盈计算。"""
         n = len(prices)
@@ -206,6 +247,15 @@ class StopManager:
                 # 收集所有触发的条件
                 triggered = []  # (reason, sell_ratio)
 
+                # P-v3.4: 公式卖出 (formula_sell) — 最高优先级, 早于 cost_stop
+                # 注意: 这里是 StopManager "标签层", 实际决策由 _simulate_core_v3 完成
+                # 这里仅作为 fallback 标签路径, 与主循环结果一致 (reason=12)
+                if (formula_exit_arr is not None
+                        and 0 <= code_idx < formula_exit_arr.shape[1]
+                        and 0 <= i < formula_exit_arr.shape[0]
+                        and bool(formula_exit_arr[i, code_idx])):
+                    triggered.append((ExitReason.FORMULA_SELL, self.formula_sell_ratio))
+
                 # 成本止损：检查Low是否跌破止损线（最高优先级）
                 if self.cost_stop_enabled and lo_profit <= self.cost_stop_threshold:
                     triggered.append((ExitReason.COST_STOP, 1.0))
@@ -222,10 +272,12 @@ class StopManager:
                                 triggered.append((ExitReason.LADDER_TP, ratio))
                                 remaining_ratio -= ratio
 
-                # 移动止损: 基于实际最高价峰值，Close回撤触发（次级保护）
+                # 移动止损/止盈 (2026-07-05 v3): 盘中 Low 触及回撤线即触发 (与 engine 同步)
+                #   旧: Close 回撤检测 (drawdown_pct = (Close - peak_hi)/peak_hi)
+                #   新: Low 触及回撤线 (bar_low <= peak_hi * (1-drawdown))
                 if self.trailing_enabled and peak_hi_profit >= self.trailing_activation:
-                    drawdown_pct = (current_price - highest_hi) / highest_hi
-                    if drawdown_pct <= -self.trailing_drawdown:
+                    trail_line = highest_hi * (1.0 - self.trailing_drawdown)
+                    if bar_low <= trail_line:
                         triggered.append((ExitReason.TRAILING_STOP, 1.0))
 
                 # 时间止盈
@@ -236,7 +288,24 @@ class StopManager:
 
                 # 取最大卖出比例作为最终操作
                 if triggered:
-                    best_reason, best_ratio = max(triggered, key=lambda x: x[1])
+                    # 2026-07-05: 三档 priority 的 best_reason 选择 (与 engine 优先级一致)
+                    #   trailing_first  → 优先 TRAILING_STOP
+                    #   ladder_tp_first → 优先 LADDER_TP
+                    #   stop_first      → 按 max sell_ratio (cost_stop ratio=1.0 通常赢)
+                    if self.trailing_first:
+                        trail_hits = [t for t in triggered if t[0] == ExitReason.TRAILING_STOP]
+                        if trail_hits:
+                            best_reason, best_ratio = trail_hits[0]
+                        else:
+                            best_reason, best_ratio = max(triggered, key=lambda x: x[1])
+                    elif self.ladder_tp_first:
+                        ladder_hits = [t for t in triggered if t[0] == ExitReason.LADDER_TP]
+                        if ladder_hits:
+                            best_reason, best_ratio = ladder_hits[0]
+                        else:
+                            best_reason, best_ratio = max(triggered, key=lambda x: x[1])
+                    else:
+                        best_reason, best_ratio = max(triggered, key=lambda x: x[1])
                     all_reasons = "+".join(r for r, _ in triggered)
                     exits[i] = True
 
@@ -277,7 +346,14 @@ class StopManager:
             )
             lines.append(f"阶梯止盈: {levels_str}（High触发, ladder_price执行）")
         if self.trailing_enabled:
-            lines.append(f"移动止损: 盈利{self.trailing_activation:.1%}激活, 回撤{self.trailing_drawdown:.1%}（High激活, Close回撤）")
+            lines.append(f"移动止损: 盈利{self.trailing_activation:.1%}激活, 盘中Low触及回撤{self.trailing_drawdown:.1%}线即按回撤线价成交")
         if self.time_enabled:
             lines.append(f"时间止损: {self.max_hold_days}天（Close执行）")
+        # P-v3.4: 公式卖出
+        if self.formula_sell_enabled:
+            fname = self.formula_sell_formula_name or "?(未配置公式名)"
+            lines.append(
+                f"公式卖出: [{fname}] 命中即卖{self.formula_sell_ratio:.0%} "
+                f"（优先级 #{self.formula_sell_priority}，最高=0）"
+            )
         return "\n".join(lines)

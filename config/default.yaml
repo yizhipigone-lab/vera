@@ -20,6 +20,9 @@ selection:
     type: "50"                  # 沪深A股
     exclude_st: true
     exclude_new_listings_days: 60
+    include_etf: false          # P-v3.4: A股 + ETF 混合 (list_type=31)
+    etf_only: false             # P-v3.4: 仅 ETF (list_type=31, 含 51/56/58/511, 排除 501/508)
+    sectors: []                 # P-v3.4: 行业板块代码列表 (list_type=11), 如 ["881319.SH"]
   period: "1d"
   dividend_type: 1              # 前复权
 
@@ -44,13 +47,20 @@ backtest:
 
 # === Stop-Profit / Stop-Loss ===
 stop_loss:
+  # 2026-07-05: 优先级 (一个 BAR 内同 bar 双触发时谁先赢)
+  #   stop_first      = cost_stop > ladder_tp > trailing > time (历史默认, 止损优先)
+  #   ladder_tp_first = ladder_tp > cost_stop > trailing > time (阶梯止盈优先)
+  #   trailing_first  = ladder_tp > trailing > cost_stop > time (移动止损优先, 当前默认)
+  # 注: formula_sell (reason=12) 仍最高优先级, 不受此开关影响
+  # 注: trailing 语义 = 盘中 Low 触及回撤线即触发, 按回撤线价执行 (含跳空低开保护)
+  priority: trailing_first
   cost_stop:
     enabled: true
     threshold: -0.12
   trailing_stop:
     enabled: true
-    activation: 0.08
-    drawdown: 0.05
+    activation: 0.035
+    drawdown: 0.01
   ladder_tp:
     enabled: true
     levels:
@@ -61,6 +71,15 @@ stop_loss:
   time_stop:
     enabled: true
     max_hold_days: 20
+  # P-v3.4: 公式卖出 — TDX 信号驱动, 最高优先级 (priority 数字越小越优先)
+  # 触发: 持仓股在某条 TDX 公式下命中信号 (TDX 返回 Value=1)
+  # 默认 enabled=false (安全优先); 启用时需正确填写 formula_name
+  formula_sell:
+    enabled: false
+    formula_name: "卖出XG"          # 占位 — 待真实公式确认后替换
+    formula_arg: ""                 # 公式参数, 多数公式留空
+    sell_ratio: 1.0                 # 1=全卖, 0.4=卖40%
+    priority: 0                     # 0=最高优先级 (早于 cost_stop)
 
 # === Benchmark ===
 benchmark:

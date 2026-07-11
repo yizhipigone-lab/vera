@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 import pandas as pd
 import numpy as np
+import yaml
 
 from utils.config_loader import ConfigLoader
 from utils.logger import setup_logger, get_logger
@@ -94,7 +95,13 @@ class StrategyConfig(BaseModel):
 
 
 class PipelineStatus:
-    """管线运行状态追踪。"""
+    """管线运行状态追踪。
+
+    不变量（前端 tryRecoverAbortedResult 依赖）:
+      - result 落盘到 last_result.json 之前，running 必须为 True
+      - running 翻为 False 之前，result 必须已赋值（即使失败也要 .result=None）
+      - 单一写入者（/api/run 的 try/finally），无需锁
+    """
     def __init__(self):
         self.running = False
         self.progress = 0
@@ -158,6 +165,8 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             },
         },
         "stop_loss": {
+            # 2026-07-05: 优先级开关 (前端 cfgPriority radio 透传, 默认 trailing_first)
+            "priority": str(cfg.get("priority", "trailing_first")),
             "cost_stop": {"enabled": cfg.cost_stop_enabled, "threshold": cfg.get("cost_stop_threshold", -0.12)},
             "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.get("trailing_activation", 0.08), "drawdown": cfg.get("trailing_drawdown", 0.05)},
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
@@ -205,6 +214,52 @@ async def validate_config(cfg: StrategyConfig):
     config_dict = _config_to_yaml_dict(cfg)
     warnings = ConfigLoader.validate_stop_config(config_dict)
     return {"success": True, "warnings": warnings, "config": config_dict}
+
+
+# ====== 前端配置存取（current.yaml） — 2026-07-10 ======
+# 单一覆盖文件：保存覆盖 current.yaml（自动备份 .bak）；加载与 default.yaml 合并；删除幂等。
+
+@app.post("/api/config/save")
+async def save_config_to_file(cfg: StrategyConfig):
+    """保存前端配置到 config/current.yaml（覆盖前自动复制备份 .bak）。"""
+    try:
+        config_dict = _config_to_yaml_dict(cfg)                      # 复用，零改动
+        warnings = ConfigLoader.validate_stop_config(config_dict)    # 不阻塞，仅回传
+        path = ConfigLoader.save_current(config_dict)
+        return {"success": True, "warnings": warnings, "saved_at": path.stat().st_mtime}
+    except PermissionError:
+        # Windows: 用户在编辑器里开着 current.yaml 时 os.replace 会失败
+        return {"success": False, "error": "文件被占用，请关闭编辑器（VS Code/记事本）中的 current.yaml 后重试"}
+    except Exception as e:
+        logger.error(f"保存配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/config/saved")
+async def get_saved_config():
+    """读取已保存配置（与 default.yaml 合并后的完整 dict）。不存在或解析失败返回 exists:false。"""
+    try:
+        if not ConfigLoader.current_exists():
+            return {"success": False, "exists": False, "error": "暂无保存的配置"}
+        cfg = ConfigLoader.load_current()                            # 合并后的完整 dict
+        return {"success": True, "exists": True, "config": cfg}
+    except yaml.YAMLError as e:
+        # 用户手改 current.yaml 写坏时的兜底（不裸抛 500）
+        return {"success": False, "exists": False, "error": f"current.yaml 解析失败（请检查缩进/格式）: {e}"}
+    except Exception as e:
+        logger.error(f"读取已保存配置失败: {e}")
+        return {"success": False, "exists": False, "error": str(e)}
+
+
+@app.delete("/api/config/saved")
+async def delete_saved_config():
+    """删除 config/current.yaml（幂等；保留 .bak 作为最后备份）。"""
+    try:
+        existed = ConfigLoader.delete_current()
+        return {"success": True, "existed": existed}
+    except Exception as e:
+        logger.error(f"删除配置失败: {e}")
+        return {"success": False, "error": str(e)}
 
 
 # ====== 管线端点 ======
