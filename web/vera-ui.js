@@ -31,6 +31,13 @@ function showToast(msg, type) {
 
 // ====== U1 (审计): 检测旧版引擎结果并显示黄条警告 ======
 const CURRENT_ENGINE_VERSION = 'signal-day-close';
+
+// ====== 2026-07-05: 回测超时/断网后的兜底探测参数 ======
+const RECOVER = {
+  MAX_RETRY: 5,            // 最多探测次数
+  INTERVAL_MS: 2000,       // 每次间隔（ms）
+  MAX_WAIT_MS: 10000,      // = MAX_RETRY × INTERVAL_MS, 用户可见的"自动恢复中..."最长等待
+};
 function checkEngineVersion(data) {
   const ev = data && data.engine_version;
   const banner = document.getElementById('legacyEngineWarning');
@@ -60,6 +67,16 @@ function validateLadder(el) {
   if (!v) { el.classList.remove('invalid'); return; }
   const valid = v.split(',').every(s => /^\d+(\.\d+)?\s*:\s*\d+(\.\d+)?$/.test(s.trim()));
   el.classList.toggle('invalid', !valid);
+}
+
+// ====== 2026-07-09: 阶梯止盈小数精度 — 去浮点尾巴 ======
+// 替代旧的 toFixed(2)/Math.round 强制取整（会把 6.5% → 7%、2.7% → 3%）。
+// toPrecision(12) 保留足够精度同时干掉浮点尾巴，如：
+//   0.011000000000000002 → 0.011,  6.500000000000001 → 6.5,  0.06*100 → 6
+// 用于阶梯止盈的写入路径与回填路径，让档位盈利/卖出比例支持任意小数百分比。
+function cleanNum(x) {
+  const n = Number(x);
+  return isNaN(n) ? 0 : parseFloat(n.toPrecision(12));
 }
 
 // ====== Theme — P3-3: 加 localStorage 持久化 ======
@@ -121,6 +138,14 @@ const CONFIG_IDS = [
   'cfgFormulaSellEn', 'cfgFormulaSellName', 'cfgFormulaSellRatio',
 ];
 
+// 2026-07-05: radio 组定义 — saveAllConfig 收集 / loadConfig 恢复 / applyConfig 应用
+//   name:   radio 的 name 属性 (querySelector key)
+//   allow:  localStorage 持久化的 key (也是后端 YAML stop_loss 字段名)
+//   新增 radio 只需在下面加一条即可, 无需改 applyConfig/loadConfig/saveAllConfig
+const RADIO_CONFIGS = [
+  { name: 'cfgPriority', allow: 'cfgPriority', fallback: 'trailing_first' },
+];
+
 function loadConfig() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -132,6 +157,17 @@ function loadConfig() {
         if (el.type === 'checkbox') el.checked = val;
         else if (el.tagName === 'SELECT') { try { el.value = val; } catch(e) {} }
         else el.value = val;
+      });
+      // 2026-07-05: radio 组 — 用 saved[rc.allow] 找 checked 的 input
+      RADIO_CONFIGS.forEach(rc => {
+        if (!(rc.allow in saved)) return;
+        const target = document.querySelector(`input[name="${rc.name}"][value="${saved[rc.allow]}"]`);
+        if (target) {
+          target.checked = true;
+        } else {
+          // L8: 找不到目标 radio 时警告 (旧 localStorage 存了已废弃的值)
+          console.warn('[loadConfig] radio', rc.name, '找不到 value=', saved[rc.allow], '— 已忽略, 保持 HTML 默认');
+        }
       });
     }
   } catch(e) {}
@@ -146,6 +182,11 @@ function saveAllConfig() {
     if (!el) return;
     if (el.type === 'checkbox') data[id] = el.checked;
     else data[id] = el.value;
+  });
+  // 2026-07-05: radio 组 — 存当前选中的 value
+  RADIO_CONFIGS.forEach(rc => {
+    const checked = document.querySelector(`input[name="${rc.name}"]:checked`);
+    if (checked) data[rc.allow] = checked.value;
   });
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -193,22 +234,40 @@ function renderSectors() {
   const empty = document.getElementById('sectorEmpty');
   if (_allSectors.length === 0) { empty.textContent = '无板块数据'; return; }
   empty.style.display = 'none';
-  // 构造 128 个 checkbox item
+  // B-14: 构造 128 个 item — checked 态高亮 + 代码简写（去 .SH 后缀省空间）
   grid.innerHTML = _allSectors.map(s => {
-    const checked = _selectedSectors.includes(s.code) ? 'checked' : '';
-    return '<div class="sector-item" data-name="' + esc(s.name) + '">' +
-      '<input type="checkbox" value="' + esc(s.code) + '" ' + checked + ' onchange="onSectorToggle(this)">' +
-      '<label title="' + esc(s.code) + '">' + esc(s.code) + ' ' + esc(s.name) + '</label>' +
+    const checked = _selectedSectors.includes(s.code);
+    const codeShort = String(s.code).replace(/\.\w+$/, '');
+    return '<div class="sector-item' + (checked ? ' checked' : '') + '" data-name="' + esc(s.name) + '" data-code="' + esc(s.code) + '">' +
+      '<input type="checkbox" value="' + esc(s.code) + '" ' + (checked ? 'checked' : '') + ' onchange="onSectorToggle(this)">' +
+      '<label title="' + esc(s.code) + ' ' + esc(s.name) + '"><span class="name">' + esc(s.name) + '</span> <span class="code">' + esc(codeShort) + '</span></label>' +
       '</div>';
   }).join('');
 }
 
 function filterSectors() {
   const kw = (document.getElementById('sectorSearch').value || '').trim().toLowerCase();
+  let matched = 0;
   document.querySelectorAll('.sector-item').forEach(item => {
     const name = (item.dataset.name || '').toLowerCase();
-    item.classList.toggle('hidden', kw && !name.includes(kw));
+    const code = (item.dataset.code || '').toLowerCase();
+    const hit = !kw || name.includes(kw) || code.includes(kw);
+    item.classList.toggle('hidden', !hit);
+    if (hit) matched++;
+    // B-14: 名称匹配字高亮
+    const nameEl = item.querySelector('.name');
+    if (nameEl) {
+      const orig = item.dataset.name || '';
+      const idx = kw && name.includes(kw) ? orig.toLowerCase().indexOf(kw) : -1;
+      if (idx >= 0) {
+        nameEl.innerHTML = esc(orig.slice(0, idx)) + '<mark>' + esc(orig.slice(idx, idx + kw.length)) + '</mark>' + esc(orig.slice(idx + kw.length));
+      } else {
+        nameEl.textContent = orig;
+      }
+    }
   });
+  const info = document.getElementById('sectorMatchInfo');
+  if (info) info.textContent = kw ? '匹配 ' + matched + ' / ' + _allSectors.length : '';
 }
 
 function onSectorToggle(cb) {
@@ -219,6 +278,8 @@ function onSectorToggle(cb) {
     _selectedSectors = _selectedSectors.filter(c => c !== code);
   }
   try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
+  const item = cb.closest('.sector-item');
+  if (item) item.classList.toggle('checked', cb.checked);
   updateSectorSummary();
   toggleUniverseDropdown();
 }
@@ -226,29 +287,41 @@ function onSectorToggle(cb) {
 function clearSectors() {
   _selectedSectors = [];
   try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
-  document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => cb.checked = false);
+  document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => {
+    cb.checked = false;
+    const item = cb.closest('.sector-item');
+    if (item) item.classList.remove('checked');
+  });
   updateSectorSummary();
   toggleUniverseDropdown();
 }
 
 function updateSectorSummary() {
   const box = document.getElementById('sectorSelected');
-  if (_selectedSectors.length === 0) { box.innerHTML = '<span style="font-size:10px;color:var(--text2)">未选板块</span>'; return; }
-  // 用代码找名称
-  box.innerHTML = _selectedSectors.map(code => {
-    const s = _allSectors.find(x => x.code === code);
-    const name = s ? s.name : code;
-    return '<span class="sector-tag" onclick="removeSector(\'' + code + '\')" title="点击取消">' +
-      esc(name) + ' <span class="x">×</span></span>';
-  }).join('') + '<span style="font-size:10px;color:var(--text2);align-self:center;margin-left:4px">(' + _selectedSectors.length + ' 个)</span>';
+  if (_selectedSectors.length === 0) {
+    box.innerHTML = '';
+  } else {
+    // B-14: 已选标签（计数走 header 徽章，这里不再重复显示个数）
+    box.innerHTML = _selectedSectors.map(code => {
+      const s = _allSectors.find(x => x.code === code);
+      const name = s ? s.name : code;
+      return '<span class="sector-tag" onclick="removeSector(\'' + code + '\')" title="点击移除">' +
+        esc(name) + ' <span class="x">×</span></span>';
+    }).join('');
+  }
+  updateSectorCount();
 }
 
 function removeSector(code) {
   _selectedSectors = _selectedSectors.filter(c => c !== code);
   try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
-  // 同步取消 checkbox
+  // 同步取消 checkbox + checked 态
   const cb = document.querySelector('#sectorGrid input[value="' + code + '"]');
-  if (cb) cb.checked = false;
+  if (cb) {
+    cb.checked = false;
+    const item = cb.closest('.sector-item');
+    if (item) item.classList.remove('checked');
+  }
   updateSectorSummary();
   toggleUniverseDropdown();
 }
@@ -263,15 +336,43 @@ function toggleUniverseDropdown() {
   sel.style.opacity = disabled ? '0.5' : '1';
 }
 
+// B-14: 折叠/展开板块面板（localStorage 记忆用户偏好）
+function toggleSectorPanel() {
+  const sec = document.querySelector('.sector-section');
+  if (!sec) return;
+  sec.classList.toggle('collapsed');
+  try { localStorage.setItem('vera_sector_collapsed', sec.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+}
+// B-14: 同步 header 计数徽章（已选 / 总数，有选中时高亮）
+function updateSectorCount() {
+  const badge = document.getElementById('sectorCountBadge');
+  if (!badge) return;
+  const n = _selectedSectors.length;
+  const total = _allSectors.length || 128;
+  badge.textContent = n + ' / ' + total;
+  badge.classList.toggle('has', n > 0);
+}
+
 // C2 修正：refreshAllSummaries — 所有用户输入经 esc() 转义后再插入 innerHTML
 function refreshAllSummaries() {
   const cs = esc(document.getElementById('cfgCostStopVal').value);
   document.getElementById('sumCostStop').innerHTML = '成本止损：亏损达到 <b>'+cs+'%</b> 全仓卖出 <span class="saved-badge saved">已保存</span>';
   const ta = esc(document.getElementById('cfgTrailingAct').value);
   const td = esc(document.getElementById('cfgTrailingDD').value);
-  document.getElementById('sumTrailing').innerHTML = '移动止损：盈利 <b>'+ta+'%</b> 激活后，回撤 <b>'+td+'%</b> 触发全仓卖出 <span class="saved-badge saved">已保存</span>';
+  // 2026-07-05 v3: trailing 语义改为"盘中 Low 触及回撤线即按回撤线价成交"
+  document.getElementById('sumTrailing').innerHTML = '移动止损：盈利 <b>'+ta+'%</b> 激活后，盘中 Low 触及回撤 <b>'+td+'%</b> 线即按回撤线价全仓卖出 <span class="saved-badge saved">已保存</span>';
   const lv = esc(document.getElementById('cfgLadderVal').value.replace(/,/g, ', '));
   document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>'+lv+'</b> <span class="saved-badge saved">已保存</span>';
+  // 2026-07-05 v3: 优先级独立摘要 (三档)
+  const priChecked = document.querySelector('input[name="cfgPriority"]:checked');
+  const priLabelMap = {
+    stop_first: '止损优先 (历史默认)',
+    ladder_tp_first: '阶梯止盈优先',
+    trailing_first: '移动止损优先 (盘中锁利)',
+  };
+  const priLabel = (priChecked && priLabelMap[priChecked.value]) || '移动止损优先 (盘中锁利)';
+  const sumPriEl = document.getElementById('sumPriority');
+  if (sumPriEl) sumPriEl.innerHTML = '优先级：'+priLabel+' <span class="saved-badge saved">已保存</span>';
   const tv = esc(document.getElementById('cfgTimeVal').value);
   document.getElementById('sumTime').innerHTML = '时间止盈：持仓 <b>'+tv+'</b> 天后无条件卖出 <span class="saved-badge saved">已保存</span>';
   const cd = esc(document.getElementById('cfgCondTimeDays').value);
@@ -339,6 +440,192 @@ function saveBlock(blockId) {
   addLog('全部配置已保存到浏览器', 'ok');
 }
 
+// 2026-07-10: 抽取前端表单 → StrategyConfig payload（runPipeline 与 saveConfigToFile 共用）。
+// 保证"跑回测"和"保存到文件"发同一份 payload（含 sectors），杜绝两份构建逻辑漂移。
+function collectConfigFromForm() {
+  const getVal = id => document.getElementById(id).value;
+  const pct = (id) => parseFloat(getVal(id)) / 100;
+  const safeFloat = (id) => { const v = parseFloat(getVal(id)); return isNaN(v) ? 0 : v; };
+  const safeInt = (id) => { const v = parseInt(getVal(id)); return isNaN(v) ? 0 : v; };
+  const ladderRaw = getVal('cfgLadderVal');
+  const ladderParts = ladderRaw.split(',').map(s => {
+    const [profit, ratio] = s.trim().split(':');
+    return cleanNum(parseFloat(profit)/100) + ':' + cleanNum(parseFloat(ratio)/100);
+  }).join(',');
+  return {
+    strategy_name: '',
+    formula_name: getVal('cfgFormula'), formula_arg: getVal('cfgFormulaArg'),
+    universe_type: getVal('cfgUniverse'), exclude_st: document.getElementById('cfgExcludeST').checked,
+    include_etf: document.getElementById('cfgIncludeEtf').checked,
+    etf_only: document.getElementById('cfgEtfOnly').checked,
+    sectors: _selectedSectors.join(','),
+    start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
+    period: getVal('cfgPeriod'), dividend_type: 1,
+    initial_capital: safeFloat('cfgCapital'),
+    commission: safeFloat('cfgCommission'),
+    slippage: safeFloat('cfgSlippage'),
+    max_positions: 999,
+    max_position_pct: 1.0,
+    min_buy_amount: safeFloat('cfgMinBuy'),
+    max_buy_amount: safeFloat('cfgMaxBuy'),
+    lot_size: safeInt('cfgLotSize'),
+    min_lots: safeInt('cfgMinLots'),
+    cost_stop_enabled: document.getElementById('cfgCostStopEn').checked, cost_stop_threshold: -Math.abs(pct('cfgCostStopVal')),
+    trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
+    ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
+    time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: safeInt('cfgTimeVal'),
+    cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
+    cond_time_days: safeInt('cfgCondTimeDays'),
+    cond_time_profit: safeFloat('cfgCondTimeProfit') / 100,
+    first_day_enabled: document.getElementById('cfgFirstDayEn').checked,
+    first_day_target: safeFloat('cfgFirstDayTarget') / 100,
+    priority: (document.querySelector('input[name="cfgPriority"]:checked') || {}).value || 'ladder_tp_first',
+    formula_sell_enabled: document.getElementById('cfgFormulaSellEn').checked,
+    formula_sell_name: document.getElementById('cfgFormulaSellName').value.trim(),
+    formula_sell_ratio: Math.max(0, Math.min(100, safeFloat('cfgFormulaSellRatio'))) / 100,
+    benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
+  };
+}
+
+// 2026-07-10: 后端完整 config dict → 前端表单（resetDefaults 与 loadConfigFromFile 共用）。
+// 抽取自 resetDefaults 的 mapping，并补两处 gap：sectors 回填、formula_sell 三字段。
+// 消除"恢复默认"与"从文件加载"两份 mapping 漂移。
+function applyConfigDict(cfg) {
+  cfg = cfg || {};
+  const mapping = {
+    cfgFormula: cfg.selection?.formula_name,
+    cfgFormulaArg: cfg.selection?.formula_arg,
+    cfgUniverse: cfg.selection?.universe?.type,
+    cfgPeriod: cfg.backtest?.period === '5m' ? '5m' : cfg.backtest?.period === '1w' ? '1w' : '1d',
+    cfgStart: cfg.time_range?.start,
+    cfgEnd: cfg.time_range?.end,
+    cfgCapital: cfg.backtest?.initial_capital,
+    cfgCommission: cfg.backtest?.commission,
+    cfgSlippage: cfg.backtest?.slippage,
+    cfgMinBuy: cfg.backtest?.position_sizing?.min_buy_amount,
+    cfgMaxBuy: cfg.backtest?.position_sizing?.max_buy_amount,
+    cfgLotSize: cfg.backtest?.position_sizing?.lot_size,
+    cfgMinLots: cfg.backtest?.position_sizing?.min_lots,
+    cfgCostStopVal: cfg.stop_loss?.cost_stop?.threshold != null ? String(cleanNum(Math.abs(cfg.stop_loss.cost_stop.threshold * 100))) : null,
+    cfgTrailingAct: cfg.stop_loss?.trailing_stop?.activation != null ? String(cleanNum(cfg.stop_loss.trailing_stop.activation * 100)) : null,
+    cfgTrailingDD: cfg.stop_loss?.trailing_stop?.drawdown != null ? String(cleanNum(cfg.stop_loss.trailing_stop.drawdown * 100)) : null,
+    cfgLadderVal: cfg.stop_loss?.ladder_tp?.levels?.map(l => cleanNum(l.profit*100)+':'+cleanNum(l.sell_ratio*100)).join(','),
+    cfgTimeVal: cfg.stop_loss?.time_stop?.max_hold_days,
+    cfgCondTimeDays: cfg.stop_loss?.cond_time_stop?.days,
+    cfgCondTimeProfit: cfg.stop_loss?.cond_time_stop?.profit != null ? String(cleanNum(cfg.stop_loss.cond_time_stop.profit * 100)) : null,
+    cfgFirstDayTarget: cfg.stop_loss?.first_day?.target != null ? String(cleanNum(cfg.stop_loss.first_day.target * 100)) : null,
+    // gap B 修复：formula_sell name/ratio（原 resetDefaults 漏，加载/恢复时公式卖出 UI 不归位）
+    cfgFormulaSellName: cfg.stop_loss?.formula_sell?.formula_name != null ? String(cfg.stop_loss.formula_sell.formula_name) : null,
+    cfgFormulaSellRatio: cfg.stop_loss?.formula_sell?.sell_ratio != null ? String(cleanNum(cfg.stop_loss.formula_sell.sell_ratio * 100)) : null,
+    cfgPriority: cfg.stop_loss?.priority || 'ladder_tp_first',
+  };
+  const checkboxMapping = {
+    cfgExcludeST: cfg.selection?.universe?.exclude_st,
+    cfgIncludeEtf: cfg.selection?.universe?.include_etf,
+    cfgEtfOnly: cfg.selection?.universe?.etf_only,
+    cfgCostStopEn: cfg.stop_loss?.cost_stop?.enabled,
+    cfgTrailingEn: cfg.stop_loss?.trailing_stop?.enabled,
+    cfgLadderEn: cfg.stop_loss?.ladder_tp?.enabled,
+    cfgTimeEn: cfg.stop_loss?.time_stop?.enabled,
+    cfgCondTimeEn: cfg.stop_loss?.cond_time_stop?.enabled,
+    cfgFirstDayEn: cfg.stop_loss?.first_day?.enabled,
+    cfgFormulaSellEn: cfg.stop_loss?.formula_sell?.enabled,   // gap B 修复
+  };
+  for (const [id, val] of Object.entries(mapping)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.value = val != null ? String(val) : el.defaultValue;
+  }
+  for (const [id, val] of Object.entries(checkboxMapping)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (val != null) el.checked = val;
+  }
+  RADIO_CONFIGS.forEach(rc => {
+    const val = mapping[rc.allow];
+    if (val != null) {
+      const target = document.querySelector(`input[name="${rc.name}"][value="${val}"]`);
+      if (target) target.checked = true;
+      else console.warn('[applyConfigDict] radio', rc.name, '找不到 value=', val);
+    }
+  });
+  // gap A 修复：sectors 回填（原 resetDefaults 不回填、还清空 → 从文件加载会丢板块勾选）
+  const sectors = cfg.selection?.universe?.sectors;
+  if (Array.isArray(sectors)) {
+    _selectedSectors = sectors.slice();
+    try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
+    // 异步兜底：_allSectors 没加载完时只先存 _selectedSectors，loadSectors 的 renderSectors 会自动勾选
+    if (_allSectors.length > 0) {
+      renderSectors();
+      updateSectorSummary();
+      toggleUniverseDropdown();
+    }
+  }
+}
+
+// 2026-07-10: 前端配置存取 current.yaml（保存/加载/删除，单一覆盖文件）
+let _savedFileExists = false;   // current.yaml 是否存在，控 Load/Delete 按钮态 + save confirm
+
+function toggleSavedButtons(exists) {
+  const load = document.getElementById('btnLoadFile');
+  const del = document.getElementById('btnDeleteFile');
+  if (load) load.disabled = !exists;
+  if (del) del.disabled = !exists;
+}
+
+async function saveConfigToFile() {
+  if (_savedFileExists && !confirm('已存在保存的配置（config/current.yaml），确定覆盖？')) return;
+  const config = collectConfigFromForm();    // 与 runPipeline 同源，含 sectors
+  try {
+    const r = await fetch('/api/config/save', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config)});
+    const res = await r.json();
+    if (res.success) {
+      _savedFileExists = true;
+      toggleSavedButtons(true);
+      saveAllConfig();                        // 同步 localStorage，保持双轨一致
+      showToast('配置已保存到 config/current.yaml' + (res.warnings && res.warnings.length ? '（'+res.warnings.length+'条告警）' : ''), 'ok');
+      addLog('配置已保存到 config/current.yaml', 'ok');
+    } else {
+      showToast('保存失败: ' + (res.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('保存失败（网络）: ' + e.message, 'error');
+  }
+}
+
+async function loadConfigFromFile() {
+  try {
+    const r = await fetch('/api/config/saved');
+    const res = await r.json();
+    if (!res.success || !res.exists) { showToast(res.error || '暂无保存的配置', 'info'); return; }
+    applyConfigDict(res.config);              // 合并后的完整 dict
+    saveAllConfig();                          // 必须！否则刷新后回退到旧 localStorage
+    refreshAllSummaries();
+    showToast('已从 config/current.yaml 加载配置', 'ok');
+    addLog('已从 config/current.yaml 加载配置', 'ok');
+  } catch(e) {
+    showToast('加载失败（网络）: ' + e.message, 'error');
+  }
+}
+
+async function deleteSavedConfig() {
+  if (!confirm('确定删除已保存的配置文件（config/current.yaml）？\n（当前表单值不会被清空，如需重置请点"恢复默认配置"）')) return;
+  try {
+    const r = await fetch('/api/config/saved', {method: 'DELETE'});
+    const res = await r.json();
+    if (res.success) {
+      _savedFileExists = false;
+      toggleSavedButtons(false);
+      showToast('已删除 config/current.yaml（表单值未变）', 'ok');
+      addLog('已删除 config/current.yaml', 'info');
+    } else {
+      showToast('删除失败: ' + (res.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('删除失败（网络）: ' + e.message, 'error');
+  }
+}
+
 // P1-2: 恢复默认配置（调后端 API，不硬编码）
 // P1-2 修正：后端 /api/config/defaults 可能不含 cond_time_stop / first_day 字段，
 // 此时用 HTML 中 <input> 元素的 value 属性作为 fallback（即页面原始默认值）
@@ -348,64 +635,9 @@ async function resetDefaults() {
     const resp = await fetch('/api/config/defaults');
     const result = await resp.json();
     if (!result.success) { showToast('获取默认配置失败', 'error'); return; }
-    const cfg = result.config || {};
-    // 后端 YAML 结构 → 前端字段映射
-    const mapping = {
-      cfgFormula: cfg.selection?.formula_name,
-      cfgFormulaArg: cfg.selection?.formula_arg,
-      cfgUniverse: cfg.selection?.universe?.type,
-      cfgPeriod: cfg.backtest?.period === '5m' ? '5m' : cfg.backtest?.period === '1w' ? '1w' : '1d',
-      cfgStart: cfg.time_range?.start,
-      cfgEnd: cfg.time_range?.end,
-      cfgCapital: cfg.backtest?.initial_capital,
-      cfgCommission: cfg.backtest?.commission,
-      cfgSlippage: cfg.backtest?.slippage,
-      cfgMinBuy: cfg.backtest?.position_sizing?.min_buy_amount,
-      cfgMaxBuy: cfg.backtest?.position_sizing?.max_buy_amount,
-      cfgLotSize: cfg.backtest?.position_sizing?.lot_size,
-      cfgMinLots: cfg.backtest?.position_sizing?.min_lots,
-      cfgCostStopVal: cfg.stop_loss?.cost_stop?.threshold != null ? String(Math.abs(cfg.stop_loss.cost_stop.threshold * 100)) : null,
-      cfgTrailingAct: cfg.stop_loss?.trailing_stop?.activation != null ? String(cfg.stop_loss.trailing_stop.activation * 100) : null,
-      cfgTrailingDD: cfg.stop_loss?.trailing_stop?.drawdown != null ? String(cfg.stop_loss.trailing_stop.drawdown * 100) : null,
-      cfgLadderVal: cfg.stop_loss?.ladder_tp?.levels?.map(l => Math.round(l.profit*100)+':'+Math.round(l.sell_ratio*100)).join(','),
-      cfgTimeVal: cfg.stop_loss?.time_stop?.max_hold_days,
-      cfgCondTimeDays: cfg.stop_loss?.cond_time_stop?.days,
-      cfgCondTimeProfit: cfg.stop_loss?.cond_time_stop?.profit != null ? String(cfg.stop_loss.cond_time_stop.profit * 100) : null,
-      cfgFirstDayTarget: cfg.stop_loss?.first_day?.target != null ? String(cfg.stop_loss.first_day.target * 100) : null,
-    };
-    const checkboxMapping = {
-      cfgExcludeST: cfg.selection?.universe?.exclude_st,
-      // P-v3.4: ETF 开关
-      cfgIncludeEtf: cfg.selection?.universe?.include_etf,
-      cfgEtfOnly: cfg.selection?.universe?.etf_only,
-      cfgCostStopEn: cfg.stop_loss?.cost_stop?.enabled,
-      cfgTrailingEn: cfg.stop_loss?.trailing_stop?.enabled,
-      cfgLadderEn: cfg.stop_loss?.ladder_tp?.enabled,
-      cfgTimeEn: cfg.stop_loss?.time_stop?.enabled,
-      cfgCondTimeEn: cfg.stop_loss?.cond_time_stop?.enabled,
-      cfgFirstDayEn: cfg.stop_loss?.first_day?.enabled,
-    };
-    for (const [id, val] of Object.entries(mapping)) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      // P1-2 修正：API 不返回该字段时，用 HTML 元素的 defaultValue（页面原始值）做 fallback
-      el.value = val != null ? String(val) : el.defaultValue;
-    }
-    for (const [id, val] of Object.entries(checkboxMapping)) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      if (val != null) el.checked = val;
-      // checkbox 无需 fallback，保持当前状态即可
-    }
-    localStorage.removeItem(STORAGE_KEY);
-    // P-v3.4: 恢复默认时清空板块勾选
+    applyConfigDict(result.config || {});   // 抽取的公共填表逻辑（含 sectors/formula_sell 回填）
+    localStorage.removeItem(STORAGE_KEY);   // 恢复默认 = 清浏览器存储（applyConfigDict 已按 default 重填表单 + 清板块）
     try { localStorage.removeItem(SECTORS_KEY); } catch(e) {}
-    _selectedSectors = [];
-    if (_allSectors.length > 0) {
-      document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => cb.checked = false);
-      updateSectorSummary();
-      toggleUniverseDropdown();
-    }
     refreshAllSummaries();
     showToast('已恢复默认配置', 'ok');
   } catch(e) {
@@ -469,54 +701,7 @@ function runPipeline() {
   document.getElementById('progressText').textContent = '';
   addLog('开始执行回测管线...', 'info');
 
-  const getVal = id => document.getElementById(id).value;
-
-  const pct = (id) => parseFloat(getVal(id)) / 100;
-  // C1 修正：安全解析数字，空字符串/非法值返回 0（而非 NaN 直通后端）
-  const safeFloat = (id) => { const v = parseFloat(getVal(id)); return isNaN(v) ? 0 : v; };
-  const safeInt = (id) => { const v = parseInt(getVal(id)); return isNaN(v) ? 0 : v; };
-  const ladderRaw = getVal('cfgLadderVal');
-  const ladderParts = ladderRaw.split(',').map(s => {
-    const [profit, ratio] = s.trim().split(':');
-    return (parseFloat(profit)/100).toFixed(2) + ':' + (parseFloat(ratio)/100).toFixed(2);
-  }).join(',');
-
-  const config = {
-    strategy_name: '',
-    formula_name: getVal('cfgFormula'), formula_arg: getVal('cfgFormulaArg'),
-    universe_type: getVal('cfgUniverse'), exclude_st: document.getElementById('cfgExcludeST').checked,
-    // P-v3.4: ETF 开关 — 仅ETF 优先于 包含ETF (后端 selector 同款逻辑)
-    include_etf: document.getElementById('cfgIncludeEtf').checked,
-    etf_only: document.getElementById('cfgEtfOnly').checked,
-    // P-v3.4: 行业板块代码 (逗号分隔字符串, 跟 ladder_levels 同风格)
-    sectors: _selectedSectors.join(','),
-    start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
-    period: getVal('cfgPeriod'), dividend_type: 1,
-    initial_capital: safeFloat('cfgCapital'),
-    commission: safeFloat('cfgCommission'),
-    slippage: safeFloat('cfgSlippage'),
-    max_positions: 999,
-    max_position_pct: 1.0,
-    min_buy_amount: safeFloat('cfgMinBuy'),
-    max_buy_amount: safeFloat('cfgMaxBuy'),
-    lot_size: safeInt('cfgLotSize'),
-    min_lots: safeInt('cfgMinLots'),
-    // H3 修正：成本止损阈值必须为负值，用 -Math.abs 确保即使用户输入正值也不会变止盈
-    cost_stop_enabled: document.getElementById('cfgCostStopEn').checked, cost_stop_threshold: -Math.abs(pct('cfgCostStopVal')),
-    trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
-    ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
-    time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: safeInt('cfgTimeVal'),
-    cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
-    cond_time_days: safeInt('cfgCondTimeDays'),
-    cond_time_profit: safeFloat('cfgCondTimeProfit') / 100,
-    first_day_enabled: document.getElementById('cfgFirstDayEn').checked,
-    first_day_target: safeFloat('cfgFirstDayTarget') / 100,
-    // P-v3.4: 公式卖出 — 钳位 [0, 100] 防呆
-    formula_sell_enabled: document.getElementById('cfgFormulaSellEn').checked,
-    formula_sell_name: document.getElementById('cfgFormulaSellName').value.trim(),
-    formula_sell_ratio: Math.max(0, Math.min(100, safeFloat('cfgFormulaSellRatio'))) / 100,
-    benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
-  };
+  const config = collectConfigFromForm();   // 2026-07-10: 抽取，与 saveConfigToFile 同源（含 sectors）
 
   addLog('配置: '+config.formula_name+' '+config.start_time+'~'+config.end_time, 'info');
 
@@ -534,9 +719,12 @@ function runPipeline() {
     } catch(e) {}
   }, 800);
 
-  // H8 修正：加 AbortController + 5min 超时，防止网络挂死永远转圈
+  // H8 修正：加 AbortController + 10min 超时，防止网络挂死永远转圈
+  // 注：后端 /api/run 是 FastAPI 同步路由 + 线程池，uvicorn 默认无超时；
+  //     这里只是给前端 fetch 一个"宁死不等到天荒地老"的上限。
+  //     2026-07-05: 后台跑长区间经常超 5min，调到 10min。
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 300000);
+  const timeout = setTimeout(() => controller.abort(), 600000);
   fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config), signal: controller.signal })
     .then(r => r.json())
     .then(data => {
@@ -561,25 +749,212 @@ function runPipeline() {
     })
     .catch(e => {
       clearTimeout(timeout);
-      pollActive = false; clearInterval(poll); btn.disabled = false;
-      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
-      document.getElementById('statusDot').className = 'status-dot on';
-      document.getElementById('statusText').textContent = '错误';
-      const msg = e.name === 'AbortError' ? '请求超时（5分钟），请缩小回测区间' : e.message;
-      addLog('网络错误: '+msg, 'error');
-      showToast('网络错误: '+msg, 'error');  // P1-4: 加 toast
+      pollActive = false; clearInterval(poll);
+      // 2026-07-05: 抽出 resetRunUI 复用 catch 与 tryRecoverAbortedResult
+      resetRunUI(btn, '错误', 'on');
+
+      // 2026-07-05: 超时/断网兜底——后端是同步线程池，连接断了但线程还在跑，
+      // 可能 10s/30s/几分钟后才落盘。先看看 status + last_result，能救就救。
+      tryRecoverAbortedResult(config, e);
     });
+}
+
+// 重置运行期 UI（catch 与 tryRecoverAbortedResult 复用，.then 成功路径保持不变以免影响既有语义）
+// statusText: '就绪' | '错误' | '自动恢复中…' 等
+function resetRunUI(btn, statusText, dotClass) {
+  document.getElementById('progressBar').style.display = 'none';
+  document.getElementById('progressText').textContent = '';
+  document.getElementById('statusDot').className = 'status-dot ' + (dotClass || 'on');
+  document.getElementById('statusText').textContent = statusText;
+  btn.disabled = false;
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
+}
+
+// 超时/断网后尝试从后端拉取已落盘的结果，避免用户白白等了 N 分钟
+async function tryRecoverAbortedResult(cfg, originalErr) {
+  // 顶层 try/catch: 防 addLog/showToast 在某些嵌入场景（无 #logPanel）抛 unhandled rejection
+  try {
+    const cfgStart = (cfg.start_time || '').toString();
+    const cfgEnd   = (cfg.end_time   || '').toString();
+    const cfgFml   = (cfg.formula_name || '').toString();
+
+    addLog('尝试自动恢复：探测后端是否仍在运行/已落盘…', 'info');
+    const btn = document.getElementById('btnRun');
+    resetRunUI(btn, '自动恢复中…', 'busy');
+
+    for (let i = 0; i < RECOVER.MAX_RETRY; i++) {
+      try {
+        // 1) 先看 status.running：还在跑就别报错，等它
+        const sr = await fetch('/api/status');
+        if (sr.ok) {
+          const s = await sr.json();
+          if (s && s.running) {
+            addLog(`后端仍在运行（第 ${i+1}/${RECOVER.MAX_RETRY} 次探测，${s.step||''} ${s.progress||0}%）…`, 'info');
+            await new Promise(r => setTimeout(r, RECOVER.INTERVAL_MS));
+            continue;
+          }
+        }
+
+        // 2) 拉 last_result：可能是本次 cfg 的结果，也可能是更早的
+        const lr = await fetch('/api/last_result');
+        if (lr.ok) {
+          const data = await lr.json();
+          // 成功判定：必须是 success=true 且 trade_count>=0（防误命中一个空结果）
+          if (data && data.success && typeof data.trade_count === 'number') {
+            // 比对 freshness：用 index 最新一条的 formula + date_range 判断是不是本次 cfg
+            // （last_result.json 里没存 meta，最稳的 freshness 依据是 /api/results[0]）
+            let isFresh = true;
+            try {
+              const ir = await fetch('/api/results');
+              if (ir.ok) {
+                const idx = await ir.json();
+                const top = Array.isArray(idx) && idx.length > 0 ? idx[0] : null;
+                if (top) {
+                  const wantDr = `${cfgStart}~${cfgEnd}`;
+                  isFresh = (top.formula === cfgFml) && (top.date_range === wantDr);
+                }
+              }
+            } catch (_) { /* 索引拿不到就当作"新鲜"，保守放过 */ }
+
+            if (isFresh) {
+              addLog(`✓ 自动恢复成功：后端已完成回测（${data.trade_count}笔交易）`, 'ok');
+              showToast(`✓ 已自动恢复回测结果（${data.trade_count}笔交易）`, 'ok');  // M-6 修复
+              lastResult = data;
+              renderAllCharts(data);
+              checkEngineVersion(data);
+              resetRunUI(btn, '就绪', 'on');
+              return;
+            } else {
+              addLog('last_result 不是本次 cfg 的结果（可能是更早的历史）— 判定为未生成', 'info');
+              break;
+            }
+          }
+        }
+        // 3) 不在跑、last_result 也没拿到 → 真没了
+        break;
+      } catch (probeErr) {
+        addLog(`探测失败（第 ${i+1} 次）：${probeErr.message}`, 'info');
+        await new Promise(r => setTimeout(r, RECOVER.INTERVAL_MS));
+      }
+    }
+
+    // 全部恢复尝试都失败：才报原始网络错误
+    const msg = originalErr && originalErr.name === 'AbortError'
+      ? '请求超时（10分钟），后端未在超时内落盘。请缩小回测区间或稍后到历史结果中查看。'
+      : (originalErr && originalErr.message) || '未知错误';
+    addLog('网络错误: '+msg, 'error');
+    showToast('网络错误: '+msg, 'error');
+    resetRunUI(btn, '错误', 'on');
+  } catch (fatalErr) {
+    // 入口 try/catch: 防 addLog/showToast 抛 unhandled rejection 导致 UI 卡死
+    // eslint-disable-next-line no-console
+    console.error('[tryRecoverAbortedResult] 兜底失败:', fatalErr);
+  }
+}
+
+// B-10: KPI 数字滚动 tween（从 0 到目标，easeOutCubic）
+function tweenNumber(el, target, formatter, duration) {
+  duration = duration || 600;
+  if (typeof target !== 'number' || isNaN(target)) { el.textContent = '--'; return; }
+  const t0 = performance.now();
+  function step(now) {
+    const p = Math.min(1, (now - t0) / duration);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = formatter(target * eased);
+    if (p < 1) requestAnimationFrame(step); else el.textContent = formatter(target);
+  }
+  requestAnimationFrame(step);
+}
+
+// B-13: 迷你 sparkline — 纯 SVG polyline + 渐变面积，无依赖、无 ECharts 开销
+function sparkline(values, color, fillAlpha) {
+  if (!values || values.length < 2) return '';
+  const w = 100, h = 32, pad = 2;
+  let min = Infinity, max = -Infinity;
+  for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
+  const range = max - min || 1;
+  const n = values.length;
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (n - 1)) * (w - pad * 2);
+    const y = pad + (1 - (v - min) / range) * (h - pad * 2);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const areaPts = pad + ',' + (h - pad) + ' ' + pts + ' ' + (w - pad) + ',' + (h - pad);
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+    '<polygon points="' + areaPts + '" fill="' + color + '" fill-opacity="' + (fillAlpha == null ? 0.15 : fillAlpha) + '"/>' +
+    '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+    '</svg>';
+}
+
+// B-11: hero 核心指标子行 — 趋势/评级 + vs 上证基准 + sparkline
+function fillHeroSub(m, data, c) {
+  const sh = data.benchmarks && data.benchmarks.shanghai;
+  let shRet = null;
+  if (sh && sh.length > 1) {
+    const first = sh.find(r => r.index_close != null);
+    const last = sh.slice().reverse().find(r => r.index_close != null);
+    if (first && last && first.index_close) shRet = last.index_close / first.index_close - 1;
+  }
+  const cumSub = document.getElementById('kpiCumRetSub');
+  if (cumSub) {
+    if (shRet != null && m.cumulative_return != null) {
+      const win = m.cumulative_return >= shRet;
+      cumSub.innerHTML = (win ? '▲' : '▼') + ' <span class="' + (win ? 'delta-up' : 'delta-down') + '">vs 上证 ' + (shRet*100).toFixed(2) + '%</span>';
+    } else cumSub.textContent = '';
+  }
+  const ddSub = document.getElementById('kpiMaxDDSub');
+  if (ddSub) ddSub.innerHTML = m.max_drawdown != null ? '<span style="color:var(--text2)">峰值到谷值最大跌幅</span>' : '';
+  const shSub = document.getElementById('kpiSharpeSub');
+  if (shSub) {
+    if (m.sharpe_ratio != null) {
+      let grade, cls;
+      if (m.sharpe_ratio >= 2) { grade = '优秀'; cls = 'delta-up'; }
+      else if (m.sharpe_ratio >= 1) { grade = '良好'; cls = 'delta-up'; }
+      else if (m.sharpe_ratio >= 0) { grade = '一般'; cls = ''; }
+      else { grade = '不佳'; cls = 'delta-down'; }
+      shSub.innerHTML = '<span class="' + cls + '">' + grade + '</span>';
+    } else shSub.textContent = '';
+  }
+  // B-13: 累计收益 + 最大回撤 sparkline（权益曲线 / 回撤曲线）
+  const cumSpark = document.getElementById('kpiCumRetSpark');
+  if (cumSpark) {
+    if (data.equity && data.equity.length > 1) {
+      const eq0 = data.equity[0].equity || 1;
+      const eqPct = data.equity.map(r => (r.equity / eq0 - 1) * 100);
+      cumSpark.innerHTML = sparkline(eqPct, c.accent, 0.16);
+    } else cumSpark.innerHTML = '';
+  }
+  const ddSpark = document.getElementById('kpiMaxDDSpark');
+  if (ddSpark) {
+    if (data.equity && data.equity.length > 1) {
+      const dd = data.equity.map(r => (r.drawdown || 0) * 100);
+      ddSpark.innerHTML = sparkline(dd, c.up, 0.2);
+    } else ddSpark.innerHTML = '';
+  }
+}
+
+// B-12: 回测完成 — KPI 卡 + 图表卡 stagger 入场
+function revealResults() {
+  const cards = document.querySelectorAll('.kpi-card, .chart-box');
+  cards.forEach(c => { c.classList.remove('reveal'); c.style.animationDelay = ''; });
+  const grid = document.getElementById('kpiGrid');
+  if (grid) void grid.offsetWidth;  // 强制 reflow 重启动画
+  cards.forEach((c, i) => {
+    c.style.animationDelay = (i * 40) + 'ms';
+    c.classList.add('reveal');
+  });
 }
 
 function renderAllCharts(data) {
   const c = getColors();
   const m = data.metrics || {};
 
-  // KPI cards
+  // KPI cards — B-10: 数字滚动（替代原直接赋值）
   const setKpi = (id, val, fmt) => {
     const el = document.getElementById(id);
-    el.textContent = fmt(val); el.className = 'kpi-value';
+    el.className = 'kpi-value';
     if (typeof val === 'number') { if (val > 0) el.classList.add('pos'); else if (val < 0) el.classList.add('neg'); }
+    tweenNumber(el, val, fmt);
   };
   setKpi('kpiCumRet', m.cumulative_return, v => v != null ? (v*100).toFixed(2)+'%' : '--');
   setKpi('kpiAnnRet', m.annualized_return, v => v != null ? (v*100).toFixed(2)+'%' : '--');
@@ -587,7 +962,7 @@ function renderAllCharts(data) {
   setKpi('kpiSharpe', m.sharpe_ratio, v => v != null ? v.toFixed(2) : '--');
   setKpi('kpiWinRate', m.win_rate, v => v != null ? (v*100).toFixed(1)+'%' : '--');
   setKpi('kpiPLR', m.profit_loss_ratio, v => v != null ? v.toFixed(2) : '--');
-  setKpi('kpiTrades', m.total_trades, v => v != null ? v : '--');
+  setKpi('kpiTrades', m.total_trades, v => v != null ? Math.round(v) : '--');
   setKpi('kpiCalmar', m.calmar_ratio, v => v != null ? v.toFixed(2) : '--');
   setKpi('kpiProfitF', m.profit_factor, v => v != null ? v.toFixed(2) : '--');
   setKpi('kpiBest', m.max_single_gain, v => v != null ? (v*100).toFixed(2)+'%' : '--');
@@ -737,7 +1112,7 @@ function renderAllCharts(data) {
 
     // 退出原因分布 — P2-2: 饼图颜色跟随主题
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损', '退市': '退市' };
+    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈/止损', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损', '退市': '退市' };
     const reasonCount = {};
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
@@ -822,6 +1197,10 @@ function renderAllCharts(data) {
     document.getElementById('summaryBox').style.display = '';
     document.getElementById('summaryContent').textContent = data.stop_config_summary;
   }
+
+  // B-11/12: hero 子行（趋势/评级 + vs 上证）+ 卡片 stagger 入场
+  fillHeroSub(m, data, c);
+  revealResults();
 }
 
 // P4-1: 交易表渲染（支持筛选）
@@ -838,7 +1217,7 @@ const reasonDetail = {
   // P-v3.4: 公式卖出
   'formula_sell': '公式止损 — TDX 公式信号命中，按比例止损（不看盈亏，最高优先级）',
 };
-const reasonShortMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
+const reasonShortMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈/止损', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
 
 function fmtReasonShort(r) {
   if (!r) return '—';
@@ -910,7 +1289,7 @@ function filterTrades() {
   const search = (document.getElementById('tradeSearch').value || '').toLowerCase();
   const filter = document.getElementById('tradeFilter').value;
   const reason = document.getElementById('tradeReason').value;
-  const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
+  const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈/止损', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
   const filtered = allTrades.filter(t => {
     const pnl = (t.profit_pct || t.return || 0) * 100;
     if (search) {
@@ -933,6 +1312,15 @@ function filterTrades() {
 document.getElementById('statusDot').className = 'status-dot on';
 loadConfig();
 loadSectors();   // P-v3.4: 加载行业板块列表
+// 2026-07-10: 探测 current.yaml 是否存在（只控 Load/Delete 按钮启用态；不填表单——遵循"打开网页不自动加载"）
+fetch('/api/config/saved').then(r => r.json()).then(res => {
+  _savedFileExists = !!(res && res.exists);
+  toggleSavedButtons(_savedFileExists);
+}).catch(() => {});
+// B-14: 恢复板块面板折叠状态（localStorage 记忆）
+if (localStorage.getItem('vera_sector_collapsed') === '1') {
+  document.querySelector('.sector-section').classList.add('collapsed');
+}
 addLog('前端就绪，等待执行回测', 'info');
 
 // 加载历史回测列表
@@ -974,3 +1362,8 @@ window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200);
 });
+
+// ====== 测试导出（Node 端单测用，浏览器中 typeof module === 'undefined 不会执行） ======
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { tryRecoverAbortedResult, resetRunUI, RECOVER };
+}

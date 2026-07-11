@@ -3,33 +3,53 @@
 <head>
 <meta charset="UTF-8">
 <link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
-<meta name="viewport" content="width=1280">
+<!-- B-1: viewport 改标准 device-width（原 width=1280 写法错误且放弃小屏适配） -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- P3-3: 在 CSS 解析前设置主题，消除 FOUC 白屏闪烁 -->
 <script>(function(){var t=localStorage.getItem('vera_theme')||'light';document.documentElement.setAttribute('data-theme',t);})();</script>
-<!-- P3-4: 非阻塞字体加载 -->
-<link rel="dns-prefetch" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<!-- B-2: 移除 Google Fonts 外链（本地部署优先铁律 + 隐私）；字体改用本地系统栈，见 :root --font/--mono -->
 <title>VERA — 量化回测系统</title>
 <style>
 /* ====== CSS Variables — P3-3: :root 默认 light，dark 覆盖 ====== */
 :root {
-  --bg: #ffffff; --surface: #f6f8fa; --card: #f6f8fa;
-  --border: #d0d7de; --text: #24292f; --text2: #656d76;
-  --up: #d1242f; --down: #1a7f37; --accent: #0969da;
-  --accent2: #8250df; --warn: #bf4b00;
-  --radius: 6px; --font: 'Inter', 'Segoe UI', 'Microsoft YaHei', sans-serif;
-  --mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+  /* B-3: 配色品牌化 — 去 GitHub 原色，换靛蓝品牌色 + 柔和中性 */
+  --bg: #fafafa; --surface: #f4f4f7; --card: #ffffff;
+  --border: #e6e6eb; --text: #1a1a2e; --text2: #6b6b7b;
+  --up: #e5484d; --down: #30a46c; --accent: #5b5bd6;
+  --accent2: #8e4ec6; --warn: #f5a623;
+  /* B-4: 圆角分级，比原单一 6px 更现代 */
+  --radius: 10px; --radius-sm: 6px; --radius-lg: 14px;
+  /* B-5: 多层柔影 — 卡片浮起感 + 品牌光晕（替换原全扁平） */
+  --shadow-sm: 0 1px 2px rgba(16,18,32,.04), 0 1px 3px rgba(16,18,32,.06);
+  --shadow-md: 0 2px 4px rgba(16,18,32,.04), 0 8px 24px rgba(16,18,32,.06);
+  --shadow-lg: 0 4px 8px rgba(16,18,32,.05), 0 24px 48px rgba(16,18,32,.08);
+  --shadow-glow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  /* B-6: 字体改本地系统栈（去 Inter / JetBrains 外链，本地部署优先） */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
 }
 [data-theme="dark"] {
-  --bg: #0d1117; --surface: #161b22; --card: #21262d;
-  --border: #30363d; --text: #e6edf3; --text2: #8b949e;
-  --up: #ef4444; --down: #22c55e; --accent: #58a6ff;
-  --accent2: #d2a8ff; --warn: #f0883e;
+  /* B-3: 暗色 — 比原 #0d1117 略深略蓝，配靛蓝更和谐；阴影改黑系 */
+  --bg: #0c0e16; --surface: #151823; --card: #1a1e2c;
+  --border: #2a2f42; --text: #e8eaf2; --text2: #8b90a8;
+  --up: #ff6166; --down: #3dd68c; --accent: #7b7bff;
+  --accent2: #b07ee0; --warn: #ffb84d;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px rgba(0,0,0,.4);
+  --shadow-md: 0 2px 4px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.4);
+  --shadow-lg: 0 4px 8px rgba(0,0,0,.35), 0 24px 48px rgba(0,0,0,.5);
+  --shadow-glow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;line-height:1.5;min-width:1280px}
+/* B-7: body 加固定渐变光斑背景（不随滚动移动），破除原纯色扁平 */
+body{
+  background:
+    radial-gradient(900px 600px at 8% -5%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),
+    radial-gradient(800px 500px at 100% 0%, color-mix(in srgb, var(--accent2) 8%, transparent), transparent 55%),
+    var(--bg);
+  background-attachment:fixed;
+  color:var(--text);font-family:var(--font);font-size:13px;line-height:1.55;min-width:1280px;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+}
 a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
@@ -64,22 +84,22 @@ a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
 
 /* ====== Sections & Forms ====== */
 .form-section{margin-bottom:18px}
-.form-section-title{font-size:11px;color:var(--text2);margin-bottom:10px;font-weight:600;letter-spacing:.3px;display:flex;align-items:center;gap:6px}
+.form-section-title{font-size:11px;color:var(--text2);margin-bottom:10px;font-weight:600;letter-spacing:.6px;display:flex;align-items:center;gap:6px;text-transform:uppercase}
 .form-section-title::before{content:'';display:inline-block;width:3px;height:12px;background:var(--accent);border-radius:2px}
 .form-group{margin-bottom:8px}
 .form-group label{display:block;font-size:10px;color:var(--text2);margin-bottom:3px;font-weight:500}
 .form-row{display:flex;gap:8px}
 .form-row .form-group{flex:1}
-input,select{width:100%;padding:7px 9px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;font-family:var(--mono);outline:none;transition:border .15s,box-shadow .15s}
-input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent)}
+input,select{width:100%;padding:7px 9px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:var(--mono);outline:none;transition:border .15s,box-shadow .15s}
+input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow)}
 .checkbox-group{display:flex;align-items:center;gap:6px;margin-bottom:3px}
 .checkbox-group input[type=checkbox]{width:auto;accent-color:var(--accent)}
 .checkbox-group label{color:var(--text);font-size:11px;margin:0}
 
 /* ====== Buttons ====== */
-.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:var(--radius);font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);transition:all .15s;font-family:var(--font)}
-.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn-primary:hover{filter:brightness(1.1)}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:var(--radius-sm);font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);transition:all .2s;font-family:var(--font)}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 35%,transparent)}
+.btn-primary:hover{filter:brightness(1.08);transform:translateY(-1px);box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 45%,transparent)}
 .btn-secondary{background:var(--card);color:var(--text)}
 .btn-secondary:hover{background:var(--border)}
 .btn-danger{background:var(--up);color:#fff;border-color:var(--up)}
@@ -93,24 +113,29 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .kpi-row-primary{grid-template-columns:repeat(3,1fr)}
 .kpi-row-secondary{grid-template-columns:repeat(5,1fr);gap:8px}
 .kpi-row-tertiary{grid-template-columns:repeat(2,1fr);gap:8px;max-width:50%}
-.kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;transition:border .2s}
-.kpi-card:hover{border-color:color-mix(in srgb,var(--accent) 30%,var(--border))}
-.kpi-label{font-size:10px;color:var(--text2);margin-bottom:5px;font-weight:500;letter-spacing:.2px}
-.kpi-value{font-size:22px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow-sm);transition:box-shadow .25s,border-color .25s,transform .25s}
+.kpi-card:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--border));box-shadow:var(--shadow-md)}
+.kpi-label{font-size:11px;color:var(--text2);margin-bottom:6px;font-weight:500;letter-spacing:.3px;text-transform:uppercase}
+.kpi-value{font-size:24px;font-weight:700;font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-0.5px}
 .kpi-value.pos{color:var(--up)} .kpi-value.neg{color:var(--down)}
-/* 核心指标放大 */
-.kpi-row-primary .kpi-card{padding:20px 22px}
-.kpi-row-primary .kpi-value{font-size:28px}
+/* B-8: hero 核心指标放大 + 微渐变背景 + 趋势/基准子行 */
+.kpi-row-primary .kpi-card{padding:22px 24px;background:linear-gradient(135deg,var(--card),color-mix(in srgb,var(--accent) 5%,var(--card)))}
+.kpi-row-primary .kpi-value{font-size:32px;font-weight:700}
 .kpi-row-primary .kpi-label{font-size:12px}
+.kpi-spark{margin-top:10px;height:32px}
+.kpi-spark:empty{display:none}
+.kpi-spark svg{width:100%;height:32px;display:block}
+.kpi-sub{font-size:11px;color:var(--text2);margin-top:8px;font-family:var(--mono);display:flex;align-items:center;gap:4px}
+.kpi-sub .delta-up{color:var(--up)} .kpi-sub .delta-down{color:var(--down)}
 /* 交易统计缩小 */
 .kpi-row-tertiary .kpi-card{padding:12px 14px}
 .kpi-row-tertiary .kpi-value{font-size:18px}
 
 /* ====== Chart Section ====== */
 .chart-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
 .chart-box.full{grid-column:1/-1}
-.chart-box-header{padding:12px 16px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text);display:flex;justify-content:space-between;align-items:center}
+.chart-box-header{padding:14px 18px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:var(--text);display:flex;justify-content:space-between;align-items:center;letter-spacing:-0.2px}
 .chart-box-body{padding:4px;height:340px}
 .chart-box-body.tall{height:440px}
 .chart-box-body.short{height:260px}
@@ -132,6 +157,10 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
 .progress-text{font-size:10px;color:var(--text2);margin-top:4px}
 
+/* B-9: 回测完成入场动效 — JS 给 KPI/图表卡加 .reveal 并 stagger 延迟（forwards 保持终态，KPI hover 不用 transform 故无冲突） */
+.reveal{animation:revealIn .5s cubic-bezier(0.16,1,0.3,1) both}
+@keyframes revealIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
 /* ====== Empty State ====== */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;color:var(--text2);text-align:center;gap:8px}
 .empty-state .icon{font-size:36px;opacity:0.4}
@@ -140,8 +169,8 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-m
 .summary-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:120px;overflow-y:auto}
 
 /* ====== Edit/Save/Cancel Toggle — P1-1: 增加取消按钮 ====== */
-.config-block{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;transition:all .2s}
-.config-block:hover{border-color:color-mix(in srgb,var(--accent) 30%,var(--border))}
+.config-block{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;box-shadow:var(--shadow-sm);transition:all .2s}
+.config-block:hover{border-color:color-mix(in srgb,var(--accent) 30%,var(--border));box-shadow:var(--shadow-md)}
 .config-block.editing{border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 15%,transparent)}
 .config-block .cfg-summary{font-size:11px;color:var(--text);line-height:1.6}
 .config-block .cfg-summary b{color:var(--accent);font-weight:600}
@@ -175,23 +204,36 @@ input.invalid{border-color:var(--up)!important}
 .input-error{color:var(--up);font-size:10px;margin-top:2px;display:none}
 input.invalid~.input-error{display:block}
 
-/* P-v3.4: 行业板块多选 — 2 列网格 + 搜索 + 已选标签 */
+/* B-14: 行业板块 — 可折叠面板 + 搜索高亮 + 已选计数徽章 */
 .sector-section{margin-top:10px;border-top:1px dashed var(--border);padding-top:10px}
-.sector-title{font-size:11px;color:var(--text2);font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
-.sector-title::before{content:'';display:inline-block;width:3px;height:12px;background:var(--accent2);border-radius:2px}
+.sector-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:4px 0 8px;user-select:none}
+.sector-header-title{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--text2);letter-spacing:.6px;text-transform:uppercase}
+.sector-header-title::before{content:'';display:inline-block;width:3px;height:12px;background:var(--accent2);border-radius:2px}
+.sector-chevron{width:12px;height:12px;color:var(--text2);transition:transform .2s}
+.sector-section.collapsed .sector-chevron{transform:rotate(-90deg)}
+.sector-count-badge{font-size:10px;font-family:var(--mono);color:var(--text2);background:var(--surface);padding:2px 8px;border-radius:8px;font-weight:600;border:1px solid var(--border)}
+.sector-count-badge.has{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 14%,transparent);border-color:color-mix(in srgb,var(--accent2) 40%,transparent)}
+.sector-panel{overflow:hidden;max-height:1000px;opacity:1;transition:max-height .3s ease,opacity .2s}
+.sector-section.collapsed .sector-panel{max-height:0;opacity:0}
+.sector-hint{font-size:10px;color:var(--text2);margin-bottom:8px;line-height:1.4}
+.sector-selected{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;max-height:120px;overflow-y:auto}
+.sector-selected:empty{display:none}
+.sector-tag{display:inline-flex;align-items:center;gap:4px;background:color-mix(in srgb,var(--accent2) 15%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 40%,transparent);border-radius:10px;padding:3px 9px;font-size:10px;cursor:pointer;font-weight:500;transition:all .15s}
+.sector-tag:hover{background:color-mix(in srgb,var(--up) 18%,transparent);color:var(--up);border-color:var(--up)}
+.sector-tag .x{font-weight:700;opacity:.7}
 .sector-toolbar{display:flex;gap:6px;margin-bottom:6px;align-items:center}
-.sector-toolbar input{flex:1;padding:5px 8px;font-size:11px}
-.sector-toolbar button{font-size:10px;padding:4px 10px}
-.sector-selected{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:20px}
-.sector-tag{display:inline-flex;align-items:center;gap:3px;background:color-mix(in srgb,var(--accent2) 15%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 40%,transparent);border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer}
-.sector-tag:hover{background:color-mix(in srgb,var(--up) 20%,transparent);color:var(--up);border-color:var(--up)}
-.sector-tag .x{font-weight:700}
-.sector-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:5px;padding:6px;background:var(--bg)}
-.sector-item{display:flex;align-items:center;gap:4px;font-size:10px;padding:2px 4px;border-radius:3px;cursor:pointer}
+.sector-toolbar input{flex:1;padding:5px 9px;font-size:11px}
+.sector-toolbar button{font-size:10px;padding:4px 10px;white-space:nowrap}
+.sector-match-info{font-size:10px;color:var(--text2);padding:0 2px 6px;font-family:var(--mono);min-height:14px}
+.sector-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px;max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px;background:var(--bg)}
+.sector-item{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 6px;border-radius:5px;cursor:pointer;transition:background .12s;border-left:2px solid transparent}
 .sector-item:hover{background:var(--surface)}
+.sector-item.checked{background:color-mix(in srgb,var(--accent2) 10%,transparent);border-left-color:var(--accent2)}
 .sector-item input{width:auto;accent-color:var(--accent2);cursor:pointer}
-.sector-item label{cursor:pointer;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sector-item label{cursor:pointer;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;display:flex;align-items:baseline;gap:5px}
+.sector-item label .code{color:var(--text2);font-size:9px;font-family:var(--mono)}
 .sector-item.hidden{display:none}
+.sector-item mark{background:color-mix(in srgb,var(--warn) 35%,transparent);color:inherit;border-radius:2px;padding:0 1px}
 .sector-empty{font-size:10px;color:var(--text2);padding:12px;text-align:center}
 </style>
 </head>
@@ -249,16 +291,23 @@ input.invalid~.input-error{display:block}
         <div class="checkbox-group"><input type="checkbox" id="cfgIncludeEtf"><label>包含ETF（A股 + ETF 混合）</label></div>
         <div class="checkbox-group"><input type="checkbox" id="cfgEtfOnly"><label>仅ETF（只 ETF，不要 A股）</label></div>
 
-        <!-- P-v3.4: 行业板块多选 (2 列网格 + 搜索) -->
+        <!-- B-14: 行业板块 — 可折叠面板 + 搜索高亮 + 已选计数徽章 -->
         <div class="sector-section">
-          <div class="sector-title">行业板块（可多选，与上方 ETF 叠加。勾选"仅ETF"时板块被忽略）</div>
-          <div class="sector-toolbar">
-            <input id="sectorSearch" placeholder="搜索板块名称..." oninput="filterSectors()">
-            <button class="btn btn-sm btn-secondary" onclick="clearSectors()">清空</button>
+          <div class="sector-header" onclick="toggleSectorPanel()" title="点击展开/收起">
+            <span class="sector-header-title"><svg class="sector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>行业板块</span>
+            <span class="sector-count-badge" id="sectorCountBadge">0 / 128</span>
           </div>
-          <div class="sector-selected" id="sectorSelected"></div>
-          <div class="sector-grid" id="sectorGrid">
-            <div class="sector-empty" id="sectorEmpty">加载板块列表中...</div>
+          <div class="sector-panel">
+            <div class="sector-hint">可多选，与 ETF 叠加；勾选"仅ETF"时板块被忽略</div>
+            <div class="sector-selected" id="sectorSelected"></div>
+            <div class="sector-toolbar">
+              <input id="sectorSearch" placeholder="搜索名称或代码…" oninput="filterSectors()">
+              <button class="btn btn-sm btn-secondary" onclick="clearSectors()">清空</button>
+            </div>
+            <div class="sector-match-info" id="sectorMatchInfo"></div>
+            <div class="sector-grid" id="sectorGrid">
+              <div class="sector-empty" id="sectorEmpty">加载板块列表中...</div>
+            </div>
           </div>
         </div>
       </div>
@@ -285,6 +334,23 @@ input.invalid~.input-error{display:block}
       <!-- 止损止盈 (编辑/保存/取消模式) — P1-1: 加取消按钮 -->
       <div class="form-section">
         <div class="form-section-title">止损止盈策略</div>
+        <!-- 2026-07-05: 优先级开关 (独立块, 不藏在阶梯止盈里) -->
+        <div class="config-block" id="blkPriority">
+          <div class="cfg-summary">
+            <span id="sumPriority">优先级：移动止损优先 (盘中锁利) <span class="saved-badge saved">已保存</span></span>
+          </div>
+          <div class="cfg-fields">
+            <div class="form-group">
+              <label>同 bar 双触发时谁先赢</label>
+              <div class="radio-group">
+                <label><input type="radio" name="cfgPriority" id="cfgPriorityStopFirst" value="stop_first"> 止损优先 (历史默认)</label>
+                <label><input type="radio" name="cfgPriority" id="cfgPriorityLadderTpFirst" value="ladder_tp_first"> 阶梯止盈优先</label>
+                <label><input type="radio" name="cfgPriority" id="cfgPriorityTrailingFirst" value="trailing_first" checked> 移动止损优先 (盘中锁利)</label>
+              </div>
+            </div>
+          </div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkPriority')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkPriority')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkPriority')" style="display:none">取消</button></div>
+        </div>
         <!-- 成本止损 -->
         <div class="config-block" id="blkCostStop">
           <div class="cfg-summary">
@@ -386,6 +452,10 @@ input.invalid~.input-error{display:block}
       </button>
       <!-- P1-2: 恢复默认配置按钮（调后端 API） -->
       <button class="btn btn-secondary btn-block btn-sm" onclick="resetDefaults()" style="margin-top:6px">恢复默认配置</button>
+      <!-- 2026-07-10: 前端配置存取 current.yaml（保存/加载/删除，单一覆盖文件） -->
+      <button class="btn btn-secondary btn-block btn-sm" onclick="saveConfigToFile()" style="margin-top:6px">保存配置到文件</button>
+      <button class="btn btn-secondary btn-block btn-sm" id="btnLoadFile" onclick="loadConfigFromFile()" style="margin-top:6px" disabled>从文件加载配置</button>
+      <button class="btn btn-secondary btn-block btn-sm" id="btnDeleteFile" onclick="deleteSavedConfig()" style="margin-top:6px" disabled>删除已保存配置</button>
       <div class="progress-bar" style="display:none" id="progressBar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
       <div class="progress-text" id="progressText"></div>
     </div>
@@ -401,9 +471,9 @@ input.invalid~.input-error{display:block}
     <!-- P3-1 + P2-4: KPI 分级布局 + tooltip -->
     <div class="kpi-grid" id="kpiGrid">
       <div class="kpi-row kpi-row-primary">
-        <div class="kpi-card" title="从初始资金到最终的涨跌比例"><div class="kpi-label">累计收益</div><div class="kpi-value" id="kpiCumRet">--</div></div>
-        <div class="kpi-card" title="从最高点到最低点的最大跌幅"><div class="kpi-label">最大回撤</div><div class="kpi-value" id="kpiMaxDD">--</div></div>
-        <div class="kpi-card" title="每承担1份风险获得的超额收益，>1 为优"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div></div>
+        <div class="kpi-card" title="从初始资金到最终的涨跌比例"><div class="kpi-label">累计收益</div><div class="kpi-value" id="kpiCumRet">--</div><div class="kpi-spark" id="kpiCumRetSpark"></div><div class="kpi-sub" id="kpiCumRetSub"></div></div>
+        <div class="kpi-card" title="从最高点到最低点的最大跌幅"><div class="kpi-label">最大回撤</div><div class="kpi-value" id="kpiMaxDD">--</div><div class="kpi-spark" id="kpiMaxDDSpark"></div><div class="kpi-sub" id="kpiMaxDDSub"></div></div>
+        <div class="kpi-card" title="每承担1份风险获得的超额收益，>1 为优"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div><div class="kpi-sub" id="kpiSharpeSub"></div></div>
       </div>
       <div class="kpi-row kpi-row-secondary">
         <div class="kpi-card" title="按复利折算的年化收益率"><div class="kpi-label">年化收益</div><div class="kpi-value" id="kpiAnnRet">--</div></div>
@@ -492,6 +562,6 @@ input.invalid~.input-error{display:block}
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/web/echarts.min.js"></script>
-<script src="/web/vera-ui.js"></script>
+<script src="/web/vera-ui.js?v=20260709b2"></script>
 </body>
 </html>
