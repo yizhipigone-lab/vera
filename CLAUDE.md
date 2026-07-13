@@ -21,13 +21,16 @@
 
 | 模块 | 路径 | 职责 |
 |---|---|---|
-| 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线,`run_cached` 是批量回测入口 |
+| 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):10 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径 |
 | 选股 | `selection/selector.py` | 股票池筛选(ST/涨停/停牌过滤) |
-| 止损管理 | `backtest/stop_manager.py` + `stop_config.py` | 止损/止盈/移动止盈/阶梯止盈 |
-| 公式系统 | TDX 公式翻译 + `batch_*.py` | 通达信公式批量回测 |
-| Web 后端 | `server.py` | API + 进度反馈(注意 `/api/run` 同步阻塞事件循环的历史问题) |
+| 止损管理 | `backtest/stop_manager.py` + `stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复) |
+| 复权口径 | `core/dividend_type.py` | **统一 int/str 映射(候选 D,0b47db5)**:DataFetcher/FormulaRunner 内部用 `to_tdx_str`/`to_formula_int` 归一化,允许混传。`assert_consistent` 由 pipeline.py:101 调用 |
+| 公式系统 | TDX 公式翻译 + `core/formula_runner.py` | 通达信公式执行封装,统一入口。批量脚本 `batch_*.py` 大部分已删(2026-07-13 清 35 个废弃脚本) |
+| Web 后端 | `server.py` | API + 进度反馈(2026-07-13 候选 E,9a94d0c + 555aadd):`Pipeline.run` 加 `progress_callback` (11 个回调点),server `/api/run` 加 3 个中间 status 消除 5→15/15→40/70→85 黑区 |
 | Web 前端 | `web/index.html` + `vera-ui.js` | 管理后台 UI |
-| 测试 | `tests/` | pytest 套件,改核心函数后必跑 |
+| 测试 | `tests/` | pytest 套件,改核心函数后必跑。守卫式 + 字节级 parity + 能力透传 + 默认值锁 + 复权口径边界 + 进度回调签名 |
+
+**历史背景**:`_simulate_core_v3`(39 参数私有函数)曾是事实公共入口,被 4 脚本 + 4 测试直调。候选 A 阶段 1 + 阶段 1.5 收编 5 脚本 + `optimize_strategies` 收编 + 清理 `optimize_full` 死 import,**生产直调完全清零**(锁私有完整达成,2026-07-13 e62e0ab)。守卫测试仍直调锁签名防误改
 
 ## 协作风格(用户四禁,违反即止损)
 
@@ -58,6 +61,7 @@
 ## 回测可信度提示
 
 - 历史审计(2026-07-02)发现过前视偏差、默认值漂移、ST 过滤失效、复权口径分裂、成交价乐观偏差等问题,系统综合曾评 4.5/10
+- **2026-07-13 架构深化 + 修复后系统综合 7.5/10**(三角色审计,980b04f + edd84ce + ca8bc6e + 41d4e29 + 4b3f8c8 + d9e74cd + e62e0ab + 0b47db5 + 9a94d0c + 555aadd + ce0b314):run_cached 加厚前门 + 锁私有 + 复权口径统一 + 进度反馈细化 + 清 35 废弃脚本。审计报告 `docs/audit/2026-07-13_候选A阶段1_审计报告.md`;候选 B(35 脚本收口)已弃,改删 35 废弃
 - **回测绝对值不可全信**(方向系统性乐观);相对排序在同口径、含停牌/ST 少的策略里尚可参考
 - 给结论时**标注是否已核实尺子**,不要装作回测是准的。具体坑以最新代码 + tests 为准,别信旧 memory 里的 file:line
 
