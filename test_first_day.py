@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd, numpy as np
 from core.connector import TdxConnector
-from backtest.engine import _simulate_core_v3
+from backtest.engine import BacktestEngine
 from core.data_fetcher import DataFetcher
 from utils.logger import get_logger
 logger = get_logger(__name__)
@@ -67,30 +67,37 @@ if high_df is not None:
 
 print(f"Data: {close.shape}, entries: {entries.sum().sum()} signals")
 
+# 候选 A 阶段 1.5: 收编到 run_cached (锁 _simulate_core_v3 私有; filter_limit_up=False 复现直调口径)
+_eng = BacktestEngine({
+    "initial_capital": 1_000_000.0,
+    "commission": 0.0003,
+    "enable_realistic_costs": False,
+    "period": "1d",
+    "position_sizing": {"min_buy_amount": 5000.0, "max_buy_amount": 50000.0, "lot_size": 100, "min_lots": 1},
+})
+_sc = {
+    "priority": "stop_first",
+    "cost_stop": {"enabled": True, "threshold": -0.06},
+    "trailing_stop": {"enabled": True, "activation": 0.05, "drawdown": 0.03},
+    "ladder_tp": {"enabled": True, "levels": [{"profit": 0.03, "sell_ratio": 0.30}]},
+    "time_stop": {"enabled": True, "max_hold_days": 10},
+    "cond_time_stop": {"enabled": False, "days": 7, "profit": 0.01},
+    "first_day": {"enabled": False, "target": 0.03},
+}
+_lp = np.array([0.03], dtype=np.float64)
+_lr = np.array([0.30], dtype=np.float64)
+
 # Test: WITHOUT first_day
-ea1, rt1 = _simulate_core_v3(
-    close.values.astype(np.float64), entries.values,
-    1000000.0, 0.0003, 5000.0, 50000.0, 100, 1,
-    True, -0.06, True, 0.05, 0.03,
-    True, np.array([0.03], dtype=np.float64), np.array([0.30], dtype=np.float64), 1,
-    True, 10, False, 7, 0.01,
-    first_day_enabled=False, first_day_target=0.03, high_np=None,
-)
+_res1 = _eng.run_cached(close, entries, None, None, _sc, None, _lp, _lr, 1,
+                       skip_sm=True, filter_limit_up=False, return_raw=True)
+ea1, rt1 = _res1["raw_equity"], _res1["raw_trades"]
 
 # Test: WITH first_day (target=3%)
-if high_df is not None:
-    high_np = high_df.values.astype(np.float64)
-else:
-    high_np = None
-
-ea2, rt2 = _simulate_core_v3(
-    close.values.astype(np.float64), entries.values,
-    1000000.0, 0.0003, 5000.0, 50000.0, 100, 1,
-    True, -0.06, True, 0.05, 0.03,
-    True, np.array([0.03], dtype=np.float64), np.array([0.30], dtype=np.float64), 1,
-    True, 10, False, 7, 0.01,
-    first_day_enabled=True, first_day_target=0.03, high_np=high_np,
-)
+high_np = high_df.values.astype(np.float64) if high_df is not None else None
+_sc["first_day"]["enabled"] = True
+_res2 = _eng.run_cached(close, entries, high_np, None, _sc, None, _lp, _lr, 1,
+                       skip_sm=True, filter_limit_up=False, return_raw=True)
+ea2, rt2 = _res2["raw_equity"], _res2["raw_trades"]
 
 # Analyze
 def analyze(rt, label):

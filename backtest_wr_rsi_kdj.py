@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd, numpy as np
 from core.connector import TdxConnector
 from utils.logger import get_logger
-from backtest.engine import _simulate_core_v3
+from backtest.engine import BacktestEngine
 
 logger = get_logger(__name__)
 
@@ -111,13 +111,27 @@ def run_one(close, entries, stop_params, cap, max_pct):
     ct, ta, td, lpv, lrv, tdays = stop_params
     lp = np.array(lpv, dtype=np.float64); lr = np.array(lrv, dtype=np.float64)
     te = tdays < 900
-    ea, rt = _simulate_core_v3(
-        c.values.astype(np.float64), e.values,
-        float(cap), 0.0003, 5000.0, float(cap * max_pct), 100, 1,
-        True, ct, True, ta, td,
-        True, lp, lr, len(lp),
-        te, int(tdays) if te else 999, False, 7, 0.01,
-    )
+    # 候选 A 阶段 1.5: 收编到 run_cached (锁 _simulate_core_v3 私有; filter_limit_up=False 复现直调口径)
+    _eng = BacktestEngine({
+        "initial_capital": float(cap),
+        "commission": 0.0003,
+        "enable_realistic_costs": False,
+        "period": "1d",
+        "position_sizing": {"min_buy_amount": 5000.0, "max_buy_amount": float(cap * max_pct),
+                            "lot_size": 100, "min_lots": 1},
+    })
+    _sc = {
+        "priority": "stop_first",
+        "cost_stop": {"enabled": True, "threshold": float(ct)},
+        "trailing_stop": {"enabled": True, "activation": float(ta), "drawdown": float(td)},
+        "ladder_tp": {"enabled": True, "levels": []},
+        "time_stop": {"enabled": te, "max_hold_days": int(tdays) if te else 999},
+        "cond_time_stop": {"enabled": False, "days": 7, "profit": 0.01},
+        "first_day": {"enabled": False, "target": 0.03},
+    }
+    _res = _eng.run_cached(c, e, None, None, _sc, None, lp, lr, len(lp),
+                          skip_sm=True, filter_limit_up=False, return_raw=True)
+    ea, rt = _res["raw_equity"], _res["raw_trades"]
     if len(rt) == 0: return None
     cr = (ea[-1] - cap) / cap
     wr = sum(1 for t in rt if t[7] > 0) / len(rt)
