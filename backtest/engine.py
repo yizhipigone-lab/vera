@@ -677,13 +677,9 @@ class BacktestEngine:
         # P1-1/P1-2: Open 不做 ffill — 停牌日 open=NaN 应保留，让 T+1 买入自然跳过
         open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64) if open_df is not None else None
 
-        # tradable 掩码 + 退市检测（基于原始未 ffill 价）
-        tradable_np = close_raw.notna().values.astype(np.bool_)
-        last_tradable_idx = np.full(close.shape[1], -1, dtype=np.int64)
-        for _ci in range(close.shape[1]):
-            _idxs = np.where(tradable_np[:, _ci])[0]
-            if _idxs.size:
-                last_tradable_idx[_ci] = int(_idxs[-1])
+        # 候选 A 审计 M1 修复: 改用公用 _build_tradable_from_raw helper
+        # 消除 run 与 run_cached 的 drift (close_raw 是 line 671 重索引后的 DataFrame, helper 对 DataFrame 等价)
+        tradable_np, last_tradable_idx = _build_tradable_from_raw(close_raw, close)
 
         # 准备阶梯止盈数组
         levels = ladder.get("levels", [])
