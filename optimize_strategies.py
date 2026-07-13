@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from core.connector import TdxConnector
 from utils.logger import get_logger
-from backtest.engine import _simulate_core_v3
+from backtest.engine import BacktestEngine
 
 logger = get_logger(__name__)
 
@@ -82,16 +82,32 @@ def run_sim(close_df, entries_df, stop_cfg, capital=1_000_000, max_buy=100000):
     lv=sorted(ladder.get("levels",[]),key=lambda x:x.get("profit",0))
     lp=np.array([lv[i]["profit"] for i in range(len(lv))],dtype=np.float64)
     lr=np.array([lv[i]["sell_ratio"] for i in range(len(lv))],dtype=np.float64)
-    ea,rt=_simulate_core_v3(
-        c.values.astype(np.float64),e.values,
-        float(capital),0.0003,5000.0,float(max_buy),100,1,
-        cost.get("enabled",True),float(cost.get("threshold",-0.06)),
-        trail.get("enabled",True),float(trail.get("activation",0.05)),
-        float(trail.get("drawdown",0.03)),
-        ladder.get("enabled",True),lp,lr,len(lv),
-        time_s.get("enabled",True),int(time_s.get("max_hold_days",10)),
-        cond_t.get("enabled",False),int(cond_t.get("days",7)),float(cond_t.get("profit",0.01)),
-    )
+    # 候选 A 阶段 1.5: 收编到 run_cached (锁 _simulate_core_v3 私有; 显式传直调默认值保字节级等价)
+    _eng = BacktestEngine({
+        "initial_capital": float(capital),
+        "commission": 0.0003,
+        "enable_realistic_costs": False,
+        "period": "1d",
+        "position_sizing": {"min_buy_amount": 5000.0, "max_buy_amount": float(max_buy),
+                            "lot_size": 100, "min_lots": 1},
+    })
+    _sc = {
+        "priority": "stop_first",
+        "cost_stop": {"enabled": cost.get("enabled", True), "threshold": float(cost.get("threshold", -0.06))},
+        "trailing_stop": {"enabled": trail.get("enabled", True),
+                          "activation": float(trail.get("activation", 0.05)),
+                          "drawdown": float(trail.get("drawdown", 0.03))},
+        "ladder_tp": {"enabled": ladder.get("enabled", True), "levels": []},
+        "time_stop": {"enabled": time_s.get("enabled", True),
+                      "max_hold_days": int(time_s.get("max_hold_days", 10))},
+        "cond_time_stop": {"enabled": cond_t.get("enabled", False),
+                           "days": int(cond_t.get("days", 7)),
+                           "profit": float(cond_t.get("profit", 0.01))},
+        "first_day": {"enabled": False, "target": 0.03},
+    }
+    _res = _eng.run_cached(c, e, None, None, _sc, None, lp, lr, len(lv),
+                          skip_sm=True, filter_limit_up=False, return_raw=True)
+    ea, rt = _res["raw_equity"], _res["raw_trades"]
     if len(rt)==0: return None
     cr=(ea[-1]-capital)/capital
     wr=sum(1 for t in rt if t[7]>0)/len(rt)

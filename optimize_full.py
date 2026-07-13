@@ -6,7 +6,7 @@ import numpy as np
 from core.connector import TdxConnector
 from core.data_fetcher import DataFetcher
 from core.formula_runner import FormulaRunner
-from backtest.engine import BacktestEngine, _simulate_core_v3
+from backtest.engine import BacktestEngine
 
 TdxConnector.ensure_connected()
 
