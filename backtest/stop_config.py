@@ -38,7 +38,13 @@ def load_stop_config(default_path: Optional[str] = None) -> Dict[str, Any]:
           'time_stop':      {'enabled': True, 'max_hold_days': 20},
           'cond_time_stop': {'enabled': False},
           'first_day':      {'enabled': False},
+          'formula_sell':   {'enabled': False, ...},                  # P-v3.4
+          'capabilities':   {'formula_exit': True, 'gap_protection': True, 'delisting': True},  # 候选 A 阶段 1
         }
+
+    capabilities 语义 (候选 A 阶段 1): 三开关默认全开, gate run_cached 已提供的能力数据。
+    开关 on + 数据 None → 能力 off (=旧行为); 开关 off → 强制 None。yaml 缺 capabilities 时
+    run_cached 用 .get("capabilities", {}) 回退全 True (安全)。
 
     Raises:
         FileNotFoundError: yaml 不存在
@@ -61,6 +67,8 @@ def load_stop_config_or_default() -> Dict[str, Any]:
         return load_stop_config()
     except Exception:
         return {
+            # 候选 A 阶段 1: 补 priority (原兜底漏了, 与 default.yaml 对齐)
+            'priority':       'trailing_first',
             'cost_stop':     {'enabled': True, 'threshold': -0.12},
             'trailing_stop': {'enabled': True, 'activation': 0.08, 'drawdown': 0.05},
             'ladder_tp': {
@@ -80,6 +88,12 @@ def load_stop_config_or_default() -> Dict[str, Any]:
                 'formula_arg': '',
                 'sell_ratio': 1.0,
                 'priority': 0,
+            },
+            # 候选 A 阶段 1: 三类能力开关 (默认全开; 数据未提供时对应能力自然 off)
+            'capabilities': {
+                'formula_exit': True,
+                'gap_protection': True,
+                'delisting': True,
             },
         }
 

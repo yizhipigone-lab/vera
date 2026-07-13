@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engine import _simulate_core_v3
+from backtest.engine import _simulate_core_v3, BacktestEngine
 from backtest.stop_config import load_stop_config
 
 
@@ -313,6 +313,65 @@ class TestNoNewPositionalParamsAdded:
                             f"_simulate_core_v3 调用 #{i+1} 中 slippage 同时是位置参数和 keyword — "
                             f"会触发 'multiple values' 错"
                         )
+
+
+# === 4. run_cached 签名契约测试 (候选 A 阶段 1: 加厚前门) ===
+class TestRunCachedSignature:
+    """run_cached 深化后的签名契约 — 锁 10 旧位置参数 + 9 新 keyword-only 能力参数.
+
+    深化方式: 旧 10 位置参数一字不动 (40 调用方依赖), 新增 9 个 keyword-only
+    全默认 None/False/True → 40 调用方不传 = 三类能力 off = 旧行为字节级一致。
+    """
+
+    def test_run_cached_positional_params_unchanged(self):
+        """核心契约: 位置参数 ≤ 10 (锁旧 baseline, 40 调用方位置调用依赖)."""
+        sig = inspect.signature(BacktestEngine.run_cached)
+        positional_count = sum(
+            1 for p in sig.parameters.values()
+            if p.default == inspect.Parameter.empty
+            and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
+        # 含 self = 11; 不含 self = 10
+        assert positional_count <= 11, (
+            f"run_cached 位置参数个数 {positional_count} > 11 (self+10). "
+            f"40 调用方依赖旧 10 位置参数, 不能加新位置参数 — 新能力必须 keyword-only。"
+        )
+
+    def test_run_cached_capability_kwargs_keyword_only(self):
+        """9 个能力参数必须 keyword-only + 有默认值 (40 调用方不传 = 旧行为)."""
+        sig = inspect.signature(BacktestEngine.run_cached)
+        required_kw = {
+            'filter_limit_up', 'open_np', 'tradable_np', 'last_tradable_idx',
+            'formula_exit_np', 'formula_exit_ratio', 'formula_exit_lag_bars',
+            'close_raw', 'return_raw',
+        }
+        for kw in required_kw:
+            assert kw in sig.parameters, f"run_cached 缺少 keyword 参数 [{kw}]"
+            p = sig.parameters[kw]
+            assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
+                f"{kw} 必须 keyword-only (防 40 调用方位置传参错位)"
+            )
+            assert p.default != inspect.Parameter.empty, (
+                f"{kw} 必须有默认值 (40 调用方不传 = 旧行为)"
+            )
+
+    def test_run_cached_forwards_capability_keywords(self):
+        """源码守卫: run_cached body 调 _simulate_core_v3 时必须传 6 个能力 keyword + 读 capabilities."""
+        src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                'backtest', 'engine.py')
+        with open(src_path, 'r', encoding='utf-8') as f:
+            src = f.read()
+        cached_start = src.find('def run_cached(self, close')
+        cached_end = src.find('def _build_trades')
+        cached_body = src[cached_start:cached_end]
+        for kw in ['tradable_np=', 'last_tradable_idx=', 'open_np=',
+                   'formula_exit_np=', 'formula_exit_ratio=', 'formula_exit_lag_bars=']:
+            assert kw in cached_body, (
+                f"run_cached 调 _simulate_core_v3 时缺少 {kw} keyword (三类能力透传)"
+            )
+        assert 'capabilities' in cached_body, "run_cached body 必须读 capabilities 开关"
+        assert 'return_raw' in cached_body, "run_cached body 必须支持 return_raw"
 
 
 if __name__ == '__main__':

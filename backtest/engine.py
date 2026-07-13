@@ -825,8 +825,27 @@ class BacktestEngine:
         }
 
     def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
-                   ladder_profits, ladder_ratios, n_ladder, skip_sm=False):
-        """用预取数据运行回测，跳过K线获取（用于批量优化）"""
+                   ladder_profits, ladder_ratios, n_ladder, skip_sm=False, *,
+                   filter_limit_up=True,
+                   open_np=None,
+                   tradable_np=None, last_tradable_idx=None,
+                   formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
+                   close_raw=None,
+                   return_raw=False):
+        """用预取数据运行回测，跳过K线获取（用于批量优化）
+
+        候选 A 阶段 1 深化（加厚前门）: 10 旧位置参数不动, 新增 9 个 keyword-only
+        透传三类能力（公式卖出/跳空保护/退市检测）。40 调用方不传新参 → 全 None
+        → 三类能力 off → 与旧版字节级一致。capabilities 三开关（默认全开）gate
+        已提供的数据, 不自动造数据。
+
+        - filter_limit_up: 默认 True（40 调用方现状, 跑涨停过滤）; 收编脚本传 False
+          复现旧直调 _simulate_core_v3 口径。
+        - open_np/tradable_np/last_tradable_idx/formula_exit_np: 能力数据, None=off。
+        - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np（不从 close 自动建,
+          防 ffill 调用方误触发退市）。
+        - return_raw: True 时 result dict 加 raw_equity/raw_trades（收编脚本 + parity 测试用）。
+        """
         stop = stop_config or {}
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
@@ -835,6 +854,12 @@ class BacktestEngine:
         first_day = stop.get("first_day", {})
         # 2026-07-05: 阶梯止盈/成本止损优先级 (ladder_tp_first / trailing_first)
         priority = str(stop.get("priority", "stop_first"))
+        _VALID_PRIORITY = {"stop_first", "ladder_tp_first", "trailing_first"}
+        if priority not in _VALID_PRIORITY:
+            logger.warning(
+                "stop_config.priority=%r 非法, 回退 stop_first (合法: %s)",
+                priority, sorted(_VALID_PRIORITY),
+            )
         ladder_tp_first = (priority == "ladder_tp_first")
         trailing_first = (priority == "trailing_first")
 
@@ -857,7 +882,37 @@ class BacktestEngine:
         ctd_scaled = ctd * bpday
         fd_bars = bpday - 1 if bpday > 1 else 1
 
-        entries = self._filter_limit_up(entries, close)
+        # 候选 A 阶段 1: capabilities 三开关 (默认全开), gate 已提供的能力数据。
+        # 语义: 开关 on + 数据 None → 能力 off (=旧行为); 开关 off → 强制 None。
+        caps = stop.get("capabilities", {})
+        cap_formula = caps.get("formula_exit", True)
+        cap_gap = caps.get("gap_protection", True)
+        cap_delist = caps.get("delisting", True)
+        if not cap_formula:
+            formula_exit_np = None
+        if not cap_gap:
+            open_np = None
+        # 退市: 仅当显式传 close_raw 时自建 tradable_np (不从 close 自动建, 防 ffill 调用方误触发)
+        if cap_delist and tradable_np is None and close_raw is not None:
+            _raw_df = close_raw if isinstance(close_raw, pd.DataFrame) else pd.DataFrame(close_raw)
+            _raw_aligned = _raw_df.reindex(index=close.index, columns=close.columns)
+            tradable_np = _raw_aligned.notna().values.astype(np.bool_)
+            last_tradable_idx = np.full(close.shape[1], -1, dtype=np.int64)
+            for _ci in range(close.shape[1]):
+                _idxs = np.where(tradable_np[:, _ci])[0]
+                if _idxs.size:
+                    last_tradable_idx[_ci] = int(_idxs[-1])
+        if not cap_delist:
+            tradable_np = None
+            last_tradable_idx = None
+        # formula_exit_ratio: keyword 优先, None 回退 config.formula_sell.sell_ratio
+        if formula_exit_ratio is None:
+            formula_exit_ratio = float(stop.get("formula_sell", {}).get("sell_ratio", 1.0))
+        # ladder 隐含约定: ladder_profits 应升序 (调用方责任); 不升序 warning 不重排
+        if n_ladder > 1 and not bool(np.all(np.diff(ladder_profits[:n_ladder]) >= 0)):
+            logger.warning("ladder_profits 非升序, 阶梯触发可能不符预期 (调用方应预排序)")
+
+        entries = self._filter_limit_up(entries, close) if filter_limit_up else entries
         equity_arr, raw_trades = _simulate_core_v3(
             close.values.astype(np.float64), entries.values,
             float(self.initial_capital), float(self.eff_commission),
@@ -879,6 +934,11 @@ class BacktestEngine:
             trailing_first=trailing_first,
             # 2026-07-09: 单票占比上限
             max_position_pct=float(self.max_position_pct),
+            # 候选 A 阶段 1: 补齐三类能力 keyword (旧版静默丢, 现按 capabilities 开关透传)
+            tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
+            open_np=open_np,
+            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
+            formula_exit_lag_bars=formula_exit_lag_bars,
         )
 
         dates = close.index
@@ -914,12 +974,17 @@ class BacktestEngine:
         metrics = MetricsCalculator.compute_all(equity_curve, trades_df, self.initial_capital,
                                                   periods_per_year=self.PERIODS_PER_YEAR.get(self.period, self.bars_per_day * 252))
         # C2 修复: 返回真实 equity_curve (以前只返回 cumret, 强制调用方用 trades 重建, 有前视偏差)
-        return {
+        result = {
             "metrics": metrics,
             "trades": trades_df,
             "cumulative_return": metrics.get("cumulative_return", 0),
             "equity_curve": equity_curve,
         }
+        # 候选 A 阶段 1: return_raw 暴露 raw_equity/raw_trades (收编脚本 + parity 测试用)
+        if return_raw:
+            result["raw_equity"] = equity_arr
+            result["raw_trades"] = raw_trades
+        return result
 
     def _build_trades(self, raw, columns, dates, bpday=1):
         if len(raw) == 0: return pd.DataFrame()
