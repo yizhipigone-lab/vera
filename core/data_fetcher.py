@@ -4,6 +4,7 @@ import pandas as pd
 from typing import List, Optional
 
 from .connector import TdxConnector
+from .dividend_type import to_tdx_str
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
 
@@ -48,6 +49,8 @@ class DataFetcher:
             每个 DataFrame 的行索引为 DatetimeIndex，列为股票代码。
         """
         cls._ensure_ready()
+        # 候选 D: 边界归一化, 允许 int 输入 (旧调用方传 int=1 也能正确映射到 "front")
+        dividend_type = to_tdx_str(dividend_type)
         from tqcenter import tq
 
         codes = normalize_list(stock_list)

@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from core.connector import TdxConnector
+from core.dividend_type import to_formula_int
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
 
@@ -39,6 +40,8 @@ class FormulaRunner:
         """
         from tqcenter import tq
         cls._ensure_ready()
+        # 候选 D: 边界归一化, 允许 str 输入 (旧调用方传 "front" 也能正确映射到 1)
+        dividend_type = to_formula_int(dividend_type)
 
         if stock_list is None:
             raw = tq.get_stock_list("50", list_type=1)
@@ -179,6 +182,8 @@ class FormulaRunner:
             dict: {stock_code: [[indicator_values]]}
         """
         cls._ensure_ready()
+        # 候选 D: 边界归一化, 允许 str 输入
+        dividend_type = to_formula_int(dividend_type)
         from tqcenter import tq
 
         if stock_list is None:
