@@ -328,6 +328,10 @@ def run_pipeline(cfg: StrategyConfig):
             pipeline_status.running = False
             return {"success": False, "error": f"无法连接通达信: {e}"}
 
+        # 候选 E: TDX 就绪 (避免 5→15 黑区)
+        pipeline_status.step = "TDX 就绪"
+        pipeline_status.progress = 8
+
         # Step 2: 选股
         pipeline_status.step = "执行选股"
         pipeline_status.progress = 15
@@ -360,6 +364,9 @@ def run_pipeline(cfg: StrategyConfig):
         bt_cfg = config_dict.get("backtest", {})
         stop_cfg = config_dict.get("stop_loss", {})
         engine = BacktestEngine(bt_cfg)
+        # 候选 E: 回测引擎就绪 (避免 15→40 黑区)
+        pipeline_status.step = "准备回测"
+        pipeline_status.progress = 30
 
         backtest_result = engine.run(
             selections=selections,
@@ -385,6 +392,9 @@ def run_pipeline(cfg: StrategyConfig):
                 start_time=cfg.start_time,
                 end_time=cfg.end_time,
             )
+        # 候选 E: 基准完成 (避免 70→85 黑区)
+        pipeline_status.step = "基准完成"
+        pipeline_status.progress = 75
 
         # Step 5: 生成报告
         pipeline_status.step = "生成报告"
