@@ -162,16 +162,27 @@ class Pipeline:
         exporter = TdxExporter()
         exporter.export_full_report(backtest_result, self.strategy_name)
 
-    def run(self, export_tdx: bool = False) -> dict:
+    def run(self, export_tdx: bool = False, progress_callback=None) -> dict:
         """
         执行完整管线。
 
         Args:
             export_tdx: 是否将结果推送到通达信界面
+            progress_callback: 可选回调 fn(progress_pct: int, step_name: str),
+                              每步完成后调用, 用于 web 进度条细化 (候选 E)。
+                              失败被吞 (不影响管线)。
 
         Returns:
             dict with keys: selections, backtest, benchmark, reports
         """
+        def _cb(pct: int, name: str):
+            """内部 callback 包装: 失败被吞, 防止 callback 异常中断管线."""
+            if progress_callback:
+                try:
+                    progress_callback(pct, name)
+                except Exception:
+                    pass
+
         logger.info("=" * 60)
         logger.info(f"VERA 量化管线启动: {self.strategy_name}")
         logger.info(f"时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
@@ -182,35 +193,49 @@ class Pipeline:
             TdxConnector.initialize()
         except Exception as e:
             logger.error(f"TDX 连接失败: {e}")
+            _cb(5, "连接通达信失败")
             return {"error": str(e), "selections": None, "backtest": None}
+        _cb(5, "连接通达信")
 
         # Step 2: 选股
         logger.info("[Step 1/5] 执行选股...")
+        _cb(10, "准备选股参数")
         selections = self.step1_select()
+        _cb(15, "执行选股")
         if selections.empty:
             logger.warning("选股结果为空，管线终止")
             TdxConnector.close()
+            _cb(20, "选股为空")
             return {"error": "no_selections", "selections": pd.DataFrame(), "backtest": None}
+        _cb(20, "保存选股结果")
 
         # Step 3: 回测
         logger.info("[Step 2/5] 执行回测...")
+        _cb(30, "构造回测引擎")
         backtest_result = self.step2_backtest(selections)
+        _cb(50, "回测完成")
 
         # Step 4: 基准对比
         logger.info("[Step 3/5] 基准对比...")
+        _cb(65, "拉取基准数据")
         benchmark_results = self.step3_benchmark(backtest_result)
+        _cb(75, "基准对比完成")
 
         # Step 5: 生成报告
         logger.info("[Step 4/5] 生成报告...")
+        _cb(85, "生成图表")
         report_outputs = self.step4_report(backtest_result, benchmark_results)
+        _cb(90, "生成报告")
 
         # Step 6: 导出到 TDX（可选）
         if export_tdx:
             logger.info("[Step 5/5] 导出到通达信...")
+            _cb(93, "导出到通达信")
             try:
                 self.step5_export_to_tdx(backtest_result)
             except Exception as e:
                 logger.warning(f"导出到通达信失败: {e}")
+        _cb(95, "落盘结果")
 
         # 清理
         TdxConnector.close()
@@ -223,6 +248,7 @@ class Pipeline:
             logger.info(f"JSON 指标: {report_outputs['json']}")
         logger.info("=" * 60)
 
+        _cb(100, "完成")
         return {
             "selections": selections,
             "backtest": backtest_result,
