@@ -203,5 +203,123 @@ def test_run_cached_no_data_legacy_behavior():
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 7: close_raw 自建 tradable_np → 退市 reason=11 (DataFrame 路径)
+# ---------------------------------------------------------------------------
+def test_run_cached_close_raw_builds_tradable_delisting():
+    """close_raw (DataFrame 含 NaN 模拟退市) → run_cached 自建 tradable → reason=11."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    close_raw = close.copy()
+    close_raw.iloc[7:, 0] = np.nan  # bar 7 起退市 (原始未 ffill 价 NaN)
+    eng = _make_engine()
+    result = _run(eng, close, entries, high, low, _stop_config(), close_raw=close_raw)
+    rt = result["raw_trades"]
+    reasons = [int(r[8]) for r in rt]
+    assert 11 in reasons, f"close_raw 自建 tradable 应触发退市 reason=11, 实际 {reasons}"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: close_raw 是 2D numpy → 应正确对齐, 不静默全-False (H1 修复)
+# ---------------------------------------------------------------------------
+def test_run_cached_close_raw_numpy_array_not_silent():
+    """close_raw 是 2D numpy → 用 close 的 index/columns 对齐, 不静默全-False 空交易."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    close_raw_np = close.values.astype(np.float64).copy()
+    close_raw_np[7:, 0] = np.nan  # bar 7 起退市
+    eng = _make_engine()
+    result = _run(eng, close, entries, high, low, _stop_config(), close_raw=close_raw_np)
+    rt = result["raw_trades"]
+    reasons = [int(r[8]) for r in rt]
+    assert 11 in reasons, (
+        f"close_raw numpy 应正确对齐触发退市 reason=11, 实际 {reasons} "
+        f"(若空交易说明静默全-False bug 未修)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: tradable_np 已传时 close_raw 被忽略 (tradable 优先, L2 文档化)
+# ---------------------------------------------------------------------------
+def test_run_cached_close_raw_ignored_when_tradable_given():
+    """tradable_np 已传 → close_raw 被忽略 (tradable 优先, close_raw 不覆盖)."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    close_raw = close.copy()
+    close_raw.iloc[7:, 0] = np.nan  # 若用 close_raw 会退市
+    tradable = np.ones((len(dates), 1), dtype=bool)  # 全可交易, 不退市
+    lti = np.array([len(dates) - 1], dtype=np.int64)
+    eng = _make_engine()
+    result = _run(eng, close, entries, high, low, _stop_config(),
+                  tradable_np=tradable, last_tradable_idx=lti, close_raw=close_raw)
+    rt = result["raw_trades"]
+    reasons = [int(r[8]) for r in rt]
+    assert 11 not in reasons, (
+        f"tradable_np 已传时 close_raw 应被忽略, 不应退市, 实际 {reasons}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: cap_gap=False → open_np 被强制 None (跳空保护 off), 不崩 (M3 补)
+# ---------------------------------------------------------------------------
+def test_run_cached_switch_disables_gap_protection():
+    """cap_gap=False → open_np 被强制 None, 不崩 + 有交易 (time_stop 兜底)."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    eng = _make_engine()
+    sc = _stop_config(capabilities={
+        "formula_exit": True, "gap_protection": False, "delisting": True,
+    })
+    result = _run(eng, close, entries, high, low, sc, open_np=open_.values.astype(np.float64))
+    assert result["raw_equity"].shape == (len(dates),)
+    assert len(result["raw_trades"]) >= 1, "cap_gap=False 不应崩, time_stop 兜底应有交易"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: priority 非法值 → warning + 回退 stop_first, 不崩 (M3 补)
+# ---------------------------------------------------------------------------
+def test_run_cached_priority_invalid_falls_back():
+    """priority='invalid_value' → warning + 回退 stop_first, 不崩 + 有交易."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    eng = _make_engine()
+    sc = _stop_config(priority="invalid_value")
+    result = _run(eng, close, entries, high, low, sc)
+    assert result["raw_equity"].shape == (len(dates),)
+    assert len(result["raw_trades"]) >= 1, "非法 priority 应回退 stop_first 不崩"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: ladder_profits 非升序 → warning, 不崩 (M3 补)
+# ---------------------------------------------------------------------------
+def test_run_cached_ladder_non_monotonic_warning():
+    """ladder_profits 非升序 ([0.15, 0.06]) → warning, 不崩 + 有交易."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    eng = _make_engine()
+    sc = _stop_config()
+    sc["ladder_tp"] = {"enabled": True, "levels": [
+        {"profit": 0.15, "sell_ratio": 0.3}, {"profit": 0.06, "sell_ratio": 0.3},
+    ]}
+    lp = np.array([0.15, 0.06], dtype=np.float64)  # 非升序
+    lr = np.array([0.3, 0.3], dtype=np.float64)
+    result = eng.run_cached(
+        close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
+        sc, None, lp, lr, 2, skip_sm=True, filter_limit_up=False, return_raw=True,
+    )
+    assert result["raw_equity"].shape == (len(dates),), "非升序 ladder 应 warning 但不崩"
+
+
+# ---------------------------------------------------------------------------
+# Test 13: return_raw=False (默认) → result 不含 raw_equity/raw_trades (L1 补)
+# ---------------------------------------------------------------------------
+def test_run_cached_return_raw_false_no_raw_keys():
+    """return_raw=False (默认) → result 不含 raw_equity/raw_trades 键 (40 调用方返回结构不变)."""
+    dates, close, high, low, open_, entries, columns = _make_market()
+    eng = _make_engine()
+    result = eng.run_cached(
+        close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
+        _stop_config(), None, np.array([]), np.array([]), 0,
+        skip_sm=True, filter_limit_up=False,  # return_raw 默认 False
+    )
+    assert "raw_equity" not in result, "return_raw=False 时不应有 raw_equity"
+    assert "raw_trades" not in result, "return_raw=False 时不应有 raw_trades"
+    assert "metrics" in result and "trades" in result and "equity_curve" in result, "正常返回结构应在"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

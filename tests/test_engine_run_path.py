@@ -324,7 +324,7 @@ class TestRunCachedSignature:
     """
 
     def test_run_cached_positional_params_unchanged(self):
-        """核心契约: 位置参数 ≤ 10 (锁旧 baseline, 40 调用方位置调用依赖)."""
+        """核心契约: 必需位置参数 ≤ 10 (含 self; 锁旧 baseline, 40 调用方位置调用依赖)."""
         sig = inspect.signature(BacktestEngine.run_cached)
         positional_count = sum(
             1 for p in sig.parameters.values()
@@ -332,10 +332,11 @@ class TestRunCachedSignature:
             and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
                            inspect.Parameter.POSITIONAL_OR_KEYWORD)
         )
-        # 含 self = 11; 不含 self = 10
-        assert positional_count <= 11, (
-            f"run_cached 位置参数个数 {positional_count} > 11 (self+10). "
-            f"40 调用方依赖旧 10 位置参数, 不能加新位置参数 — 新能力必须 keyword-only。"
+        # 实测 = 10 (self + 9 必需位置: close/entries/high_np/low_np/stop_config/selections/
+        #           ladder_profits/ladder_ratios/n_ladder; skip_sm 有默认值不算)
+        assert positional_count <= 10, (
+            f"run_cached 必需位置参数个数 {positional_count} > 10 (self+9). "
+            f"40 调用方依赖旧 9 必需位置参数 (skip_sm 有默认), 不能加新必需位置参数 — 新能力必须 keyword-only。"
         )
 
     def test_run_cached_capability_kwargs_keyword_only(self):
@@ -354,6 +355,27 @@ class TestRunCachedSignature:
             )
             assert p.default != inspect.Parameter.empty, (
                 f"{kw} 必须有默认值 (40 调用方不传 = 旧行为)"
+            )
+
+    def test_run_cached_capability_kwargs_default_values(self):
+        """H2 修复: 9 keyword 的精确默认值 (40 调用方行为命脉, 防 filter_limit_up=True 被改 False)."""
+        sig = inspect.signature(BacktestEngine.run_cached)
+        expected_defaults = {
+            'filter_limit_up': True,
+            'open_np': None,
+            'tradable_np': None,
+            'last_tradable_idx': None,
+            'formula_exit_np': None,
+            'formula_exit_ratio': None,
+            'formula_exit_lag_bars': 1,
+            'close_raw': None,
+            'return_raw': False,
+        }
+        for kw, expected in expected_defaults.items():
+            actual = sig.parameters[kw].default
+            assert actual == expected, (
+                f"run_cached.{kw} 默认值应为 {expected!r}, 实际 {actual!r} — "
+                f"改默认值会破坏 40 调用方行为 (filter_limit_up=True 是命脉)"
             )
 
     def test_run_cached_forwards_capability_keywords(self):

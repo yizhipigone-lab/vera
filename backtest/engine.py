@@ -558,6 +558,37 @@ def _simulate_core_v3(
     return equity_arr, trades[:trade_count]
 
 
+def _build_tradable_from_raw(close_raw, close):
+    """从原始未 ffill 价自建 tradable_np + last_tradable_idx (退市检测用).
+
+    候选 A 阶段 1 (审计 H1/H4/M1 修复): 抽成 helper 让 run_cached / run 共用, 消除 drift。
+    - close_raw: DataFrame 或 2D array, 原始价(含停牌 NaN)。array 时用 close 的 index/columns 对齐。
+    - close: 对齐基准 (已 ffill 的 DataFrame)。
+    返回 (tradable_np, last_tradable_idx); close_raw=None 时返回 (None, None)。
+    全-False 时 warning (标签/形状不匹配的常见症状)。
+    """
+    if close_raw is None:
+        return None, None
+    if isinstance(close_raw, pd.DataFrame):
+        raw_df = close_raw
+    else:
+        # numpy array / list: 用 close 的 index/columns 赋标签, 防 pd.DataFrame 默认整数列名 → reindex 全 NaN
+        raw_df = pd.DataFrame(close_raw, index=close.index, columns=close.columns)
+    raw_aligned = raw_df.reindex(index=close.index, columns=close.columns)
+    tradable_np = raw_aligned.notna().values.astype(np.bool_)
+    last_tradable_idx = np.full(close.shape[1], -1, dtype=np.int64)
+    for _ci in range(close.shape[1]):
+        _idxs = np.where(tradable_np[:, _ci])[0]
+        if _idxs.size:
+            last_tradable_idx[_ci] = int(_idxs[-1])
+    if tradable_np.sum() == 0:
+        logger.warning(
+            "_build_tradable_from_raw: tradable_np 全 False — close_raw 标签/形状可能与 close 不匹配, "
+            "退市检测将无效果 (检查 close_raw 的 index/columns 是否与 close 对齐)"
+        )
+    return tradable_np, last_tradable_idx
+
+
 # ═══════════════════════════════════════════════════════════════
 # BacktestEngine — Python 包装层
 # ═══════════════════════════════════════════════════════════════
@@ -894,17 +925,13 @@ class BacktestEngine:
             open_np = None
         # 退市: 仅当显式传 close_raw 时自建 tradable_np (不从 close 自动建, 防 ffill 调用方误触发)
         if cap_delist and tradable_np is None and close_raw is not None:
-            _raw_df = close_raw if isinstance(close_raw, pd.DataFrame) else pd.DataFrame(close_raw)
-            _raw_aligned = _raw_df.reindex(index=close.index, columns=close.columns)
-            tradable_np = _raw_aligned.notna().values.astype(np.bool_)
-            last_tradable_idx = np.full(close.shape[1], -1, dtype=np.int64)
-            for _ci in range(close.shape[1]):
-                _idxs = np.where(tradable_np[:, _ci])[0]
-                if _idxs.size:
-                    last_tradable_idx[_ci] = int(_idxs[-1])
+            tradable_np, last_tradable_idx = _build_tradable_from_raw(close_raw, close)
         if not cap_delist:
             tradable_np = None
             last_tradable_idx = None
+        # M2 修复: tradable_np 与 last_tradable_idx 应成对 (单传会导致退市永不触发, 仓位长期挂账)
+        if tradable_np is not None and last_tradable_idx is None:
+            logger.warning("tradable_np 已传但 last_tradable_idx=None, 退市检测将不触发 (应成对传)")
         # formula_exit_ratio: keyword 优先, None 回退 config.formula_sell.sell_ratio
         if formula_exit_ratio is None:
             formula_exit_ratio = float(stop.get("formula_sell", {}).get("sell_ratio", 1.0))
