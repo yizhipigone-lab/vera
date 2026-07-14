@@ -25,7 +25,7 @@ from core.connector import TdxConnector
 def _get_info_safe(code: str) -> dict:
     """单只股票信息获取，吞异常返回空 dict"""
     try:
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         info = tq.get_stock_info(code)
         return info if isinstance(info, dict) else {}
     except Exception:

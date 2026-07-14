@@ -30,7 +30,7 @@ class SignalExporter:
     ) -> bool:
         """发送预警信号到通达信 TQ 预警界面。"""
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
 
         if time_list is None:
             from datetime import datetime
@@ -71,7 +71,7 @@ class SignalExporter:
         data_list 每个子列表最多 16 个纯数字字符串。
         """
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
 
         try:
             tq.send_bt_data(
@@ -97,7 +97,7 @@ class SignalExporter:
     ) -> bool:
         """将多个 DataFrame 展示在通达信 TQ 界面。"""
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
 
         if jsn_filenames is None:
             jsn_filenames = [f"vera_t{i+1}.jsn" for i in range(len(df_list))]
@@ -121,7 +121,7 @@ class SignalExporter:
     def send_file(cls, file_path: str) -> bool:
         """发送文件路径到通达信，可供客户端打开。"""
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
 
         try:
             tq.send_file(file_path)

@@ -51,7 +51,7 @@ class DataFetcher:
         cls._ensure_ready()
         # 候选 D: 边界归一化, 允许 int 输入 (旧调用方传 int=1 也能正确映射到 "front")
         dividend_type = to_tdx_str(dividend_type)
-        from tqcenter import tq
+        tq = TdxConnector.tq()
 
         codes = normalize_list(stock_list)
         if not codes:
@@ -197,7 +197,7 @@ class DataFetcher:
         '25'=中证1000, '28'=中证A500, '51'=创业板, '52'=科创板, '53'=北交所
         """
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         raw = tq.get_stock_list(str(list_type), list_type=1)
         codes = []
         for s in raw:
@@ -222,7 +222,7 @@ class DataFetcher:
         if cls._SECTOR_CACHE:
             return cls._SECTOR_CACHE
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         raw = tq.get_stock_list('11', list_type=1)
         cls._SECTOR_CACHE = [
             {"code": s["Code"], "name": s["Name"].strip()}
@@ -240,7 +240,7 @@ class DataFetcher:
         if sector_code in cls._SECTOR_STOCKS_CACHE:
             return cls._SECTOR_STOCKS_CACHE[sector_code]
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         try:
             raw = tq.get_stock_list_in_sector(sector_code, list_type=0)
             stocks = []
@@ -290,7 +290,7 @@ class DataFetcher:
         if cls._NAME_MAP_CACHE and not refresh:
             return cls._NAME_MAP_CACHE
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         result: dict = {}
         # list_type='50' = 沪深A股, list_type=1 = 每只用 dict 返回 (含 Name 字段)
         for market in ('5', '50'):
@@ -330,7 +330,7 @@ class DataFetcher:
     ) -> List[str]:
         """获取交易日列表。"""
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         dates = tq.get_trading_dates(
             market=market, start_time=start_time, end_time=end_time, count=-1,
         )
@@ -347,7 +347,7 @@ class DataFetcher:
     ) -> dict:
         """获取专业财务数据。"""
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         codes = normalize_list(stock_list)
         return tq.get_financial_data(
             stock_list=codes,
@@ -366,6 +366,6 @@ class DataFetcher:
     ) -> pd.DataFrame:
         """获取除权除息数据。"""
         cls._ensure_ready()
-        from tqcenter import tq
+        tq = TdxConnector.tq()
         code = normalize_list([stock_code])[0]
         return tq.get_divid_factors(stock_code=code, start_time=start_time, end_time=end_time)

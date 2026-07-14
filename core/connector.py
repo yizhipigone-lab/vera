@@ -102,3 +102,17 @@ class TdxConnector:
     @classmethod
     def get_plugin_dir(cls) -> str:
         return os.path.join(_TDX_PATH, "PYPlugins")
+
+    @classmethod
+    def tq(cls):
+        """返回 TQ API 对象（懒初始化，调用前确保已连接）。
+
+        用法:
+            TdxConnector.ensure_connected()
+            tq_api = TdxConnector.tq()
+            data = tq_api.get_market_data(...)
+
+        等价于旧: from tqcenter import tq; tq.get_*(...)
+        """
+        cls.ensure_connected()
+        return cls._tq

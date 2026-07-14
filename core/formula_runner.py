@@ -38,8 +38,8 @@ class FormulaRunner:
         Returns:
             DataFrame with columns: stock_code, select_date, formula_name
         """
-        from tqcenter import tq
         cls._ensure_ready()
+        tq = TdxConnector.tq()
         # 候选 D: 边界归一化, 允许 str 输入 (旧调用方传 "front" 也能正确映射到 1)
         dividend_type = to_formula_int(dividend_type)
 
@@ -184,7 +184,7 @@ class FormulaRunner:
         cls._ensure_ready()
         # 候选 D: 边界归一化, 允许 str 输入
         dividend_type = to_formula_int(dividend_type)
-        from tqcenter import tq
+        tq = TdxConnector.tq()
 
         if stock_list is None:
             stock_list = tq.get_stock_list("50", list_type=1)
