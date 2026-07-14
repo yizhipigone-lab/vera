@@ -11,6 +11,7 @@ import numpy as np
 from typing import Dict, Optional, Any
 
 from backtest.metrics import MetricsCalculator
+from backtest.result import BacktestResult
 from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
 from core.data_fetcher import DataFetcher
 from core.stock_filter import get_cached_info
@@ -865,11 +866,11 @@ class BacktestEngine:
         # C2: stop_config_summary 改从函数生成（不再调用 StopManager，避免 compute_exit_signals 重复计算）
         from backtest.stop_config import get_stop_config_summary
 
-        return {
-            "equity_curve": equity_curve, "trades": trades_df, "metrics": metrics,
-            "stop_config_summary": get_stop_config_summary(stop),
-            "selections": selections, "stock_count": len(cols),
-        }
+        return BacktestResult(
+            equity_curve=equity_curve, trades=trades_df, metrics=metrics,
+            stop_config_summary=get_stop_config_summary(stop),
+            selections=selections, stock_count=len(cols),
+        )
 
     def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
                    ladder_profits, ladder_ratios, n_ladder, *,
@@ -987,17 +988,17 @@ class BacktestEngine:
         # C2: 共享后处理（与 run 同一入口, 防 drift）
         equity_curve, trades_df, metrics = self._post_process(equity_arr, raw_trades, close, bpday)
         # C2 修复: 返回真实 equity_curve (以前只返回 cumret, 强制调用方用 trades 重建, 有前视偏差)
-        result = {
-            "metrics": metrics,
-            "trades": trades_df,
-            "cumulative_return": metrics.get("cumulative_return", 0),
-            "equity_curve": equity_curve,
-        }
-        # 候选 A 阶段 1: return_raw 暴露 raw_equity/raw_trades (收编脚本 + parity 测试用)
+        # C3: 返回 BacktestResult dataclass (dict-like 兼容老代码; raw_* 仅 return_raw 时设置)
+        bt_kwargs = dict(
+            metrics=metrics,
+            trades=trades_df,
+            cumulative_return=metrics.get("cumulative_return", 0),
+            equity_curve=equity_curve,
+        )
         if return_raw:
-            result["raw_equity"] = equity_arr
-            result["raw_trades"] = raw_trades
-        return result
+            bt_kwargs["raw_equity"] = equity_arr
+            bt_kwargs["raw_trades"] = raw_trades
+        return BacktestResult(**bt_kwargs)
 
     def _post_process(self, equity_arr, raw_trades, close, bpday):
         """C2: run() 与 run_cached() 的共享后处理。
@@ -1115,6 +1116,7 @@ class BacktestEngine:
         logger.info("-" * 40)
 
     def _empty_result(self):
-        return {"equity_curve": pd.DataFrame(columns=["date","equity","drawdown"]),
-                "trades": pd.DataFrame(), "metrics": {}, "stop_config_summary": "",
-                "selections": pd.DataFrame(), "stock_count": 0}
+        return BacktestResult(
+            equity_curve=pd.DataFrame(columns=["date", "equity", "drawdown"]),
+            trades=pd.DataFrame(), metrics={}, stop_config_summary="",
+            selections=pd.DataFrame(), stock_count=0)
