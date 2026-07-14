@@ -858,21 +858,8 @@ class BacktestEngine:
         raw_holds = [int(row[2]) - int(row[1]) for row in raw_trades]
         logger.info("VeraCore: %s笔交易 %.2fs RAW_MAX_HOLD=%d", len(raw_trades), elapsed, max(raw_holds) if raw_holds else 0)
 
-        # 构建输出
-        dates = close.index
-        equity_curve = pd.DataFrame({"date": dates, "equity": equity_arr})
-        equity_curve.set_index("date", inplace=True)
-        peak = equity_curve["equity"].expanding().max()
-        equity_curve["drawdown"] = (equity_curve["equity"] - peak) / peak
-        equity_curve.reset_index(inplace=True)
-
-        trades_df = self._build_trades(raw_trades, close.columns, dates, bpday)
-        if not trades_df.empty:
-            trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
-            trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
-
-        metrics = MetricsCalculator.compute_all(equity_curve, trades_df, self.initial_capital,
-                                                  periods_per_year=self.PERIODS_PER_YEAR.get(self.period, self.bars_per_day * 252))
+        # C2: 共享后处理（与 run_cached 同一入口, 防 drift）
+        equity_curve, trades_df, metrics = self._post_process(equity_arr, raw_trades, close, bpday)
         self._log_results(metrics)
 
         # C2: stop_config_summary 改从函数生成（不再调用 StopManager，避免 compute_exit_signals 重复计算）
@@ -997,20 +984,8 @@ class BacktestEngine:
             formula_exit_lag_bars=formula_exit_lag_bars,
         )
 
-        dates = close.index
-        equity_curve = pd.DataFrame({"date": dates, "equity": equity_arr})
-        equity_curve.set_index("date", inplace=True)
-        peak = equity_curve["equity"].expanding().max()
-        equity_curve["drawdown"] = (equity_curve["equity"] - peak) / peak
-        equity_curve.reset_index(inplace=True)
-
-        trades_df = self._build_trades(raw_trades, close.columns, dates, bpday)
-        if not trades_df.empty:
-            trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
-            trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
-
-        metrics = MetricsCalculator.compute_all(equity_curve, trades_df, self.initial_capital,
-                                                  periods_per_year=self.PERIODS_PER_YEAR.get(self.period, self.bars_per_day * 252))
+        # C2: 共享后处理（与 run 同一入口, 防 drift）
+        equity_curve, trades_df, metrics = self._post_process(equity_arr, raw_trades, close, bpday)
         # C2 修复: 返回真实 equity_curve (以前只返回 cumret, 强制调用方用 trades 重建, 有前视偏差)
         result = {
             "metrics": metrics,
@@ -1023,6 +998,30 @@ class BacktestEngine:
             result["raw_equity"] = equity_arr
             result["raw_trades"] = raw_trades
         return result
+
+    def _post_process(self, equity_arr, raw_trades, close, bpday):
+        """C2: run() 与 run_cached() 的共享后处理。
+
+        equity_arr + raw_trades → equity_curve(DataFrame) + trades_df + metrics。
+        抽出此方法消除两入口的 equity_curve/_build_trades/metrics 重复
+        （修一个 equity_curve bug 不再需要在两处各改一次）。
+        """
+        dates = close.index
+        equity_curve = pd.DataFrame({"date": dates, "equity": equity_arr})
+        equity_curve.set_index("date", inplace=True)
+        peak = equity_curve["equity"].expanding().max()
+        equity_curve["drawdown"] = (equity_curve["equity"] - peak) / peak
+        equity_curve.reset_index(inplace=True)
+
+        trades_df = self._build_trades(raw_trades, close.columns, dates, bpday)
+        if not trades_df.empty:
+            trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
+            trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
+
+        metrics = MetricsCalculator.compute_all(
+            equity_curve, trades_df, self.initial_capital,
+            periods_per_year=self.PERIODS_PER_YEAR.get(self.period, self.bars_per_day * 252))
+        return equity_curve, trades_df, metrics
 
     def _build_trades(self, raw, columns, dates, bpday=1):
         if len(raw) == 0: return pd.DataFrame()
