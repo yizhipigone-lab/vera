@@ -21,7 +21,7 @@
 
 | 模块 | 路径 | 职责 |
 |---|---|---|
-| 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):10 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径 |
+| 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`_simulate_core_v3` 现为兼容壳(2026-07-14 候选 A 阶段2,ENGINE_VERSION v3.4-loop-refactor),转调 `backtest/loop/BacktestLoop.run()`;旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):9 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径 |
 | 选股 | `selection/selector.py` | 股票池筛选(ST/涨停/停牌过滤) |
 | 止损管理 | `backtest/stop_manager.py` + `stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复) |
 | 复权口径 | `core/dividend_type.py` | **统一 int/str 映射(候选 D,0b47db5)**:DataFetcher/FormulaRunner 内部用 `to_tdx_str`/`to_formula_int` 归一化,允许混传。`assert_consistent` 由 pipeline.py:101 调用 |

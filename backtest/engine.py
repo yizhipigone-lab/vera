@@ -1,4 +1,10 @@
-"""VeraCore 回测引擎 — 纯Python，内置OHLC止盈止损判断。"""
+"""VeraCore 回测引擎 — 纯Python，内置OHLC止盈止损判断。
+
+候选 A 阶段 2（2026-07-14, v3.4-loop-refactor）: 核心循环已拆到 `backtest/loop/` 子包。
+`_simulate_core_v3` 现为 ~45 行兼容壳, 转调 `backtest.loop.BacktestLoop.run()`;
+旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。
+新结构设计说明见 `docs/architecture/loop.md`。对外签名零改动, 所有调用方零改动。
+"""
 
 import pandas as pd
 import numpy as np
@@ -888,7 +894,7 @@ class BacktestEngine:
                    return_raw=False):
         """用预取数据运行回测，跳过K线获取（用于批量优化）
 
-        候选 A 阶段 1 深化（加厚前门）: 10 旧位置参数不动, 新增 9 个 keyword-only
+        候选 A 阶段 1 深化（加厚前门）: 9 旧位置参数不动, 新增 9 个 keyword-only
         透传三类能力（公式卖出/跳空保护/退市检测）。40 调用方不传新参 → 全 None
         → 三类能力 off → 与旧版字节级一致。capabilities 三开关（默认全开）gate
         已提供的数据, 不自动造数据。
