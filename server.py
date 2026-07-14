@@ -359,14 +359,15 @@ def run_pipeline(cfg: StrategyConfig):
         logger.info(f"选股完成: {len(selections)} 条记录")
 
         # Step 3: 回测
-        pipeline_status.step = "执行回测"
-        pipeline_status.progress = 40
+        # 候选 E: 回测引擎就绪 (避免 15→40 黑区)
+        # 修复 2026-07-14: 原顺序 progress 40(执行)→30(准备) 倒退,改为先准备(30)再执行(40),进度单调递增 15→30→40→70
+        pipeline_status.step = "准备回测"
+        pipeline_status.progress = 30
         bt_cfg = config_dict.get("backtest", {})
         stop_cfg = config_dict.get("stop_loss", {})
         engine = BacktestEngine(bt_cfg)
-        # 候选 E: 回测引擎就绪 (避免 15→40 黑区)
-        pipeline_status.step = "准备回测"
-        pipeline_status.progress = 30
+        pipeline_status.step = "执行回测"
+        pipeline_status.progress = 40
 
         backtest_result = engine.run(
             selections=selections,
