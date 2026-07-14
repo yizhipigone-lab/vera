@@ -77,7 +77,6 @@ def _run(eng, close, entries, high, low, sc, **cap_kwargs):
         close, entries,
         high.values.astype(np.float64), low.values.astype(np.float64),
         sc, None, np.array([]), np.array([]), 0,
-        skip_sm=True,
         filter_limit_up=False, return_raw=True,
         **cap_kwargs,
     )
@@ -299,7 +298,7 @@ def test_run_cached_ladder_non_monotonic_warning():
     lr = np.array([0.3, 0.3], dtype=np.float64)
     result = eng.run_cached(
         close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
-        sc, None, lp, lr, 2, skip_sm=True, filter_limit_up=False, return_raw=True,
+        sc, None, lp, lr, 2, filter_limit_up=False, return_raw=True,
     )
     assert result["raw_equity"].shape == (len(dates),), "非升序 ladder 应 warning 但不崩"
 
@@ -314,7 +313,7 @@ def test_run_cached_return_raw_false_no_raw_keys():
     result = eng.run_cached(
         close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
         _stop_config(), None, np.array([]), np.array([]), 0,
-        skip_sm=True, filter_limit_up=False,  # return_raw 默认 False
+        filter_limit_up=False,  # return_raw 默认 False
     )
     assert "raw_equity" not in result, "return_raw=False 时不应有 raw_equity"
     assert "raw_trades" not in result, "return_raw=False 时不应有 raw_trades"

@@ -147,7 +147,7 @@ def _assert_parity(eng, close, entries, high, low, sc, **caps):
     ea, rt = _direct_call(eng, close, entries, hn, ln, sc, lp, lr, nl, **caps)
     result = eng.run_cached(
         close, entries, hn, ln, sc, None, lp, lr, nl,
-        skip_sm=True, filter_limit_up=False, return_raw=True, **caps,
+        filter_limit_up=False, return_raw=True, **caps,
     )
     assert np.array_equal(result["raw_equity"], ea), (
         f"raw_equity 不一致 (caps={caps})\n"

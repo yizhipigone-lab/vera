@@ -58,6 +58,49 @@ def load_stop_config(default_path: Optional[str] = None) -> Dict[str, Any]:
     return defaults['stop_loss']
 
 
+def get_stop_config_summary(stop_loss_config: dict) -> str:
+    """
+    根据 stop_loss 配置字典生成摘要字符串。
+
+    C2: 从 engine.py run() 里 StopManager.get_config_summary() 调用迁出，
+    消除 stop_manager.py 的重复 exit 计算逻辑（compute_exit_signals / _compute_single_stock）。
+    仅做配置展示，无交易逻辑。
+    """
+    lines = []
+    cost = stop_loss_config.get("cost_stop", {})
+    if cost.get("enabled", True):
+        lines.append(f"成本止损: {cost.get('threshold', -0.12):.1%}（Low触发, stop_price执行）")
+
+    ladder = stop_loss_config.get("ladder_tp", {})
+    if ladder.get("enabled", True) and ladder.get("levels"):
+        levels_str = " → ".join(
+            f"盈利{lv['profit']:.0%}卖{lv['sell_ratio']:.0%}"
+            for lv in sorted(ladder["levels"], key=lambda x: x.get("profit", 0))
+        )
+        lines.append(f"阶梯止盈: {levels_str}（High触发, ladder_price执行）")
+
+    trail = stop_loss_config.get("trailing_stop", {})
+    if trail.get("enabled", True):
+        lines.append(
+            f"移动止损: 盈利{trail.get('activation', 0.08):.1%}激活, "
+            f"盘中Low触及回撤{trail.get('drawdown', 0.05):.1%}线即按回撤线价成交"
+        )
+
+    time_s = stop_loss_config.get("time_stop", {})
+    if time_s.get("enabled", True):
+        lines.append(f"时间止损: {time_s.get('max_hold_days', 20)}天（Close执行）")
+
+    # P-v3.4: 公式卖出
+    fs = stop_loss_config.get("formula_sell", {})
+    if fs.get("enabled", False):
+        fname = fs.get("formula_name", "") or "?(未配置公式名)"
+        lines.append(
+            f"公式卖出: [{fname}] 命中即卖{fs.get('sell_ratio', 1.0):.0%} "
+            f"（优先级 #{fs.get('priority', 0)}，最高=0）"
+        )
+    return "\n".join(lines)
+
+
 def load_stop_config_or_default() -> Dict[str, Any]:
     """
     加载失败时回退到代码内兜底 (-0.12/0.08/0.05/6%-15%/20天)

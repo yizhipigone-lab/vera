@@ -3,7 +3,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Any
-from backtest.stop_manager import StopManager
+
 from backtest.metrics import MetricsCalculator
 from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
 from core.data_fetcher import DataFetcher
@@ -819,40 +819,21 @@ class BacktestEngine:
             trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
             trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
 
-        # 使用 StopManager 仅生成 exit_info 用于增强标签
-        sm = StopManager(stop_config)
-        high_prices_sm = pd.DataFrame(high_np, index=close.index, columns=close.columns) if high_np is not None else None
-        low_prices_sm = pd.DataFrame(low_np, index=close.index, columns=close.columns) if low_np is not None else None
-        _, exit_info = sm.compute_exit_signals(close, entries, high_prices_sm, low_prices_sm)
-
-        # 叠加 StopManager 的退出原因（三重匹配）
-        col_map = {c: i for i, c in enumerate(close.columns)}
-        for idx, t in trades_df.iterrows():
-            code = t["stock_code"]
-            ed = t["entry_date"]
-            xd = t["exit_date"]
-            if t["exit_reason"] in ("换股卖出",):
-                if not exit_info.empty:
-                    m = exit_info[
-                        (exit_info["stock_code"] == code) &
-                        (pd.to_datetime(exit_info["entry_date"]) == ed) &
-                        (pd.to_datetime(exit_info["exit_date"]) == xd)
-                    ]
-                    if not m.empty:
-                        trades_df.at[idx, "exit_reason"] = m.iloc[0]["exit_reason"]
-
         metrics = MetricsCalculator.compute_all(equity_curve, trades_df, self.initial_capital,
                                                   periods_per_year=self.PERIODS_PER_YEAR.get(self.period, self.bars_per_day * 252))
         self._log_results(metrics)
 
+        # C2: stop_config_summary 改从函数生成（不再调用 StopManager，避免 compute_exit_signals 重复计算）
+        from backtest.stop_config import get_stop_config_summary
+
         return {
             "equity_curve": equity_curve, "trades": trades_df, "metrics": metrics,
-            "stop_config_summary": sm.get_config_summary(),
+            "stop_config_summary": get_stop_config_summary(stop),
             "selections": selections, "stock_count": len(cols),
         }
 
     def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
-                   ladder_profits, ladder_ratios, n_ladder, skip_sm=False, *,
+                   ladder_profits, ladder_ratios, n_ladder, *,
                    filter_limit_up=True,
                    open_np=None,
                    tradable_np=None, last_tradable_idx=None,
@@ -975,24 +956,6 @@ class BacktestEngine:
         if not trades_df.empty:
             trades_df["entry_date"] = pd.to_datetime(trades_df["entry_date"])
             trades_df["exit_date"] = pd.to_datetime(trades_df["exit_date"])
-
-        # StopManager for labels (skip in batch mode for speed)
-        if not skip_sm:
-            sm = StopManager(stop_config)
-            high_sm = pd.DataFrame(high_np, index=close.index, columns=close.columns) if high_np is not None else None
-            low_sm = pd.DataFrame(low_np, index=close.index, columns=close.columns) if low_np is not None else None
-            _, exit_info = sm.compute_exit_signals(close, entries, high_sm, low_sm)
-
-            for idx, t in trades_df.iterrows():
-                if t["exit_reason"] in ("换股卖出",):
-                    if not exit_info.empty:
-                        m = exit_info[
-                            (exit_info["stock_code"] == t["stock_code"]) &
-                            (pd.to_datetime(exit_info["entry_date"]) == t["entry_date"]) &
-                            (pd.to_datetime(exit_info["exit_date"]) == t["exit_date"])
-                        ]
-                        if not m.empty:
-                            trades_df.at[idx, "exit_reason"] = m.iloc[0]["exit_reason"]
 
         metrics = MetricsCalculator.compute_all(equity_curve, trades_df, self.initial_capital,
                                                   periods_per_year=self.PERIODS_PER_YEAR.get(self.period, self.bars_per_day * 252))
