@@ -4,6 +4,7 @@ import pandas as pd
 from typing import List, Optional
 
 from .connector import TdxConnector
+from .data_cache import DataCache
 from .dividend_type import to_tdx_str
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
@@ -230,8 +231,8 @@ class DataFetcher:
         return [c for c in codes if c]
 
     # P-v3.4: 行业板块支持 — 板块列表 + 成份股, 均带进程级缓存
-    _SECTOR_CACHE: List[dict] = []                      # 128 个板块列表 [{code, name}]
-    _SECTOR_STOCKS_CACHE: dict = {}                     # {sector_code: [成份股代码]}
+    # C6: 三类缓存抽到 DataCache, DataFetcher 委托
+    _cache = DataCache()
 
     @classmethod
     def get_sector_list(cls) -> List[dict]:
@@ -241,16 +242,16 @@ class DataFetcher:
         Returns:
             [{"code": "881319.SH", "name": "半导体"}, ...]
         """
-        if cls._SECTOR_CACHE:
-            return cls._SECTOR_CACHE
+        if cls._cache.has_sector_list():
+            return cls._cache.get_sector_list()
         cls._ensure_ready()
         tq = cls._connector().tq()
         raw = tq.get_stock_list('11', list_type=1)
-        cls._SECTOR_CACHE = [
+        cls._cache.set_sector_list([
             {"code": s["Code"], "name": s["Name"].strip()}
             for s in raw if isinstance(s, dict) and s.get("Code")
-        ]
-        return cls._SECTOR_CACHE
+        ])
+        return cls._cache.get_sector_list()
 
     @classmethod
     def get_sector_stocks(cls, sector_code: str) -> List[str]:
@@ -259,8 +260,8 @@ class DataFetcher:
 
         Returns: 纯代码字符串列表, 失败返回空列表不抛异常.
         """
-        if sector_code in cls._SECTOR_STOCKS_CACHE:
-            return cls._SECTOR_STOCKS_CACHE[sector_code]
+        if cls._cache.has_sector_stocks(sector_code):
+            return cls._cache.get_sector_stocks(sector_code)
         cls._ensure_ready()
         tq = cls._connector().tq()
         try:
@@ -272,7 +273,7 @@ class DataFetcher:
                 elif isinstance(s, dict):
                     stocks.append(s.get("Code", ""))
             stocks = [s for s in stocks if s]
-            cls._SECTOR_STOCKS_CACHE[sector_code] = stocks
+            cls._cache.set_sector_stocks(sector_code, stocks)
             return stocks
         except Exception as e:
             from utils.logger import get_logger
@@ -282,11 +283,9 @@ class DataFetcher:
     @classmethod
     def clear_sector_cache(cls):
         """清空板块缓存 (板块成份股更新时手动调)."""
-        cls._SECTOR_CACHE.clear()
-        cls._SECTOR_STOCKS_CACHE.clear()
+        cls._cache.clear_sector()
 
     # === 全量股票代码→简称 进程级缓存 (修复交易表显示问题) ===
-    _NAME_MAP_CACHE: dict = {}        # {code: name}
 
     @staticmethod
     def _fix_tq_name(s: str) -> str:
@@ -309,8 +308,8 @@ class DataFetcher:
         Returns:
             {'601872.SH': '招商轮船', ...} 共约 5200 条
         """
-        if cls._NAME_MAP_CACHE and not refresh:
-            return cls._NAME_MAP_CACHE
+        if cls._cache.has_name_map() and not refresh:
+            return cls._cache.get_name_map()
         cls._ensure_ready()
         tq = cls._connector().tq()
         result: dict = {}
@@ -328,7 +327,7 @@ class DataFetcher:
                 if not code or not name_raw:
                     continue
                 result[code] = cls._fix_tq_name(name_raw)
-        cls._NAME_MAP_CACHE = result
+        cls._cache.set_name_map(result)
         logger.info(f"全量简称缓存已构建: {len(result)} 条")
         return result
 
@@ -341,7 +340,7 @@ class DataFetcher:
     @classmethod
     def clear_name_cache(cls):
         """清空简称缓存"""
-        cls._NAME_MAP_CACHE.clear()
+        cls._cache.clear_name()
 
     @classmethod
     def get_trading_dates(
