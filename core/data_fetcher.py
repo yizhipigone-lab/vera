@@ -12,7 +12,14 @@ logger = get_logger(__name__)
 
 
 class DataFetcher:
-    """TDX 数据获取统一门面。所有调用前自动确保连接就绪。"""
+    """TDX 数据获取统一门面。所有调用前自动确保连接就绪。
+
+    C5 轻量解耦: 通过 _connector() 缝隙注入 connector, 默认仍用 TdxConnector 单例。
+    测试可 set_connector(mock) 替换, 不改 27 个外部 TdxConnector 调用点。
+    """
+
+    # C5: connector 注入缝隙（默认 None → 用 TdxConnector 单例）
+    _connector_override = None
 
     # 基准指数代码（P1-6: 补沪深300/中证500）
     INDEX_CODES = {
@@ -24,9 +31,24 @@ class DataFetcher:
         "zhongzhengA500": "000510.SH", # 中证A500（代码待 TDX 核实）
     }
 
-    @staticmethod
-    def _ensure_ready():
-        TdxConnector.ensure_connected()
+    @classmethod
+    def _connector(cls):
+        """返回当前生效的 connector（默认 TdxConnector 单例, 可被 set_connector 覆盖）。"""
+        return cls._connector_override if cls._connector_override is not None else TdxConnector
+
+    @classmethod
+    def set_connector(cls, connector) -> None:
+        """注入 connector（测试用, 传 mock 替换 TDX 连接）。"""
+        cls._connector_override = connector
+
+    @classmethod
+    def reset_connector(cls) -> None:
+        """恢复默认 TdxConnector 单例。"""
+        cls._connector_override = None
+
+    @classmethod
+    def _ensure_ready(cls):
+        cls._connector().ensure_connected()
 
     @classmethod
     def get_kline(
@@ -51,7 +73,7 @@ class DataFetcher:
         cls._ensure_ready()
         # 候选 D: 边界归一化, 允许 int 输入 (旧调用方传 int=1 也能正确映射到 "front")
         dividend_type = to_tdx_str(dividend_type)
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
 
         codes = normalize_list(stock_list)
         if not codes:
@@ -197,7 +219,7 @@ class DataFetcher:
         '25'=中证1000, '28'=中证A500, '51'=创业板, '52'=科创板, '53'=北交所
         """
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         raw = tq.get_stock_list(str(list_type), list_type=1)
         codes = []
         for s in raw:
@@ -222,7 +244,7 @@ class DataFetcher:
         if cls._SECTOR_CACHE:
             return cls._SECTOR_CACHE
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         raw = tq.get_stock_list('11', list_type=1)
         cls._SECTOR_CACHE = [
             {"code": s["Code"], "name": s["Name"].strip()}
@@ -240,7 +262,7 @@ class DataFetcher:
         if sector_code in cls._SECTOR_STOCKS_CACHE:
             return cls._SECTOR_STOCKS_CACHE[sector_code]
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         try:
             raw = tq.get_stock_list_in_sector(sector_code, list_type=0)
             stocks = []
@@ -290,7 +312,7 @@ class DataFetcher:
         if cls._NAME_MAP_CACHE and not refresh:
             return cls._NAME_MAP_CACHE
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         result: dict = {}
         # list_type='50' = 沪深A股, list_type=1 = 每只用 dict 返回 (含 Name 字段)
         for market in ('5', '50'):
@@ -330,7 +352,7 @@ class DataFetcher:
     ) -> List[str]:
         """获取交易日列表。"""
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         dates = tq.get_trading_dates(
             market=market, start_time=start_time, end_time=end_time, count=-1,
         )
@@ -347,7 +369,7 @@ class DataFetcher:
     ) -> dict:
         """获取专业财务数据。"""
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         codes = normalize_list(stock_list)
         return tq.get_financial_data(
             stock_list=codes,
@@ -366,6 +388,6 @@ class DataFetcher:
     ) -> pd.DataFrame:
         """获取除权除息数据。"""
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         code = normalize_list([stock_code])[0]
         return tq.get_divid_factors(stock_code=code, start_time=start_time, end_time=end_time)
