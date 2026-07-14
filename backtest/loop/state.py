@@ -258,11 +258,15 @@ class PositionBook:
         return p
 
     def get(self, p: int) -> Position:
-        """读槽位 p 为 Position 快照。"""
+        """读槽位 p 为 Position 快照。
+
+        float 字段保留 np.float64（不 cast Python float）, 保证策略算术与 legacy
+        裸 np.float64 数组操作字节级一致（防 1-ULP 漂移）。
+        """
         return Position(
-            code=int(self._code[p]), shares=float(self._shares[p]),
-            entry_px=float(self._entry_px[p]), entry_idx=int(self._entry_idx[p]),
-            high_px=float(self._high_px[p]), high_hi=float(self._high_hi[p]),
+            code=int(self._code[p]), shares=self._shares[p],
+            entry_px=self._entry_px[p], entry_idx=int(self._entry_idx[p]),
+            high_px=self._high_px[p], high_hi=self._high_hi[p],
             ladder_done=int(self._ladder_done[p]),
         )
 

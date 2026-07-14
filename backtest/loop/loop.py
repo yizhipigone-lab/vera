@@ -92,7 +92,7 @@ class BacktestLoop:
         p = self.params
         bpday = p.bpday
         slippage = p.slippage
-        comm_stamp = p.commission + p.stamp_tax
+        comm_factor = 1.0 - p.commission - p.stamp_tax
         pp = 0
         while pp < book.count:
             ci = int(book.code_arr[pp])
@@ -110,7 +110,7 @@ class BacktestLoop:
                     ep_d = book.entry_px_arr[pp]
                     sell_price = xp if xp > 0 else ep_d
                     sell_eff = sell_price * (1.0 - slippage)
-                    gross = total_sh * sell_eff * (1.0 - comm_stamp)
+                    gross = total_sh * sell_eff * comm_factor
                     cash += gross
                     ret = (sell_price - ep_d) / ep_d if ep_d > 0.0 else 0.0
                     trade_buf.append(ci, book.entry_idx_arr[pp], i, ep_d,
@@ -170,7 +170,7 @@ class BacktestLoop:
                 r = abs_s.check(pos, bar, ctx)
                 if r:
                     cash, action = self._execute_single(
-                        r[0], pp, ci, i, ep, book, trade_buf, cash, slippage, comm_stamp)
+                        r[0], pp, ci, i, ep, book, trade_buf, cash, slippage, comm_factor)
                     fired = True
                     break
             if fired:
@@ -190,7 +190,7 @@ class BacktestLoop:
 
             if len(results) == 1:
                 cash, action = self._execute_single(
-                    results[0], pp, ci, i, ep, book, trade_buf, cash, slippage, comm_stamp)
+                    results[0], pp, ci, i, ep, book, trade_buf, cash, slippage, comm_factor)
                 if action == "keep":
                     pp += 1
                 continue
@@ -199,14 +199,14 @@ class BacktestLoop:
                 # M6 不变量: results[0] 必为 ladder 部分卖(is_partial=True), dispatcher
                 # 仅在 ladder_partial 存在时才追加第二结果, 故此处 tr0.is_partial 恒真。
                 cash = self._execute_dual(
-                    results, pp, ci, i, ep, book, trade_buf, cash, slippage, comm_stamp)
+                    results, pp, ci, i, ep, book, trade_buf, cash, slippage, comm_factor)
                 # 清仓 (swap-and-pop), 不 pp+=1
                 continue
         return cash
 
     # ─────────────────────────────────────────────────────────
     def _execute_single(self, tr: TriggerResult, pp, ci, i, ep, book,
-                        trade_buf, cash, slippage, comm_stamp):
+                        trade_buf, cash, slippage, comm_factor):
         """执行单触发。返回 (cash, action)。action ∈ {'keep','clear'}。
 
         keep  = 部分卖, 保留仓位 (pp+=1)
@@ -219,7 +219,7 @@ class BacktestLoop:
             sell_sh = max((sell_sh // p.lot_size) * p.lot_size, p.lot_size)
             if sell_sh < total_sh:
                 sell_eff = tr.execution_price * (1.0 - slippage)
-                gross = sell_sh * sell_eff * (1.0 - comm_stamp)
+                gross = sell_sh * sell_eff * comm_factor
                 cash += gross
                 ret = self._ret(tr, ep)
                 trade_buf.append(ci, book.entry_idx_arr[pp], i, ep,
@@ -230,7 +230,7 @@ class BacktestLoop:
             # sell_sh >= total_sh → 落到全卖
         # 全卖
         sell_eff = tr.execution_price * (1.0 - slippage)
-        gross = total_sh * sell_eff * (1.0 - comm_stamp)
+        gross = total_sh * sell_eff * comm_factor
         cash += gross
         ret = self._ret(tr, ep)
         trade_buf.append(ci, book.entry_idx_arr[pp], i, ep,
@@ -247,7 +247,7 @@ class BacktestLoop:
         return (tr.execution_price - ep) / ep if ep > 0.0 else 0.0
 
     def _execute_dual(self, results, pp, ci, i, ep, book, trade_buf,
-                      cash, slippage, comm_stamp):
+                      cash, slippage, comm_factor):
         """执行双触发: ladder 部分卖 + trailing/cost 全卖剩余。返回 cash。
 
         对齐 engine.py:346-384。两笔交易同 bar, 最后清仓。
@@ -263,7 +263,7 @@ class BacktestLoop:
             sell_sh = max((sell_sh // p.lot_size) * p.lot_size, p.lot_size)
             if 0 < sell_sh < total_sh:
                 sell_eff = tr0.execution_price * (1.0 - slippage)
-                gross = sell_sh * sell_eff * (1.0 - comm_stamp)
+                gross = sell_sh * sell_eff * comm_factor
                 cash += gross
                 ret0 = (tr0.execution_price - ep) / ep if ep > 0.0 else 0.0
                 trade_buf.append(ci, book.entry_idx_arr[pp], i, ep,
@@ -274,7 +274,7 @@ class BacktestLoop:
         # 2. 全卖剩余 (trailing/cost)
         if remaining > 0:
             sell_eff = tr1.execution_price * (1.0 - slippage)
-            gross = remaining * sell_eff * (1.0 - comm_stamp)
+            gross = remaining * sell_eff * comm_factor
             cash += gross
             ret1 = (tr1.execution_price - ep) / ep if ep > 0.0 else 0.0
             trade_buf.append(ci, book.entry_idx_arr[pp], i, ep,

@@ -38,16 +38,17 @@ class LadderTpStrategy:
         # mutate bitmask（跨 bar 累计, 与 engine.py:196 一致）
         pos.ladder_done = new_mask
         ratios = ctx.ladder_ratios[: ctx.n_ladder].copy()
-        sell_ratio = float(compute_ladder_sell_ratio(prev_mask, new_mask, profits, ratios))
+        sell_ratio = compute_ladder_sell_ratio(prev_mask, new_mask, profits, ratios)
         # 执行价: 取已置位且 hi_pp 满足的最大档位 profit（engine.py:296-302）
         tp_profit = 0.0
         for li in range(ctx.n_ladder):
             if (new_mask >> li) & 1 and ctx.hi_pp >= profits[li]:
                 if profits[li] > tp_profit:
                     tp_profit = profits[li]
-        exec_price = float(pos.entry_px * (1.0 + tp_profit))
+        # 保留 np.float64 不 cast, 保证与 legacy 裸数组算术字节级一致
+        exec_price = pos.entry_px * (1.0 + tp_profit)
         return [TriggerResult(
             reason=5, strategy_name=self.name, execution_price=exec_price,
             sell_ratio=sell_ratio, is_partial=bool(sell_ratio < 1.0),
-            actual_return=float(tp_profit),
+            actual_return=tp_profit,
         )]
