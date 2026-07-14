@@ -13,7 +13,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ENGINE VERSION: increment to bust Python .pyc cache
-ENGINE_VERSION = "v3.3-limit-up-filter-20260605"
+ENGINE_VERSION = "v3.4-loop-refactor-20260714"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -30,6 +30,52 @@ ENGINE_VERSION = "v3.3-limit-up-filter-20260605"
 # ═══════════════════════════════════════════════════════════════
 
 def _simulate_core_v3(
+    price_np, entry_np,
+    initial_capital, commission,
+    min_buy_amount, max_buy_amount, lot_size, min_lots,
+    cost_stop_enabled, cost_stop_threshold,
+    trailing_enabled, trailing_activation, trailing_drawdown,
+    ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
+    time_enabled, max_hold_days,
+    cond_time_enabled, cond_time_days, cond_time_profit,
+    first_day_enabled=False, first_day_target=0.03,
+    first_day_n_bars=1, high_np=None, low_np=None, bpday=1,
+    slippage=0.0, stamp_tax=0.0,
+    tradable_np=None, last_tradable_idx=None,
+    open_np=None,
+    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
+    ladder_tp_first=False,
+    trailing_first=False,
+    max_position_pct=1.0,
+):
+    """兼容壳（候选 A 阶段 2, ENGINE_VERSION v3.4-loop-refactor-20260714）。
+
+    39 参数签名零改动（22 必需 + 17 可选, 全 positional, 无 `*`）, 所有调用方零改动。
+    转调 backtest.loop.BacktestLoop.run()。行为与 _simulate_core_v3_legacy 字节级一致
+    （见 tests/test_loop_parity.py 54 组对照）。
+
+    first_day_n_bars 为历史半死参数（legacy 函数体从未引用, 仅调用方传入）, 此处接收但忽略。
+    返回 (equity_arr, raw_trades[:count]) 与 legacy 完全一致。
+    """
+    from backtest.loop import build_backtest_loop
+    loop = build_backtest_loop(
+        initial_capital, commission,
+        min_buy_amount, max_buy_amount, lot_size, min_lots,
+        cost_stop_enabled, cost_stop_threshold,
+        trailing_enabled, trailing_activation, trailing_drawdown,
+        ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
+        time_enabled, max_hold_days,
+        cond_time_enabled, cond_time_days, cond_time_profit,
+        first_day_enabled, first_day_target,
+        bpday, slippage, stamp_tax, max_position_pct,
+        ladder_tp_first, trailing_first,
+        formula_exit_np, formula_exit_ratio, formula_exit_lag_bars,
+    )
+    return loop.run(price_np, entry_np, high_np, low_np, open_np,
+                    tradable_np, last_tradable_idx, formula_exit_np)
+
+
+def _simulate_core_v3_legacy(
     price_np, entry_np,
     initial_capital, commission,
     min_buy_amount, max_buy_amount, lot_size, min_lots,
