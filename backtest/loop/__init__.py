@@ -13,6 +13,8 @@ from .strategies import (
     CostStopStrategy, LadderTpStrategy, TrailingStrategy,
     TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
 )
+from .exit_engine import Priority, ExitDispatcher, PRE_DISPATCH_STRATEGIES
+from .absolute import FormulaSellStrategy
 
 __all__ = [
     "BacktestParams", "Context", "Position", "PositionBook", "TradeBuffer", "Bar",
@@ -20,4 +22,6 @@ __all__ = [
     "ExitStrategy", "AbsoluteStrategy", "TriggerResult",
     "CostStopStrategy", "LadderTpStrategy", "TrailingStrategy",
     "TimeStopStrategy", "CondTimeStrategy", "FirstDayStrategy",
+    "Priority", "ExitDispatcher", "PRE_DISPATCH_STRATEGIES",
+    "FormulaSellStrategy",
 ]
