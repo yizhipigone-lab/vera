@@ -277,6 +277,38 @@ class PositionBook:
     def set_shares(self, p: int, shares: float) -> None:
         self._shares[p] = shares
 
+    def set_ladder_done(self, p: int, ladder_done: int) -> None:
+        self._ladder_done[p] = ladder_done
+
+    # ── 数组访问器（hot loop 直接索引, 对齐 engine.py 的 pos_* 裸数组操作）──
+    @property
+    def code_arr(self) -> np.ndarray:
+        return self._code
+
+    @property
+    def shares_arr(self) -> np.ndarray:
+        return self._shares
+
+    @property
+    def entry_px_arr(self) -> np.ndarray:
+        return self._entry_px
+
+    @property
+    def entry_idx_arr(self) -> np.ndarray:
+        return self._entry_idx
+
+    @property
+    def high_px_arr(self) -> np.ndarray:
+        return self._high_px
+
+    @property
+    def high_hi_arr(self) -> np.ndarray:
+        return self._high_hi
+
+    @property
+    def ladder_done_arr(self) -> np.ndarray:
+        return self._ladder_done
+
     def remove_swap_pop(self, p: int) -> None:
         """swap-and-pop 删除槽位 p（对齐 engine.py:120-128）。
 

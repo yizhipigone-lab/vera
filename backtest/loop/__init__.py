@@ -15,6 +15,10 @@ from .strategies import (
 )
 from .exit_engine import Priority, ExitDispatcher, PRE_DISPATCH_STRATEGIES
 from .absolute import FormulaSellStrategy
+from .entry import EntryEngine
+from .equity import EquityTracker
+from .loop import BacktestLoop
+from .builder import build_backtest_loop
 
 __all__ = [
     "BacktestParams", "Context", "Position", "PositionBook", "TradeBuffer", "Bar",
@@ -24,4 +28,5 @@ __all__ = [
     "TimeStopStrategy", "CondTimeStrategy", "FirstDayStrategy",
     "Priority", "ExitDispatcher", "PRE_DISPATCH_STRATEGIES",
     "FormulaSellStrategy",
+    "EntryEngine", "EquityTracker", "BacktestLoop", "build_backtest_loop",
 ]

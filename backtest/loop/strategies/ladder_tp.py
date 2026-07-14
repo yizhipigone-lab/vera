@@ -48,4 +48,5 @@ class LadderTpStrategy:
         return [TriggerResult(
             reason=5, strategy_name=self.name, execution_price=exec_price,
             sell_ratio=sell_ratio, is_partial=bool(sell_ratio < 1.0),
+            actual_return=float(tp_profit),
         )]

@@ -15,8 +15,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import List, Optional, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,9 @@ class TriggerResult:
         execution_price: 已算好的成交价（含跳空保护等逻辑，check() 内算完填入）。
         sell_ratio: 卖出比例。1.0=全卖; <1.0=部分卖（ladder 阶梯止盈）。
         is_partial: 是否部分卖（trailing_first 双触发用，ladder 部分卖后保留仓位）。
+        actual_return: 精确收益率（可选）。ladder 用 tp_profit 原值（engine.py:303）,
+            其余策略不填（None → loop 用 (exec_price-ep)/ep 重算, 对齐 engine.py:290/311/315）。
+            仅 _execute_single 用; _execute_dual 的 ladder 部分卖走重算（engine.py:377）。
     """
 
     reason: int
@@ -36,6 +39,7 @@ class TriggerResult:
     execution_price: float
     sell_ratio: float = 1.0
     is_partial: bool = False
+    actual_return: Optional[float] = None
 
 
 @runtime_checkable
