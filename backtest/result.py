@@ -29,6 +29,11 @@ class BacktestResult:
     字段覆盖 run() 与 run_cached() 两个入口的全部 key:
       run()        → equity_curve, trades, metrics, stop_config_summary, selections, stock_count
       run_cached() → metrics, trades, cumulative_return, equity_curve (+ raw_equity/raw_trades if return_raw)
+
+    ⚠️ _UNSET 语义: 未构造时传入的字段值为 _UNSET 哨兵（不是 None）。
+    访问未设置字段务必用 result.get("field", default)（返回 default）或 result["field"]
+    （抛 KeyError）——**不要直接 .field 访问未设置字段**, 会拿到 _UNSET 哨兵对象。
+    .field 仅用于已知设置的字段（如 run() 结果的 result.metrics）。
     """
 
     equity_curve: Any = _UNSET

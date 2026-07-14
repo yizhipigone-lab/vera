@@ -1,6 +1,8 @@
 """C6 — DataCache 抽出测试。"""
 from __future__ import annotations
 
+import pytest
+
 from core.data_cache import DataCache
 
 
@@ -64,6 +66,14 @@ class TestDataCache:
 class TestDataFetcherCacheDelegation:
     """DataFetcher.clear_* 委托到 DataCache。"""
 
+    @pytest.fixture(autouse=True)
+    def _reset_shared_cache(self):
+        """A1/T1: 每测前后 reset DataFetcher._cache, 防 assert 失败泄漏到后续测试。"""
+        from core.data_fetcher import DataFetcher
+        DataFetcher._cache.clear_all()
+        yield
+        DataFetcher._cache.clear_all()
+
     def test_clear_sector_clears_cache(self):
         from core.data_fetcher import DataFetcher
         DataFetcher._cache.set_sector_list([{"code": "1"}])
@@ -71,7 +81,6 @@ class TestDataFetcherCacheDelegation:
         DataFetcher.clear_sector_cache()
         assert not DataFetcher._cache.has_sector_list()
         assert not DataFetcher._cache.has_sector_stocks("1")
-        DataFetcher._cache.clear_all()  # 清理
 
     def test_clear_name_clears_cache(self):
         from core.data_fetcher import DataFetcher
