@@ -116,14 +116,33 @@ def test_persist_writes_three_files(tmp_path):
     assert blob["meta"]["formula"] == "TEST"
 
 
-def test_persist_swallows_failure(tmp_path):
-    """落盘失败必须被吞 (不抛, 与 server 现状一致)."""
+def test_persist_swallows_failure(tmp_path, monkeypatch):
+    """落盘失败必须被吞 (不抛, 与 server 现状一致).
+
+    HIGH-3 修复: 用 Mock 让 open() 抛出 OSError，验证 persist 内部确实吞掉异常，
+    而非依赖"Windows Z: 盘不存在"这种环境相关的不稳定路径。
+    """
+    import builtins
+    import io
+
+    call_count = [0]
+
+    def fake_open(*args, **kwargs):
+        call_count[0] += 1
+        raise OSError("disk full or permission denied")
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+
     writer = ResultWriter()
-    # last_result_path 指向一个不存在的盘符路径, 触发写入失败
-    bad_path = Path("Z:/no_such_drive_xyz/last.json")
-    # 不应抛
-    writer.persist({"success": True}, results_dir=tmp_path / "r",
-                   last_result_path=bad_path, meta_extras={})
+    # 不应抛任何异常
+    writer.persist(
+        {"success": True, "trade_count": 0, "metrics": {}},
+        results_dir=tmp_path / "results",
+        last_result_path=tmp_path / "last_result.json",
+        meta_extras={},
+    )
+    # open 被调用过（说明确实尝试写了，只是被吞了）
+    assert call_count[0] > 0, "persist 应该尝试写文件（至少一次）"
 
 
 # ---------- on_progress ----------

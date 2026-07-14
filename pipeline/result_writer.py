@@ -30,11 +30,28 @@ ENTRY_PRICE_BASIS = "close_on_signal_day"
 
 @dataclass(frozen=True)
 class PipelineResult:
-    """Pipeline.run 的 typed 返回值 (取代原 plain dict)."""
+    """Pipeline.run 的 typed 返回值 (取代原 plain dict).
+
+    C1-2: 加 dict-like 访问方法，兼容 main.py 的 result["backtest"] / result.get(...) 写法。
+    """
     selections: Optional[pd.DataFrame]
     backtest: dict          # {"metrics","trades","equity_curve","stop_config_summary",...}
     benchmark: dict
     reports: dict           # {"html","json"}
+
+    # C1-2 dict-like 访问: result["backtest"] / result.get(...)
+    _FIELDS = ("selections", "backtest", "benchmark", "reports")
+
+    def __getitem__(self, key):
+        if key in self._FIELDS:
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 def safe_serialize(obj):
@@ -86,7 +103,11 @@ class ResultWriter:
         self._sink(step, pct)
 
     def serialize(self, result: PipelineResult) -> dict:
-        """PipelineResult → 前端响应 dict (字段集 = server 现状, backward compat 硬约束)."""
+        """PipelineResult → 前端响应 dict (字段集 = server 现状, backward compat 硬约束).
+
+        注意: PipelineResult 是 frozen dataclass，外部无法替换字段，但 backtest 等内部
+        dict/DataFrame 仍可原地修改（frozen 只阻止 `obj.field = x`，不阻止
+        `obj.backtest["key"] = val`）。调用方负责不在传入后修改 result 内部状态。"""
         backtest = result.backtest or {}
         metrics = backtest.get("metrics", {}) or {}
         trades = backtest.get("trades", pd.DataFrame())
@@ -167,9 +188,10 @@ class ResultWriter:
                 **meta_extras,
             }
             # data 顶层也加 engine_version/entry_price_basis (server.py:512-514)
+            # 改用直接赋值(与 server.py 一致)，setdefault 在非 dict 时抛 AttributeError 被吞
             if isinstance(response, dict):
-                response.setdefault("engine_version", ENGINE_VERSION)
-                response.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)
+                response["engine_version"] = ENGINE_VERSION
+                response["entry_price_basis"] = ENTRY_PRICE_BASIS
             # results/{ts}.json
             result_path = results_dir / f"{ts}.json"
             with open(result_path, "w", encoding="utf-8") as f:

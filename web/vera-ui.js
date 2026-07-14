@@ -1034,7 +1034,7 @@ function renderAllCharts(data) {
           borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
           textStyle: { color: c.text2, fontSize: 9 } },
       ],
-      grid: { left: 60, right: 70, top: 35, bottom: 60 },
+      grid: { left: 60, right: 100, top: 35, bottom: 60 },
       xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
       yAxis: [
         { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
@@ -1043,10 +1043,10 @@ function renderAllCharts(data) {
           axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
       ],
       // P4-3: 图表导出工具
-      toolbox: { right: 10, top: 0, feature: {
+      toolbox: { right: 75, top: 0, feature: {
         saveAsImage: { title: '保存图片', pixelRatio: 2 },
         dataZoom: { title: { zoom: '区域缩放', back: '还原' } },
-        restore: { title: '还原' },
+        restore: { title: '刷新' },
       }, iconStyle: { borderColor: c.text2 } },
       series: series,
     }, true);

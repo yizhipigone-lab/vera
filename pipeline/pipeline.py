@@ -9,7 +9,7 @@ from typing import Optional
 from core.connector import TdxConnector
 from selection.selector import StockSelector
 from selection.deduplicator import Deduplicator
-from selection.result_writer import ResultWriter
+from pipeline.result_writer import PipelineResult
 from backtest.engine import BacktestEngine
 from backtest.benchmark import BenchmarkComparator
 from report.report_generator import ReportGenerator
@@ -196,6 +196,8 @@ class Pipeline:
             _cb(5, "连接通达信失败")
             return {"error": str(e), "selections": None, "backtest": None}
         _cb(5, "连接通达信")
+        # C1-2: 对齐 server 的 8% TDX就绪进度点
+        _cb(8, "TDX就绪")
 
         # Step 2: 选股
         logger.info("[Step 1/5] 执行选股...")
@@ -249,9 +251,10 @@ class Pipeline:
         logger.info("=" * 60)
 
         _cb(100, "完成")
-        return {
-            "selections": selections,
-            "backtest": backtest_result,
-            "benchmark": benchmark_results,
-            "reports": report_outputs,
-        }
+        # C1-2: 返回 PipelineResult dataclass，dict-like 访问兼容 main.py 老调用方
+        return PipelineResult(
+            selections=selections,
+            backtest=backtest_result,
+            benchmark=benchmark_results,
+            reports=report_outputs,
+        )
