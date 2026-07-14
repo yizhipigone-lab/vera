@@ -26,7 +26,7 @@
 | 止损管理 | `backtest/stop_manager.py` + `stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复) |
 | 复权口径 | `core/dividend_type.py` | **统一 int/str 映射(候选 D,0b47db5)**:DataFetcher/FormulaRunner 内部用 `to_tdx_str`/`to_formula_int` 归一化,允许混传。`assert_consistent` 由 pipeline.py:101 调用 |
 | 公式系统 | TDX 公式翻译 + `core/formula_runner.py` | 通达信公式执行封装,统一入口。批量脚本 `batch_*.py` 大部分已删(2026-07-13 清 35 个废弃脚本) |
-| Web 后端 | `server.py` | API + 进度反馈(2026-07-13 候选 E,9a94d0c + 555aadd):`Pipeline.run` 加 `progress_callback` (11 个回调点),server `/api/run` 加 3 个中间 status 消除 5→15/15→40/70→85 黑区 |
+| Web 后端 | `server.py` | API + 进度反馈。**现状(2026-07-14 核实)**:`/api/run` handler(~272 行)手工内联 BacktestEngine/StockSelector,**不走 `Pipeline.run`**;进度靠 `pipeline_status.progress` 手工赋值(非 Pipeline 回调);候选 E 加的中间 status 实插在手工编排里,且 :363-369 曾有 40→30 进度倒退 bug(2026-07-14 已修)。**候选 D C1** 将把 server 改走 `Pipeline.run` 统一完整流程接缝(详见 `docs/plans/2026-07-14_候选D_实施计划.md`) |
 | Web 前端 | `web/index.html` + `vera-ui.js` | 管理后台 UI |
 | 测试 | `tests/` | pytest 套件,改核心函数后必跑。守卫式 + 字节级 parity + 能力透传 + 默认值锁 + 复权口径边界 + 进度回调签名 |
 
