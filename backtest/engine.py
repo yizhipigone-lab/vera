@@ -54,15 +54,18 @@ def _simulate_core_v3(
     ladder_tp_first=False,
     trailing_first=False,
     max_position_pct=1.0,
+    # ATR 波动率止损 (新 API 策略, opt-in; legacy 无此能力, 默认禁用保持 parity)
+    atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
 ):
     """兼容壳（候选 A 阶段 2, ENGINE_VERSION v3.4-loop-refactor-20260714）。
 
     39 参数签名零改动（22 必需 + 17 可选, 全 positional, 无 `*`）, 所有调用方零改动。
     转调 backtest.loop.BacktestLoop.run()。行为与 _simulate_core_v3_legacy 字节级一致
-    （见 tests/test_loop_parity.py 54 组对照）。
+    （见 tests/test_loop_parity.py 54 组对照; ATR 默认禁用, 不参与 parity）。
 
     first_day_n_bars 为历史半死参数（legacy 函数体从未引用, 仅调用方传入）, 此处接收但忽略。
-    返回 (equity_arr, raw_trades[:count]) 与 legacy 完全一致。
+    atr_* 为新增 keyword (默认禁用), 启用时走 BacktestLoop 新 API, legacy 无对应能力。
+    返回 (equity_arr, raw_trades[:count]) 与 legacy 完全一致 (ATR 禁用时)。
     """
     from backtest.loop import build_backtest_loop
     loop = build_backtest_loop(
@@ -77,6 +80,7 @@ def _simulate_core_v3(
         bpday, slippage, stamp_tax, max_position_pct,
         ladder_tp_first, trailing_first,
         formula_exit_np, formula_exit_ratio, formula_exit_lag_bars,
+        atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
     )
     return loop.run(price_np, entry_np, high_np, low_np, open_np,
                     tradable_np, last_tradable_idx, formula_exit_np)
@@ -109,6 +113,8 @@ def _simulate_core_v3_legacy(
     trailing_first=False,
     # 2026-07-09: 单票占比上限 (<1.0 启用; 默认1.0=不约束, 老行为)
     max_position_pct=1.0,
+    # ATR kwargs: legacy 无 ATR 能力, 接收但忽略 (保持与壳可互换, 作 parity 甲骨文)
+    atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
 ):
     n_dates = price_np.shape[0]
     n_stocks = price_np.shape[1]
@@ -642,6 +648,27 @@ def _build_tradable_from_raw(close_raw, close):
     return tradable_np, last_tradable_idx
 
 
+def _compute_atr_matrix(high_np, low_np, close_np, period: int = 14):
+    """计算 ATR 矩阵 (n_dates, n_stocks) float64。
+
+    TR = max(H-L, |H-prevClose|, |L-prevClose|); ATR = TR 的 period 周期简单均值
+    (min_periods=1, 首根 bar 用 H-L)。首 period-1 根为部分均值。
+    high_np/low_np/close_np 形状一致 (n,k)。返回 float64 矩阵, 缺值 NaN。
+    """
+    n, k = close_np.shape
+    atr = np.full((n, k), np.nan, dtype=np.float64)
+    for ci in range(k):
+        h = pd.Series(high_np[:, ci])
+        l = pd.Series(low_np[:, ci])
+        c = pd.Series(close_np[:, ci])
+        prev_c = c.shift(1)
+        tr = pd.concat(
+            [(h - l).abs(), (h - prev_c).abs(), (l - prev_c).abs()], axis=1
+        ).max(axis=1)
+        atr[:, ci] = tr.rolling(period, min_periods=1).mean().values
+    return atr
+
+
 # ═══════════════════════════════════════════════════════════════
 # BacktestEngine — Python 包装层
 # ═══════════════════════════════════════════════════════════════
@@ -825,6 +852,19 @@ class BacktestEngine:
                      mhd, mhd_scaled, time_s.get("enabled", True), self.period, bpday)
         t0 = pd.Timestamp.now()
         entries = self._filter_limit_up(entries, close)
+        # ATR 波动率止损: stop_config["atr_stop"], 内部从 high/low/close 预算
+        atr_cfg = stop.get("atr_stop", {})
+        atr_enabled = bool(atr_cfg.get("enabled", False))
+        atr_matrix = None
+        atr_multiplier = float(atr_cfg.get("multiplier", 3.0))
+        if atr_enabled:
+            if high_np is not None and low_np is not None:
+                atr_matrix = _compute_atr_matrix(
+                    high_np, low_np, close.values.astype(np.float64),
+                    period=int(atr_cfg.get("period", 14)))
+            else:
+                logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
+                atr_enabled = False
         equity_arr, raw_trades = _simulate_core_v3(
             close.values.astype(np.float64), entries.values,
             float(self.initial_capital),
@@ -853,6 +893,8 @@ class BacktestEngine:
             trailing_first=trailing_first,
             # 2026-07-09: 单票占比上限
             max_position_pct=float(self.max_position_pct),
+            # ATR 波动率止损 (新策略, opt-in)
+            atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
         )
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         # DEBUG: check raw bar differences from Numba output directly
@@ -955,6 +997,19 @@ class BacktestEngine:
         # ladder 隐含约定: ladder_profits 应升序 (调用方责任); 不升序 warning 不重排
         if n_ladder > 1 and not bool(np.all(np.diff(ladder_profits[:n_ladder]) >= 0)):
             logger.warning("ladder_profits 非升序, 阶梯触发可能不符预期 (调用方应预排序)")
+        # ATR 波动率止损: stop_config["atr_stop"], 内部从 high/low/close 预算矩阵
+        atr_cfg = stop.get("atr_stop", {})
+        atr_enabled = bool(atr_cfg.get("enabled", False))
+        atr_matrix = None
+        atr_multiplier = float(atr_cfg.get("multiplier", 3.0))
+        atr_period = int(atr_cfg.get("period", 14))
+        if atr_enabled:
+            if high_np is not None and low_np is not None:
+                atr_matrix = _compute_atr_matrix(
+                    high_np, low_np, close.values.astype(np.float64), period=atr_period)
+            else:
+                logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
+                atr_enabled = False
 
         entries = self._filter_limit_up(entries, close) if filter_limit_up else entries
         equity_arr, raw_trades = _simulate_core_v3(
@@ -983,6 +1038,8 @@ class BacktestEngine:
             open_np=open_np,
             formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
             formula_exit_lag_bars=formula_exit_lag_bars,
+            # ATR 波动率止损 (新策略, opt-in)
+            atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
