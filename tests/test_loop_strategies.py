@@ -421,3 +421,63 @@ class TestAtrIntegration:
         assert 13.0 in reasons, f"应含 ATR(reason=13) 交易, reasons={reasons}"
         atr_trade = trades[reasons == 13.0][0]
         assert atr_trade[4] == pytest.approx(9.5)  # exec_price = trail_line
+
+
+# ─────────────────────────────────────────────────────────────
+# ATR 组合场景（审计 A1/T2: trailing_first 双触发 + 与 cost_stop 组合）
+# ─────────────────────────────────────────────────────────────
+class TestAtrCompose:
+    def test_atr_trailing_first_dual_with_ladder_partial(self):
+        """trailing_first: ladder 部分卖 + ATR 全卖剩余 → 2 笔交易(5 + 13)。"""
+        from backtest.loop import build_backtest_loop
+        n = 6
+        price = np.full((n, 1), 10.0); high = np.full((n, 1), 10.0)
+        low = np.full((n, 1), 10.0); op = np.full((n, 1), 10.0)
+        # bar2 冲高 10.8 → ladder 第一档(0.06)部分卖, peak_hi=10.8
+        price[2, 0] = 10.8; high[2, 0] = 10.8; low[2, 0] = 10.7
+        # bar3 跌 low=9.2 → ATR 线 = 10.8 - 3*0.5 = 9.3, 9.2<=9.3 触发
+        price[3, 0] = 9.3; high[3, 0] = 9.5; low[3, 0] = 9.2
+        entry = np.zeros((n, 1), dtype=bool); entry[0, 0] = True
+        atr_matrix = np.full((n, 1), 0.5, dtype=np.float64)
+        loop = build_backtest_loop(
+            1_000_000.0, 0.0003, 1000.0, 200_000.0, 100, 1,
+            True, -0.20,        # cost_stop 不触发(阈值 -20%)
+            False, 0.05, 0.10,  # trailing 禁用 → ATR 才能兜底
+            True, np.array([0.06, 0.15], dtype=np.float64),
+            np.array([0.5, 0.5], dtype=np.float64), 2,  # ladder 启用
+            False, 10, False, 3, 0.08, False, 0.03,
+            1, 0.0, 0.001, 1.0,
+            ladder_tp_first=False, trailing_first=True,  # trailing_first 模式
+            formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
+            atr_enabled=True, atr_matrix=atr_matrix, atr_multiplier=3.0,
+        )
+        eq, trades = loop.run(price, entry, high, low, op, None, None, None)
+        reasons = sorted(trades[:, 8])
+        assert reasons == [5.0, 13.0], (
+            f"trailing_first 双触发应产 ladder(5)+atr(13), got reasons={reasons}")
+
+    def test_atr_compose_cost_stop_wins(self):
+        """stop_first: cost_stop 与 atr 都满足时, cost_stop 先赢(order 在前)。"""
+        from backtest.loop import build_backtest_loop
+        n = 6
+        price = np.full((n, 1), 10.0); high = np.full((n, 1), 10.0)
+        low = np.full((n, 1), 10.0); op = np.full((n, 1), 10.0)
+        # bar2 peak=11; bar3 low=9.4 → cost_stop(-5%=9.5) 和 atr(11-1.5=9.5) 都触发
+        price[2, 0] = 11.0; high[2, 0] = 11.0; low[2, 0] = 10.8
+        price[3, 0] = 9.5; high[3, 0] = 9.8; low[3, 0] = 9.4
+        entry = np.zeros((n, 1), dtype=bool); entry[0, 0] = True
+        atr_matrix = np.full((n, 1), 0.5, dtype=np.float64)
+        loop = build_backtest_loop(
+            1_000_000.0, 0.0003, 1000.0, 200_000.0, 100, 1,
+            True, -0.05,        # cost_stop 阈值 -5% → low=9.4 触发
+            False, 0.05, 0.10,
+            False, np.array([0.06, 0.15], dtype=np.float64),
+            np.array([0.5, 0.5], dtype=np.float64), 2,
+            False, 10, False, 3, 0.08, False, 0.03,
+            1, 0.0, 0.001, 1.0, False, False, None, 1.0, 1,
+            atr_enabled=True, atr_matrix=atr_matrix, atr_multiplier=3.0,
+        )
+        eq, trades = loop.run(price, entry, high, low, op, None, None, None)
+        reasons = trades[:, 8]
+        assert 3.0 in reasons and 13.0 not in reasons, (
+            f"stop_first 下 cost_stop 应先赢(reason=3), atr(13)不应触发, got {reasons}")

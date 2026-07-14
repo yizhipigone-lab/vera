@@ -1033,7 +1033,8 @@ class BacktestEngine:
                       7.0: "cond_time_stop",
                       10.0: "首日未达标",
                       11.0: "退市",
-                      12.0: "formula_sell"}
+                      12.0: "formula_sell",
+                      13.0: "ATR止损"}
         col_map = {c: i for i, c in enumerate(columns)}
         inv_col = {i: c for c, i in col_map.items()}
         records = []
