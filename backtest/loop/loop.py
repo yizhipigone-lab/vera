@@ -14,13 +14,14 @@
 from __future__ import annotations
 
 import math
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .state import (
     BacktestParams, Context, PositionBook, TradeBuffer, Bar,
 )
-from .strategies.base import TriggerResult
+from .strategies.base import AbsoluteStrategy, TriggerResult
 from .exit_engine import ExitDispatcher
 from .absolute import FormulaSellStrategy
 from .entry import EntryEngine
@@ -32,7 +33,7 @@ class BacktestLoop:
 
     def __init__(self, params: BacktestParams,
                  dispatcher: ExitDispatcher,
-                 absolutes,
+                 absolutes: Sequence[AbsoluteStrategy],
                  entry_engine: EntryEngine,
                  equity_tracker: EquityTracker,
                  position_book: PositionBook,
@@ -49,10 +50,17 @@ class BacktestLoop:
         self.ladder_ratios = ladder_ratios
         self.n_ladder = n_ladder
 
-    def run(self, price_np, entry_np, high_np, low_np, open_np,
-            tradable_np, last_tradable_idx,
-            formula_exit_np) -> tuple:
-        """跑完整回测, 返回 (equity_arr, raw_trades)。"""
+    def run(self, price_np: np.ndarray, entry_np: np.ndarray,
+            high_np: Optional[np.ndarray], low_np: Optional[np.ndarray],
+            open_np: Optional[np.ndarray],
+            tradable_np: Optional[np.ndarray],
+            last_tradable_idx: Optional[np.ndarray],
+            formula_exit_np: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+        """跑完整回测, 返回 (equity_arr, raw_trades)。
+
+        formula_exit_np: 信号已存于 FormulaSellStrategy(absolutes), 此参数保留作
+        显式传递/未来扩展, run 内不直接引用（LOW-2）。
+        """
         n_dates = price_np.shape[0]
         n_stocks = price_np.shape[1]
         p = self.params
@@ -141,7 +149,8 @@ class BacktestLoop:
             peak_hi = book.high_hi_arr[pp] if book.high_hi_arr[pp] > 0 else ep
             peak_hi_profit = (peak_hi - ep) / ep if ep > 0.0 else 0.0
             hold_days = i - book.entry_idx_arr[pp]
-            op = open_np[i, ci] if open_np is not None else xp
+            # open_np=None 时 engine.py 不做跳空保护 → 传 NaN 让 CostStopStrategy 跳过
+            op = open_np[i, ci] if open_np is not None else float("nan")
 
             pos = book.get(pp)
             bar = Bar(close=xp, high=hi, low=lo, open=op)
@@ -187,6 +196,8 @@ class BacktestLoop:
                 continue
             else:
                 # 双触发: [ladder 部分卖, trailing/cost 全卖剩余] (engine.py:346-384)
+                # M6 不变量: results[0] 必为 ladder 部分卖(is_partial=True), dispatcher
+                # 仅在 ladder_partial 存在时才追加第二结果, 故此处 tr0.is_partial 恒真。
                 cash = self._execute_dual(
                     results, pp, ci, i, ep, book, trade_buf, cash, slippage, comm_stamp)
                 # 清仓 (swap-and-pop), 不 pp+=1

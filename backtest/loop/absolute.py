@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -25,7 +25,8 @@ class FormulaSellStrategy:
 
     name = "formula_sell"
 
-    def __init__(self, formula_exit_np, ratio: float = 1.0, lag_bars: int = 1):
+    def __init__(self, formula_exit_np: Optional[np.ndarray],
+                 ratio: float = 1.0, lag_bars: int = 1):
         self.signal = formula_exit_np   # (n_dates, n_stocks) bool ndarray, 可为 None
         self.ratio = float(ratio)
         self.lag_bars = int(lag_bars)

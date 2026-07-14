@@ -30,13 +30,14 @@ class LadderTpStrategy:
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         prev_mask = pos.ladder_done
-        profits = ctx.ladder_profits[: ctx.n_ladder]
+        # H5/R9: .copy() 取只读副本, 防误写污染跨 bar 的 ladder_profits 视图
+        profits = ctx.ladder_profits[: ctx.n_ladder].copy()
         new_mask = compute_ladder_trigger(prev_mask, ctx.hi_pp, profits)
         if new_mask == prev_mask:
             return []
         # mutate bitmask（跨 bar 累计, 与 engine.py:196 一致）
         pos.ladder_done = new_mask
-        ratios = ctx.ladder_ratios[: ctx.n_ladder]
+        ratios = ctx.ladder_ratios[: ctx.n_ladder].copy()
         sell_ratio = float(compute_ladder_sell_ratio(prev_mask, new_mask, profits, ratios))
         # 执行价: 取已置位且 hi_pp 满足的最大档位 profit（engine.py:296-302）
         tp_profit = 0.0

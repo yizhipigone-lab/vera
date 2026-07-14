@@ -51,6 +51,13 @@ class BacktestParams:
     bpday: int = 1               # bars per day
     max_position_pct: float = 1.0  # 单票占比上限（1.0=不约束, 老行为）
 
+    def __post_init__(self):
+        # M2: 启动期 fail-fast, 防 bpday=0 除零
+        if self.bpday < 1:
+            raise ValueError(f"bpday 必须 >= 1, 收到 {self.bpday}")
+        if self.lot_size < 1:
+            raise ValueError(f"lot_size 必须 >= 1, 收到 {self.lot_size}")
+
 
 # ─────────────────────────────────────────────────────────────
 # 单 bar 市场数据
@@ -126,22 +133,24 @@ def assert_state_dtype() -> None:
     """断言 Position / Bar / Context 的字段 dtype 约定。
 
     阶段 1 验收门槛: 传错 dtype（float 字段传 int / int 字段传 float）必须能被检测。
-    这里用构造 + isinstance 检查 Python 层; numpy 层由 PositionBook/TradeBuffer 的
-    .dtype property 暴露, parity 测试再断言 np.float64/np.int32。
+    用 raise TypeError（非裸 assert, 防 python -O 剥离, M4）。
+    numpy 层由 PositionBook/TradeBuffer 的 .dtype property 暴露, parity 测试再断言。
     """
-    # Position: int 字段必须能装 int, float 字段必须能装 float
     pos = Position(
         code=np.int32(3), shares=np.float64(100.0), entry_px=np.float64(10.0),
         entry_idx=np.int32(5), high_px=np.float64(11.0), high_hi=np.float64(12.0),
         ladder_done=np.int32(0),
     )
-    assert isinstance(pos.code, (int, np.integer)), "Position.code 必须 int"
-    assert isinstance(pos.shares, (float, np.floating)), "Position.shares 必须 float"
-    assert isinstance(pos.ladder_done, (int, np.integer)), "Position.ladder_done 必须 int(bitmask)"
-    # Bar 全 float
+    if not isinstance(pos.code, (int, np.integer)):
+        raise TypeError("Position.code 必须 int")
+    if not isinstance(pos.shares, (float, np.floating)):
+        raise TypeError("Position.shares 必须 float")
+    if not isinstance(pos.ladder_done, (int, np.integer)):
+        raise TypeError("Position.ladder_done 必须 int(bitmask)")
     b = Bar(close=10.0, high=11.0, low=9.0, open=10.0)
-    assert all(isinstance(getattr(b, f), (float, np.floating))
-               for f in ("close", "high", "low", "open")), "Bar 字段必须 float"
+    for f in ("close", "high", "low", "open"):
+        if not isinstance(getattr(b, f), (float, np.floating)):
+            raise TypeError(f"Bar.{f} 必须 float")
 
 
 # ─────────────────────────────────────────────────────────────

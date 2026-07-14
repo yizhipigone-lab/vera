@@ -31,7 +31,8 @@ class TrailingStrategy:
         trail_line = ctx.peak_hi * (1.0 - self.drawdown)
         if bar.low <= trail_line:
             ep = pos.entry_px
-            reason = 8 if (trail_line - ep) / ep > 0.0 else 4
+            # M3: 防御 ep==0 除零（上游已挡, 此处独立守卫）
+            reason = 8 if (ep > 0.0 and (trail_line - ep) / ep > 0.0) else 4
             return [TriggerResult(
                 reason=reason, strategy_name=self.name, execution_price=trail_line,
             )]

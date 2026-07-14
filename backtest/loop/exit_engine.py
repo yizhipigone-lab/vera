@@ -65,7 +65,8 @@ class ExitDispatcher:
         """
         if self.priority == Priority.TRAILING_FIRST:
             return self._eval_trailing_first(pos, bar, ctx)
-        for name in _PRIORITY_ORDER[self.priority]:
+        # M5: .get 防御, 即使新增 Priority 值也不 KeyError
+        for name in _PRIORITY_ORDER.get(self.priority, []):
             s = self.strategies.get(name)
             if s is None:
                 continue
@@ -86,7 +87,7 @@ class ExitDispatcher:
                     ladder_partial = r[0]      # 部分卖, 继续检查 trailing
                 else:
                     return [r[0]]              # 全卖, 阻塞
-        # 2. trailing（不阻塞: 不管 ladder 是否部分触发都检查）
+        # 2. trailing（ladder 部分卖或未触发时检查; ladder 全卖已早退）
         trailing = self.strategies.get("trailing")
         if trailing is not None:
             r = trailing.check(pos, bar, ctx)

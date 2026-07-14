@@ -6,6 +6,8 @@ capability gating（HA1）: enabled=False 的策略不进 dispatcher dict。
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 
 from .state import BacktestParams, PositionBook
@@ -21,23 +23,28 @@ from .loop import BacktestLoop
 
 
 def build_backtest_loop(
-    initial_capital, commission,
-    min_buy_amount, max_buy_amount, lot_size, min_lots,
-    cost_stop_enabled, cost_stop_threshold,
-    trailing_enabled, trailing_activation, trailing_drawdown,
-    ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
-    time_enabled, max_hold_days,
-    cond_time_enabled, cond_time_days, cond_time_profit,
-    first_day_enabled=False, first_day_target=0.03,
-    bpday=1, slippage=0.0, stamp_tax=0.0,
-    max_position_pct=1.0,
-    ladder_tp_first=False, trailing_first=False,
-    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
+    initial_capital: float, commission: float,
+    min_buy_amount: float, max_buy_amount: float, lot_size: int, min_lots: int,
+    cost_stop_enabled: bool, cost_stop_threshold: float,
+    trailing_enabled: bool, trailing_activation: float, trailing_drawdown: float,
+    ladder_enabled: bool, ladder_profits: np.ndarray, ladder_ratios: np.ndarray,
+    n_ladder: int,
+    time_enabled: bool, max_hold_days: int,
+    cond_time_enabled: bool, cond_time_days: int, cond_time_profit: float,
+    first_day_enabled: bool = False, first_day_target: float = 0.03,
+    bpday: int = 1, slippage: float = 0.0, stamp_tax: float = 0.0,
+    max_position_pct: float = 1.0,
+    ladder_tp_first: bool = False, trailing_first: bool = False,
+    formula_exit_np: Optional[np.ndarray] = None,
+    formula_exit_ratio: float = 1.0, formula_exit_lag_bars: int = 1,
 ) -> BacktestLoop:
     """从 _simulate_core_v3 的参数构造 BacktestLoop。
 
-    签名顺序对齐 _simulate_core_v3 的 positional 参数（engine.py:32-58）。
+    签名顺序对齐 _simulate_core_v3 的 positional 参数（engine.py）。
     """
+    # M7: ladder 数组入口归一化 float64, 防外部传 float32/list 导致触发边界漂移
+    ladder_profits = np.asarray(ladder_profits, dtype=np.float64)
+    ladder_ratios = np.asarray(ladder_ratios, dtype=np.float64)
     params = BacktestParams(
         initial_capital=initial_capital, commission=commission,
         slippage=slippage, stamp_tax=stamp_tax,

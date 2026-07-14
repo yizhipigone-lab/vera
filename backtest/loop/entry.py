@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 
 from .state import BacktestParams, PositionBook, TradeBuffer
@@ -26,7 +28,8 @@ class EntryEngine:
 
     def run_bar(self, i: int, cash: float, book: PositionBook,
                 trade_buf: TradeBuffer, price_np: np.ndarray,
-                entry_np: np.ndarray, tradable_np,
+                entry_np: np.ndarray,
+                tradable_np: Optional[np.ndarray],
                 prev_equity: float) -> float:
         """engine.py:465-538。返回更新后的 cash。"""
         p = self.params
