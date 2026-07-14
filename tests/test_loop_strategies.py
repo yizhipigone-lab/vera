@@ -14,6 +14,7 @@ from backtest.loop import (
     TradeColumns, assert_state_dtype,
     CostStopStrategy, LadderTpStrategy, TrailingStrategy,
     TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
+    AtrStopStrategy,
 )
 
 
@@ -340,3 +341,83 @@ class TestPositionBook:
         pos = book.get(p0)
         assert pos.high_px == 11.0
         assert pos.high_hi == 12.0
+
+
+# ─────────────────────────────────────────────────────────────
+# AtrStopStrategy (reason=13) — 加新策略范例
+# ─────────────────────────────────────────────────────────────
+class TestAtrStop:
+    def test_trigger_when_low_below_atr_line(self):
+        # peak_hi=11.0, ATR=0.5, multiplier=3 → trail_line = 11 - 1.5 = 9.5
+        atr_matrix = np.full((10, 2), 0.5, dtype=np.float64)
+        s = AtrStopStrategy(atr_matrix=atr_matrix, multiplier=3.0)
+        pos = make_pos(entry_px=10.0)
+        ctx = make_ctx(bar_index=5, ci=0, peak_hi=11.0)
+        bar = make_bar(low=9.4)  # <= 9.5 触发
+        res = s.check(pos, bar, ctx)
+        assert len(res) == 1
+        assert res[0].reason == 13
+        assert res[0].execution_price == pytest.approx(9.5)
+        assert res[0].sell_ratio == 1.0  # 全卖
+
+    def test_no_trigger_when_low_above_atr_line(self):
+        atr_matrix = np.full((10, 2), 0.5, dtype=np.float64)
+        s = AtrStopStrategy(atr_matrix=atr_matrix, multiplier=3.0)
+        ctx = make_ctx(bar_index=5, ci=0, peak_hi=11.0)  # trail_line=9.5
+        assert s.check(make_pos(), make_bar(low=9.6), ctx) == []
+
+    def test_no_trigger_when_atr_zero(self):
+        atr_matrix = np.zeros((10, 2), dtype=np.float64)
+        s = AtrStopStrategy(atr_matrix=atr_matrix, multiplier=3.0)
+        ctx = make_ctx(bar_index=5, ci=0, peak_hi=11.0)
+        assert s.check(make_pos(), make_bar(low=5.0), ctx) == []
+
+    def test_none_matrix_no_fire(self):
+        s = AtrStopStrategy(atr_matrix=None, multiplier=3.0)
+        assert s.check(make_pos(), make_bar(low=5.0), make_ctx(peak_hi=11.0)) == []
+
+    def test_out_of_bounds_no_fire(self):
+        atr_matrix = np.full((5, 2), 0.5, dtype=np.float64)
+        s = AtrStopStrategy(atr_matrix=atr_matrix, multiplier=3.0)
+        ctx = make_ctx(bar_index=99, ci=0, peak_hi=11.0)  # 越界
+        assert s.check(make_pos(), make_bar(low=5.0), ctx) == []
+
+
+# ─────────────────────────────────────────────────────────────
+# ATR 端到端集成（build_backtest_loop + BacktestLoop.run, reason=13）
+# ─────────────────────────────────────────────────────────────
+class TestAtrIntegration:
+    def test_atr_fires_through_full_loop(self):
+        """建带 ATR 的 loop, 跑 crafted 数据, 验 reason=13 交易产生。"""
+        from backtest.loop import build_backtest_loop
+        # bar0 入场@10; bar1 T+1; bar2 冲高 peak=11; bar3 跌 low=9.4
+        n = 6
+        price = np.full((n, 1), 10.0)
+        high = np.full((n, 1), 10.0)
+        low = np.full((n, 1), 10.0)
+        op = np.full((n, 1), 10.0)
+        price[2, 0] = 11.0; high[2, 0] = 11.0; low[2, 0] = 10.8
+        price[3, 0] = 9.5;  high[3, 0] = 9.8;  low[3, 0] = 9.4
+        entry = np.zeros((n, 1), dtype=bool)
+        entry[0, 0] = True
+        atr_matrix = np.full((n, 1), 0.5, dtype=np.float64)  # ATR=0.5
+        # trail_line @ bar3 = peak_hi(11) - 3*0.5 = 9.5; low=9.4 <= 9.5 → ATR 触发
+        loop = build_backtest_loop(
+            1_000_000.0, 0.0003, 1000.0, 200_000.0, 100, 1,
+            True, -0.20,        # cost_stop 阈值 -20% (不触发, 让 ATR 先)
+            False, 0.05, 0.10,  # trailing 禁用
+            False, np.array([0.06, 0.15], dtype=np.float64),
+            np.array([0.5, 0.5], dtype=np.float64), 2,  # ladder 禁用
+            False, 10,          # time 禁用
+            False, 3, 0.08,     # cond_time 禁用
+            False, 0.03,        # first_day 禁用
+            1, 0.0, 0.001, 1.0, False, False, None, 1.0, 1,
+            atr_enabled=True, atr_matrix=atr_matrix, atr_multiplier=3.0,
+        )
+        eq, trades = loop.run(price, entry, high, low, op, None, None, None)
+        assert trades.shape[0] >= 1, f"应产生交易, got {trades.shape}"
+        # 至少一笔 reason=13
+        reasons = trades[:, 8]
+        assert 13.0 in reasons, f"应含 ATR(reason=13) 交易, reasons={reasons}"
+        atr_trade = trades[reasons == 13.0][0]
+        assert atr_trade[4] == pytest.approx(9.5)  # exec_price = trail_line

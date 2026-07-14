@@ -12,6 +12,7 @@ from .strategies import (
     ExitStrategy, AbsoluteStrategy, TriggerResult,
     CostStopStrategy, LadderTpStrategy, TrailingStrategy,
     TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
+    AtrStopStrategy,
 )
 from .exit_engine import Priority, ExitDispatcher, PRE_DISPATCH_STRATEGIES
 from .absolute import FormulaSellStrategy
@@ -26,6 +27,7 @@ __all__ = [
     "ExitStrategy", "AbsoluteStrategy", "TriggerResult",
     "CostStopStrategy", "LadderTpStrategy", "TrailingStrategy",
     "TimeStopStrategy", "CondTimeStrategy", "FirstDayStrategy",
+    "AtrStopStrategy",
     "Priority", "ExitDispatcher", "PRE_DISPATCH_STRATEGIES",
     "FormulaSellStrategy",
     "EntryEngine", "EquityTracker", "BacktestLoop", "build_backtest_loop",

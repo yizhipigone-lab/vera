@@ -14,6 +14,7 @@ from .state import BacktestParams, PositionBook
 from .strategies import (
     CostStopStrategy, LadderTpStrategy, TrailingStrategy,
     TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
+    AtrStopStrategy,
 )
 from .exit_engine import ExitDispatcher, Priority
 from .absolute import FormulaSellStrategy
@@ -37,6 +38,10 @@ def build_backtest_loop(
     ladder_tp_first: bool = False, trailing_first: bool = False,
     formula_exit_np: Optional[np.ndarray] = None,
     formula_exit_ratio: float = 1.0, formula_exit_lag_bars: int = 1,
+    # ATR 波动率止损（新 API 策略, 默认禁用; 启用需传 atr_matrix）
+    atr_enabled: bool = False,
+    atr_matrix: Optional[np.ndarray] = None,
+    atr_multiplier: float = 3.0,
 ) -> BacktestLoop:
     """从 _simulate_core_v3 的参数构造 BacktestLoop。
 
@@ -69,6 +74,9 @@ def build_backtest_loop(
             days=cond_time_days, profit=cond_time_profit)
     if first_day_enabled:
         strategies["first_day"] = FirstDayStrategy(target=first_day_target)
+    if atr_enabled:
+        strategies["atr_stop"] = AtrStopStrategy(
+            atr_matrix=atr_matrix, multiplier=atr_multiplier)
 
     # ── priority ──
     if trailing_first:

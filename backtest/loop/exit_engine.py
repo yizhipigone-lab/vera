@@ -32,9 +32,10 @@ PRE_DISPATCH_STRATEGIES = {"formula_sell"}
 
 
 # priority-block 求值顺序（first-trigger-wins）
+# atr_stop 为新 API 策略, 默认不在 dict（builder 未启用则不进 strategies, 无影响）
 _PRIORITY_ORDER: Dict[Priority, List[str]] = {
-    Priority.STOP_FIRST: ["cost_stop", "ladder_tp", "trailing"],
-    Priority.LADDER_TP_FIRST: ["ladder_tp", "cost_stop", "trailing"],
+    Priority.STOP_FIRST: ["cost_stop", "atr_stop", "ladder_tp", "trailing"],
+    Priority.LADDER_TP_FIRST: ["ladder_tp", "cost_stop", "atr_stop", "trailing"],
     # trailing_first 单独处理（双触发语义）
 }
 
@@ -103,7 +104,15 @@ class ExitDispatcher:
                 if ladder_partial is not None:
                     return [ladder_partial, r[0]]   # 双触发: ladder 部分卖 + cost_stop 全卖剩余
                 return [r[0]]
-        # 4. trailing/cost 都没触发, 但 ladder 部分卖了 → ladder 是唯一触发
+        # 3b. atr_stop 兜底（cost_stop 没触发才检查, 同款兜底语义）
+        atr = self.strategies.get("atr_stop")
+        if atr is not None:
+            r = atr.check(pos, bar, ctx)
+            if r:
+                if ladder_partial is not None:
+                    return [ladder_partial, r[0]]   # 双触发: ladder 部分卖 + atr_stop 全卖剩余
+                return [r[0]]
+        # 4. trailing/cost/atr 都没触发, 但 ladder 部分卖了 → ladder 是唯一触发
         if ladder_partial is not None:
             return [ladder_partial]
         # 5. 公共尾部
