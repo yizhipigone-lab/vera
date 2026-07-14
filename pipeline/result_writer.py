@@ -23,6 +23,8 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
+from backtest.result import BacktestResult
+
 # F2 回归保护: 标记买入语义 (signal-day-close = 信号日收盘价买入, 业务铁律2)
 ENGINE_VERSION = "signal-day-close"
 ENTRY_PRICE_BASIS = "close_on_signal_day"
@@ -35,7 +37,7 @@ class PipelineResult:
     C1-2: 加 dict-like 访问方法，兼容 main.py 的 result["backtest"] / result.get(...) 写法。
     """
     selections: Optional[pd.DataFrame]
-    backtest: dict          # {"metrics","trades","equity_curve","stop_config_summary",...}
+    backtest: Optional[BacktestResult]   # C3: engine.run() 返 BacktestResult (dict-like, 兼容老 dict 调用)
     benchmark: dict
     reports: dict           # {"html","json"}
 

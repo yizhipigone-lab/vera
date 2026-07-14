@@ -150,3 +150,63 @@ class TestAtrStop:
 - [ ] 全量 `pytest tests/` 仍 258 passed + 5 skipped
 
 按此模板，新人 60 分钟内可跑通一个新策略测试。
+
+---
+
+## 7. 后续重构补遗（C2/C3/C5/C6 + ATR 生产化）
+
+拆解主线之外, 围绕 `backtest/loop/` 又做了几项配套重构:
+
+### 7.1 BacktestResult（C3）
+
+`backtest/result.py` — engine.run()/run_cached() 的返回从 plain dict 改为 frozen dataclass。
+- **精确 dict 语义**: `_UNSET` 哲兵, 只有构造时显式传入的字段才算 `in`/`keys()`; run() 与 run_cached() 的 key 集合互不相同, 与老 dict 完全一致
+- **dict-like**: `__getitem__`/`get`/`__contains__`/`keys`/`items` + `.field` + `to_dict()`
+- **⚠️ _UNSET 语义**: 未设置字段务必用 `result.get("field", default)`, 不要直接 `.field`（会拿到 _UNSET 哨兵）
+- 现有 `result["key"]`/`result.get("key")` 调用零改动; PipelineResult.backtest 字段已 typed 为 `Optional[BacktestResult]`
+
+### 7.2 DataFetcher connector 缝隙（C5）
+
+`core/data_fetcher.py` 加 `_connector()`/`set_connector()`/`reset_connector()`。
+- 9 个内部 `TdxConnector.tq()` 调用路由到 `_connector()` 缝隙
+- 默认仍用 TdxConnector 单例, **27 个外部调用点零改动**
+- 测试可 `set_connector(mock)` 注入假 connector, 不触达真实 TDX
+
+### 7.3 DataCache（C6）
+
+`core/data_cache.py` — 从 DataFetcher 抽出 sector_list/sector_stocks/name_map 三类进程级缓存。
+- DataFetcher 持 `_cache = DataCache()`, 5 个方法委托
+- `clear_sector_cache`/`clear_name_cache` 公开 API 不变
+
+### 7.4 ATR 生产化（ATR 接入 run_cached/run）
+
+ATR 不再只是新 API 演示, 已接生产路径:
+- `stop_config["atr_stop"] = {"enabled": bool, "period": 14, "multiplier": 3.0}`（opt-in, 默认禁用）
+- run_cached/run 内部用 `_compute_atr_matrix(high,low,close,period)` 预算 ATR 矩阵（标准 TR + 14 周期均值）
+- 优先级: 止损类, cost_stop 之后（dispatcher 顺序表已就位）
+- high_np/low_np 缺失时警告并禁用, 不崩
+
+### 7.5 run/run_cached 共享后处理（C2）
+
+`_post_process(equity_arr, raw_trades, close, bpday)` 抽出 equity_curve/_build_trades/metrics, 两入口共用。改 equity_curve 逻辑只改一处。
+
+### 7.6 性能基准（实测, 无需优化）
+
+| 规模 | legacy | new | 退化 |
+|---|---|---|---|
+| 500×100 | 0.010s | 0.017s | 1.73x |
+| 2500×500（真实批量） | 0.089s | 0.124s | **1.40x** |
+
+规模上来后 numpy 固定成本主导, 对象创建占比下降 → 真实批量 1.40x < 2x 阈值, **无需 __slots__ 优化**。
+
+### 7.7 `_simulate_core_v3_legacy` 甲骨文删除时机评估
+
+527 行 legacy 保留作 parity 甲骨文（`tests/test_loop_parity.py` 50 组 + `tests/test_real_parity.py` 3 组真实数据对比壳 vs legacy）。
+
+**删除时机建议**:
+- 现在**不删** — 真实对拍刚过, 保留至少一个发版周期（到你下次正式发版后）做回归兜底
+- 删之前**必须**先把 `test_loop_parity.py` / `test_real_parity.py` 从"壳 vs legacy"改成"壳 vs 固化快照"（用 `np.save` 存一组基准 equity/trades, 对比快照而非 legacy）。否则删了 legacy 就没了参照
+- 删除时 legacy 的 atr kwargs 一并去掉（legacy 为可替换加了 atr 参数接收忽略）
+- 推荐流程: 发版 → 观察 1-2 周 → 转快照 parity → 删 legacy + 清理 `from engine import _simulate_core_v3_legacy`
+
+**当前保留成本**: 527 行死代码 + 维护面（改引擎要同步两处）, 但 parity 价值高于此成本, 值得。
