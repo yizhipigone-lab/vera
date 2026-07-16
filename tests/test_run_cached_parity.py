@@ -99,6 +99,16 @@ def _direct_call(eng, close, entries, high_np, low_np, stop_config,
     ctd_scaled = int(cond_t.get("days", 7)) * bpday
     fd_bars = bpday - 1 if bpday > 1 else 1
 
+    # 移动止损止盈缺字段/None 语义：与 run()/run_cached() 对齐。
+    # 此处必须硬编码 0.035/0.01, 严禁 import 生产端命名常量, 否则两侧同时写错时
+    # parity 测试仍会假绿, 失去 oracle 价值。
+    trailing_activation = trail.get("activation")
+    if trailing_activation is None:
+        trailing_activation = 0.035
+    trailing_drawdown = trail.get("drawdown")
+    if trailing_drawdown is None:
+        trailing_drawdown = 0.01
+
     # capabilities gate (与深化后 run_cached 一致)
     caps = stop.get("capabilities", {})
     if not caps.get("formula_exit", True):
@@ -121,8 +131,8 @@ def _direct_call(eng, close, entries, high_np, low_np, stop_config,
         float(eng.min_buy_amount), float(eng.max_buy_amount),
         int(eng.lot_size), int(eng.min_lots),
         cost.get("enabled", True), float(cost.get("threshold", -0.12)),
-        trail.get("enabled", True), float(trail.get("activation", 0.08)),
-        float(trail.get("drawdown", 0.05)),
+        trail.get("enabled", True), float(trailing_activation),
+        float(trailing_drawdown),
         ladder.get("enabled", True), lp, lr, nl,
         time_s.get("enabled", True), mhd_scaled,
         cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
@@ -169,6 +179,50 @@ def test_parity_no_capabilities():
     dates, close, high, low, open_, entries, cols = _make_market()
     eng = _make_engine()
     _assert_parity(eng, close, entries, high, low, _stop_config_full())
+
+
+# ---------------------------------------------------------------------------
+# Parity: 移动止损止盈缺字段 (Task 4 缺字段 parity)
+# ---------------------------------------------------------------------------
+def test_parity_when_trailing_values_missing():
+    """run_cached 与直调核心在缺省移动止损止盈参数时必须字节级一致。"""
+    _, close, high, low, _, entries, _ = _make_market()
+    engine = _make_engine()
+    stop_config = _stop_config_full()
+    stop_config["trailing_stop"] = {"enabled": True}
+
+    _assert_parity(
+        engine,
+        close,
+        entries,
+        high,
+        low,
+        stop_config,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parity: 移动止损止盈显式 None (Task 4 None 语义 parity)
+# ---------------------------------------------------------------------------
+def test_parity_when_trailing_values_are_none():
+    """显式 None 与缺字段语义相同, 且两条路径字节级一致。"""
+    _, close, high, low, _, entries, _ = _make_market()
+    engine = _make_engine()
+    stop_config = _stop_config_full()
+    stop_config["trailing_stop"] = {
+        "enabled": True,
+        "activation": None,
+        "drawdown": None,
+    }
+
+    _assert_parity(
+        engine,
+        close,
+        entries,
+        high,
+        low,
+        stop_config,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,8 @@
-"""公式执行层 — 封装 TDX 原生条件选股和指标计算公式。"""
+"""公式执行层 — 封装 TDX 原生条件选股和指标计算公式。
+
+T-H-2 (2026-07-15): 加 connector seam (set_connector/reset_connector/_connector),
+与 DataFetcher 的 C5 seam 模式一致, 支持 mock 集成测试.
+"""
 
 from typing import Dict, List, Optional
 import pandas as pd
@@ -10,13 +14,35 @@ from utils.code_normalizer import normalize_list
 
 logger = get_logger(__name__)
 
+# T-H-2 connector seam
+_connector_override = None
+
 
 class FormulaRunner:
     """TDX 公式执行封装。支持条件选股 (XG) 和指标计算 (ZB)。"""
 
+    _connector_override = None
+
+    @classmethod
+    def set_connector(cls, connector):
+        """注入 mock connector (测试用)."""
+        cls._connector_override = connector
+
+    @classmethod
+    def reset_connector(cls):
+        """恢复默认 TdxConnector."""
+        cls._connector_override = None
+
+    @classmethod
+    def _connector(cls):
+        if cls._connector_override is not None:
+            return cls._connector_override
+        return TdxConnector
+
     @staticmethod
     def _ensure_ready():
-        TdxConnector.ensure_connected()
+        conn = FormulaRunner._connector()
+        conn.ensure_connected()
 
     @classmethod
     def run_stock_selection_with_dates(
@@ -39,7 +65,7 @@ class FormulaRunner:
             DataFrame with columns: stock_code, select_date, formula_name
         """
         cls._ensure_ready()
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
         # 候选 D: 边界归一化, 允许 str 输入 (旧调用方传 "front" 也能正确映射到 1)
         dividend_type = to_formula_int(dividend_type)
 
@@ -184,7 +210,7 @@ class FormulaRunner:
         cls._ensure_ready()
         # 候选 D: 边界归一化, 允许 str 输入
         dividend_type = to_formula_int(dividend_type)
-        tq = TdxConnector.tq()
+        tq = cls._connector().tq()
 
         if stock_list is None:
             stock_list = tq.get_stock_list("50", list_type=1)

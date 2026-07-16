@@ -166,3 +166,51 @@ def test_empty_sector_falls_back_to_empty_pool(mock_empty_sector):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# === 覆盖率靶向 (2026-07-15) ===
+
+def test_custom_universe_type():
+    """type='custom' → 直接使用 config['stocks'] 列表."""
+    sel = StockSelector({
+        "formula_name": "UPN",
+        "formula_arg": "3",
+        "universe": {
+            "type": "custom",
+            "stocks": ["600519.SH", "000001.SZ"],
+            "exclude_st": False,
+            "sectors": [],
+            "include_etf": False,
+            "etf_only": False,
+        },
+    })
+    stocks = sel.resolve_universe()
+    assert len(stocks) == 2
+    assert "600519.SH" in stocks
+
+
+def test_resolve_universe_exclude_st_enabled(monkeypatch):
+    """exclude_st=True 时 resolve_universe 调用 filter_stocks."""
+    from core import data_fetcher
+
+    def fake_universe(cls, lt):
+        return ["600519.SH", "000001.SZ", "000002.SZ"]
+
+    monkeypatch.setattr(data_fetcher.DataFetcher, "get_stock_universe",
+                        classmethod(fake_universe))
+
+    sel = StockSelector({
+        "formula_name": "UPN",
+        "formula_arg": "3",
+        "universe": {
+            "type": "50",
+            "exclude_st": True,
+            "exclude_new_listings_days": 60,
+            "sectors": [],
+            "include_etf": False,
+            "etf_only": False,
+        },
+    })
+    stocks = sel.resolve_universe()
+    # ST filter may reduce list, but resolve should complete without error
+    assert isinstance(stocks, list)

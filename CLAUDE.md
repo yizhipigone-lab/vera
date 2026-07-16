@@ -23,7 +23,7 @@
 |---|---|---|
 | 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`_simulate_core_v3` 现为兼容壳(2026-07-14 候选 A 阶段2,ENGINE_VERSION v3.4-loop-refactor),转调 `backtest/loop/BacktestLoop.run()`;旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):9 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径 |
 | 选股 | `selection/selector.py` | 股票池筛选(ST/涨停/停牌过滤) |
-| 止损管理 | `backtest/stop_manager.py` + `stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复) |
+| 止损管理 | `backtest/stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复)。stop_manager.py 已于候选 D C2 删除 |
 | 复权口径 | `core/dividend_type.py` | **统一 int/str 映射(候选 D,0b47db5)**:DataFetcher/FormulaRunner 内部用 `to_tdx_str`/`to_formula_int` 归一化,允许混传。`assert_consistent` 由 pipeline.py:101 调用 |
 | 公式系统 | TDX 公式翻译 + `core/formula_runner.py` | 通达信公式执行封装,统一入口。批量脚本 `batch_*.py` 大部分已删(2026-07-13 清 35 个废弃脚本) |
 | Web 后端 | `server.py` | API + 进度反馈。**现状(2026-07-14 已完成)**:`/api/run` 走 `Pipeline.run` + `ResultWriter`（统一完整流程接缝，2026-07-14 372f59b）；进度回调由 `ResultWriter.on_progress` 驱动 `pipeline_status` 单例（不再手工赋值）；`PipelineResult` frozen dataclass 统一返回结构。C5 真实盘口验证通过（路径 A/B 数字字节级一致）。 |
@@ -38,6 +38,20 @@
 2. **不过度谨慎**:不要为安全给 4 个保留意见 + 半个选项
 3. **不空话**:必须给具体代码 / 具体数字 / 具体路径
 4. **不拍脑袋**:不确定就明确说"这块我没把握,证据是 X"
+
+## 审计纪律(2026-07-15 写入,源自 C1 假阳性事件)
+
+**铁律**: 任何审计报告引用 `[file.py:line]` **必须**经过机器校验,严禁肉眼引用。
+
+工具:
+- `docs/audit/_verify_references.py` — 提取所有 `[file.py:line]` 引用,校验文件存在 + 行号在范围内
+- CLI: `python -m docs.audit._verify_references <md_path>` (返回码 0=PASS, 1=FAIL)
+- 测试: `pytest tests/test_audit_references.py` (含本日报告的反向防回归 `test_metrics_67_actual_code_has_as_e`)
+
+事件回顾: 2026-07-15 审计报告 C1 错引 `[backtest/metrics.py:67-68]` 说 `except Exception:` 没有 `as e`,
+实际代码第 67 行**就是** `except Exception as e:`。报告把 `as e:` 截掉伪造 CRITICAL,判"不可合入"。
+
+教训: 审计 agent 写引用前**必须 Read 实际行**,不能凭记忆/上下文推断。机器校验是兜底,人是最后一道。
 
 决策风格:**先跑通再优化**。方案给"推荐 + 备选 + 风险",该拍板就拍板。中文为主,专业词中英混用(T+1 / Calmar / 可转债),复杂概念先大白话再补术语。
 

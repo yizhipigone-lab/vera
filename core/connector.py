@@ -61,8 +61,10 @@ class TdxConnector:
 
     @classmethod
     def is_ready(cls) -> bool:
-        """检查连接是否就绪。"""
+        """检查连接是否就绪。P2-4: _tq 可能为 None (close 后清理)。"""
         if not cls._initialized:
+            return False
+        if cls._tq is None:
             return False
         try:
             return cls._tq._initialized
@@ -71,7 +73,15 @@ class TdxConnector:
 
     @classmethod
     def close(cls) -> None:
-        """断开 TDX 连接。"""
+        """断开 TDX 连接，清理模块缓存以支持下次重新初始化。
+
+        P2-4 (2026-07-15): close 后仅设 _initialized=False 不够——
+        Python import cache 会复用已 close 的 tq 模块, tq.initialize() 在脏状态上
+        重初始化可能失败, 导致切周期(1d→5m→1d)后"通达信未打开"。
+        现在 close 时同时:
+        1. 清 _tq/_tqconst 引用
+        2. 从 sys.modules 移除 tqcenter, 强制下次 initialize 做干净 import
+        """
         if cls._initialized:
             try:
                 cls._tq.close()
@@ -80,6 +90,11 @@ class TdxConnector:
                 logger.warning(f"关闭 TDX 连接时出错: {e}")
             finally:
                 cls._initialized = False
+                cls._tq = None
+                cls._tqconst = None
+                # 强制下次 initialize 重新导入, 避免复用已 close 的模块
+                for mod_name in ("tqcenter", "tqconst"):
+                    sys.modules.pop(mod_name, None)
 
     @classmethod
     def ensure_connected(cls) -> None:
@@ -113,6 +128,11 @@ class TdxConnector:
             data = tq_api.get_market_data(...)
 
         等价于旧: from tqcenter import tq; tq.get_*(...)
+
+        P2-4 (2026-07-15): _tq 可能因 close 被清为 None, ensure_connected 内部
+        调 initialize 会重新赋值, 此处加防御断言。
         """
         cls.ensure_connected()
+        if cls._tq is None:
+            raise RuntimeError("TDX 连接异常: _tq 为 None, 请重启 server")
         return cls._tq

@@ -13,6 +13,11 @@ from typing import Dict, Optional, Any
 from backtest.metrics import MetricsCalculator
 from backtest.result import BacktestResult
 from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
+from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR
+from backtest.stop_config import (
+    DEFAULT_TRAILING_ACTIVATION,
+    DEFAULT_TRAILING_DRAWDOWN,
+)
 from core.data_fetcher import DataFetcher
 from core.stock_filter import get_cached_info
 from utils.logger import get_logger
@@ -28,6 +33,13 @@ ENGINE_VERSION = "v3.4-loop-refactor-20260714"
 # 默认优先级 (priority=stop_first, 历史): 成本止损 > 阶梯止盈 > 移动止损/止盈 > 时间止损
 # priority=ladder_tp_first 模式: 阶梯止盈 > 成本止损 > 移动 > 时间
 #   (详见 _simulate_core_v3 的 ladder_tp_first 参数 + config/default.yaml['stop_loss']['priority'])
+#
+# 浮点阈值比较设计决策: 本项目所有止损/止盈阈值比较（如 lo_pp <= cost_stop_threshold）
+# 有意不使用 epsilon 容差。原因: 用户配置 threshold=-0.12 时，算出来 -0.119999 就该触发
+# （浮点误差方向不定, 加了 epsilon 反而可能漏触发）。唯一例外: tests/ 合成数据中允许
+# 用 pytest.approx 做精确断言。代码内 profit_pct > 0 的平盘判定场景也无 epsilon — 浮点
+# 尾巴 0.00000001 不该算盈利, 与 <= 阈值触发是同一边界逻辑。审计 F-H6 (2026-07-15) 确认
+# 这是有意的设计选择, 不是遗漏。
 #   formula_sell (reason=12) 始终最高优先级, 不受 priority 开关影响
 # 执行价格:
 #   成本止损 → stop_price (ep*(1+threshold)) 简化模式
@@ -675,9 +687,10 @@ def _compute_atr_matrix(high_np, low_np, close_np, period: int = 14):
 
 class BacktestEngine:
 
-    BARS_PER_DAY = {"1d": 1, "1w": 1, "5m": 48}
-    # P1-4: periods_per_year 用独立映射，避免 1w 被 *252 高估 4.8 倍（1w 应为 52 周/年）
-    PERIODS_PER_YEAR = {"1d": 252, "1w": 52, "5m": 48 * 252}
+    # P2-6 (2026-07-15): 数据字典移至 backtest/_constants.py, 类属性保留为向后兼容入口
+    # (benchmark.py 现在直接 from ._constants import, 无需拖入本引擎模块)
+    BARS_PER_DAY = BARS_PER_DAY
+    PERIODS_PER_YEAR = PERIODS_PER_YEAR
 
     def __init__(self, config: Optional[dict] = None):
         config = config or {}
@@ -709,6 +722,11 @@ class BacktestEngine:
             self.eff_stamp_tax = self.stamp_tax
 
     def run(self, selections, start_time="", end_time="", stop_config=None):
+        """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
+
+        调用方注意：若 selections 来自不复权数据源，需通过 Pipeline.run() 统一入口，
+        pipeline 会在 step1 之后校验复权口径一致性。直接调 engine.run() 绕过了此校验。
+        """
         if selections.empty: return self._empty_result()
 
         stop = stop_config or {}
@@ -718,6 +736,12 @@ class BacktestEngine:
         trailing_first = (priority == "trailing_first")
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
+        trailing_activation = trail.get("activation")
+        if trailing_activation is None:
+            trailing_activation = DEFAULT_TRAILING_ACTIVATION
+        trailing_drawdown = trail.get("drawdown")
+        if trailing_drawdown is None:
+            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
         ladder = stop.get("ladder_tp", {})
         time_s = stop.get("time_stop", {})
         cond_t = stop.get("cond_time_stop", {})
@@ -727,7 +751,31 @@ class BacktestEngine:
 
         # 始终获取完整OHLC数据（不再仅首日规则）
         # P0-1: fill_data=False — 让停牌以 NaN 显式暴露，避免 TDX 源头前向填充掩盖前视偏差
-        kline = DataFetcher.get_kline(codes, start_time, end_time, dividend_type="front", period=self.period, fill_data=False)
+        # 2026-07-16: 5m/分钟级走稀疏窗口拉取, 只拉每只股信号日往后 45 交易日,
+        #   避免 4889 只×4.5年 5m 全量(~15亿点)拉取卡死。日线路径一字不变(向后兼容)。
+        window_mask = None
+        if self.bars_per_day > 1:
+            win_td = int(getattr(self, "_window_trading_days", 45))
+            # 窗口尾部安全校验: 窗口必须 > max_hold_days, 否则时间止损来不及触发,
+            #   持仓被窗口边界当退市强平(reason=11)。见 loop.py:107。
+            _mhd = int(stop.get("time_stop", {}).get("max_hold_days", 20))
+            if win_td <= _mhd + 5:
+                win_td = _mhd + 15
+                logger.warning(
+                    "5m稀疏窗口: max_hold_days=%d 接近窗口, 自动加长窗口到 %d 交易日防退市误杀",
+                    _mhd, win_td,
+                )
+            if not stop.get("time_stop", {}).get("enabled", True):
+                logger.warning(
+                    "5m稀疏窗口模式建议开启时间止损(time_stop.enabled); "
+                    "否则窗口尾部未平持仓会被当退市强平(reason=11)"
+                )
+            kline, window_mask = DataFetcher.get_kline_windowed(
+                selections, period=self.period,
+                window_trading_days=win_td, dividend_type="front", fill_data=False,
+            )
+        else:
+            kline = DataFetcher.get_kline(codes, start_time, end_time, dividend_type="front", period=self.period, fill_data=False)
         if not kline or "Close" not in kline:
             return self._empty_result()
 
@@ -760,6 +808,18 @@ class BacktestEngine:
         # 候选 A 审计 M1 修复: 改用公用 _build_tradable_from_raw helper
         # 消除 run 与 run_cached 的 drift (close_raw 是 line 671 重索引后的 DataFrame, helper 对 DataFrame 等价)
         tradable_np, last_tradable_idx = _build_tradable_from_raw(close_raw, close)
+
+        # 2026-07-16: 稀疏窗口模式 — 窗口外强制不可交易, 避免窗口边界 NaN 被
+        #   _build_tradable_from_raw 判为退市。用户决策"窗口内才可交易"。
+        if window_mask is not None and not window_mask.empty:
+            wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
+            tradable_np = tradable_np & wm
+            # last_tradable_idx 重算为窗口内最后一个可交易 bar (每列)
+            last_tradable_idx = np.full(tradable_np.shape[1], -1, dtype=np.int64)
+            for ci in range(tradable_np.shape[1]):
+                nz = np.nonzero(tradable_np[:, ci])[0]
+                if nz.size:
+                    last_tradable_idx[ci] = int(nz[-1])
 
         # 准备阶梯止盈数组
         levels = ladder.get("levels", [])
@@ -872,8 +932,8 @@ class BacktestEngine:
             float(self.min_buy_amount), float(self.max_buy_amount),
             int(self.lot_size), int(self.min_lots),
             cost.get("enabled", True), float(cost.get("threshold", -0.12)),
-            trail.get("enabled", True), float(trail.get("activation", 0.08)),
-            float(trail.get("drawdown", 0.05)),
+            trail.get("enabled", True), float(trailing_activation),
+            float(trailing_drawdown),
             ladder.get("enabled", True), ladder_profits, ladder_ratios, len(lv),
             time_s.get("enabled", True), mhd_scaled,
             cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
@@ -939,6 +999,12 @@ class BacktestEngine:
         stop = stop_config or {}
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
+        trailing_activation = trail.get("activation")
+        if trailing_activation is None:
+            trailing_activation = DEFAULT_TRAILING_ACTIVATION
+        trailing_drawdown = trail.get("drawdown")
+        if trailing_drawdown is None:
+            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
         time_s = stop.get("time_stop", {})
         cond_t = stop.get("cond_time_stop", {})
         first_day = stop.get("first_day", {})
@@ -956,14 +1022,11 @@ class BacktestEngine:
         # 2026-07-06: bug fix - v3 优化脚本发现 close 是 tuple, 详情见 optimize_quantqq_v3.py 失败堆栈
         # DEBUG 输出 close 实际类型 + 调用栈
         if isinstance(close, tuple) and not isinstance(close, pd.DataFrame):
-            import traceback
-            print(f'[DEBUG] run_cached close IS TUPLE: len={len(close)}, types={[type(x).__name__ for x in close]}')
-            print(f'[DEBUG] CALL STACK:')
-            traceback.print_stack(limit=8)
+            logger.warning("run_cached 收到 tuple 类型 close (疑似旧调用方位置参数错位), len=%d", len(close))
             # 兼容老调用: (close, entries) 位置传成 tuple
             if len(close) == 2 and isinstance(close[0], pd.DataFrame) and isinstance(close[1], pd.DataFrame):
                 close, entries = close[0], close[1]
-                print(f'  [DEBUG] auto unpack to (close, entries)')
+                logger.debug("已自动 unpack tuple → (close, entries)")
 
         mhd = int(time_s.get("max_hold_days", 20))
         bpday = self.bars_per_day
@@ -1018,8 +1081,8 @@ class BacktestEngine:
             float(self.min_buy_amount), float(self.max_buy_amount),
             int(self.lot_size), int(self.min_lots),
             cost.get("enabled", True), float(cost.get("threshold", -0.12)),
-            trail.get("enabled", True), float(trail.get("activation", 0.08)),
-            float(trail.get("drawdown", 0.05)),
+            trail.get("enabled", True), float(trailing_activation),
+            float(trailing_drawdown),
             stop.get("ladder_tp", {}).get("enabled", True), ladder_profits, ladder_ratios, n_ladder,
             time_s.get("enabled", True), mhd_scaled,
             cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
@@ -1084,7 +1147,7 @@ class BacktestEngine:
     def _build_trades(self, raw, columns, dates, bpday=1):
         if len(raw) == 0: return pd.DataFrame()
         reason_map = {1.0: "换股卖出", 3.0: "成本止损",
-                      4.0: "移动止损", 8.0: "移动止盈",
+                      4.0: "移动止盈", 8.0: "移动止盈",
                       5.0: "阶梯止盈",
                       6.0: "时间止损", 9.0: "时间止盈",
                       7.0: "cond_time_stop",

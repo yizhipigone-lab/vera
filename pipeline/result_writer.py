@@ -10,8 +10,7 @@
 - stock_name 回填 (查简称表) 必须保留 (server.py:459-466 现有逻辑, Pipeline.run 不做)
 - status_sink 用 callable 注入避免循环 import (server import ResultWriter, ResultWriter 延迟 import server)
 
-命名冲突警告: 本模块的 ResultWriter 与 selection/result_writer.py:ResultWriter 同名但不同物
-(本模块管"前端响应+落盘", selection 那个管"选股结果写 CSV")。import 时注意来源。
+本模块管"前端响应+落盘"（原 selection/result_writer.py 已于候选 D 清理时删除）。
 """
 from __future__ import annotations
 
@@ -24,6 +23,11 @@ import numpy as np
 import pandas as pd
 
 from backtest.result import BacktestResult
+
+# P1-3 (2026-07-15): 模块级 logger, 替代 4 处内联 `import logging` + `logging.getLogger(__name__)`
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # F2 回归保护: 标记买入语义 (signal-day-close = 信号日收盘价买入, 业务铁律2)
 ENGINE_VERSION = "signal-day-close"
@@ -40,14 +44,20 @@ class PipelineResult:
     backtest: Optional[BacktestResult]   # C3: engine.run() 返 BacktestResult (dict-like, 兼容老 dict 调用)
     benchmark: dict
     reports: dict           # {"html","json"}
+    error: Optional[str] = None   # P0-1 (2026-07-15): 失败路径也返 PipelineResult, error 字段携带错误信息
 
     # C1-2 dict-like 访问: result["backtest"] / result.get(...)
-    _FIELDS = ("selections", "backtest", "benchmark", "reports")
+    # P0-1 修订: "error" 进 _FIELDS — 失败路径需要 main.py:52 的 "error" in result 命中
+    _FIELDS = ("selections", "backtest", "benchmark", "reports", "error")
 
     def __getitem__(self, key):
         if key in self._FIELDS:
             return getattr(self, key)
         raise KeyError(key)
+
+    def __contains__(self, key):
+        """支持 'key' in result 写法 (main.py:52 兼容)."""
+        return key in self._FIELDS
 
     def get(self, key, default=None):
         try:
@@ -57,22 +67,48 @@ class PipelineResult:
 
 
 def safe_serialize(obj):
-    """NaN/Inf/ndarray/Timestamp → JSON 安全值 (复刻自 server.py:421-437)."""
-    if isinstance(obj, (np.integer,)):
+    """递归 NaN/Inf/ndarray/Timestamp → JSON 安全值 (T-H-1, 2026-07-15).
+
+    升级为递归版本: dict/list/tuple/set/frozenset 内嵌套的 NaN/Inf 也会被转为 None。
+    不可变: 所有容器返回新对象，不修改入参。
+    """
+    # 1. np.integer / np.bool_ → int (numpy 2.x 中 np.bool_ 非 np.integer 子类, 需显式捕获)
+    if isinstance(obj, (np.integer, np.bool_)):
         return int(obj)
+    # 2. np.floating → float + NaN/Inf→None (必须在 float 前:
+    #    np.float64 同时匹配 isinstance(obj, float)，若 float 在前会把 np.float64 原样返回)
     if isinstance(obj, (np.floating,)):
         v = float(obj)
         if np.isnan(v) or np.isinf(v):
             return None
         return v
+    # 3. Python float → NaN/Inf→None
     if isinstance(obj, float):
         if np.isnan(obj) or np.isinf(obj):
             return None
         return obj
+    # 4. np.ndarray → .tolist() (必须在 list 前: 防对 ndarray 逐元素递归)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
+    # 5. pd.Timestamp → isoformat
     if isinstance(obj, pd.Timestamp):
         return obj.isoformat()
+    # 6. dict → 递归 sanitize 每个 value
+    if isinstance(obj, dict):
+        return {k: safe_serialize(v) for k, v in obj.items()}
+    # 7. list → 递归 sanitize 每个元素
+    if isinstance(obj, list):
+        return [safe_serialize(v) for v in obj]
+    # 8. tuple → 转为 list 并递归 (JSON 无 tuple)
+    if isinstance(obj, tuple):
+        return [safe_serialize(v) for v in obj]
+    # 9. set / frozenset → 转为 list 并递归 (JSON 无 set)
+    if isinstance(obj, (set, frozenset)):
+        return [safe_serialize(v) for v in obj]
+    # 10. pd.NaT → None (NaTType 非 Timestamp 子类，用 is 身份判断)
+    if obj is pd.NaT:
+        return None
+    # 11. catch-all: int / str / bool / None / 未知对象 → 原样返回
     return obj
 
 
@@ -88,14 +124,24 @@ class ResultWriter:
             try:
                 self._status_sink(step, pct)
             except Exception:
-                pass  # 回调异常不中断管线 (复刻 pipeline._cb 语义)
+                # 回调异常不中断管线 (复刻 pipeline._cb 语义)
+                # P1-3 (2026-07-15): 用模块级 logger, 替代原内联 import logging
+                logger.warning("status_sink 回调异常", exc_info=True)
         else:
+            # P2-3 (2026-07-15): python server.py 时模块名是 __main__ 非 server,
+            # from server import pipeline_status 会重新导入创建克隆体导致进度丢失.
+            # 优先走 __main__ 兜底.
             try:
-                from server import pipeline_status
-                pipeline_status.step = step
-                pipeline_status.progress = pct
+                import sys
+                main = sys.modules.get("__main__")
+                ps = getattr(main, "pipeline_status", None) if main is not None else None
+                if ps is None:
+                    from server import pipeline_status as ps
+                ps.step = step
+                ps.progress = pct
             except Exception:
-                pass
+                # P1-3 (2026-07-15): 用模块级 logger
+                logger.warning("pipeline_status 写入失败", exc_info=True)
 
     def on_progress(self, pct: int, step: str) -> None:
         """Pipeline.run progress_callback adapter.
@@ -138,6 +184,8 @@ class ResultWriter:
                 from core.data_fetcher import DataFetcher
                 name_map = DataFetcher.get_name_map()
             except Exception:
+                # P1-3 (2026-07-15): 用模块级 logger
+                logger.warning("DataFetcher.get_name_map 失败, stock_name 将为空", exc_info=True)
                 name_map = {}
             for d in trades_data:
                 code = d.get("stock_code", "")
@@ -211,4 +259,5 @@ class ResultWriter:
             with open(last_result_path, "w", encoding="utf-8") as f:
                 _json.dump(response, f, ensure_ascii=False, default=str)
         except Exception:
-            pass  # 落盘失败不阻塞响应 (复刻 server.py:530-531)
+            # P1-3 (2026-07-15): 用模块级 logger
+            logger.warning("结果落盘失败 (不阻塞响应)", exc_info=True)

@@ -33,6 +33,16 @@ PRE_DISPATCH_STRATEGIES = {"formula_sell"}
 
 # priority-block 求值顺序（first-trigger-wins）
 # atr_stop 为新 API 策略, 默认不在 dict（builder 未启用则不进 strategies, 无影响）
+#
+# 设计说明 — ATR 在不同 priority 下的位置语义:
+#   STOP_FIRST:       cost_stop > atr_stop > ladder_tp > trailing
+#     (ATR 是波动率止损，排在硬止损之后、止盈之前)
+#   LADDER_TP_FIRST:  ladder_tp > cost_stop > atr_stop > trailing
+#     (止盈优先，ATR 退到成本止损之后)
+#   TRAILING_FIRST:   单独双触发语义（不在本表），ATR 排在 trailing > cost_stop 之后
+#     (ladder 部分卖不阻塞 → trailing 全卖剩余 或 cost_stop 兜底 → ATR 最末)
+#   三种 priority 下 ATR 求值顺序不同是刻意设计：波动率止损的"止损"属性使其
+#   始终排在成本止损附近（同属止损族），具体前/后取决于该 priority 下止损 vs 止盈的优先级。
 _PRIORITY_ORDER: Dict[Priority, List[str]] = {
     Priority.STOP_FIRST: ["cost_stop", "atr_stop", "ladder_tp", "trailing"],
     Priority.LADDER_TP_FIRST: ["ladder_tp", "cost_stop", "atr_stop", "trailing"],

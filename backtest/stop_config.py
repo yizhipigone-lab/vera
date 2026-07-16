@@ -17,6 +17,16 @@
 """
 from typing import Any, Dict, Optional
 
+from utils.logger import get_logger
+
+# P0-2 (2026-07-15): 模块级 logger (修复审计 C2 描述失真 —
+# 原代码缺 logger = get_logger(__name__), except 块靠丑陋的局部赋值)
+logger = get_logger(__name__)
+
+# 移动止损止盈默认值：与 config/default.yaml 和 commit 1900b8f 对齐。
+DEFAULT_TRAILING_ACTIVATION = 0.035
+DEFAULT_TRAILING_DRAWDOWN = 0.01
+
 
 def load_stop_config(default_path: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -27,7 +37,7 @@ def load_stop_config(default_path: Optional[str] = None) -> Dict[str, Any]:
         {
           'priority':      'trailing_first' | 'ladder_tp_first' | 'stop_first',  # 2026-07-05: 优先级
           'cost_stop':     {'enabled': True, 'threshold': -0.12},
-          'trailing_stop': {'enabled': True, 'activation': 0.08, 'drawdown': 0.05},
+          'trailing_stop': {'enabled': True, 'activation': 0.035, 'drawdown': 0.01},
           'ladder_tp': {
             'enabled': True,
             'levels': [
@@ -63,7 +73,7 @@ def get_stop_config_summary(stop_loss_config: dict) -> str:
     根据 stop_loss 配置字典生成摘要字符串。
 
     C2: 从 engine.py run() 里 StopManager.get_config_summary() 调用迁出，
-    消除 stop_manager.py 的重复 exit 计算逻辑（compute_exit_signals / _compute_single_stock）。
+    消除 engine.py 旧版 exit 计算逻辑的重复（compute_exit_signals / _compute_single_stock）。
     仅做配置展示，无交易逻辑。
     """
     lines = []
@@ -81,9 +91,15 @@ def get_stop_config_summary(stop_loss_config: dict) -> str:
 
     trail = stop_loss_config.get("trailing_stop", {})
     if trail.get("enabled", True):
+        activation = trail.get("activation")
+        if activation is None:
+            activation = DEFAULT_TRAILING_ACTIVATION
+        drawdown = trail.get("drawdown")
+        if drawdown is None:
+            drawdown = DEFAULT_TRAILING_DRAWDOWN
         lines.append(
-            f"移动止损: 盈利{trail.get('activation', 0.08):.1%}激活, "
-            f"盘中Low触及回撤{trail.get('drawdown', 0.05):.1%}线即按回撤线价成交"
+            f"移动止盈: 盈利{activation:.1%}激活, "
+            f"盘中Low触及回撤{drawdown:.1%}线即按回撤线价成交"
         )
 
     time_s = stop_loss_config.get("time_stop", {})
@@ -103,17 +119,23 @@ def get_stop_config_summary(stop_loss_config: dict) -> str:
 
 def load_stop_config_or_default() -> Dict[str, Any]:
     """
-    加载失败时回退到代码内兜底 (-0.12/0.08/0.05/6%-15%/20天)
+    加载失败时回退到代码内兜底 (-0.12/0.035/0.01/6%-15%/20天)
     用于 yaml 缺失也能跑的容错场景.
     """
     try:
         return load_stop_config()
     except Exception:
+        # P0-2 (2026-07-15): 用模块级 logger (替代原 except 内局部赋值)
+        logger.error("加载 stop_config 失败, 回退硬编码兜底 (请检查 config/default.yaml 格式)", exc_info=True)
         return {
             # 候选 A 阶段 1: 补 priority (原兜底漏了, 与 default.yaml 对齐)
             'priority':       'trailing_first',
             'cost_stop':     {'enabled': True, 'threshold': -0.12},
-            'trailing_stop': {'enabled': True, 'activation': 0.08, 'drawdown': 0.05},
+            'trailing_stop': {
+                'enabled': True,
+                'activation': DEFAULT_TRAILING_ACTIVATION,
+                'drawdown': DEFAULT_TRAILING_DRAWDOWN,
+            },
             'ladder_tp': {
                 'enabled': True,
                 'levels': [

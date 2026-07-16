@@ -336,7 +336,7 @@ class Visualizer:
 
         reason_labels = {
             "cost_stop": "成本止损",
-            "trailing_stop": "移动止损",
+            "trailing_stop": "移动止盈",
             "ladder_tp": "阶梯止盈",
             "time_stop": "时间止损",
             "signal": "信号卖出",

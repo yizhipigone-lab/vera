@@ -53,7 +53,9 @@ def make_ctx(**kw) -> Context:
 # ─────────────────────────────────────────────────────────────
 class TestStateDtype:
     def test_assert_state_dtype_passes(self):
-        assert_state_dtype()  # 不抛即过
+        pos = make_pos()
+        bar = Bar(close=10.0, high=11.0, low=9.0, open=10.0)
+        assert_state_dtype(pos, bar)  # 不抛即过
 
     def test_position_int_fields(self):
         pos = make_pos()

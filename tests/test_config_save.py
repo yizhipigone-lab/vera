@@ -120,3 +120,23 @@ def test_saved_file_has_header_and_lf(tmp_path):
     raw = p.read_bytes()
     assert b"\r\n" not in raw
     assert raw.decode("utf-8").startswith("# VERA 前端保存的用户配置")
+
+
+def test_roundtrip_preserves_explicit_trailing_values(tmp_path):
+    """用户保存的 8%/5% 是显式策略值，不能被新默认覆盖。"""
+    path = tmp_path / "current.yaml"
+    config = {
+        "stop_loss": {
+            "trailing_stop": {
+                "enabled": True,
+                "activation": 0.08,
+                "drawdown": 0.05,
+            },
+        },
+    }
+
+    ConfigLoader.save_current(config, path=str(path))
+    loaded = ConfigLoader.load_current(path=str(path))
+
+    assert loaded["stop_loss"]["trailing_stop"]["activation"] == 0.08
+    assert loaded["stop_loss"]["trailing_stop"]["drawdown"] == 0.05

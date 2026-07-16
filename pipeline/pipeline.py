@@ -162,7 +162,8 @@ class Pipeline:
         exporter = TdxExporter()
         exporter.export_full_report(backtest_result, self.strategy_name)
 
-    def run(self, export_tdx: bool = False, progress_callback=None) -> dict:
+    def run(self, export_tdx: bool = False, progress_callback=None,
+            close_on_finish: bool = True) -> 'PipelineResult | dict':
         """
         执行完整管线。
 
@@ -171,6 +172,11 @@ class Pipeline:
             progress_callback: 可选回调 fn(progress_pct: int, step_name: str),
                               每步完成后调用, 用于 web 进度条细化 (候选 E)。
                               失败被吞 (不影响管线)。
+            close_on_finish: 管线结束时是否断开 TDX 连接。默认 True(CLI/一次性
+                              脚本跑完即退, 保持向后兼容)。server 常驻进程应传
+                              False —— 反复 close→reinit 会触发 TDX 本地握手, 偶发
+                              失败导致"切周期/重跑连不上"(2026-07-16)。连接在进程内
+                              长存, 下次请求直接复用, 无需重新握手。
 
         Returns:
             dict with keys: selections, backtest, benchmark, reports
@@ -181,7 +187,7 @@ class Pipeline:
                 try:
                     progress_callback(pct, name)
                 except Exception:
-                    pass
+                    logger.warning("进度回调异常 (不中断管线)", exc_info=True)
 
         logger.info("=" * 60)
         logger.info(f"VERA 量化管线启动: {self.strategy_name}")
@@ -194,7 +200,11 @@ class Pipeline:
         except Exception as e:
             logger.error(f"TDX 连接失败: {e}")
             _cb(5, "连接通达信失败")
-            return {"error": str(e), "selections": None, "backtest": None}
+            # P0-1 (2026-07-15): 失败也返 PipelineResult, 消除 dict/typed 分裂
+            return PipelineResult(
+                selections=None, backtest=None, benchmark={}, reports={},
+                error=str(e),
+            )
         _cb(5, "连接通达信")
         # C1-2: 对齐 server 的 8% TDX就绪进度点
         _cb(8, "TDX就绪")
@@ -206,9 +216,14 @@ class Pipeline:
         _cb(15, "执行选股")
         if selections.empty:
             logger.warning("选股结果为空，管线终止")
-            TdxConnector.close()
+            if close_on_finish:
+                TdxConnector.close()
             _cb(20, "选股为空")
-            return {"error": "no_selections", "selections": pd.DataFrame(), "backtest": None}
+            # P0-1 (2026-07-15): 失败也返 PipelineResult, 消除 dict/typed 分裂
+            return PipelineResult(
+                selections=pd.DataFrame(), backtest=None, benchmark={}, reports={},
+                error="no_selections",
+            )
         _cb(20, "保存选股结果")
 
         # Step 3: 回测
@@ -239,8 +254,10 @@ class Pipeline:
                 logger.warning(f"导出到通达信失败: {e}")
         _cb(95, "落盘结果")
 
-        # 清理
-        TdxConnector.close()
+        # 清理: 仅在 close_on_finish 时断开(CLI/一次性脚本)。
+        # server 传 False, 连接进程内长存, 避免反复握手引发偶发连不上。
+        if close_on_finish:
+            TdxConnector.close()
 
         logger.info("=" * 60)
         logger.info("管线执行完成！")

@@ -19,6 +19,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import inspect
+
+import backtest.engine as engine_module
+import backtest.stop_config as stop_config_module
 import numpy as np
 import pandas as pd
 import pytest
@@ -394,6 +397,200 @@ class TestRunCachedSignature:
             )
         assert 'capabilities' in cached_body, "run_cached body 必须读 capabilities 开关"
         assert 'return_raw' in cached_body, "run_cached body 必须支持 return_raw"
+
+
+# === 5. 任务 3: run() / run_cached() 移动止损止盈默认值契约 ===
+# 锁定:
+#   1. 缺字段 / None → 默认值 0.035 / 0.01 (与 config/default.yaml 对齐)
+#   2. 显式 0.08/0.05 与 0.0/0.0 必须保留 (0.0 是合法显式值, 不能用 or 兜底)
+#   3. _simulate_core_v3 的位置参数索引 11/12 必须保持 trailing_activation / trailing_drawdown
+
+
+def _default_contract_engine():
+    return BacktestEngine({
+        "initial_capital": 100_000.0,
+        "commission": 0.0003,
+        "enable_realistic_costs": False,
+        "period": "1d",
+        "position_sizing": {
+            "min_buy_amount": 1000.0,
+            "max_buy_amount": 5000.0,
+            "lot_size": 100,
+            "min_lots": 1,
+        },
+    })
+
+
+def _default_contract_market():
+    dates = pd.bdate_range("2024-01-02", periods=3)
+    close = pd.DataFrame(
+        {"000001.SZ": [10.0, 10.1, 10.2]},
+        index=dates,
+    )
+    entries = pd.DataFrame(False, index=dates, columns=close.columns)
+    entries.iloc[0, 0] = True
+    return close, entries
+
+
+def _capture_core_trailing(monkeypatch, n_bars):
+    captured = {}
+    parameter_names = list(
+        inspect.signature(engine_module._simulate_core_v3).parameters
+    )
+    activation_index = parameter_names.index("trailing_activation")
+    drawdown_index = parameter_names.index("trailing_drawdown")
+    assert activation_index == 11
+    assert drawdown_index == 12
+
+    def fake_core(*args, **kwargs):
+        # 兼容签名一旦改变，上面的名称索引断言会先给出明确失败。
+        assert len(args) > drawdown_index
+        captured["activation"] = args[activation_index]
+        captured["drawdown"] = args[drawdown_index]
+        return (
+            np.full(n_bars, 100_000.0, dtype=np.float64),
+            np.empty((0, 9), dtype=np.float64),
+        )
+
+    monkeypatch.setattr(engine_module, "_simulate_core_v3", fake_core)
+    return captured
+
+
+@pytest.mark.parametrize(
+    "trailing_config",
+    [
+        {"enabled": True},
+        {"enabled": True, "activation": None, "drawdown": None},
+    ],
+)
+def test_run_cached_uses_yaml_defaults_when_trailing_values_missing(
+    monkeypatch, trailing_config
+):
+    engine = _default_contract_engine()
+    close, entries = _default_contract_market()
+    captured = _capture_core_trailing(monkeypatch, len(close))
+
+    engine.run_cached(
+        close,
+        entries,
+        None,
+        None,
+        {"trailing_stop": trailing_config},
+        pd.DataFrame(),
+        np.array([], dtype=np.float64),
+        np.array([], dtype=np.float64),
+        0,
+        filter_limit_up=False,
+    )
+
+    assert captured == {"activation": 0.035, "drawdown": 0.01}
+
+
+@pytest.mark.parametrize(
+    ("activation", "drawdown"),
+    [(0.08, 0.05), (0.0, 0.0)],
+)
+def test_run_cached_preserves_explicit_trailing_values(
+    monkeypatch, activation, drawdown
+):
+    engine = _default_contract_engine()
+    close, entries = _default_contract_market()
+    captured = _capture_core_trailing(monkeypatch, len(close))
+
+    engine.run_cached(
+        close,
+        entries,
+        None,
+        None,
+        {
+            "trailing_stop": {
+                "enabled": True,
+                "activation": activation,
+                "drawdown": drawdown,
+            },
+        },
+        pd.DataFrame(),
+        np.array([], dtype=np.float64),
+        np.array([], dtype=np.float64),
+        0,
+        filter_limit_up=False,
+    )
+
+    assert captured == {"activation": activation, "drawdown": drawdown}
+
+
+def _run_with_captured_trailing(monkeypatch, trailing_config):
+    engine = _default_contract_engine()
+    close, _ = _default_contract_market()
+    kline = {
+        "Close": close,
+        "High": close * 1.01,
+        "Low": close * 0.99,
+        "Open": close.copy(),
+    }
+    selections = pd.DataFrame([
+        {
+            "select_date": close.index[0],
+            "stock_code": close.columns[0],
+        },
+    ])
+    captured = _capture_core_trailing(monkeypatch, len(close))
+    monkeypatch.setattr(
+        engine_module.DataFetcher,
+        "get_kline",
+        lambda *args, **kwargs: kline,
+    )
+    monkeypatch.setattr(
+        BacktestEngine,
+        "_filter_limit_up",
+        lambda self, entries, prices: entries,
+    )
+    # 本测试只验证引擎传给核心循环的参数；摘要 None 语义在 Task 5 独立验证。
+    monkeypatch.setattr(
+        stop_config_module,
+        "get_stop_config_summary",
+        lambda config: "",
+    )
+
+    engine.run(
+        selections=selections,
+        start_time="20240102",
+        end_time="20240104",
+        stop_config={"trailing_stop": trailing_config},
+    )
+    return captured
+
+
+@pytest.mark.parametrize(
+    "trailing_config",
+    [
+        {"enabled": True},
+        {"enabled": True, "activation": None, "drawdown": None},
+    ],
+)
+def test_run_uses_yaml_defaults_when_trailing_values_missing(
+    monkeypatch, trailing_config
+):
+    captured = _run_with_captured_trailing(monkeypatch, trailing_config)
+    assert captured == {"activation": 0.035, "drawdown": 0.01}
+
+
+@pytest.mark.parametrize(
+    ("activation", "drawdown"),
+    [(0.08, 0.05), (0.0, 0.0)],
+)
+def test_run_preserves_explicit_trailing_values(
+    monkeypatch, activation, drawdown
+):
+    captured = _run_with_captured_trailing(
+        monkeypatch,
+        {
+            "enabled": True,
+            "activation": activation,
+            "drawdown": drawdown,
+        },
+    )
+    assert captured == {"activation": activation, "drawdown": drawdown}
 
 
 if __name__ == '__main__':

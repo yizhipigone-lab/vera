@@ -31,6 +31,10 @@ import yaml
 
 from utils.config_loader import ConfigLoader
 from utils.logger import setup_logger, get_logger
+from backtest.stop_config import (
+    DEFAULT_TRAILING_ACTIVATION,
+    DEFAULT_TRAILING_DRAWDOWN,
+)
 
 logger = setup_logger("VERA-Server", level="INFO")
 
@@ -89,8 +93,8 @@ class StrategyConfig(BaseModel):
             "initial_capital": 1000000.0, "commission": 0.0003, "slippage": 0.001,
             "min_buy_amount": 2000.0, "max_buy_amount": 20000.0,
             "lot_size": 100, "min_lots": 1,
-            "cost_stop_threshold": -0.12, "trailing_activation": 0.08,
-            "trailing_drawdown": 0.05, "max_hold_days": 20,
+            "cost_stop_threshold": -0.12, "trailing_activation": DEFAULT_TRAILING_ACTIVATION,
+            "trailing_drawdown": DEFAULT_TRAILING_DRAWDOWN, "max_hold_days": 20,
             "cond_time_days": 7, "cond_time_profit": 0.02,
             "first_day_target": 0.03,
         }
@@ -174,7 +178,15 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             # 2026-07-05: 优先级开关 (前端 cfgPriority radio 透传, 默认 trailing_first)
             "priority": str(cfg.get("priority", "trailing_first")),
             "cost_stop": {"enabled": cfg.cost_stop_enabled, "threshold": cfg.get("cost_stop_threshold", -0.12)},
-            "trailing_stop": {"enabled": cfg.trailing_enabled, "activation": cfg.get("trailing_activation", 0.08), "drawdown": cfg.get("trailing_drawdown", 0.05)},
+            "trailing_stop": {
+                "enabled": cfg.trailing_enabled,
+                "activation": cfg.get(
+                    "trailing_activation", DEFAULT_TRAILING_ACTIVATION
+                ),
+                "drawdown": cfg.get(
+                    "trailing_drawdown", DEFAULT_TRAILING_DRAWDOWN
+                ),
+            },
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},
             "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.get("cond_time_days", 7), "profit": cfg.get("cond_time_profit", 0.01)},
@@ -322,11 +334,21 @@ def run_pipeline(cfg: StrategyConfig):
             tmp_yaml = fp.name
 
         # C1-3: ResultWriter 作为 progress_callback 适配器，驱动 pipeline_status
-        writer = ResultWriter(status_sink=None)  # status_sink=None 时内部 fallback 到 server.pipeline_status
+        # P2-3 (2026-07-15): status_sink 显式传闭包, 不能用 None fallback —
+        # python server.py 时模块名是 __main__ 非 server, from server import pipeline_status
+        # 会重新导入创建克隆体, 进度更新全写到错误实例.
+        def _update_status(step: str, pct: int):
+            pipeline_status.step = step
+            pipeline_status.progress = pct
+
+        writer = ResultWriter(status_sink=_update_status)
 
         # C1-3: 一行调用统一完整流程
+        # 2026-07-16: close_on_finish=False —— server 常驻进程, TDX 连接进程内长存,
+        # 不在每次回测后断开。避免反复 close→reinit 触发本地握手偶发失败
+        # (症状: 切周期/重跑时"无法连接到 TDX", 多点几次又好)。
         pipeline = Pipeline(tmp_yaml)
-        result = pipeline.run(progress_callback=writer.on_progress)
+        result = pipeline.run(progress_callback=writer.on_progress, close_on_finish=False)
 
         # C1-3: 先断言类型，再访问 error 字段（HIGH-1 修复：防止 plain dict 先触发 get("error") 掩盖类型错误）
         from pipeline.result_writer import PipelineResult
@@ -371,7 +393,8 @@ def run_pipeline(cfg: StrategyConfig):
             from core.connector import TdxConnector
             TdxConnector.close()
         except Exception:
-            pass
+            # P3 (2026-07-15): 清理路径异常不阻塞响应, 但留痕 (debug 级, 不污染 INFO 日志)
+            logger.debug("TdxConnector.close 异常 (清理路径, 不阻塞响应)", exc_info=True)
         return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
     finally:
@@ -380,7 +403,8 @@ def run_pipeline(cfg: StrategyConfig):
             try:
                 _os.unlink(tmp_yaml)
             except Exception:
-                pass
+                # P3 (2026-07-15): 清理路径异常, debug 留痕
+                logger.debug("临时 YAML 文件清理失败 (不阻塞响应)", exc_info=True)
 
 
 @app.get("/api/last_result")

@@ -360,7 +360,7 @@ function refreshAllSummaries() {
   const ta = esc(document.getElementById('cfgTrailingAct').value);
   const td = esc(document.getElementById('cfgTrailingDD').value);
   // 2026-07-05 v3: trailing 语义改为"盘中 Low 触及回撤线即按回撤线价成交"
-  document.getElementById('sumTrailing').innerHTML = '移动止损：盈利 <b>'+ta+'%</b> 激活后，盘中 Low 触及回撤 <b>'+td+'%</b> 线即按回撤线价全仓卖出 <span class="saved-badge saved">已保存</span>';
+  document.getElementById('sumTrailing').innerHTML = '移动止盈：盈利 <b>'+ta+'%</b> 激活后，盘中 Low 触及回撤 <b>'+td+'%</b> 线即按回撤线价全仓卖出 <span class="saved-badge saved">已保存</span>';
   const lv = esc(document.getElementById('cfgLadderVal').value.replace(/,/g, ', '));
   document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>'+lv+'</b> <span class="saved-badge saved">已保存</span>';
   // 2026-07-05 v3: 优先级独立摘要 (三档)
@@ -368,9 +368,9 @@ function refreshAllSummaries() {
   const priLabelMap = {
     stop_first: '止损优先 (历史默认)',
     ladder_tp_first: '阶梯止盈优先',
-    trailing_first: '移动止损优先 (盘中锁利)',
+    trailing_first: '移动止盈优先 (盘中锁利)',
   };
-  const priLabel = (priChecked && priLabelMap[priChecked.value]) || '移动止损优先 (盘中锁利)';
+  const priLabel = (priChecked && priLabelMap[priChecked.value]) || '移动止盈优先 (盘中锁利)';
   const sumPriEl = document.getElementById('sumPriority');
   if (sumPriEl) sumPriEl.innerHTML = '优先级：'+priLabel+' <span class="saved-badge saved">已保存</span>';
   const tv = esc(document.getElementById('cfgTimeVal').value);
@@ -1112,7 +1112,7 @@ function renderAllCharts(data) {
 
     // 退出原因分布 — P2-2: 饼图颜色跟随主题
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈/止损', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损', '退市': '退市' };
+    const reasonMap = { '成本止损': '成本止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损', '退市': '退市' };
     const reasonCount = {};
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
@@ -1125,7 +1125,6 @@ function renderAllCharts(data) {
     // P-v3.4 修复: 每种 reason 固定颜色 (不再按 index 循环), 移动止损用橙色避免撞背景
     const reasonColorMap = {
       '成本止损': c.up,        // 红 (亏损)
-      '移动止损': c.warn,      // 橙 (亏损) — 原来撞背景, 改醒目橙
       '移动止盈': c.down,      // 绿 (盈利)
       '阶梯止盈': c.accent,    // 蓝 (盈利)
       '时间止损': c.accent2,   // 紫 (亏损)
@@ -1206,8 +1205,7 @@ function renderAllCharts(data) {
 // P4-1: 交易表渲染（支持筛选）
 const reasonDetail = {
   '成本止损': '成本止损 — 亏损触及止损线，全仓卖出',
-  '移动止损': '移动止损 — 从最高点回撤触及阈值，亏损清仓',
-  '移动止盈': '移动止盈 — 从最高点回撤触及阈值，盈利清仓',
+  '移动止盈': '移动止盈 — 从最高点回撤触及阈值，按回撤线价清仓',
   '阶梯止盈': '阶梯止盈 — 盈利达到目标档位，分批卖出',
   '时间止损': '时间止损 — 持仓天数达到上限，亏损清仓',
   '时间止盈': '时间止盈 — 持仓天数达到上限，盈利清仓',
@@ -1217,7 +1215,7 @@ const reasonDetail = {
   // P-v3.4: 公式卖出
   'formula_sell': '公式止损 — TDX 公式信号命中，按比例止损（不看盈亏，最高优先级）',
 };
-const reasonShortMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈/止损', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
+const reasonShortMap = { '成本止损': '成本止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
 
 function fmtReasonShort(r) {
   if (!r) return '—';
@@ -1289,7 +1287,7 @@ function filterTrades() {
   const search = (document.getElementById('tradeSearch').value || '').toLowerCase();
   const filter = document.getElementById('tradeFilter').value;
   const reason = document.getElementById('tradeReason').value;
-  const reasonMap = { '成本止损': '成本止损', '移动止损': '移动止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈/止损', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
+  const reasonMap = { '成本止损': '成本止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损' };
   const filtered = allTrades.filter(t => {
     const pnl = (t.profit_pct || t.return || 0) * 100;
     if (search) {

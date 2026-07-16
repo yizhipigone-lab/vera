@@ -64,9 +64,10 @@ class MetricsCalculator:
                         metrics["avg_hold_days"] = float(hold.mean())
                         metrics["max_hold_days"] = int(hold.max())
                         metrics["min_hold_days"] = int(hold.min())
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("hold_days 计算失败: %s", e)
 
+        # 注意: 对非日线周期(5m等)这是 bar 数而非实际交易日数, 语义上更接近 total_bars
         metrics["total_trading_days"] = len(equity_curve)
         return metrics
 

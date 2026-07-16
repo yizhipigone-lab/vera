@@ -7,6 +7,8 @@
 
 换股 (reason=1) 特殊: 卖旧仓用 gross = sh*bp*(1-commission), 无滑点无印花税
 （与正常卖出 (1-slippage)*(1-commission-stamp_tax) 不同, 必须精确保留）。
+
+迭代 1 (2026-07-15): 显式声明走 BACKTEST_T_CLOSE 路径, 防止与未来 sim_trader T+1 路径混用.
 """
 
 from __future__ import annotations
@@ -15,7 +17,11 @@ from typing import Optional
 
 import numpy as np
 
+from backtest._entry_basis import EntryPath, assert_single_path, ENTRY_BASIS_BACKTEST
 from .state import BacktestParams, PositionBook, TradeBuffer
+
+# 业务铁律 2 — 本模块入场价口径单一真相源
+ENTRY_PATH: EntryPath = EntryPath.BACKTEST_T_CLOSE
 
 MAX_POS = 5000
 

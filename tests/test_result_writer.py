@@ -38,6 +38,40 @@ def test_pipeline_result_is_frozen():
         pr.backtest = {"x": 1}
 
 
+def test_pipeline_result_contains_supports_in_operator():
+    """__contains__ 必须支持 'key' in result (main.py:52 / server.py 兼容). P1-4 (2026-07-15)."""
+    pr = PipelineResult(selections=None, backtest={}, benchmark={}, reports={})
+    assert "selections" in pr
+    assert "backtest" in pr
+    assert "benchmark" in pr
+    assert "reports" in pr
+    assert "nonexistent" not in pr
+
+
+def test_pipeline_result_contains_error_field_on_failure():
+    """P0-1 (2026-07-15): 失败路径也返 PipelineResult, 'error' 必须命中 (main.py:52 兼容)."""
+    pr = PipelineResult(
+        selections=None, backtest=None, benchmark={}, reports={},
+        error="TDX 连接失败",
+    )
+    assert "error" in pr
+    assert pr["error"] == "TDX 连接失败"
+
+
+def test_pipeline_result_get_supports_default():
+    """P1-4: .get(key, default) 必须支持 — 兼容 dict.get() 旧调用."""
+    pr = PipelineResult(selections=None, backtest={}, benchmark={}, reports={})
+    assert pr.get("selections") is None
+    assert pr.get("nonexistent", "fallback") == "fallback"
+
+
+def test_pipeline_result_getitem_raises_keyerror():
+    """P1-4: result[unknown] 必须抛 KeyError (与 dict 行为一致), 不静默 None."""
+    pr = PipelineResult(selections=None, backtest={}, benchmark={}, reports={})
+    with pytest.raises(KeyError):
+        _ = pr["nonexistent"]
+
+
 # ---------- serialize ----------
 
 def _make_result():
@@ -161,3 +195,21 @@ def test_on_progress_swallows_sink_exception():
         raise RuntimeError("sink 炸了")
     writer = ResultWriter(status_sink=bad_sink)
     writer.on_progress(50, "回测")  # 不应抛
+
+
+# === 覆盖率靶向 (2026-07-15) ===
+
+def test_persist_empty_pipeline_result(tmp_path):
+    """空 PipelineResult (error 路径) persist 不崩溃."""
+    from pipeline.result_writer import PipelineResult
+    writer = ResultWriter()
+    empty = PipelineResult(
+        selections=None, backtest=None, benchmark={}, reports={},
+        error="no_selections",
+    )
+    response = writer.serialize(empty)
+    # error 路径也能正常序列化
+    assert response["success"] is True
+    assert response["metrics"] == {}
+    assert response["trades"] == []
+    assert response["trade_count"] == 0

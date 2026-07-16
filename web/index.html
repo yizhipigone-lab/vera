@@ -95,6 +95,9 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .checkbox-group{display:flex;align-items:center;gap:6px;margin-bottom:3px}
 .checkbox-group input[type=checkbox]{width:auto;accent-color:var(--accent)}
 .checkbox-group label{color:var(--text);font-size:11px;margin:0}
+.radio-group{display:flex;flex-direction:column;gap:5px}
+.radio-group label{display:flex;align-items:center;gap:5px;color:var(--text);font-size:11px;cursor:pointer}
+.radio-group input[type=radio]{width:auto;accent-color:var(--accent);margin:0;flex-shrink:0}
 
 /* ====== Buttons ====== */
 .btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:var(--radius-sm);font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);transition:all .2s;font-family:var(--font)}
@@ -337,7 +340,7 @@ input.invalid~.input-error{display:block}
         <!-- 2026-07-05: 优先级开关 (独立块, 不藏在阶梯止盈里) -->
         <div class="config-block" id="blkPriority">
           <div class="cfg-summary">
-            <span id="sumPriority">优先级：移动止损优先 (盘中锁利) <span class="saved-badge saved">已保存</span></span>
+            <span id="sumPriority">优先级：移动止盈优先 (盘中锁利) <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
             <div class="form-group">
@@ -345,7 +348,7 @@ input.invalid~.input-error{display:block}
               <div class="radio-group">
                 <label><input type="radio" name="cfgPriority" id="cfgPriorityStopFirst" value="stop_first"> 止损优先 (历史默认)</label>
                 <label><input type="radio" name="cfgPriority" id="cfgPriorityLadderTpFirst" value="ladder_tp_first"> 阶梯止盈优先</label>
-                <label><input type="radio" name="cfgPriority" id="cfgPriorityTrailingFirst" value="trailing_first" checked> 移动止损优先 (盘中锁利)</label>
+                <label><input type="radio" name="cfgPriority" id="cfgPriorityTrailingFirst" value="trailing_first" checked> 移动止盈优先 (盘中锁利)</label>
               </div>
             </div>
           </div>
@@ -362,16 +365,16 @@ input.invalid~.input-error{display:block}
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkCostStop')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkCostStop')" style="display:none">取消</button></div>
         </div>
-        <!-- 移动止损 -->
+        <!-- 移动止盈 -->
         <div class="config-block" id="blkTrailing">
           <div class="cfg-summary">
-            <span id="sumTrailing">移动止损：盈利 <b>8%</b> 激活后，回撤 <b>5%</b> 触发全仓卖出 <span class="saved-badge saved">已保存</span></span>
+            <span id="sumTrailing">移动止盈：盈利 <b>3.5%</b> 激活后，回撤 <b>1%</b> 触发全仓卖出 <span class="saved-badge saved">已保存</span></span>
           </div>
           <div class="cfg-fields">
-            <div class="checkbox-group"><input type="checkbox" id="cfgTrailingEn" checked><label>启用移动止损</label></div>
+            <div class="checkbox-group"><input type="checkbox" id="cfgTrailingEn" checked><label>启用移动止盈</label></div>
             <div class="form-row">
-              <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="8" type="number"></div>
-              <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="5" type="number"></div>
+              <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="3.5" type="number"></div>
+              <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="1" type="number"></div>
             </div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkTrailing')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkTrailing')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkTrailing')" style="display:none">取消</button></div>

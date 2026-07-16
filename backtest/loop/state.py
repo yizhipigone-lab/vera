@@ -129,27 +129,30 @@ class Position:
 # ─────────────────────────────────────────────────────────────
 # dtype 断言（R3/M1）
 # ─────────────────────────────────────────────────────────────
-def assert_state_dtype() -> None:
-    """断言 Position / Bar / Context 的字段 dtype 约定。
+def assert_state_dtype(pos: Position, bar: Bar) -> None:
+    """断言 Position / Bar 的字段 dtype 约定 (T-CR-2 修复, 2026-07-15).
 
-    阶段 1 验收门槛: 传错 dtype（float 字段传 int / int 字段传 float）必须能被检测。
-    用 raise TypeError（非裸 assert, 防 python -O 剥离, M4）。
-    numpy 层由 PositionBook/TradeBuffer 的 .dtype property 暴露, parity 测试再断言。
+    接收外部传入的 Position 和 Bar 对象做真实校验,
+    不再内部构造自检 (旧版是 tautology, 永远不可能失败).
     """
-    pos = Position(
-        code=np.int32(3), shares=np.float64(100.0), entry_px=np.float64(10.0),
-        entry_idx=np.int32(5), high_px=np.float64(11.0), high_hi=np.float64(12.0),
-        ladder_done=np.int32(0),
-    )
+    # Position 字段校验 (int 字段: code/entry_idx/ladder_done; float 字段: shares/entry_px/high_px/high_hi)
     if not isinstance(pos.code, (int, np.integer)):
         raise TypeError("Position.code 必须 int")
     if not isinstance(pos.shares, (float, np.floating)):
         raise TypeError("Position.shares 必须 float")
+    if not isinstance(pos.entry_px, (float, np.floating)):
+        raise TypeError("Position.entry_px 必须 float")
+    if not isinstance(pos.entry_idx, (int, np.integer)):
+        raise TypeError("Position.entry_idx 必须 int")
+    if not isinstance(pos.high_px, (float, np.floating)):
+        raise TypeError("Position.high_px 必须 float")
+    if not isinstance(pos.high_hi, (float, np.floating)):
+        raise TypeError("Position.high_hi 必须 float")
     if not isinstance(pos.ladder_done, (int, np.integer)):
         raise TypeError("Position.ladder_done 必须 int(bitmask)")
-    b = Bar(close=10.0, high=11.0, low=9.0, open=10.0)
+    # Bar 字段校验 (全部 float)
     for f in ("close", "high", "low", "open"):
-        if not isinstance(getattr(b, f), (float, np.floating)):
+        if not isinstance(getattr(bar, f), (float, np.floating)):
             raise TypeError(f"Bar.{f} 必须 float")
 
 

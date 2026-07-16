@@ -391,7 +391,7 @@ def test_trailing_flat_open_no_false_gap_protection():
 # Test 11: reason 按回撤线价判断 (不是 Close) — 盈利的 trailing 应 reason=8
 #   场景: ep=100, high=103, low=94, close=98
 #   回撤线价=101.97 → pp_trail=+1.97% > 0 → reason=8 (移动止盈)
-#   旧逻辑用 Close=98 → pp=-2% ≤ 0 → reason=4 (移动止损) — 错误
+#   旧逻辑用 Close=98 → pp=-2% ≤ 0 → reason=4 (移动止盈) — 错误
 # ---------------------------------------------------------------------------
 def test_trailing_reason_uses_trail_line_price():
     """trailing 触发后 reason 按回撤线价判断: 101.97 盈利 → reason=8 (移动止盈)."""
@@ -412,12 +412,12 @@ def test_trailing_reason_uses_trail_line_price():
 
 
 # ---------------------------------------------------------------------------
-# Test 11b: 回撤线价亏损时 reason=4 (移动止损)
+# Test 11b: 回撤线价亏损时 reason=4 (移动止盈)
 #   场景: ep=100, high=101 (激活 1%? 不够 3%). 改 activation=0.005, high=101
 #   trail_line=101*0.99=99.99, pp_trail=-0.01% ≤ 0 → reason=4
 # ---------------------------------------------------------------------------
 def test_trailing_reason_loss_when_trail_line_below_ep():
-    """回撤线价 < ep 时 reason=4 (移动止损)."""
+    """回撤线价 < ep 时 reason=4 (移动止盈)."""
     close, high, low, entries = _make_trailing_market(activation=0.005, drawdown=0.01, low_pct=-0.06, close_pct=-0.04)
     # peak_hi=103 (默认 high=103), trail_line=103*0.99=101.97 > ep=100 → pp_trail>0 → reason=8
     # 要让 trail_line < ep, 需 high 接近 ep. 改 high=100.5 (activation=0.005 即 0.5%)
@@ -432,7 +432,7 @@ def test_trailing_reason_loss_when_trail_line_below_ep():
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, "应触发 trailing"
     assert trail_trades[0][8] == 4.0, \
-        f"回撤线价 99.495 亏损 (-0.5%), 应 reason=4 (移动止损), 实际 reason={trail_trades[0][8]}"
+        f"回撤线价 99.495 亏损 (-0.5%), 应 reason=4 (移动止盈), 实际 reason={trail_trades[0][8]}"
 def test_trailing_new_semantics_all_modes():
     """trailing 语义改造是全局的: stop_first/ladder_tp_first/trailing_first 都用 Low 触发 + 回撤线价."""
     close, high, low, entries = _make_trailing_market(low_pct=-0.06, close_pct=-0.04)

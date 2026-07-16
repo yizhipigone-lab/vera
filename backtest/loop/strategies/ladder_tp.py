@@ -3,9 +3,14 @@
 薄壳, 转调 backtest.ladder_tp 的两个纯函数。
 对齐 engine.py:192-204/218-227/240-249 的触发 + engine.py:291-303 的执行价。
 
-注意（HA4 例外）: 本策略 mutate pos.ladder_done bitmask, 与 engine.py:196 原地
-mutation 一致。dispatcher 据返回值的 is_partial/sell_ratio 决定是否阻塞后续策略
-（trailing_first 下部分卖不阻塞, 见 exit_engine.py）。
+设计选择 — pos.ladder_done 就地修改:
+  check() 在当前 bar 内 mutate pos.ladder_done bitmask, 然后 loop 在 evaluate 之后
+  通过 book.set_ladder_done() 写回 PositionBook。这样做的原因是 ladder_done 是跨 bar
+  累计状态（一旦某档触发就永久置位），check() 返回的新 mask 需要被本次 bar 的后续策略
+  （如同 bar 的 trailing/cost_stop）看到更新后的状态。
+  风险: 如果在 check() 和 set_ladder_done() 之间有人读 pos.ladder_done，会看到已修改值。
+  更干净的设计是 check() 返回 new_ladder_done 不 mutate pos（见审计 F-H3），
+  但当前与 engine.py:196 原地 mutation 范式保持一致。
 """
 
 from __future__ import annotations

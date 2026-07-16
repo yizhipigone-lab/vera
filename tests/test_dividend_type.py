@@ -134,3 +134,37 @@ def test_adj_mappings_consistent():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+# === 覆盖率靶向 (2026-07-15) ===
+
+def test_to_tdx_str_invalid_int_fallback():
+    """非法 int (如 99) → 兜底 'front'."""
+    assert to_tdx_str(99) == "front"
+
+
+def test_to_formula_int_invalid_str_fallback():
+    """非法字符串 → 兜底 1."""
+    assert to_formula_int("未知值") == 1
+
+
+def test_assert_consistent_mixed_types_same_semantic():
+    """int 1 和 str 'front' 语义相同 → 不抛."""
+    assert_consistent(1, "front")  # 不抛即过
+
+
+def test_to_tdx_str_digit_str():
+    """字符串数字 '0'/'1'/'2' → 对应字符串."""
+    assert to_tdx_str("0") == "none"
+    assert to_tdx_str("1") == "front"
+    assert to_tdx_str("2") == "back"
+
+
+def test_to_formula_int_digit_str():
+    """字符串数字 '2' → 整数 2."""
+    assert to_formula_int("2") == 2
+
+
+def test_to_formula_int_out_of_range():
+    """越界整数 99 → 兜底 1."""
+    assert to_formula_int(99) == 1

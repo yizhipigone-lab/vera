@@ -3,6 +3,9 @@
 import pandas as pd
 from typing import Dict, List, Optional
 
+# P2-6 (2026-07-15): 直接 import 纯数据常量, 无需拖入整个 BacktestEngine 模块
+from backtest._constants import PERIODS_PER_YEAR
+
 from core.data_fetcher import DataFetcher
 from utils.logger import get_logger
 
@@ -39,8 +42,8 @@ class BenchmarkComparator:
         Returns:
             dict: {index_name: comparison_df}
         """
-        # P1-4: 1w 用 52 周/年，避免 *252 高估 4.8 倍
-        periods_per_year = {"1d": 252, "1w": 52, "5m": 48 * 252}.get(self.period, 252)
+        # P1-4: 1w 用 52 周/年，避免 *252 高估 4.8 倍。P2-6 (2026-07-15): 直接引用 _constants
+        periods_per_year = PERIODS_PER_YEAR.get(self.period, 252)
         results = {}
         for idx_name in self.index_names:
             logger.info(f"获取指数 [{idx_name}] 数据进行对比...")

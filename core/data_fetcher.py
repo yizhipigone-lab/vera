@@ -101,6 +101,186 @@ class DataFetcher:
         return result
 
     @classmethod
+    def get_trading_days(
+        cls,
+        start_time: str,
+        end_time: str,
+        market: str = "SH",
+    ) -> List[pd.Timestamp]:
+        """获取 [start_time, end_time] 内的有序交易日列表 (Timestamp, 已排序去重)。
+
+        用于稀疏窗口拉取 (get_kline_windowed) 按交易日推进窗口, 避免自然日误差
+        (周末/节假日)。底层调 tq.get_trading_dates, 失败时返回空列表。
+        """
+        cls._ensure_ready()
+        tq = cls._connector().tq()
+        try:
+            raw = tq.get_trading_dates(market, start_time, end_time)
+        except Exception as e:
+            logger.warning(f"获取交易日历失败: {e}")
+            return []
+        days = []
+        for d in raw or []:
+            try:
+                days.append(pd.to_datetime(str(d)[:8], format="%Y%m%d"))
+            except (ValueError, TypeError):
+                continue
+        return sorted(set(days))
+
+    @classmethod
+    def get_kline_windowed(
+        cls,
+        selections: pd.DataFrame,
+        period: str,
+        window_trading_days: int = 45,
+        dividend_type: str = "front",
+        fill_data: bool = False,
+    ) -> tuple:
+        """稀疏窗口拉取: 只拉每只股票信号日往后 window_trading_days 交易日的 K 线。
+
+        用于 5m/分钟级回测: 全区间全股池数据量爆炸 (4889 只 × 4.5 年 5m ≈ 15 亿点),
+        但持仓期由止盈止损决定 (≤30 天), 每只股只需信号日附近的短窗口。
+
+        Args:
+            selections: 选股结果, 需含 stock_code + select_date 列。
+            period: K 线周期 (如 "5m")。
+            window_trading_days: 每只股信号日往后拉多少交易日 (默认 45, 覆盖 30 天持仓+15 缓冲)。
+            dividend_type: 复权口径 (默认 "front", 与 engine 对齐)。
+            fill_data: 是否让 TDX 前向填充 (默认 False, 保留停牌 NaN)。
+
+        Returns:
+            (kline_dict, window_mask):
+              - kline_dict: 与 get_kline 同结构 {'Open':DataFrame, ..., 'Close':DataFrame}
+                行=所有窗口时间戳并集, 列=股票代码。
+              - window_mask: DataFrame(同 Close 形状, bool), True=该 bar 在该股窗口内。
+                窗口外为 False → 回测层据此设"不可交易", 避免窗口边界 NaN 误判退市。
+        """
+        if selections is None or selections.empty:
+            return {}, pd.DataFrame()
+
+        sel = selections.copy()
+        sel["select_date"] = pd.to_datetime(sel["select_date"])
+        sel["stock_code"] = sel["stock_code"].apply(
+            lambda c: normalize_list([c])[0] if normalize_list([c]) else c
+        )
+
+        # 每只股的窗口起点 = 最早信号日; 窗口需覆盖到 最晚信号日 + N 交易日
+        first_sig = sel.groupby("stock_code")["select_date"].min()
+        last_sig = sel.groupby("stock_code")["select_date"].max()
+
+        global_start = first_sig.min()
+        global_end = last_sig.max()
+
+        # 拉全区间交易日历 (往后多留 window+10 天缓冲, 保证末批窗口能推满)
+        cal_end = (global_end + pd.Timedelta(days=int(window_trading_days * 1.7) + 20))
+        trading_days = cls.get_trading_days(
+            global_start.strftime("%Y%m%d"), cal_end.strftime("%Y%m%d")
+        )
+        if not trading_days:
+            logger.warning("交易日历为空, 稀疏窗口退化为按自然日估算窗口")
+            trading_days = None
+
+        def _window_end(sig_date: pd.Timestamp) -> pd.Timestamp:
+            """信号日往后 window_trading_days 个交易日的日期。"""
+            if trading_days:
+                idx = 0
+                lo, hi = 0, len(trading_days) - 1
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    if trading_days[mid] < sig_date:
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+                idx = lo  # 第一个 >= sig_date 的交易日
+                target = min(idx + window_trading_days, len(trading_days) - 1)
+                return trading_days[target]
+            # 无交易日历兜底: 自然日估算 (交易日≈自然日×5/7, 反推)
+            return sig_date + pd.Timedelta(days=int(window_trading_days * 1.5) + 5)
+
+        # 每只股的 [窗口起, 窗口止]
+        win_start = {c: first_sig[c] for c in first_sig.index}
+        win_end = {c: _window_end(last_sig[c]) for c in last_sig.index}
+
+        # 按 (窗口起月份) 分桶批量拉取, 减少 tq 往返
+        sel_codes = list(win_start.keys())
+        buckets: dict = {}
+        for c in sel_codes:
+            key = win_start[c].strftime("%Y%m")
+            buckets.setdefault(key, []).append(c)
+
+        fields = ["Open", "High", "Low", "Close", "Volume", "Amount"]
+        field_frames: dict = {f: [] for f in fields}
+        mask_frames = []
+
+        total_buckets = len(buckets)
+        for bi, (mkey, codes) in enumerate(sorted(buckets.items()), 1):
+            b_start = min(win_start[c] for c in codes)
+            b_end = max(win_end[c] for c in codes)
+            logger.info(
+                f"  窗口批次 {bi}/{total_buckets} [{mkey}] "
+                f"{len(codes)} 只 {b_start.date()}~{b_end.date()}"
+            )
+            data = cls.get_kline(
+                codes,
+                start_time=b_start.strftime("%Y%m%d"),
+                end_time=b_end.strftime("%Y%m%d"),
+                period=period,
+                dividend_type=dividend_type,
+                fill_data=fill_data,
+            )
+            if not data or "Close" not in data:
+                continue
+
+            close_b = data["Close"]
+            if not isinstance(close_b.index, pd.DatetimeIndex):
+                close_b.index = pd.to_datetime(close_b.index)
+
+            for f in fields:
+                if f in data and not data[f].empty:
+                    field_frames[f].append(data[f])
+
+            # 构建本批 window_mask: 每只股只在自己 [win_start, win_end] 内为 True
+            m = pd.DataFrame(False, index=close_b.index, columns=close_b.columns)
+            for c in codes:
+                if c not in m.columns:
+                    continue
+                in_win = (m.index >= win_start[c]) & (m.index <= win_end[c])
+                m.loc[in_win, c] = True
+            mask_frames.append(m)
+
+        if not mask_frames:
+            logger.warning("稀疏窗口拉取结果为空")
+            return {}, pd.DataFrame()
+
+        # 合并各批: 时间轴取并集, 列按股票代码。不同批可能共享时间戳
+        # (如 1月信号股窗口与 2月信号股窗口在 2-3月重叠), 必须按 (行,列) 取首个非空,
+        # 不能简单 drop 重复行 (会丢掉另一批的股票列)。
+        kline_out: dict = {}
+        for f in fields:
+            if field_frames[f]:
+                merged = pd.concat(field_frames[f], axis=0)
+                # groupby(level=0).first() 逐列取首个非 NaN, 正确合并跨批重叠时间戳
+                merged = merged.groupby(level=0).first().sort_index()
+                kline_out[f] = merged
+
+        window_mask = pd.concat(mask_frames, axis=0)
+        # 同 (行,列) 跨批取 OR (任一批标记窗口内即为窗口内)
+        window_mask = window_mask.groupby(level=0).max().sort_index().fillna(False)
+        # 对齐到 Close 的行列 (兜底: 缺失填 False)
+        if "Close" in kline_out:
+            window_mask = window_mask.reindex(
+                index=kline_out["Close"].index,
+                columns=kline_out["Close"].columns,
+                fill_value=False,
+            ).fillna(False).astype(bool)
+
+        logger.info(
+            f"稀疏窗口拉取完成: {len(kline_out.get('Close', pd.DataFrame()).columns)} 只股, "
+            f"{len(kline_out.get('Close', pd.DataFrame()))} 个 bar (窗口={window_trading_days}交易日)"
+        )
+        return kline_out, window_mask
+
+    @classmethod
     def get_kline_single(
         cls,
         stock_code: str,

@@ -12,6 +12,11 @@ Thumbs.db
 .venv/
 *.pkl
 dump.rdb
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.cache/
 
 # 前端保存的运行时配置（含策略机密，不入 git；每次保存自动覆盖 + 备份 .bak）
 config/current.yaml
