@@ -304,6 +304,10 @@ def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
                     **kw: kline_1d))
     monkeypatch.setattr(BacktestEngine, '_filter_limit_up',
                         lambda self, entries, prices: entries)
+    # _limit_ratio_vector 会查 get_cached_info → 触 TDX 初始化, 留下全局
+    # "已初始化但未连接" 状态, 污染后续真实管线测试的 skip 判定。mock 掉。
+    monkeypatch.setattr(BacktestEngine, '_limit_ratio_vector',
+                        lambda self, columns: np.full(len(columns), 0.10))
 
     def fake_core(price_np, entry_np, *args, **kwargs):
         if capture is not None:
