@@ -65,18 +65,18 @@ class EntryEngine:
                 continue
             entry_i = i
             # ── 换股: 已持有同股票 → 卖旧仓（reason=1, 无滑点无印花税）──
-            for old_p in range(book.count):
-                if book.code_arr[old_p] == ci:
-                    os_sh = book.shares_arr[old_p]
-                    os_ep = book.entry_px_arr[old_p]
-                    os_ei = book.entry_idx_arr[old_p]
-                    gross = os_sh * bp * (1.0 - p.commission)  # 仅手续费
-                    cash += gross
-                    os_pp = (bp - os_ep) / os_ep if os_ep > 0.0 else 0.0
-                    trade_buf.append(ci, os_ei, i, os_ep, bp, os_sh,
-                                     gross - os_sh * os_ep, os_pp, 1)
-                    book.remove_swap_pop(old_p)
-                    break
+            # 2026-07-18 Phase 3: slot_of O(1) 替代逐槽扫描 (dense 场景 147ms→~10ms)
+            old_p = book.slot_of(ci)
+            if old_p >= 0:
+                os_sh = book.shares_arr[old_p]
+                os_ep = book.entry_px_arr[old_p]
+                os_ei = book.entry_idx_arr[old_p]
+                gross = os_sh * bp * (1.0 - p.commission)  # 仅手续费
+                cash += gross
+                os_pp = (bp - os_ep) / os_ep if os_ep > 0.0 else 0.0
+                trade_buf.append(ci, os_ei, i, os_ep, bp, os_sh,
+                                 gross - os_sh * os_ep, os_pp, 1)
+                book.remove_swap_pop(old_p)
             # ── 买入新仓 ──
             buy_amount = min(cash, p.max_buy_amount)
             if p.max_position_pct < 1.0:

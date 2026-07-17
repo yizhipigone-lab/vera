@@ -231,6 +231,10 @@ class PositionBook:
         self._high_hi = np.zeros(max_pos, dtype=np.float64)
         self._ladder_done = np.zeros(max_pos, dtype=np.int32)
         self._count = 0
+        # 2026-07-18 Phase 3: code→slot 索引, 换股查找 O(n)→O(1)。
+        # 不变量: 同一 code 在 book 中至多一个槽位(同码买入前先换股卖旧)。
+        # 仅 add/remove_swap_pop/set 三处维护, 与数组严格同步。
+        self._slot_of = {}
 
     @property
     def count(self) -> int:
@@ -257,6 +261,7 @@ class PositionBook:
         self._high_px[p] = high_px
         self._high_hi[p] = high_hi
         self._ladder_done[p] = 0
+        self._slot_of[int(code)] = p
         self._count += 1
         return p
 
@@ -275,6 +280,10 @@ class PositionBook:
 
     def set(self, p: int, pos: Position) -> None:
         """把 Position 写回槽位 p。"""
+        old_code = int(self._code[p])
+        if int(pos.code) != old_code:
+            self._slot_of.pop(old_code, None)
+            self._slot_of[int(pos.code)] = p
         self._code[p] = pos.code
         self._shares[p] = pos.shares
         self._entry_px[p] = pos.entry_px
@@ -325,13 +334,19 @@ class PositionBook:
     def ladder_done_arr(self) -> np.ndarray:
         return self._ladder_done
 
+    def slot_of(self, code: int) -> int:
+        """code 的槽位, 不存在返回 -1。O(1), 替代逐槽扫描 (2026-07-18 Phase 3)。"""
+        return self._slot_of.get(int(code), -1)
+
     def remove_swap_pop(self, p: int) -> None:
         """swap-and-pop 删除槽位 p（对齐 engine.py:120-128）。
 
         把最后一个槽位挪到 p, count-=1。遍历中删除时调用方负责不 p+=1。
         """
         last = self._count - 1
+        removed_code = int(self._code[p])
         if p < last:
+            self._slot_of[int(self._code[last])] = p
             self._code[p] = self._code[last]
             self._shares[p] = self._shares[last]
             self._entry_px[p] = self._entry_px[last]
@@ -339,4 +354,5 @@ class PositionBook:
             self._high_px[p] = self._high_px[last]
             self._high_hi[p] = self._high_hi[last]
             self._ladder_done[p] = self._ladder_done[last]
+        self._slot_of.pop(removed_code, None)
         self._count -= 1
