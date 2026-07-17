@@ -1251,6 +1251,45 @@ function renderAllCharts(data) {
     document.getElementById('summaryContent').textContent = data.stop_config_summary;
   }
 
+  // 2026-07-18: 5m 降级影响卡片 (仅 degrade_5m 开启时后端才返回 degradation)
+  const degrBox = document.getElementById('degradationBox');
+  if (data.degradation && data.degradation.enabled) {
+    const dg = data.degradation;
+    const fmtAmt = v => (v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toLocaleString('zh-CN', {maximumFractionDigits: 0}) + ' 元');
+    const fmtPct = v => (v == null ? '—' : (v * 100).toFixed(2) + '%');
+    const lines = [];
+    lines.push('降级持仓: ' + dg.degraded_trades + ' / ' + dg.total_trades + ' 笔 (' + fmtPct(dg.degraded_pct) + ')'
+      + ' | 降级股-天: ' + (dg.n_stock_days || 0)
+      + (dg.rejected_limit_up ? ' | 1d 涨停拒绝: ' + dg.rejected_limit_up : ''));
+    if (dg.degraded_days && Object.keys(dg.degraded_days).length) {
+      lines.push('降级日分布: ' + Object.entries(dg.degraded_days).map(([d, n]) => d + ' × ' + n).join(', '));
+    }
+    if (dg.impact_amount) {
+      lines.push('影响金额区间: [' + fmtAmt(dg.impact_amount.pessimistic) + ', ' + fmtAmt(dg.impact_amount.optimistic) + ']'
+        + ' (模糊日 ' + (dg.ambiguous_trades || 0) + ' 笔: 同日止盈止损先后未知)');
+    }
+    if (dg.return_range) {
+      lines.push('收益率影响: [' + fmtPct(dg.return_range.pessimistic) + ', ' + fmtPct(dg.return_range.optimistic) + ']');
+    }
+    if (dg.close_based_stop_bias && dg.close_based_stop_bias.count) {
+      lines.push('收盘价策略偏差: ' + dg.close_based_stop_bias.count + ' 笔, ['
+        + fmtAmt(dg.close_based_stop_bias.amount_pessimistic) + ', '
+        + fmtAmt(dg.close_based_stop_bias.amount_optimistic) + ']'
+        + ' (时间止损/条件时间止盈/首日按 1d 收盘成交, 真 5m 价不可观测)');
+    }
+    if (dg.sharpe_range) {
+      lines.push('夏普区间: [' + Number(dg.sharpe_range.pessimistic).toFixed(2) + ', ' + Number(dg.sharpe_range.optimistic).toFixed(2) + ']'
+        + ' | 最大回撤区间: [' + fmtPct(dg.max_drawdown_range.pessimistic) + ', ' + fmtPct(dg.max_drawdown_range.optimistic) + ']');
+    }
+    if (dg.adjust_mismatches) {
+      lines.push('⚠ 复权一致性违例: ' + dg.adjust_mismatches + ' 处 (5m 日聚合 ≠ 1d, 查复权口径)');
+    }
+    document.getElementById('degradationContent').textContent = lines.join('\n');
+    degrBox.style.display = '';
+  } else {
+    degrBox.style.display = 'none';
+  }
+
   // B-11/12: hero 子行（趋势/评级 + vs 上证）+ 卡片 stagger 入场
   fillHeroSub(m, data, c);
   revealResults();

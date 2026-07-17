@@ -528,6 +528,12 @@ input.invalid~.input-error{display:block}
       <div class="summary-box" id="summaryContent"></div>
     </div>
 
+    <!-- 2026-07-18: 5m 数据层降级影响 (仅 degrade_5m 开启且有结果时显示) -->
+    <div class="chart-box full" id="degradationBox" style="display:none">
+      <div class="chart-box-header">5m 降级影响 (缺 5m 的股-天用日线填充)</div>
+      <div class="summary-box" id="degradationContent"></div>
+    </div>
+
     <!-- 系统日志 -->
     <div class="chart-box full">
       <div class="chart-box-header">系统日志</div>
