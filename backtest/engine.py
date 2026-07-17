@@ -1029,6 +1029,23 @@ class BacktestEngine:
                 n_deg, len(positions), degradation["degraded_pct"] * 100,
                 degrade_res.n_stock_days, degrade_res.rejected_limit_up,
             )
+            # Phase B: 降级影响报告 (模糊日两档 + close 价策略偏差 + 夏普/回撤范围)
+            if high_np is not None and low_np is not None:
+                from backtest.degrade_report import compute_impact_report
+                degradation.update(compute_impact_report(
+                    raw_trades, degraded_np, high_np, low_np, bpday,
+                    cost_enabled=cost.get("enabled", True),
+                    cost_threshold=float(cost.get("threshold", -0.12)),
+                    trailing_enabled=trail.get("enabled", True),
+                    trailing_activation=float(trailing_activation),
+                    trailing_drawdown=float(trailing_drawdown),
+                    ladder_enabled=ladder.get("enabled", True),
+                    ladder_profits=tuple(float(p) for p in ladder_profits),
+                    initial_capital=float(self.initial_capital),
+                    equity_arr=equity_arr,
+                    periods_per_year=self.PERIODS_PER_YEAR.get(
+                        self.period, self.bars_per_day * 252),
+                ))
 
         # C2: stop_config_summary 改从函数生成（不再调用 StopManager，避免 compute_exit_signals 重复计算）
         from backtest.stop_config import get_stop_config_summary

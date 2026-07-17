@@ -213,3 +213,19 @@ def test_persist_empty_pipeline_result(tmp_path):
     assert response["metrics"] == {}
     assert response["trades"] == []
     assert response["trade_count"] == 0
+
+
+def test_serialize_includes_degradation_only_when_present():
+    """degradation (2026-07-18 计划书 §4.7 LOW-2): 有才加 key, 无则不加 (向后兼容)."""
+    writer = ResultWriter()
+    pr = _make_result()
+    pr.backtest["degradation"] = {
+        "enabled": True, "degraded_trades": 2, "total_trades": 10,
+        "impact_amount": {"pessimistic": -100.0, "actual": 0.0, "optimistic": 50.0},
+    }
+    resp = writer.serialize(pr)
+    assert resp["degradation"]["degraded_trades"] == 2
+    assert resp["degradation"]["impact_amount"]["pessimistic"] == -100.0
+    # 无 degradation → key 不出现 (响应形状不变)
+    resp2 = writer.serialize(_make_result())
+    assert "degradation" not in resp2

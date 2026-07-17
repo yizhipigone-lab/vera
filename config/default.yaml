@@ -44,6 +44,10 @@ backtest:
     max_buy_amount: 20000.0
     lot_size: 100
     min_lots: 1
+  # 2026-07-18 (计划书: 5m数据层降级): 缺 5m 的股-天用当天 1d OHLC 填满 48 根 bar
+  # 保住信号 (默认关 = 现状丢信号); 停牌不降级; 降级影响报告在 result.degradation。
+  # 仅 period="5m" 等分钟级 + run() 路径生效 (run_cached/批量优化不支持)。
+  degrade_5m: false
 
 # === Stop-Profit / Stop-Loss ===
 stop_loss:

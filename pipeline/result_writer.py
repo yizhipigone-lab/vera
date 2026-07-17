@@ -206,7 +206,7 @@ class ResultWriter:
                 })
             benchmark_data[name] = bm_list
 
-        return {
+        resp = {
             "success": True,
             "metrics": metrics_clean,
             "equity": equity_data,
@@ -219,6 +219,11 @@ class ResultWriter:
             "engine_version": ENGINE_VERSION,
             "entry_price_basis": ENTRY_PRICE_BASIS,
         }
+        # 2026-07-18 (计划书 §4.7 LOW-2): 5m 降级报告有才加 key, 无则响应形状不变
+        degradation = backtest.get("degradation")
+        if degradation is not None:
+            resp["degradation"] = safe_serialize(degradation)
+        return resp
 
     def persist(self, response: dict, *, results_dir: Path, last_result_path: Path,
                 meta_extras: Optional[dict] = None) -> None:
