@@ -26,8 +26,11 @@ from .exit_engine import ExitDispatcher
 from .absolute import FormulaSellStrategy
 from .entry import EntryEngine
 from .equity import EquityTracker
+from .signals import precompute_signal_lists
 
 from utils.logger import get_logger
+# 2026-07-18: 协作式停止 (web「停止回测」按钮)。CLI/批量脚本从不置位, 行为不变。
+from core.stop_flag import raise_if_stopped
 
 logger = get_logger(__name__)
 
@@ -53,6 +56,7 @@ class BacktestLoop:
         self.ladder_profits = ladder_profits
         self.ladder_ratios = ladder_ratios
         self.n_ladder = n_ladder
+        self._has_run = False  # 2026-07-18 F2: 单实例单次使用守卫
 
     def run(self, price_np: np.ndarray, entry_np: np.ndarray,
             high_np: Optional[np.ndarray], low_np: Optional[np.ndarray],
@@ -64,7 +68,15 @@ class BacktestLoop:
 
         formula_exit_np: 信号已存于 FormulaSellStrategy(absolutes), 此参数保留作
         显式传递/未来扩展, run 内不直接引用（LOW-2）。
+
+        2026-07-18 审计 F2: 单实例不可复用 — PositionBook 与 entry skip 计数
+        不重置, 二次 run 会带上一轮持仓/计数, 资金数字静默错乱。fail-fast。
         """
+        if self._has_run:
+            raise RuntimeError(
+                "BacktestLoop 实例不可复用: run() 已被调用过。请重新 build_backtest_loop() "
+                "(PositionBook/skipped_signal_count 不重置, 复用会产出静默错误结果)")
+        self._has_run = True
         n_dates = price_np.shape[0]
         n_stocks = price_np.shape[1]
         p = self.params
@@ -75,13 +87,13 @@ class BacktestLoop:
         equity.reset(n_dates)
 
         # 2026-07-17 Phase 1 项2: 入场信号一次预计算 (替代每 bar 全列扫描)。
-        # np.nonzero 行主序 → 每 bar 内列升序, 与旧 range(n_stocks) 扫描顺序一致。
-        # cumsum 切点恒产 n_dates 段, 空 bar 得空段 (无信号日不炸)。
-        sig_rows, sig_cols = np.nonzero(entry_np)
-        cuts = np.cumsum(entry_np.sum(axis=1))[:-1]
-        sig_by_bar = np.split(sig_cols, cuts)
+        # 2026-07-18 审计 F1: 抽公共 helper + count_nonzero(按个数切段),
+        # 非二值矩阵不再静默错位 (与 legacy truthy 语义一致)。
+        sig_by_bar = precompute_signal_lists(entry_np)
 
         for i in range(n_dates):
+            # 停止回测按钮: is_set() 开销 ~几十 ns, 逐 bar 检查可秒级响应
+            raise_if_stopped()
             # ── 1. 卖出 ──
             cash = self._sell_bar(i, cash, book, trade_buf, price_np, high_np,
                                   low_np, open_np, tradable_np, last_tradable_idx)

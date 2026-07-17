@@ -60,6 +60,10 @@ class ExitDispatcher:
         strategies: {name: ExitStrategy} 只含已启用策略（capability 过滤后）。
             合法 name: cost_stop / ladder_tp / trailing / time_stop / cond_time / first_day。
         priority: 三档优先级之一。
+
+    2026-07-18 审计 F3: **构造后不可变**。求值序列 (_order/_tail/_ladder 等)
+    在 __init__ 一次性快照, 构造后增删 self.strategies 不会生效且不会报错
+    (新策略永不求值, 删掉的继续触发)。要改策略集合请重建 ExitDispatcher。
     """
 
     def __init__(self, strategies: Dict[str, ExitStrategy], priority: Priority):
