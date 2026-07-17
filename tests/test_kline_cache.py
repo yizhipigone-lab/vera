@@ -22,7 +22,8 @@ def _make_fake_kline(stock_list, start, end, period="1d", dividend_type="front",
     if period == "1d":
         bars = idx
     else:
-        bars = pd.date_range(start, end, freq="5min")
+        # 5m: 生成到 end 当天收盘 (含末日 9:35-15:00 bar, 与真实 TDX 一致)
+        bars = pd.date_range(start, pd.Timestamp(end) + pd.Timedelta(days=1), freq="5min")
         bars = bars[bars.indexer_between_time("9:35", "15:00")]
     out = {}
     for code in stock_list:
@@ -99,7 +100,8 @@ def test_return_signature_unchanged(tmp_path):
 
 
 def test_incremental_append_new_dates(tmp_path):
-    """last_date 后有新日期 → 增量拉取 append, 不重拉旧段。"""
+    """last_date 后有新日期 → 增量拉取 append, 不重拉旧段。
+    F6 [H2]: 增量起点含重叠 bar (last_d), 用于 staleness 比对。"""
     calls = {"codes": []}
 
     def tracking_fetcher(stock_list, start, end, **k):
@@ -108,11 +110,11 @@ def test_incremental_append_new_dates(tmp_path):
 
     cache = _make_cache(tmp_path, fetcher=tracking_fetcher)
     cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
-    # 后续取更长区间 → 增量拉 01-10 之后
+    # 后续取更长区间 → 增量拉 01-10 (重叠 bar) 起
     cache.get(["002008.SZ"], "2024-01-01", "2024-01-20", period="1d")
-    # 至少有一次增量拉取 (start 在 01-10 之后)
-    has_incremental = any(s > "20240110" for (_, s, _) in calls["codes"])
-    assert has_incremental, "应有增量拉取 (last_date 之后)"
+    # 至少有一次增量拉取 (start 在 01-10 含重叠, 01-01 首次之后)
+    has_incremental = any(s == "20240110" for (_, s, _) in calls["codes"])
+    assert has_incremental, f"应有增量拉取 (含重叠 bar last_d), calls={calls['codes']}"
 
 
 # ───────────────────────── gap 检测 (1d) ─────────────────────────
@@ -216,4 +218,111 @@ def test_get_kline_signature_backward_compat(monkeypatch):
     # 旧式调用: 全位置参数 (与 engine.py:778 调用方式一致)
     res = DataFetcher.get_kline(["002008.SZ"], "20240101", "20240110", "1d", "front")
     assert "Close" in res
+
+
+# ───────────────────────── 审计修复 F1-F6 ─────────────────────────
+
+
+def test_f1_mixed_dividend_type_raises(tmp_path):
+    """F1 [C1] dividend_type 非 front → 抛 ValueError, 杜绝混合口径静默错数。"""
+    cache = _make_cache(tmp_path)
+    with pytest.raises(ValueError):
+        cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d", dividend_type="none")
+    # front / 1 正常
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d", dividend_type="front")
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d", dividend_type=1)
+
+
+def test_f2_5m_end_day_not_dropped(tmp_path):
+    """F2 [H3] 5m 区间末日整段不被切片丢弃 (end_ts=00:00 时仍含当天 9:35-15:00 bar)。"""
+    cache = _make_cache(tmp_path)
+    res = cache.get(["002008.SZ"], "2024-01-02", "2024-01-05", period="5m")
+    close = res["Close"]["002008.SZ"].dropna()
+    assert len(close) > 0
+    last_day = close.index.max().normalize()
+    assert last_day == pd.Timestamp("2024-01-05"), (
+        f"5m 末日 2024-01-05 被丢弃, 最后 bar 日期={last_day}"
+    )
+
+
+def test_f2_1d_end_day_unchanged(tmp_path):
+    """F2 [H3] 1d 末日行为不变 (00:00 本就等于 normalize)。"""
+    cache = _make_cache(tmp_path)
+    res = cache.get(["002008.SZ"], "2024-01-02", "2024-01-05", period="1d")
+    close = res["Close"]["002008.SZ"].dropna()
+    assert close.index.max() == pd.Timestamp("2024-01-05")
+
+
+def test_f3_non_normalized_code_works(tmp_path):
+    """F3 [M2] 非归一化代码 ("002008") 与归一化 ("002008.SZ") 等价, 共用一份缓存。"""
+    cache = _make_cache(tmp_path)
+    r1 = cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    r2 = cache.get(["002008"], "2024-01-01", "2024-01-10", period="1d")
+    # 非归一化代码应能取到 (静默消失 bug)
+    assert "002008.SZ" in r2["Close"].columns or "002008" in r2["Close"].columns
+    c2 = r2["Close"].iloc[:, 0].dropna()
+    assert len(c2) > 0, "非归一化代码 get(['002008']) 不应返回空"
+    # 共用一份 parquet (不产生碎片)
+    import glob
+    files = glob.glob(str(tmp_path / "kline_cache" / "1d" / "*.parquet"))
+    assert len(files) == 1, f"应只有一份 parquet, 实际 {files}"
+
+
+def test_f4_backward_extension_warns(tmp_path, caplog):
+    """F4 [M1] 请求起点早于缓存起点 → 打 WARNING, 不静默截断。"""
+    cache = _make_cache(tmp_path)
+    cache.get(["002008.SZ"], "2024-02-01", "2024-02-29", period="1d")  # 先缓存 2 月
+    with caplog.at_level("WARNING", logger="core.kline_cache"):
+        cache.get(["002008.SZ"], "2024-01-01", "2024-02-29", period="1d")  # 请求更早起点
+    assert any("002008" in r.message and ("截断" in r.message or "早" in r.message or "缺失" in r.message)
+               for r in caplog.records), "向后扩展静默截断必须告警"
+
+
+def test_f5_intact_false_cooldown(tmp_path):
+    """F5 [H1] intact=false 股连续两次 get() 只全量重拉一次 (24h 冷却, 不 thrash)。"""
+    def always_gap_fetcher(stock_list, start, end, **k):
+        res = _make_fake_kline(stock_list, start, end, **k)
+        for f in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
+            res[f] = res[f].drop(pd.Timestamp("2024-01-05"), errors="ignore")
+        return res
+
+    calls = {"n": 0}
+
+    def counting(sl, s, e, **k):
+        calls["n"] += 1
+        return always_gap_fetcher(sl, s, e, **k)
+
+    cache = _make_cache(tmp_path, fetcher=counting)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    # 确认 intact=false
+    rec = [r for r in cache._manifest_all() if r[0] == "002008.SZ"][0]
+    intact_idx = cache.MANIFEST_COLUMNS.index("intact")
+    assert not rec[intact_idx]
+    n1 = calls["n"]
+    # 第二次 get (同一进程内, 应冷却不再全量重拉)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    assert calls["n"] == n1, f"intact=false 冷却期不应重复全量重拉 (n1={n1}, n2={calls['n']})"
+
+
+def test_f6_staleness_overlap_triggers_full_refetch(tmp_path):
+    """F6 [H2] 增量含重叠 bar, close 不一致 → 全量重拉 (前复权分红 shift)。"""
+    calls = []
+
+    def shifting_fetcher(stock_list, start, end, **k):
+        calls.append(str(start))
+        res = _make_fake_kline(stock_list, start, end, **k)
+        # 若 start 是增量起点 (非全量), 把首 bar close 改大模拟分红 shift
+        if str(start) > "20240101":
+            res["Close"] = res["Close"] * 1.5
+        return res
+
+    cache = _make_cache(tmp_path, fetcher=shifting_fetcher)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    calls.clear()
+    # 增量取 [last+? , end] → 重叠 bar close 变了 → 应触发全量重拉 (含更早 start)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-20", period="1d")
+    assert any(s <= "20240101" for s in calls), (
+        f"重叠 bar close 不一致应触发全量重拉, 但 calls={calls}"
+    )
+
 

@@ -27,6 +27,10 @@ from .absolute import FormulaSellStrategy
 from .entry import EntryEngine
 from .equity import EquityTracker
 
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class BacktestLoop:
     """主回测循环协调器。~150 行, 只剩协调逻辑。"""
@@ -83,6 +87,12 @@ class BacktestLoop:
 
         # ── 4. 期末不平仓 ──
         equity.finalize(n_dates - 1, cash, price_np, book)
+        # F7 [H4]: 汇总 entry 被停牌/数据缺失 skip 的告警 (补圆"不静默吞信号")
+        skipped = getattr(self.entry_engine, "skipped_signal_count", 0)
+        if skipped:
+            logger.warning(
+                "entry_signal_skip: 共 %d 个入场信号因停牌/数据缺失被跳过 (无成交, 见 _build_entry_signals 告警)",
+                skipped)
         return equity.equity_arr, trade_buf.to_array()
 
     # ─────────────────────────────────────────────────────────

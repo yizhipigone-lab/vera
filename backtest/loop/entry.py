@@ -31,6 +31,11 @@ class EntryEngine:
 
     def __init__(self, params: BacktestParams):
         self.params = params
+        # F7 [H4]: entry 因停牌/价缺失被 skip 的计数 (loop 结束汇总告警, 补圆"不静默吞信号")
+        self.skipped_signal_count = 0
+
+    def _record_skip(self, i: int, ci: int):
+        self.skipped_signal_count += 1
 
     def run_bar(self, i: int, cash: float, book: PositionBook,
                 trade_buf: TradeBuffer, price_np: np.ndarray,
@@ -43,11 +48,13 @@ class EntryEngine:
         for ci in range(n_stocks):
             if not entry_np[i, ci]:
                 continue
-            # 信号日停牌 → skip
+            # 信号日停牌 → skip (F7: 计数, 补圆不静默吞信号)
             if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
+                self._record_skip(i, ci)
                 continue
             bp = price_np[i, ci]
             if np.isnan(bp) or bp <= 0.0:
+                self._record_skip(i, ci)
                 continue
             entry_i = i
             # ── 换股: 已持有同股票 → 卖旧仓（reason=1, 无滑点无印花税）──

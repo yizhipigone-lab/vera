@@ -142,3 +142,52 @@ def test_pipeline_no_warn_on_period_match(caplog):
         pipe.step2_backtest(empty_sel)
     assert not any("period_mismatch" in r.message for r in caplog.records)
 
+
+# ───────────────────────── F7 [H4] 单股缺口 engine 层告警 ─────────────────────────
+
+
+def _make_entry_engine():
+    import numpy as np
+    from backtest.loop.state import BacktestParams, PositionBook, TradeBuffer
+    from backtest.loop.entry import EntryEngine
+    p = BacktestParams(
+        initial_capital=100_000.0, commission=0.0003, slippage=0.001, stamp_tax=0.0005,
+        min_buy_amount=1000.0, max_buy_amount=50000.0, lot_size=100, min_lots=1,
+    )
+    return EntryEngine(p), PositionBook(), TradeBuffer(10, 2)
+
+
+def test_f7_entry_skip_counts_on_nan_price():
+    """F7 [H4] 单股信号日价 NaN → entry 被 skip 且计数 (不静默吞)。"""
+    import numpy as np
+    from backtest.loop.state import PositionBook, TradeBuffer
+    eng, book, trade_buf = _make_entry_engine()
+    price_np = np.array([[np.nan, 10.0]])          # 股0 价 NaN, 股1 正常
+    entry_np = np.array([[True, False]])            # 股0 有信号
+    cash = eng.run_bar(0, 100_000.0, book, trade_buf, price_np, entry_np, None, 100_000.0)
+    assert eng.skipped_signal_count == 1, "价 NaN 的信号应被计数 skip"
+    assert book.count == 0, "价 NaN 不应成交"
+
+
+def test_f7_entry_skip_counts_on_suspended():
+    """F7 [H4] 信号日停牌 (tradable=False) → skip 且计数。"""
+    import numpy as np
+    eng, book, trade_buf = _make_entry_engine()
+    price_np = np.array([[10.0, 20.0]])
+    entry_np = np.array([[True, False]])
+    tradable_np = np.array([[False, True]])         # 股0 停牌
+    cash = eng.run_bar(0, 100_000.0, book, trade_buf, price_np, entry_np, tradable_np, 100_000.0)
+    assert eng.skipped_signal_count == 1, "停牌信号应被计数 skip"
+    assert book.count == 0
+
+
+def test_f7_valid_entry_not_counted():
+    """F7 正常成交的信号不计数 (不误伤)。"""
+    import numpy as np
+    eng, book, trade_buf = _make_entry_engine()
+    price_np = np.array([[10.0]])
+    entry_np = np.array([[True]])
+    cash = eng.run_bar(0, 100_000.0, book, trade_buf, price_np, entry_np, None, 100_000.0)
+    assert eng.skipped_signal_count == 0
+    assert book.count == 1, "正常信号应成交"
+

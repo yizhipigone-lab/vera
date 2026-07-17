@@ -21,6 +21,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from utils.logger import get_logger
+from utils.code_normalizer import normalize_list
+from core.dividend_type import to_tdx_str
 
 logger = get_logger(__name__)
 
@@ -65,7 +67,13 @@ class KlineCache:
             c.execute("""CREATE TABLE IF NOT EXISTS manifest(
                 stock_code TEXT, period TEXT, first_date TEXT, last_date TEXT,
                 last_close REAL, rows INTEGER, fetched_at TEXT, intact INTEGER,
+                last_full_refetch_at TEXT,
                 PRIMARY KEY(stock_code, period))""")
+            # 迁移: 旧库无 last_full_refetch_at 列时补上 (F5 冷却)
+            try:
+                c.execute("ALTER TABLE manifest ADD COLUMN last_full_refetch_at TEXT")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
 
     def _manifest_all(self) -> List[tuple]:
         with self._conn() as c:
@@ -118,7 +126,14 @@ class KlineCache:
     def get(self, stock_list, start, end, period="1d", dividend_type="front") -> Dict[str, pd.DataFrame]:
         """取 K 线, 返回 {Open,High,Low,Close,Volume,Amount: DataFrame}, 列=股票、行=date。
         与 DataFetcher.get_kline 返回结构一致。"""
-        stock_list = list(stock_list)
+        # F1 [C1]: 只存前复权 (决策), 混合口径 fail-fast, 杜绝静默错数
+        if to_tdx_str(dividend_type) != "front":
+            raise ValueError(
+                f"KlineCache 只支持前复权 (dividend_type=front), 收到 {dividend_type!r}. "
+                f"如需其他复权口径请用 use_cache=False 直拉 TDX。"
+            )
+        # F3 [M2]: 归一化股票代码 (与 TDX 路径一致, 杜绝非标准代码静默消失 + 缓存碎片)
+        stock_list = normalize_list(stock_list)
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
         for code in stock_list:
@@ -142,25 +157,89 @@ class KlineCache:
 
     def _ensure(self, code: str, period: str, start_ts: pd.Timestamp,
                 end_ts: pd.Timestamp, dividend_type: str):
-        """确保 [start, end] 已缓存; miss-fetch 增量; 1d gap 检测。"""
+        """确保 [start, end] 已缓存; miss-fetch 增量; 1d gap 检测。
+
+        F4 [M1] 向后扩展静默截断 → 告警
+        F5 [H1] intact=false 全量重拉 24h 冷却 → 杜绝停牌 thrash
+        F6 [H2] 增量含重叠 bar 比对 last_close → 前复权分红 shift 检测
+        """
         rec = self._manifest_get(code, period)
         need_fetch: Optional[tuple] = None
+        staleness_check: Optional[tuple] = None  # (last_d, old_last_close)
+        is_full_fetch = False
+        skip_gap_detection = False
         if rec is None:
             need_fetch = (start_ts, end_ts)
+            is_full_fetch = True
         else:
             first_d = pd.Timestamp(rec[0])
             last_d = pd.Timestamp(rec[1])
+            last_close = rec[2]
             intact = bool(rec[3])
+            # F4: 请求起点早于缓存起点 → 告警 (前段缺失, 不静默截断)
+            if first_d > start_ts:
+                logger.warning(
+                    "kline_truncated: %s %s 请求起点 %s 早于缓存起点 %s, 前段数据缺失 (向后扩展未拉取)",
+                    code, period, start_ts.strftime("%Y-%m-%d"), first_d.strftime("%Y-%m-%d"))
             if not intact:
-                need_fetch = (start_ts, end_ts)  # 之前不完整 → 全量重拉
+                # F5: 全量重拉冷却 (24h), 杜绝停牌股每次调用全量重拉死循环
+                if self._refetch_cooled_down(code, period):
+                    need_fetch = (start_ts, end_ts)
+                    is_full_fetch = True
+                else:
+                    # 冷却期内: 用缓存现状, 连 gap 补拉也跳过 (不 thrash)
+                    skip_gap_detection = True
             elif last_d < end_ts:
-                need_fetch = (last_d + pd.Timedelta(days=1), end_ts)  # 增量
-            # first_d > start_ts 的向后扩展 Phase 1 暂不处理 (rare)
+                # F6: 增量含重叠 bar (last_d), 绕开"TDX 是否返回重叠"未验证假设
+                need_fetch = (last_d, end_ts)
+                staleness_check = (last_d, last_close)
         if need_fetch:
             with self._lock:
                 self._fetch_and_store(code, period, need_fetch[0], need_fetch[1], dividend_type)
-        if period == "1d":
+            if is_full_fetch:
+                self._mark_refetch(code, period)  # F5: 记录全量拉取时间
+            # F6: 比对重叠 bar close, 不一致 → 分红 shift → 全量重拉
+            if staleness_check is not None:
+                last_d, old_close = staleness_check
+                new_close = self._close_at(code, period, last_d)
+                if (old_close is not None and new_close is not None
+                        and abs(new_close - old_close) > 1e-6):
+                    logger.warning(
+                        "kline_staleness: %s %s 重叠 bar %s close 由 %s 变为 %s (分红 shift), 全量重拉",
+                        code, period, last_d.strftime("%Y-%m-%d"), old_close, new_close)
+                    with self._lock:
+                        self._fetch_and_store(code, period, start_ts, end_ts, dividend_type)
+                    self._mark_refetch(code, period)
+        if period == "1d" and not skip_gap_detection:
             self._detect_and_fill_gaps_1d(code, period, start_ts, end_ts, dividend_type)
+
+    # ── F5 冷却 / F6 重叠 bar ──
+
+    _REFETCH_COOLDOWN = pd.Timedelta(hours=24)
+
+    def _refetch_cooled_down(self, code: str, period: str) -> bool:
+        """距上次全量拉取 > 24h 才允许再全量拉 (F5 停牌 thrash 冷却)。"""
+        with self._conn() as c:
+            r = c.execute(
+                "SELECT last_full_refetch_at FROM manifest WHERE stock_code=? AND period=?",
+                (code, period)).fetchone()
+        if not r or not r[0]:
+            return True  # 从未全量拉过 → 允许
+        last = pd.Timestamp(r[0])
+        return (pd.Timestamp.now() - last) > self._REFETCH_COOLDOWN
+
+    def _mark_refetch(self, code: str, period: str):
+        with self._conn() as c:
+            c.execute("UPDATE manifest SET last_full_refetch_at=? WHERE stock_code=? AND period=?",
+                      (datetime.now().isoformat(), code, period))
+
+    def _close_at(self, code: str, period: str, date: pd.Timestamp) -> Optional[float]:
+        """读 parquet 在 date 当日的 close (F6 重叠 bar 比对用)。"""
+        df = self._read_parquet(code, period, date, date + pd.Timedelta(days=1))
+        if df.empty or "close" not in df.columns:
+            return None
+        s = df["close"].dropna()
+        return float(s.iloc[0]) if not s.empty else None
 
     def _fetch_and_store(self, code: str, period: str, fstart: pd.Timestamp,
                          fend: pd.Timestamp, dividend_type: str):
@@ -301,4 +380,8 @@ class KlineCache:
             df = df.set_index("date")
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
-        return df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
+        # F2 [H3]: 按日期比较, 1d (00:00) 与 5m (09:35-15:00) 都含首末日全天。
+        # 直接 <= end_ts (end=00:00) 会把 5m 区间末日 48 根 bar 全切掉。
+        start_norm = start_ts.normalize()
+        end_norm = end_ts.normalize()
+        return df.loc[(df.index.normalize() >= start_norm) & (df.index.normalize() <= end_norm)]
