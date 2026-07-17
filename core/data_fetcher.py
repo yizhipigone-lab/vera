@@ -21,6 +21,7 @@ class DataFetcher:
 
     # C5: connector 注入缝隙（默认 None → 用 TdxConnector 单例）
     _connector_override = None
+    _KLINE_CACHE_DIR = None  # 测试可覆盖; None → 项目根 data/kline_cache
 
     # 基准指数代码（P1-6: 补沪深300/中证500）
     INDEX_CODES = {
@@ -62,6 +63,9 @@ class DataFetcher:
         count: int = -1,
         fill_data: bool = True,
         field_list: Optional[List[str]] = None,
+        *,
+        use_cache: bool = False,
+        force_refresh: bool = False,
     ) -> dict:
         """
         获取 K 线数据。
@@ -70,7 +74,34 @@ class DataFetcher:
             dict: {'Open': DataFrame, 'High': DataFrame, 'Low': DataFrame,
                    'Close': DataFrame, 'Volume': DataFrame, 'Amount': DataFrame}
             每个 DataFrame 的行索引为 DatetimeIndex，列为股票代码。
+
+        use_cache=True (opt-in, Phase 1 默认 False): 走本地 KlineCache, miss-fetch 增量补 TDX,
+        含 1d gap 检测+告警 (治 002008 类数据缺口)。force_refresh 强制全量重拉。
+        详见 docs/plan/2026-07-17_本地K线parquet缓存_计划书.md。
         """
+        if use_cache:
+            return cls._get_kline_via_cache(
+                stock_list, start_time, end_time, period, dividend_type,
+                force_refresh=force_refresh,
+            )
+        return cls._get_kline_from_tdx(
+            stock_list, start_time, end_time, period, dividend_type,
+            count=count, fill_data=fill_data, field_list=field_list,
+        )
+
+    @classmethod
+    def _get_kline_from_tdx(
+        cls,
+        stock_list: List[str],
+        start_time: str = "",
+        end_time: str = "",
+        period: str = "1d",
+        dividend_type: str = "front",
+        count: int = -1,
+        fill_data: bool = True,
+        field_list: Optional[List[str]] = None,
+    ) -> dict:
+        """TDX 直拉 (原 get_kline 实现, 缓存关闭或 miss-fetch 时用)。"""
         cls._ensure_ready()
         # 候选 D: 边界归一化, 允许 int 输入 (旧调用方传 int=1 也能正确映射到 "front")
         dividend_type = to_tdx_str(dividend_type)
@@ -99,6 +130,38 @@ class DataFetcher:
 
         logger.info(f"获取到 {len(result)} 个字段的数据")
         return result
+
+    @classmethod
+    def _get_kline_via_cache(
+        cls,
+        stock_list: List[str],
+        start_time: str,
+        end_time: str,
+        period: str,
+        dividend_type: str,
+        force_refresh: bool = False,
+    ) -> dict:
+        """走本地 KlineCache (Phase 1)。miss-fetch 回退 _get_kline_from_tdx(fill_data=False)。"""
+        from core.kline_cache import KlineCache
+        from pathlib import Path
+
+        cache_dir = (cls._KLINE_CACHE_DIR if cls._KLINE_CACHE_DIR
+                     else str(Path(__file__).resolve().parent.parent / "data" / "kline_cache"))
+
+        def _tdx_fetcher(sl, s, e, period="1d", dividend_type="front"):
+            return cls._get_kline_from_tdx(sl, s, e, period=period,
+                                           dividend_type=dividend_type, fill_data=False)
+
+        def _calendar_fetcher():
+            return cls.get_trading_dates("SH", "20100101", "20991231")
+
+        cache = KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
+                           calendar_fetcher=_calendar_fetcher)
+        if force_refresh:
+            for code in normalize_list(stock_list):
+                cache._manifest_set_intact(code, period, False)
+        return cache.get(stock_list, start_time, end_time,
+                         period=period, dividend_type=dividend_type)
 
     @classmethod
     def get_trading_days(
