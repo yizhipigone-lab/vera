@@ -17,6 +17,8 @@ from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR
 from backtest.stop_config import (
     DEFAULT_TRAILING_ACTIVATION,
     DEFAULT_TRAILING_DRAWDOWN,
+    DEFAULT_PRIORITY,
+    VALID_PRIORITIES,
 )
 from core.data_fetcher import DataFetcher
 from core.stock_filter import get_cached_info
@@ -733,7 +735,14 @@ class BacktestEngine:
 
         stop = stop_config or {}
         # 2026-07-05: 优先级 (ladder_tp_first / trailing_first)
-        priority = str(stop.get("priority", "stop_first"))
+        # 2026-07-18 审计 F5: 补 run_cached 同款合法性校验 + 常量收口 stop_config
+        priority = str(stop.get("priority", DEFAULT_PRIORITY))
+        if priority not in VALID_PRIORITIES:
+            logger.warning(
+                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
+                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
+            )
+            priority = DEFAULT_PRIORITY
         ladder_tp_first = (priority == "ladder_tp_first")
         trailing_first = (priority == "trailing_first")
         cost = stop.get("cost_stop", {})
@@ -1011,13 +1020,13 @@ class BacktestEngine:
         cond_t = stop.get("cond_time_stop", {})
         first_day = stop.get("first_day", {})
         # 2026-07-05: 阶梯止盈/成本止损优先级 (ladder_tp_first / trailing_first)
-        priority = str(stop.get("priority", "stop_first"))
-        _VALID_PRIORITY = {"stop_first", "ladder_tp_first", "trailing_first"}
-        if priority not in _VALID_PRIORITY:
+        priority = str(stop.get("priority", DEFAULT_PRIORITY))
+        if priority not in VALID_PRIORITIES:
             logger.warning(
-                "stop_config.priority=%r 非法, 回退 stop_first (合法: %s)",
-                priority, sorted(_VALID_PRIORITY),
+                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
+                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
             )
+            priority = DEFAULT_PRIORITY
         ladder_tp_first = (priority == "ladder_tp_first")
         trailing_first = (priority == "trailing_first")
 

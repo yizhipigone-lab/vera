@@ -27,6 +27,14 @@ logger = get_logger(__name__)
 DEFAULT_TRAILING_ACTIVATION = 0.035
 DEFAULT_TRAILING_DRAWDOWN = 0.01
 
+# 优先级合法集 — 单一真相源 (2026-07-18 审计 F5)。
+# engine.run()/run_cached() 的校验统一引用此处, 不再各写一份。
+VALID_PRIORITIES = frozenset({"stop_first", "ladder_tp_first", "trailing_first"})
+# 引擎层缺省(stop_config 未显式给 priority 时): stop_first。
+# 注意与 config/default.yaml(trailing_first) 的语义区别: yaml 是"用户配置",
+# 引擎缺省是"调用方什么都没说时的最保守行为"(止损优先)。两者刻意不同, 不是分叉 bug。
+DEFAULT_PRIORITY = "stop_first"
+
 
 def load_stop_config(default_path: Optional[str] = None) -> Dict[str, Any]:
     """
