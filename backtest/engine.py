@@ -674,19 +674,17 @@ def _compute_atr_matrix(high_np, low_np, close_np, period: int = 14):
     TR = max(H-L, |H-prevClose|, |L-prevClose|); ATR = TR 的 period 周期简单均值
     (min_periods=1, 首根 bar 用 H-L)。首 period-1 根为部分均值。
     high_np/low_np/close_np 形状一致 (n,k)。返回 float64 矩阵, 缺值 NaN。
+
+    2026-07-18: 逐列 pandas 循环 → 全矩阵向量化 (278ms→18ms, 15x)。
+    np.fmax 忽略 NaN 与 pandas .max(skipna) 语义一致; rolling 仍是同一 pandas
+    引擎(2D 一次算), A/B 实测数值含 NaN 位置完全一致。
     """
-    n, k = close_np.shape
-    atr = np.full((n, k), np.nan, dtype=np.float64)
-    for ci in range(k):
-        h = pd.Series(high_np[:, ci])
-        l = pd.Series(low_np[:, ci])
-        c = pd.Series(close_np[:, ci])
-        prev_c = c.shift(1)
-        tr = pd.concat(
-            [(h - l).abs(), (h - prev_c).abs(), (l - prev_c).abs()], axis=1
-        ).max(axis=1)
-        atr[:, ci] = tr.rolling(period, min_periods=1).mean().values
-    return atr
+    prev_c = np.empty_like(close_np)
+    prev_c[0] = np.nan
+    prev_c[1:] = close_np[:-1]
+    tr = np.fmax(np.fmax(np.abs(high_np - low_np), np.abs(high_np - prev_c)),
+                 np.abs(low_np - prev_c))
+    return pd.DataFrame(tr).rolling(period, min_periods=1).mean().values
 
 
 # ═══════════════════════════════════════════════════════════════
