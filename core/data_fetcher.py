@@ -6,6 +6,8 @@ from typing import List, Optional
 from .connector import TdxConnector
 from .data_cache import DataCache
 from .dividend_type import to_tdx_str
+# 2026-07-18: 协作式停止 (web「停止回测」按钮)
+from .stop_flag import raise_if_stopped
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
 
@@ -277,6 +279,8 @@ class DataFetcher:
 
         total_buckets = len(buckets)
         for bi, (mkey, codes) in enumerate(sorted(buckets.items()), 1):
+            # 2026-07-18: 停止回测按钮 — 5m 窗口分批拉取是长耗时点, 逐批检查
+            raise_if_stopped()
             b_start = min(win_start[c] for c in codes)
             b_end = max(win_end[c] for c in codes)
             logger.info(

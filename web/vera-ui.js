@@ -675,7 +675,38 @@ function echartsInit(id) {
   return c;
 }
 
+// ====== 2026-07-18: 停止回测按钮 ======
+// 运行中「执行回测」按钮变身红色「停止回测」, 点击立即停 (用户决策: 不弹二次确认)。
+// 后端协作式停止: /api/stop 置标志, 数据拉取/回测循环下一轮检查点抛异常中断。
+const BTN_RUN_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
+const BTN_STOP_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg> 停止回测';
+const runState = { running: false, userStopped: false, controller: null };
+
+function setBtnStopMode(btn) {
+  btn.disabled = false;
+  btn.classList.remove('btn-primary');
+  btn.classList.add('btn-danger');
+  btn.innerHTML = BTN_STOP_HTML;
+}
+function setBtnRunMode(btn) {
+  btn.disabled = false;
+  btn.classList.remove('btn-danger');
+  btn.classList.add('btn-primary');
+  btn.innerHTML = BTN_RUN_HTML;
+}
+
+async function stopPipeline() {
+  if (!runState.running) return;
+  runState.userStopped = true;
+  addLog('正在停止回测...', 'info');
+  // 网络失败也继续本地中止 (catch 里按 userStopped 收尾)
+  try { await fetch('/api/stop', { method: 'POST' }); } catch (e) {}
+  if (runState.controller) runState.controller.abort();
+}
+
 function runPipeline() {
+  // 2026-07-18: 运行中此按钮已是「停止回测」
+  if (runState.running) { stopPipeline(); return; }
   // P1-5: 执行前校验
   const startEl = document.getElementById('cfgStart');
   const endEl = document.getElementById('cfgEnd');
@@ -694,7 +725,8 @@ function runPipeline() {
 
   saveAllConfig();
   const btn = document.getElementById('btnRun');
-  btn.disabled = true; btn.innerHTML = '运行中...';
+  runState.running = true; runState.userStopped = false;
+  setBtnStopMode(btn);  // 2026-07-18: 运行中按钮 = 停止回测
   document.getElementById('progressBar').style.display = 'block';
   document.getElementById('statusDot').className = 'status-dot busy';
   document.getElementById('statusText').textContent = '运行中';
@@ -719,23 +751,35 @@ function runPipeline() {
     } catch(e) {}
   }, 800);
 
-  // H8 修正：加 AbortController + 10min 超时，防止网络挂死永远转圈
+  // H8 修正：加 AbortController + 30min 超时，防止网络挂死永远转圈
   // 注：后端 /api/run 是 FastAPI 同步路由 + 线程池，uvicorn 默认无超时；
   //     这里只是给前端 fetch 一个"宁死不等到天荒地老"的上限。
   //     2026-07-05: 后台跑长区间经常超 5min，调到 10min。
+  //     2026-07-17: 长区间回测仍超 10min，调到 30min。
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 600000);
+  runState.controller = controller;  // 停止按钮要 abort 它
+  const timeout = setTimeout(() => controller.abort(), 1800000);
   fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config), signal: controller.signal })
     .then(r => r.json())
     .then(data => {
       clearTimeout(timeout);
       pollActive = false; clearInterval(poll);
+      runState.running = false; runState.controller = null;
       document.getElementById('progressBar').style.display = 'none';
       document.getElementById('progressText').textContent = '';
       document.getElementById('statusDot').className = 'status-dot on';
       document.getElementById('statusText').textContent = '就绪';
-      btn.disabled = false; btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
+      setBtnRunMode(btn);
       if (!data.success) {
+        // 2026-07-18: 停止竞态 — abort 晚于响应到达时, 后端返回 stopped:true,
+        // 按"已停止"而非"失败"处理
+        if (data.stopped || runState.userStopped) {
+          runState.userStopped = false;
+          document.getElementById('statusText').textContent = '已停止';
+          addLog('回测已手动停止', 'info');
+          showToast('回测已手动停止', 'info');
+          return;
+        }
         addLog('失败: ' + (data.error || '未知错误'), 'error');
         showToast('回测失败: ' + (data.error || '未知错误'), 'error');  // P1-4: alert → toast
         lastResult = null;
@@ -750,6 +794,17 @@ function runPipeline() {
     .catch(e => {
       clearTimeout(timeout);
       pollActive = false; clearInterval(poll);
+      runState.running = false; runState.controller = null;
+
+      // 2026-07-18: 用户主动停止 — 跳过结果抢救, 直接复位
+      if (runState.userStopped) {
+        runState.userStopped = false;
+        resetRunUI(btn, '已停止', 'on');
+        addLog('回测已手动停止', 'info');
+        showToast('回测已手动停止', 'info');
+        return;
+      }
+
       // 2026-07-05: 抽出 resetRunUI 复用 catch 与 tryRecoverAbortedResult
       resetRunUI(btn, '错误', 'on');
 
@@ -766,8 +821,7 @@ function resetRunUI(btn, statusText, dotClass) {
   document.getElementById('progressText').textContent = '';
   document.getElementById('statusDot').className = 'status-dot ' + (dotClass || 'on');
   document.getElementById('statusText').textContent = statusText;
-  btn.disabled = false;
-  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> 执行回测';
+  setBtnRunMode(btn);  // 2026-07-18: 含按钮样式复位 (红→蓝)
 }
 
 // 超时/断网后尝试从后端拉取已落盘的结果，避免用户白白等了 N 分钟
@@ -840,7 +894,7 @@ async function tryRecoverAbortedResult(cfg, originalErr) {
 
     // 全部恢复尝试都失败：才报原始网络错误
     const msg = originalErr && originalErr.name === 'AbortError'
-      ? '请求超时（10分钟），后端未在超时内落盘。请缩小回测区间或稍后到历史结果中查看。'
+      ? '请求超时（30分钟），后端未在超时内落盘。请缩小回测区间或稍后到历史结果中查看。'
       : (originalErr && originalErr.message) || '未知错误';
     addLog('网络错误: '+msg, 'error');
     showToast('网络错误: '+msg, 'error');

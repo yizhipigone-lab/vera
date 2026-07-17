@@ -23,6 +23,8 @@ import pyarrow.parquet as pq
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
 from core.dividend_type import to_tdx_str
+# 2026-07-18: 协作式停止 (web「停止回测」按钮)。批量脚本从不置位, 行为不变。
+from core.stop_flag import raise_if_stopped
 
 logger = get_logger(__name__)
 
@@ -137,6 +139,8 @@ class KlineCache:
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
         for code in stock_list:
+            # 2026-07-18: 停止回测按钮 — 缓存 miss 逐只拉网是长耗时点, 逐只检查
+            raise_if_stopped()
             self._ensure(code, period, start_ts, end_ts, dividend_type)
         # 读盘 + 拼宽表
         per_stock = {code: self._read_parquet(code, period, start_ts, end_ts)

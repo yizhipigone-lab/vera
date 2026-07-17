@@ -15,6 +15,8 @@ from pipeline.result_writer import ENGINE_VERSION, ENTRY_PRICE_BASIS
 # C1-3: Pipeline 统一入口 + ResultWriter 序列化/落盘
 from pipeline.pipeline import Pipeline
 from pipeline.result_writer import ResultWriter
+# 2026-07-17: 协作式停止标志 (停止回测按钮)
+from core.stop_flag import BacktestStoppedError, clear_stop, request_stop
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -307,6 +309,7 @@ def run_pipeline(cfg: StrategyConfig):
     if pipeline_status.running:
         return JSONResponse(status_code=409, content={"success": False, "error": "管线正在运行中"})
 
+    clear_stop()  # 2026-07-17: 清掉上一次停止残留的标志, 防新回测被秒杀
     pipeline_status.running = True
     pipeline_status.progress = 0
     pipeline_status.step = "初始化"
@@ -384,6 +387,14 @@ def run_pipeline(cfg: StrategyConfig):
         pipeline_status.running = False
         return response_data
 
+    except BacktestStoppedError as e:
+        # 2026-07-17: 用户点「停止回测」——不停 TDX 连接, 不落盘, 直接收尾
+        pipeline_status.error = str(e)
+        pipeline_status.result = None
+        pipeline_status.running = False
+        logger.info("回测被用户手动停止")
+        return {"success": False, "error": str(e), "stopped": True}
+
     except Exception as e:
         pipeline_status.error = str(e)
         pipeline_status.result = None
@@ -405,6 +416,21 @@ def run_pipeline(cfg: StrategyConfig):
             except Exception:
                 # P3 (2026-07-15): 清理路径异常, debug 留痕
                 logger.debug("临时 YAML 文件清理失败 (不阻塞响应)", exc_info=True)
+
+
+@app.post("/api/stop")
+def stop_pipeline():
+    """停止当前回测 (2026-07-17)。
+
+    协作式停止: 置全局标志, 数据拉取/回测循环在下一轮检查点抛出
+    BacktestStoppedError, 通常几秒内生效 (拉取阶段最慢不超过当前这只股票)。
+    """
+    if not pipeline_status.running:
+        return {"success": False, "error": "当前没有运行中的回测"}
+    # 注意: 不写 pipeline_status (单一写入者=/api/run), 前端日志已提示"正在停止"
+    request_stop()
+    logger.info("收到停止回测请求")
+    return {"success": True}
 
 
 @app.get("/api/last_result")
