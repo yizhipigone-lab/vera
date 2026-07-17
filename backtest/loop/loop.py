@@ -74,6 +74,13 @@ class BacktestLoop:
         equity = self.equity_tracker
         equity.reset(n_dates)
 
+        # 2026-07-17 Phase 1 项2: 入场信号一次预计算 (替代每 bar 全列扫描)。
+        # np.nonzero 行主序 → 每 bar 内列升序, 与旧 range(n_stocks) 扫描顺序一致。
+        # cumsum 切点恒产 n_dates 段, 空 bar 得空段 (无信号日不炸)。
+        sig_rows, sig_cols = np.nonzero(entry_np)
+        cuts = np.cumsum(entry_np.sum(axis=1))[:-1]
+        sig_by_bar = np.split(sig_cols, cuts)
+
         for i in range(n_dates):
             # ── 1. 卖出 ──
             cash = self._sell_bar(i, cash, book, trade_buf, price_np, high_np,
@@ -81,7 +88,8 @@ class BacktestLoop:
             # ── 2. 买入 ──
             prev_eq = equity.equity_arr[i - 1] if i > 0 else float(p.initial_capital)
             cash = self.entry_engine.run_bar(i, cash, book, trade_buf, price_np,
-                                             entry_np, tradable_np, prev_eq)
+                                             entry_np, tradable_np, prev_eq,
+                                             sig_cis=sig_by_bar[i])
             # ── 3. 权益 ──
             equity.update(i, cash, price_np, book)
 

@@ -41,13 +41,20 @@ class EntryEngine:
                 trade_buf: TradeBuffer, price_np: np.ndarray,
                 entry_np: np.ndarray,
                 tradable_np: Optional[np.ndarray],
-                prev_equity: float) -> float:
-        """engine.py:465-538。返回更新后的 cash。"""
+                prev_equity: float,
+                sig_cis: Optional[np.ndarray] = None) -> float:
+        """engine.py:465-538。返回更新后的 cash。
+
+        sig_cis: 本 bar 有信号的股票列索引(升序)。None 时按旧路径全列扫描
+        (兼容直调方); BacktestLoop.run 传入预计算的 np.nonzero 结果
+        (2026-07-17 Phase 1 项2: 25.5ms→1.1ms)。升序保证与 range(n_stocks)
+        扫描顺序一致 → 同 bar 多信号买入顺序不变 → parity 不破。
+        """
         p = self.params
-        n_stocks = price_np.shape[1]
-        for ci in range(n_stocks):
-            if not entry_np[i, ci]:
-                continue
+        if sig_cis is None:
+            sig_cis = np.nonzero(entry_np[i])[0]
+        for ci in sig_cis:
+            ci = int(ci)
             # 信号日停牌 → skip (F7: 计数, 补圆不静默吞信号)
             if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
                 self._record_skip(i, ci)
