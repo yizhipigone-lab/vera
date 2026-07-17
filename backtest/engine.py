@@ -1147,6 +1147,13 @@ class BacktestEngine:
         return equity_curve, trades_df, metrics
 
     def _build_trades(self, raw, columns, dates, bpday=1):
+        """raw_trades 数组 → 交易明细 DataFrame。
+
+        2026-07-17 Phase 2: 逐行 dict 构造 → 按列构建 (76ms→~20ms)。
+        舍入保留 Python round 列表推导 — 探针实测 np.round 对 x.xx5 型值
+        ~4% 不一致 (二进制 half-even vs 十进制正确舍入), 不可向量化。
+        数据流顺序与旧版一致: 先 round4 得 ep/xp → 再乘 sh → 再 round2。
+        """
         if len(raw) == 0: return pd.DataFrame()
         reason_map = {1.0: "换股卖出", 3.0: "成本止损",
                       4.0: "移动止盈", 8.0: "移动止盈",
@@ -1157,26 +1164,33 @@ class BacktestEngine:
                       11.0: "退市",
                       12.0: "formula_sell",
                       13.0: "ATR止损"}
-        col_map = {c: i for i, c in enumerate(columns)}
-        inv_col = {i: c for c, i in col_map.items()}
-        records = []
-        for row in raw:
-            ci = int(row[0]); code = inv_col.get(ci, str(ci))
-            ei = int(row[1]); xi = int(row[2])
-            ed = dates[ei] if 0 <= ei < len(dates) else dates[0]
-            xd = dates[xi] if 0 <= xi < len(dates) else dates[-1]
-            ep = round(float(row[3]), 4); xp = round(float(row[4]), 4)
-            sh = int(row[5])
-            records.append({
-                "stock_code": code, "entry_date": ed, "exit_date": xd,
-                "entry_price": ep, "exit_price": xp, "shares": sh,
-                "entry_amount": round(ep * sh, 2), "exit_amount": round(xp * sh, 2),
-                "pnl": round(float(row[6]), 2), "return": round(float(row[7]), 4),
-                "profit_pct": round(float(row[7]), 4),
-                "exit_reason": reason_map.get(row[8], "换股卖出"),
-                "hold_days": max(1, (xi - ei) // bpday) if bpday > 1 else (xi - ei),
-            })
-        return pd.DataFrame(records)
+        inv_col = {i: c for i, c in enumerate(columns)}
+        n_dates = len(dates)
+        ci_arr = raw[:, 0].astype(np.int64)
+        ei_arr = raw[:, 1].astype(np.int64)
+        xi_arr = raw[:, 2].astype(np.int64)
+        ep = [round(float(v), 4) for v in raw[:, 3]]
+        xp = [round(float(v), 4) for v in raw[:, 4]]
+        sh = [int(v) for v in raw[:, 5]]
+        if bpday > 1:
+            hold = np.maximum(1, (xi_arr - ei_arr) // bpday)
+        else:
+            hold = xi_arr - ei_arr
+        return pd.DataFrame({
+            "stock_code": [inv_col.get(ci, str(ci)) for ci in ci_arr],
+            "entry_date": [dates[i] if 0 <= i < n_dates else dates[0] for i in ei_arr],
+            "exit_date": [dates[i] if 0 <= i < n_dates else dates[-1] for i in xi_arr],
+            "entry_price": ep,
+            "exit_price": xp,
+            "shares": sh,
+            "entry_amount": [round(e * s, 2) for e, s in zip(ep, sh)],
+            "exit_amount": [round(x * s, 2) for x, s in zip(xp, sh)],
+            "pnl": [round(float(v), 2) for v in raw[:, 6]],
+            "return": [round(float(v), 4) for v in raw[:, 7]],
+            "profit_pct": [round(float(v), 4) for v in raw[:, 7]],
+            "exit_reason": [reason_map.get(v, "换股卖出") for v in raw[:, 8]],
+            "hold_days": list(hold),
+        })
 
     def _fetch_prices(self, codes, start, end):
         return DataFetcher.get_close_price(codes, start, end, dividend_type="front", period=self.period, use_cache=self.use_kline_cache)
