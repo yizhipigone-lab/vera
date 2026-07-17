@@ -1,7 +1,7 @@
 """ExitDispatcher — 止损止盈调度器。
 
-候选 A 阶段 2 — stage 2。把 _simulate_core_v3 的 3 套优先级 if 链
-（engine.py:188-273）抽成 dispatcher.evaluate() -> List[TriggerResult]。
+候选 A 阶段 2 — stage 2。把 _simulate_core_v3_legacy 的 3 套优先级 if 链
+抽成 dispatcher.evaluate() -> List[TriggerResult]。
 
 核心设计（v3 计划书 §2.1 CA1）:
 - 多结果模型: trailing_first 下同 bar 可返回 2 个触发

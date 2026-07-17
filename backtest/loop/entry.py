@@ -1,6 +1,6 @@
 """EntryEngine — 买入循环 + 换股 (reason=1)。
 
-候选 A 阶段 2 — stage 3。从 _simulate_core_v3 抽离买入块（engine.py:465-538）。
+候选 A 阶段 2 — stage 3。从 _simulate_core_v3_legacy 抽离买入块。
 
 铁律（CLAUDE.md 业务铁律 2）: 尾盘选股 → 信号日 T 收盘价买入。entry_np[i,ci]=True
 → 以 price_np[i] (当日收盘) 成交。
@@ -43,7 +43,7 @@ class EntryEngine:
                 tradable_np: Optional[np.ndarray],
                 prev_equity: float,
                 sig_cis: Optional[np.ndarray] = None) -> float:
-        """engine.py:465-538。返回更新后的 cash。
+        """_simulate_core_v3_legacy 买入块的移植。返回更新后的 cash。
 
         sig_cis: 本 bar 有信号的股票列索引(升序)。None 时按旧路径全列扫描
         (兼容直调方); BacktestLoop.run 传入预计算的 np.nonzero 结果

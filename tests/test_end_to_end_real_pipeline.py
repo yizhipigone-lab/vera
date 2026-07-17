@@ -39,12 +39,19 @@ def cfg():
 
 @pytest.fixture(scope="module")
 def tdx_paths():
-    """确保 TDX 模块路径已加 (test 启动时 by conftest 加, 这里再保险一层)."""
+    """确保 TDX 模块路径已加 (test 启动时 by conftest 加, 这里再保险一层).
+
+    2026-07-18 审计 H5: TDX 不可用时 skip (与 test_real_parity 一致),
+    不再整类 ERROR — 换机器/上 CI 不会假红。
+    """
     tdx = r"E:\NEW_TDX\PYPlugins\user"
     if tdx not in sys.path:
         sys.path.insert(0, tdx)
     from core.connector import TdxConnector
-    TdxConnector.initialize()
+    try:
+        TdxConnector.initialize()
+    except Exception as e:
+        pytest.skip(f"TDX 不可用: {e}")
     yield
     TdxConnector.close()
 

@@ -1,6 +1,6 @@
 """BacktestLoop — 主回测循环。
 
-候选 A 阶段 2 — stage 3。把 _simulate_core_v3 (engine.py:32-558) 的主循环
+候选 A 阶段 2 — stage 3。把 _simulate_core_v3_legacy 的主循环
 端口成: PositionBook + ExitDispatcher + AbsoluteStrategy + EntryEngine + EquityTracker。
 
 设计（v3 计划书 §2.1）:
@@ -118,7 +118,7 @@ class BacktestLoop:
     # ─────────────────────────────────────────────────────────
     def _sell_bar(self, i, cash, book, trade_buf, price_np, high_np,
                   low_np, open_np, tradable_np, last_tradable_idx) -> float:
-        """engine.py:91-463 的卖出循环。返回更新后的 cash。"""
+        """_simulate_core_v3_legacy 卖出段的移植。返回更新后的 cash。"""
         p = self.params
         bpday = p.bpday
         slippage = p.slippage
@@ -144,7 +144,7 @@ class BacktestLoop:
                     and not tradable_np[i, ci]):
                 if (last_tradable_idx is not None and last_tradable_idx[ci] >= 0
                         and i > last_tradable_idx[ci]):
-                    # 退市: 强制平仓 (engine.py:99-129)
+                    # 退市: 强制平仓 (对齐 _simulate_core_v3_legacy 退市段)
                     total_sh = shares_arr[pp]
                     ep_d = entry_px_arr[pp]
                     sell_price = xp if xp > 0 else ep_d

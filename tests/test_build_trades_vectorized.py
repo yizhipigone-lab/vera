@@ -21,7 +21,7 @@ def _old_build_trades(raw, columns, dates, bpday=1):
     if len(raw) == 0:
         return pd.DataFrame()
     reason_map = {1.0: "换股卖出", 3.0: "成本止损",
-                  4.0: "移动止盈", 8.0: "移动止盈",
+                  4.0: "移动止损", 8.0: "移动止盈",   # 2026-07-18 审计修正(原 4.0 误标"移动止盈")
                   5.0: "阶梯止盈",
                   6.0: "时间止损", 9.0: "时间止盈",
                   7.0: "cond_time_stop",

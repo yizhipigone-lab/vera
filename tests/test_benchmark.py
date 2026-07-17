@@ -63,21 +63,13 @@ def test_benchmark_custom_indices():
 
 def test_benchmark_uses_correct_periods_per_year():
     """不同 period 必须用对应 PERIODS_PER_YEAR, 防 1w 仍用 252."""
-    # 1d → 252
-    cmp_1d = BenchmarkComparator({"period": "1d"})
-    # 1w → 52 (关键)
-    cmp_1w = BenchmarkComparator({"period": "1w"})
-
-    # 构造相同 equity_curve (252 行), _align 在共同日期 < 2 时返空, 不进入计算
-    eq = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=10), "equity": [1.0] * 10})
-
-    # 1w 模式下, _align 应使用 52 (而非 252)
-    # 通过 monkeypatch _fetch_index 让其返空, 验证 periods_per_year 透传路径
-    # 简化: 直接调用 _align 验证参数传递
-
-    # 直接断言: benchmark.PERIODS_PER_YEAR 引用正确
+    # 2026-07-18 审计 M2 修复: 旧版断言 `bm.PERIODS_PER_YEAR is PERIODS_PER_YEAR`
+    # 是恒真 tautology (同一模块对象两次 import)。改为行为断言: 查表值正确。
     import backtest.benchmark as bm
-    assert bm.PERIODS_PER_YEAR is PERIODS_PER_YEAR
+    assert bm.PERIODS_PER_YEAR["1d"] == 252
+    assert bm.PERIODS_PER_YEAR["1w"] == 52
+    # 5m 年化 = 48 bar/日 × 252 日
+    assert bm.PERIODS_PER_YEAR["5m"] == 48 * 252
 
 
 # ---------- _align 防御性返回 ----------

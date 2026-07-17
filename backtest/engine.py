@@ -75,7 +75,7 @@ def _simulate_core_v3(
 
     39 参数签名零改动（22 必需 + 17 可选, 全 positional, 无 `*`）, 所有调用方零改动。
     转调 backtest.loop.BacktestLoop.run()。行为与 _simulate_core_v3_legacy 字节级一致
-    （见 tests/test_loop_parity.py 54 组对照; ATR 默认禁用, 不参与 parity）。
+    （见 tests/test_loop_parity.py 50 组对照; ATR 默认禁用, 不参与 parity）。
 
     first_day_n_bars 为历史半死参数（legacy 函数体从未引用, 仅调用方传入）, 此处接收但忽略。
     atr_* 为新增 keyword (默认禁用), 启用时走 BacktestLoop 新 API, legacy 无对应能力。
@@ -700,7 +700,9 @@ class BacktestEngine:
         self.commission = float(config.get("commission", 0.0003))
         self.slippage = float(config.get("slippage", 0.001))
         self.stamp_tax = float(config.get("stamp_tax", 0.0005))  # A股卖出单边
-        # P0-5: 默认 True — 含印花税+滑点的真实成本（老脚本可显式传 False 复现零成本基线）
+        # P0-5: 默认 True — 含印花税+滑点的真实成本
+        # 2026-07-18 审计修正注释: realistic_costs=False 只免滑点+印花税, 佣金照收
+        # (eff_commission 两分支均 = self.commission), 并非"零成本基线"
         self.realistic_costs = bool(config.get("enable_realistic_costs", True))
         self.period = config.get("period", "1d")
         self.bars_per_day = self.BARS_PER_DAY.get(self.period, 1)
@@ -1164,8 +1166,9 @@ class BacktestEngine:
         数据流顺序与旧版一致: 先 round4 得 ep/xp → 再乘 sh → 再 round2。
         """
         if len(raw) == 0: return pd.DataFrame()
+        # 2026-07-18 审计修正: 4.0 是 trailing 亏损出(移动止损), 8.0 才是盈利出(移动止盈)
         reason_map = {1.0: "换股卖出", 3.0: "成本止损",
-                      4.0: "移动止盈", 8.0: "移动止盈",
+                      4.0: "移动止损", 8.0: "移动止盈",
                       5.0: "阶梯止盈",
                       6.0: "时间止损", 9.0: "时间止盈",
                       7.0: "cond_time_stop",
