@@ -210,8 +210,8 @@ class KlineCache:
                     with self._lock:
                         self._fetch_and_store(code, period, start_ts, end_ts, dividend_type)
                     self._mark_refetch(code, period)
-        if period == "1d" and not skip_gap_detection:
-            self._detect_and_fill_gaps_1d(code, period, start_ts, end_ts, dividend_type)
+        if period in ("1d", "5m") and not skip_gap_detection:
+            self._detect_and_fill_gaps(code, period, start_ts, end_ts, dividend_type)
 
     # ── F5 冷却 / F6 重叠 bar ──
 
@@ -287,18 +287,19 @@ class KlineCache:
         df = self._read_parquet(code, period, pd.Timestamp("1900-01-01"), pd.Timestamp("2099-12-31"))
         if df.empty:
             return
-        intact = self._check_gaps_1d(code, period, df.index)
+        intact = self._check_gaps(code, period, df.index)
         first_d = df.index[0]
         last_d = df.index[-1]
         last_close = float(df["close"].iloc[-1]) if "close" in df.columns else None
         self._manifest_upsert(code, period, first_d.strftime("%Y%m%d"),
                               last_d.strftime("%Y%m%d"), last_close, len(df), intact)
 
-    # ───────────────────── gap 检测 (1d) ─────────────────────
+    # ───────────────────── gap 检测 (1d 缺日 + 5m 缺 bar) ─────────────────────
 
-    def _check_gaps_1d(self, code: str, period: str, cached_dates: pd.DatetimeIndex) -> bool:
-        """校验 cached_dates vs 交易日历 (在 cached 范围内)。返回 intact=True 无缺日。"""
-        if period != "1d" or len(cached_dates) == 0:
+    def _check_gaps(self, code: str, period: str, cached_dates: pd.DatetimeIndex) -> bool:
+        """day级: 校验 cached_dates 覆盖的交易日 vs 交易日历 (在 cached 范围内)。
+        1d/5m 通用 — 某交易日 0 根 bar 即缺 (002008 5m 6.23-6.29 那种整天缺)。返回 intact=True 无缺。"""
+        if len(cached_dates) == 0:
             return True
         cal = self._get_calendar()
         cached_str = {d.strftime("%Y%m%d") for d in cached_dates}
@@ -311,9 +312,9 @@ class KlineCache:
             return False
         return True
 
-    def _detect_and_fill_gaps_1d(self, code: str, period: str, start_ts: pd.Timestamp,
-                                 end_ts: pd.Timestamp, dividend_type: str):
-        """对 [start, end] 做 gap 检测, 缺日 → 自动补拉, 仍缺 → intact=false 告警。"""
+    def _detect_and_fill_gaps(self, code: str, period: str, start_ts: pd.Timestamp,
+                              end_ts: pd.Timestamp, dividend_type: str):
+        """对 [start, end] 做 day级 gap 检测 + 5m 部分 bar 检测, 缺 → 自动补拉, 仍缺 → intact=false 告警。"""
         df = self._read_parquet(code, period, start_ts, end_ts)
         if df.empty:
             return
@@ -322,6 +323,9 @@ class KlineCache:
         lo = max(df.index.min().strftime("%Y%m%d"), start_ts.strftime("%Y%m%d"))
         hi = min(df.index.max().strftime("%Y%m%d"), end_ts.strftime("%Y%m%d"))
         expected = {d for d in cal if lo <= d <= hi}
+        # 5m 部分 bar 检测 (整天有 bar 但 < 48, 如半日或盘中缺段)
+        if period == "5m":
+            self._warn_partial_bars_5m(code, df)
         gaps = sorted(expected - cached_str)
         if not gaps:
             return
@@ -342,6 +346,19 @@ class KlineCache:
             self._manifest_set_intact(code, period, False)
         else:
             self._manifest_set_intact(code, period, True)
+
+    _BARS_PER_DAY_5M = 48  # A股 9:35-15:00 每 5min 一根
+
+    def _warn_partial_bars_5m(self, code: str, df: pd.DataFrame):
+        """5m 按日 bar 数检测部分缺口 (整天有 bar 但 < 48)。只告警不置 intact (半日/盘后可能正常)。"""
+        if df.empty:
+            return
+        per_day = df.groupby(df.index.normalize()).size()
+        partial = {d.strftime("%Y-%m-%d"): int(n)
+                   for d, n in per_day.items() if 0 < n < self._BARS_PER_DAY_5M}
+        if partial:
+            logger.warning("kline_gap_5m: %s 5m 部分缺 bar (预期 %d 根/日): %s",
+                           code, self._BARS_PER_DAY_5M, partial)
 
     @staticmethod
     def _contiguous_segments(dates: List[str]) -> List[tuple]:

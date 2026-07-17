@@ -1179,7 +1179,7 @@ class BacktestEngine:
         return pd.DataFrame(records)
 
     def _fetch_prices(self, codes, start, end):
-        return DataFetcher.get_close_price(codes, start, end, dividend_type="front", period=self.period)
+        return DataFetcher.get_close_price(codes, start, end, dividend_type="front", period=self.period, use_cache=self.use_kline_cache)
 
     def _ensure_index(self, df):
         if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)

@@ -326,3 +326,60 @@ def test_f6_staleness_overlap_triggers_full_refetch(tmp_path):
     )
 
 
+# ───────────────────────── Phase 2: 5m 缺 bar 检测 ─────────────────────────
+
+
+def test_5m_whole_day_gap_detected(tmp_path, caplog):
+    """Phase2: 5m 整天缺 (0 根, 如 002008 6.23-6.29) → 检出 + 告警。"""
+    def gap5m_fetcher(stock_list, start, end, **k):
+        res = _make_fake_kline(stock_list, start, end, **k)
+        for f in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
+            df = res[f]
+            # 删 01-05 当天所有 bar (整天缺)
+            mask = df.index.normalize() != pd.Timestamp("2024-01-05")
+            res[f] = df[mask]
+        return res
+
+    cache = _make_cache(tmp_path, fetcher=gap5m_fetcher)
+    with caplog.at_level("WARNING", logger="core.kline_cache"):
+        cache.get(["002008.SZ"], "2024-01-02", "2024-01-08", period="5m")
+    assert any("kline_gap" in r.message and "002008" in r.message for r in caplog.records), (
+        "5m 整天缺必须检出并告警"
+    )
+
+
+def test_5m_partial_bars_warns(tmp_path, caplog):
+    """Phase2: 5m 某天 bar 数 < 48 (部分缺口) → 打 kline_gap_5m 告警。"""
+    def partial5m_fetcher(stock_list, start, end, **k):
+        res = _make_fake_kline(stock_list, start, end, **k)
+        for f in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
+            df = res[f]
+            # 01-05 只留 10 根 (部分缺)
+            day = df.index.normalize() == pd.Timestamp("2024-01-05")
+            keep = (~day) | (df.groupby(df.index.normalize()).cumcount() < 10)
+            res[f] = df[keep]
+        return res
+
+    cache = _make_cache(tmp_path, fetcher=partial5m_fetcher)
+    with caplog.at_level("WARNING", logger="core.kline_cache"):
+        cache.get(["002008.SZ"], "2024-01-02", "2024-01-08", period="5m")
+    assert any("kline_gap_5m" in r.message for r in caplog.records), (
+        "5m 部分缺 bar (某天 <48 根) 必须告警"
+    )
+
+
+def test_get_close_price_passes_use_cache(monkeypatch, tmp_path):
+    """③b: get_close_price(use_cache=True) 透传到 get_kline (run_cached 路径接缓存)。"""
+    from core.data_fetcher import DataFetcher
+    seen = {}
+
+    def fake_get_kline(cls, *a, **k):
+        seen["use_cache"] = k.get("use_cache")
+        return {"Close": pd.DataFrame({"002008.SZ": [1.0, 2.0]},
+                                      index=pd.to_datetime(["2024-01-02", "2024-01-03"]))}
+
+    monkeypatch.setattr(DataFetcher, "get_kline", classmethod(fake_get_kline))
+    DataFetcher.get_close_price(["002008.SZ"], "20240101", "20240110", use_cache=True)
+    assert seen["use_cache"] is True, "get_close_price 应把 use_cache 透传给 get_kline"
+
+

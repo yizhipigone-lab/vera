@@ -428,11 +428,15 @@ class DataFetcher:
         end_time: str = "",
         dividend_type: str = "front",
         period: str = "1d",
+        *,
+        use_cache: bool = False,
     ) -> pd.DataFrame:
-        """获取收盘价 DataFrame（回测核心输入）。period 可指定 1d/1w/5m 等。"""
+        """获取收盘价 DataFrame（回测核心输入）。period 可指定 1d/1w/5m 等。
+        use_cache=True: 走本地 KlineCache (miss-fetch 增量补 TDX)。"""
         data = cls.get_kline(
             stock_list, start_time, end_time,
             dividend_type=dividend_type, period=period,
+            use_cache=use_cache,
         )
         if "Close" not in data:
             return pd.DataFrame()
