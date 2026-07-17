@@ -40,7 +40,7 @@ def _args(price, high, low, op, entry):
 
 @pytest.mark.parametrize("runner", [_simulate_core_v3_legacy, _simulate_core_v3])
 def test_perf_baseline(runner):
-    """100 股 × 500 bar, 新壳相对 legacy 退化应 < 3x（CI 放宽, 本地 < 2x）。"""
+    """100 股 × 500 bar, 单次 < 1.0s (2026-07-17 Phase 2 收紧: 5.0s→1.0s, 本地实测 ~20ms)。"""
     price, high, low, op, entry = _make_data()
     args = _args(price, high, low, op, entry)
     runner(*args)  # 预热
@@ -48,12 +48,15 @@ def test_perf_baseline(runner):
     for _ in range(3):
         runner(*args)
     dt = (time.time() - t0) / 3
-    # 仅断言"能在合理时间内跑完", 不断言绝对值（CI 波动）
-    assert dt < 5.0, f"{runner.__name__} 单次 {dt:.3f}s 过慢"
+    assert dt < 1.0, f"{runner.__name__} 单次 {dt:.3f}s 过慢 (本地实测 ~0.02s)"
 
 
 def test_perf_regression_ratio():
-    """新壳 vs legacy wall-clock 比 < 3x（CR1 阈值本地 2x, CI 放宽 3x 防误报）。"""
+    """新壳 vs legacy wall-clock 比 < 2.0x (2026-07-17 Phase 2 收紧: 3.0x→2.0x)。
+
+    本地实测基线: Phase 1 后新壳 ~1.5-1.7x (稀疏持仓), 密集持仓 ~1.05x。
+    无 CI, 全本地跑, 2.0x 阈值不误报; 未来上 CI 再放宽。
+    """
     price, high, low, op, entry = _make_data()
     args = _args(price, high, low, op, entry)
     _simulate_core_v3_legacy(*args)
@@ -67,7 +70,6 @@ def test_perf_regression_ratio():
         _simulate_core_v3(*args)
     t_new = (time.time() - t0) / 3
     ratio = t_new / t_legacy if t_legacy > 0 else 0
-    # CI 环境噪声大, 阈值 3x; 本地开发环境实测 ~1.8x
-    assert ratio < 3.0, (
+    assert ratio < 2.0, (
         f"性能退化 {ratio:.2f}x 超阈值(legacy={t_legacy:.3f}s new={t_new:.3f}s); "
-        f"本地应 < 2x, 考虑给 Context/Position 加 __slots__")
+        f"Phase 1 后本地应 < 1.8x")
