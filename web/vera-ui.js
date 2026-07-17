@@ -1277,7 +1277,7 @@ function renderAllCharts(data) {
         + fmtAmt(dg.close_based_stop_bias.amount_optimistic) + ']'
         + ' (时间止损/条件时间止盈/首日按 1d 收盘成交, 真 5m 价不可观测)');
     }
-    if (dg.sharpe_range) {
+    if (dg.sharpe_range && dg.max_drawdown_range) {
       lines.push('夏普区间: [' + Number(dg.sharpe_range.pessimistic).toFixed(2) + ', ' + Number(dg.sharpe_range.optimistic).toFixed(2) + ']'
         + ' | 最大回撤区间: [' + fmtPct(dg.max_drawdown_range.pessimistic) + ', ' + fmtPct(dg.max_drawdown_range.optimistic) + ']');
     }

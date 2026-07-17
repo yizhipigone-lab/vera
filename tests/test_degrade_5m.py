@@ -251,6 +251,52 @@ def test_adjust_consistent_no_mismatch():
 # 降级交易事后扫描
 # ─────────────────────────────────────────────────────────────
 
+def test_limit_up_ratio_aligned_by_column_name_not_position():
+    """审计 HIGH-1: 涨停比率必须按列名对齐, 不是按位置。
+
+    1d 拉取的列序/列数与 5m 无保证 (KlineCache 跳过无数据股)。688 是 20%,
+    若按位置错拿 600 的 10% → +15% 被误判涨停拒绝 (该填的没填)。
+    """
+    codes = ["600001", "688001"]
+    close = _mk_5m({
+        "600001": {"2026-06-22": 10.0, "2026-06-23": None, "2026-06-24": 10.2},
+        "688001": {"2026-06-22": 20.0, "2026-06-23": None, "2026-06-24": 20.2},
+    })
+    high, low, opn = _ohlc_from_close(close)
+    # 1d 列序故意颠倒 + 600001 涨停 (+10%), 688001 +15% (20% 板不算涨停)
+    c1 = _mk_1d({
+        "688001": {"2026-06-22": 20.0, "2026-06-23": 23.0, "2026-06-24": 20.2},
+        "600001": {"2026-06-22": 10.0, "2026-06-23": 11.0, "2026-06-24": 10.2},
+    })
+    h1, l1, o1 = c1 + 0.1, c1 - 0.1, c1 - 0.05
+    # ratio_vec 按 5m 列序 (600001→10%, 688001→20%)
+    res = apply_5m_degradation(close, high, low, opn, c1, h1, l1, o1,
+                               window_bounds=_bounds(codes),
+                               limit_ratio_vec=np.array([0.10, 0.20]))
+    day2 = close.index.normalize() == pd.Timestamp("2026-06-23")
+    ci_600, ci_688 = list(close.columns).index("600001"), list(close.columns).index("688001")
+    # 600001 涨停 → 拒绝; 688001 +15% < 20% → 正常填充 (错对齐会把它也拒了)
+    assert res.close.loc[day2, "600001"].isna().all()
+    assert np.allclose(res.close.loc[day2, "688001"].values, 23.0)
+    assert res.rejected_limit_up == 1
+
+
+def test_limit_up_1d_missing_column_safe():
+    """审计 HIGH-1b: 1d 缺某股列 (整段无数据) → 该股不降级, 且不 broadcast 报错。"""
+    close = _mk_5m({
+        "600001": {"2026-06-22": 10.0, "2026-06-23": None, "2026-06-24": 10.2},
+        "600002": {"2026-06-22": 20.0, "2026-06-23": None, "2026-06-24": 20.2},
+    })
+    high, low, opn = _ohlc_from_close(close)
+    # 1d 只有 600001 一列 (600002 整段缺)
+    c1 = _mk_1d({"600001": {"2026-06-22": 10.0, "2026-06-23": 10.1, "2026-06-24": 10.2}})
+    h1, l1, o1 = c1 + 0.1, c1 - 0.1, c1 - 0.05
+    res = apply_5m_degradation(close, high, low, opn, c1, h1, l1, o1,
+                               window_bounds=_bounds(["600001", "600002"]),
+                               limit_ratio_vec=np.array([0.10, 0.10]))
+    assert res.n_stock_days == 1  # 只 600001 降级, 不崩
+
+
 def test_scan_degraded_positions():
     """持仓区间 [entry_idx, exit_idx] 含降级 bar → 标记; 部分出场按 (ci, entry_idx) 聚合。"""
     n_bars = 3 * BARS_5M_PER_DAY

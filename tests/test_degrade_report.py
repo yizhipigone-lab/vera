@@ -174,7 +174,7 @@ def test_close_based_stop_bias():
 
 
 def test_close_based_reasons_all_covered():
-    """时间止损(6)/cond_time(7)/时间止盈(9)/首日未达标(10) 都算 close 价策略。"""
+    """时间止损(6)/cond_time(7)/时间止盈(9)/首日未达标(10)/公式卖出(12) 都算 close 价策略。"""
     close, high, low = _arrays([(10.1, 9.9, 10.0), (11.0, 10.0, 10.5)])
     degraded = _degraded(1, 2)
     raw = np.array([
@@ -182,9 +182,10 @@ def test_close_based_reasons_all_covered():
         _row(0, 47, 61, 10.0, 10.5, 100, 7.0),
         _row(0, 47, 62, 10.0, 10.5, 100, 9.0),
         _row(0, 47, 63, 10.0, 10.5, 100, 10.0),
+        _row(0, 47, 64, 10.0, 10.5, 100, 12.0),  # formula_sell 也按 bar.close (absolute.py:47)
     ])
     rep = compute_impact_report(raw, degraded, high, low, B, initial_capital=100000.0)
-    assert rep["close_based_stop_bias"]["count"] == 4
+    assert rep["close_based_stop_bias"]["count"] == 5
 
 
 def test_exit_on_non_degraded_day_no_bias():

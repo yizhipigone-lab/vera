@@ -81,7 +81,7 @@ def _simulate_core_v3(
 
     39 参数签名零改动（22 必需 + 17 可选, 全 positional, 无 `*`）, 所有调用方零改动。
     转调 backtest.loop.BacktestLoop.run()。行为与 _simulate_core_v3_legacy 字节级一致
-    （见 tests/test_loop_parity.py 50 组对照; ATR 默认禁用, 不参与 parity）。
+    （见 tests/test_loop_parity.py 55 组对照; ATR 默认禁用, 不参与 parity）。
 
     first_day_n_bars 为历史半死参数（legacy 函数体从未引用, 仅调用方传入）, 此处接收但忽略。
     atr_* 为新增 keyword (默认禁用), 启用时走 BacktestLoop 新 API, legacy 无对应能力。
@@ -1297,6 +1297,11 @@ class BacktestEngine:
 
         返回 (close, high, low, open, degraded_df, DegradeResult);
         失败/跳过返回原矩阵 + (None, None)。
+
+        ⚠️ 性能注意 (审计 MEDIUM-2): 网格 = [最早信号, 最晚信号+窗口] 内每个日历
+        交易日 × 48 根 × 全部股票列。信号稀疏分布在大区间时, reindex 会制造大量
+        全 NaN 日, loop 主循环按膨胀后的行数跑 (4.5 年 ≈ 5.3 万行/股)。
+        002008 类短区间场景无感; 长区间 5m 回测开启降级时会感知内存/耗时增长。
         """
         orig = (close, high_df, low_df, open_df)
         try:

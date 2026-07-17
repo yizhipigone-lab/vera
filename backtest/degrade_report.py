@@ -28,8 +28,9 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 按 bar.close 成交的策略 reason (time_stop.py:27 / cond_time.py:28 / first_day.py:41)
-CLOSE_BASED_REASONS = frozenset({6.0, 7.0, 9.0, 10.0})
+# 按 bar.close 成交的策略 reason (time_stop.py:27 / cond_time.py:28 /
+# first_day.py:41 / absolute.py:47 formula_sell)
+CLOSE_BASED_REASONS = frozenset({6.0, 7.0, 9.0, 10.0, 12.0})
 
 
 def _zero_report() -> dict:

@@ -133,7 +133,11 @@ def apply_5m_degradation(
     h1 = _align_1d(high_1d)
     l1 = _align_1d(low_1d)
     o1 = _align_1d(open_1d)
-    has_1d = (c1 is not None) & ~np.isnan(c1)
+    # 审计 LOW-1: None 守卫必须先判 (np.isnan(None) 直接 TypeError)
+    if c1 is None:
+        has_1d = np.zeros((n_days, n_stocks), dtype=bool)
+    else:
+        has_1d = ~np.isnan(c1)
     for a in (h1, l1, o1):
         if a is None:
             has_1d &= False
@@ -158,7 +162,11 @@ def apply_5m_degradation(
 
     # ── 1d 涨停判定 (MEDIUM-3) ──
     if limit_ratio_vec is not None and close_1d is not None and not close_1d.empty:
-        lu_df = _detect_1d_limit_up(close_1d, np.asarray(limit_ratio_vec, dtype=np.float64))
+        # 审计 HIGH-1 (2026-07-18): ratio_vec 按 5m 列序, 必须先按列名对齐 1d
+        # (1d 拉取列序/列数无保证 — KlineCache 跳过整段无数据股)。
+        # 缺列 → NaN → prev NaN → 判 False (安全)。
+        close_1d_al = close_1d.reindex(columns=cols)
+        lu_df = _detect_1d_limit_up(close_1d_al, np.asarray(limit_ratio_vec, dtype=np.float64))
         limit_up = lu_df.reindex(index=day_dates, columns=cols,
                                  fill_value=False).values.astype(bool)
     else:
