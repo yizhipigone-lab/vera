@@ -45,6 +45,8 @@ class BacktestResult:
     cumulative_return: Any = _UNSET
     raw_equity: Any = _UNSET
     raw_trades: Any = _UNSET
+    # 2026-07-18: 5m 降级报告 (degrade_5m=True 且 run() 路径才设置; 计划书 §4.7)
+    degradation: Any = _UNSET
 
     # ── dict-like 兼容（精确复刻 dict 语义: 只有 set 的字段才算 in）──
     def _all_field_names(self) -> List[str]:

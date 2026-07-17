@@ -193,6 +193,66 @@ class DataFetcher:
         return sorted(set(days))
 
     @classmethod
+    def compute_window_bounds(
+        cls,
+        selections: pd.DataFrame,
+        window_trading_days: int,
+        trading_days: Optional[List[pd.Timestamp]] = None,
+    ) -> tuple:
+        """每只股的稀疏窗口 [窗口起, 窗口止] = [最早信号日, 最晚信号日+N 交易日]。
+
+        2026-07-18 从 get_kline_windowed 抽出 (degrade_5m 降级填充需要同一套
+        窗口边界判定"窗口内才可交易", 防两份逻辑 drift)。行为与原内联实现一致。
+        trading_days 传入则跳过交易日历拉取 (测试/复用)。
+
+        Returns:
+            (win_start, win_end): 两个 dict {stock_code: pd.Timestamp}。
+        """
+        sel = selections.copy()
+        sel["select_date"] = pd.to_datetime(sel["select_date"])
+        sel["stock_code"] = sel["stock_code"].apply(
+            lambda c: normalize_list([c])[0] if normalize_list([c]) else c
+        )
+
+        # 每只股的窗口起点 = 最早信号日; 窗口需覆盖到 最晚信号日 + N 交易日
+        first_sig = sel.groupby("stock_code")["select_date"].min()
+        last_sig = sel.groupby("stock_code")["select_date"].max()
+
+        if trading_days is None:
+            global_start = first_sig.min()
+            global_end = last_sig.max()
+            # 拉全区间交易日历 (往后多留 window+10 天缓冲, 保证末批窗口能推满)
+            cal_end = (global_end + pd.Timedelta(days=int(window_trading_days * 1.7) + 20))
+            trading_days = cls.get_trading_days(
+                global_start.strftime("%Y%m%d"), cal_end.strftime("%Y%m%d")
+            )
+            if not trading_days:
+                logger.warning("交易日历为空, 稀疏窗口退化为按自然日估算窗口")
+                trading_days = None
+
+        def _window_end(sig_date: pd.Timestamp) -> pd.Timestamp:
+            """信号日往后 window_trading_days 个交易日的日期。"""
+            if trading_days:
+                idx = 0
+                lo, hi = 0, len(trading_days) - 1
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    if trading_days[mid] < sig_date:
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+                idx = lo  # 第一个 >= sig_date 的交易日
+                target = min(idx + window_trading_days, len(trading_days) - 1)
+                return trading_days[target]
+            # 无交易日历兜底: 自然日估算 (交易日≈自然日×5/7, 反推)
+            return sig_date + pd.Timedelta(days=int(window_trading_days * 1.5) + 5)
+
+        # 每只股的 [窗口起, 窗口止]
+        win_start = {c: first_sig[c] for c in first_sig.index}
+        win_end = {c: _window_end(last_sig[c]) for c in last_sig.index}
+        return win_start, win_end
+
+    @classmethod
     def get_kline_windowed(
         cls,
         selections: pd.DataFrame,
@@ -223,48 +283,7 @@ class DataFetcher:
         if selections is None or selections.empty:
             return {}, pd.DataFrame()
 
-        sel = selections.copy()
-        sel["select_date"] = pd.to_datetime(sel["select_date"])
-        sel["stock_code"] = sel["stock_code"].apply(
-            lambda c: normalize_list([c])[0] if normalize_list([c]) else c
-        )
-
-        # 每只股的窗口起点 = 最早信号日; 窗口需覆盖到 最晚信号日 + N 交易日
-        first_sig = sel.groupby("stock_code")["select_date"].min()
-        last_sig = sel.groupby("stock_code")["select_date"].max()
-
-        global_start = first_sig.min()
-        global_end = last_sig.max()
-
-        # 拉全区间交易日历 (往后多留 window+10 天缓冲, 保证末批窗口能推满)
-        cal_end = (global_end + pd.Timedelta(days=int(window_trading_days * 1.7) + 20))
-        trading_days = cls.get_trading_days(
-            global_start.strftime("%Y%m%d"), cal_end.strftime("%Y%m%d")
-        )
-        if not trading_days:
-            logger.warning("交易日历为空, 稀疏窗口退化为按自然日估算窗口")
-            trading_days = None
-
-        def _window_end(sig_date: pd.Timestamp) -> pd.Timestamp:
-            """信号日往后 window_trading_days 个交易日的日期。"""
-            if trading_days:
-                idx = 0
-                lo, hi = 0, len(trading_days) - 1
-                while lo <= hi:
-                    mid = (lo + hi) // 2
-                    if trading_days[mid] < sig_date:
-                        lo = mid + 1
-                    else:
-                        hi = mid - 1
-                idx = lo  # 第一个 >= sig_date 的交易日
-                target = min(idx + window_trading_days, len(trading_days) - 1)
-                return trading_days[target]
-            # 无交易日历兜底: 自然日估算 (交易日≈自然日×5/7, 反推)
-            return sig_date + pd.Timedelta(days=int(window_trading_days * 1.5) + 5)
-
-        # 每只股的 [窗口起, 窗口止]
-        win_start = {c: first_sig[c] for c in first_sig.index}
-        win_end = {c: _window_end(last_sig[c]) for c in last_sig.index}
+        win_start, win_end = cls.compute_window_bounds(selections, window_trading_days)
 
         # 按 (窗口起月份) 分桶批量拉取, 减少 tq 往返
         sel_codes = list(win_start.keys())
