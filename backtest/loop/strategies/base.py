@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Protocol, runtime_checkable
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TriggerResult:
     """单次触发结果（frozen，不可变）。
 

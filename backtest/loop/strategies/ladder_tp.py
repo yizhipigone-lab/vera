@@ -36,13 +36,15 @@ class LadderTpStrategy:
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         prev_mask = pos.ladder_done
         # H5/R9: .copy() 取只读副本, 防误写污染跨 bar 的 ladder_profits 视图
-        profits = ctx.ladder_profits[: ctx.n_ladder].copy()
+        # H5/R9 原注释: 防误写。已核验 compute_ladder_trigger/sell_ratio 对输入纯只读
+        # (backtest/ladder_tp.py:44-50/:81-91), 2026-07-17 Phase 1 去 copy (每 check 省一次数组拷贝)
+        profits = ctx.ladder_profits[: ctx.n_ladder]
         new_mask = compute_ladder_trigger(prev_mask, ctx.hi_pp, profits)
         if new_mask == prev_mask:
             return []
         # mutate bitmask（跨 bar 累计, 与 engine.py:196 一致）
         pos.ladder_done = new_mask
-        ratios = ctx.ladder_ratios[: ctx.n_ladder].copy()
+        ratios = ctx.ladder_ratios[: ctx.n_ladder]  # 只读视图, 同上
         sell_ratio = compute_ladder_sell_ratio(prev_mask, new_mask, profits, ratios)
         # 执行价: 取已置位且 hi_pp 满足的最大档位 profit（engine.py:296-302）
         tp_profit = 0.0

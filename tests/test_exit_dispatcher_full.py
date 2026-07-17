@@ -8,6 +8,8 @@
 import sys
 from pathlib import Path
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -95,12 +97,11 @@ def test_stop_first_cost_stop_takes_priority(base_pos, base_bar, base_ctx_no_tri
     """STOP_FIRST: cost_stop 触发 → 即使 ladder 也满足, 只返 cost_stop."""
     # cost_stop 触发 (lo_pp <= -0.05), ladder 也满足 (hi_pp >= 0.06),
     # 但 STOP_FIRST 下 cost_stop 先赢
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.06,
-        "hi_pp": 0.07,
-        "peak_hi": 10.7, "peak_hi_profit": 0.07,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.06,
+        hi_pp=0.07,
+        peak_hi=10.7, peak_hi_profit=0.07,
+    )
     d = ExitDispatcher(full_strategies, Priority.STOP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -111,11 +112,10 @@ def test_stop_first_cost_stop_takes_priority(base_pos, base_bar, base_ctx_no_tri
 def test_stop_first_ladder_only_when_cost_not_triggered(base_pos, base_bar, base_ctx_no_trigger, full_strategies):
     """STOP_FIRST: cost_stop 未触发, ladder 满足 → 返 ladder."""
     # lo_pp=-0.03 (未触发 cost_stop -0.05), hi_pp=0.07 (触发 ladder 0.06)
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.03, "hi_pp": 0.07,
-        "peak_hi": 10.7, "peak_hi_profit": 0.07,  # 触发 ladder 但不触发 trailing
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.03, hi_pp=0.07,
+        peak_hi=10.7, peak_hi_profit=0.07,  # 触发 ladder 但不触发 trailing
+    )
     d = ExitDispatcher(full_strategies, Priority.STOP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -127,11 +127,10 @@ def test_stop_first_trailing_only_when_others_not_triggered(base_pos, base_bar, 
     # lo_pp=-0.03 (cost_stop 未触发), hi_pp=0.04 (ladder 0.06 未触发)
     # peak_hi_profit=0.06 (>= 0.05 activation), trail_line = 10.6*(1-0.03)=10.282
     # bar.low=9.5 <= 10.282 → trailing 触发
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.03, "hi_pp": 0.04,
-        "peak_hi": 10.6, "peak_hi_profit": 0.06,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.03, hi_pp=0.04,
+        peak_hi=10.6, peak_hi_profit=0.06,
+    )
     d = ExitDispatcher(full_strategies, Priority.STOP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -141,12 +140,11 @@ def test_stop_first_trailing_only_when_others_not_triggered(base_pos, base_bar, 
 def test_stop_first_falls_through_to_tail(base_pos, base_bar, base_ctx_no_trigger, full_strategies):
     """STOP_FIRST: cost/ladder/trailing 都未触发, 但 time_stop 满足 → 返 time_stop."""
     # hold_days=20, pp=0.08 → time_stop 触发 reason=9
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.03, "hi_pp": 0.04,
-        "peak_hi_profit": 0.0,  # trailing 不触发
-        "hold_days": 20, "pp": 0.08,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.03, hi_pp=0.04,
+        peak_hi_profit=0.0,  # trailing 不触发
+        hold_days=20, pp=0.08,
+    )
     d = ExitDispatcher(full_strategies, Priority.STOP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -168,11 +166,10 @@ def test_stop_first_no_trigger_returns_empty(base_pos, base_bar, base_ctx_no_tri
 def test_ladder_tp_first_ladder_takes_priority(base_pos, base_bar, base_ctx_no_trigger, full_strategies):
     """LADDER_TP_FIRST: ladder 满足 + cost_stop 也满足 → 只返 ladder."""
     # lo_pp=-0.06 (cost_stop 触发), hi_pp=0.07 (ladder 触发)
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.06, "hi_pp": 0.07,
-        "peak_hi": 10.7, "peak_hi_profit": 0.07,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.06, hi_pp=0.07,
+        peak_hi=10.7, peak_hi_profit=0.07,
+    )
     d = ExitDispatcher(full_strategies, Priority.LADDER_TP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -182,10 +179,9 @@ def test_ladder_tp_first_ladder_takes_priority(base_pos, base_bar, base_ctx_no_t
 def test_ladder_tp_first_cost_stop_when_no_ladder(base_pos, base_bar, base_ctx_no_trigger, full_strategies):
     """LADDER_TP_FIRST: ladder 未触发, cost_stop 满足 → 返 cost_stop."""
     # lo_pp=-0.06 (cost_stop 触发), hi_pp=0.04 (ladder 0.06 未触发)
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.06, "hi_pp": 0.04,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.06, hi_pp=0.04,
+    )
     d = ExitDispatcher(full_strategies, Priority.LADDER_TP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -204,12 +200,11 @@ def test_trailing_first_ladder_partial_then_trailing(base_pos, base_bar, base_ct
     # hi_pp=0.07 → 触发 ladder 第 1 档 (profit=0.06, ratio=0.30) → 部分卖
     # peak_hi=10.7, drawdown=0.03 → trail_line=10.7*(1-0.03)=10.379
     # bar.low=9.5 <= 10.379 → trailing 触发
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "hi_pp": 0.07,
-        "peak_hi": 10.7, "peak_hi_profit": 0.07,
-        "pos_high_hi": 10.7,  # 用于 ladder exec_price 计算
-    })
+    ctx = replace(base_ctx_no_trigger,
+        hi_pp=0.07,
+        peak_hi=10.7, peak_hi_profit=0.07,
+        pos_high_hi=10.7,  # 用于 ladder exec_price 计算
+    )
     d = ExitDispatcher(full_strategies, Priority.TRAILING_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     # 双触发: ladder 部分卖 + trailing 全卖剩余
@@ -232,13 +227,12 @@ def test_default_trailing_values_keep_ladder_before_trailing(
         "ladder_tp": LadderTpStrategy(),
         "trailing": TrailingStrategy(activation=0.035, drawdown=0.01),
     }
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "hi_pp": 0.06,
-        "peak_hi": 10.6,
-        "peak_hi_profit": 0.06,
-        "pos_high_hi": 10.6,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        hi_pp=0.06,
+        peak_hi=10.6,
+        peak_hi_profit=0.06,
+        pos_high_hi=10.6,
+    )
     dispatcher = ExitDispatcher(strategies, Priority.TRAILING_FIRST)
 
     results = dispatcher.evaluate(base_pos, base_bar, ctx)
@@ -254,11 +248,10 @@ def test_trailing_first_ladder_full_sell_blocks_others(base_pos, base_bar, base_
     # 触发 ladder 第 2 档 (profit=0.15, ratio=0.30) — 单档 <1.0 仍是部分卖
     # 实际 ladder 是单档部分卖, 不会触发"全卖阻塞"
     # 此测试覆盖 ladder 触发后无 trailing 触发的情形
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "hi_pp": 0.07,
-        "peak_hi": 10.0, "peak_hi_profit": 0.0,  # trailing 不触发
-    })
+    ctx = replace(base_ctx_no_trigger,
+        hi_pp=0.07,
+        peak_hi=10.0, peak_hi_profit=0.0,  # trailing 不触发
+    )
     d = ExitDispatcher(full_strategies, Priority.TRAILING_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     # 只有 ladder (部分卖), 无 trailing
@@ -269,11 +262,10 @@ def test_trailing_first_ladder_full_sell_blocks_others(base_pos, base_bar, base_
 def test_trailing_first_no_ladder_just_trailing(base_pos, base_bar, base_ctx_no_trigger, full_strategies):
     """TRAILING_FIRST: 无 ladder, 仅 trailing → 单触发."""
     # hi_pp=0.04 (ladder 0.06 未触发), peak_hi=10.6 → trail_line=10.282 → low 9.5 触发
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "hi_pp": 0.04,
-        "peak_hi": 10.6, "peak_hi_profit": 0.06,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        hi_pp=0.04,
+        peak_hi=10.6, peak_hi_profit=0.06,
+    )
     d = ExitDispatcher(full_strategies, Priority.TRAILING_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -282,12 +274,11 @@ def test_trailing_first_no_ladder_just_trailing(base_pos, base_bar, base_ctx_no_
 
 def test_trailing_first_cost_stop_when_no_ladder_no_trailing(base_pos, base_bar, base_ctx_no_trigger, full_strategies):
     """TRAILING_FIRST: ladder/trailing 都未触发, cost_stop 触发 → cost_stop 单触发."""
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "lo_pp": -0.06,
-        "hi_pp": 0.0,
-        "peak_hi_profit": 0.0,
-    })
+    ctx = replace(base_ctx_no_trigger,
+        lo_pp=-0.06,
+        hi_pp=0.0,
+        peak_hi_profit=0.0,
+    )
     d = ExitDispatcher(full_strategies, Priority.TRAILING_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert len(results) == 1
@@ -303,11 +294,10 @@ def test_dispatcher_with_only_cost_stop(base_pos, base_bar, base_ctx_no_trigger)
     """只启用 cost_stop 时, 即便 ladder 触发条件满足, 也只可能返 cost_stop 或 []."""
     strategies = {"cost_stop": CostStopStrategy(threshold=-0.05)}
     # ladder 触发条件满足, 但 strategies 里没有 ladder
-    ctx = base_ctx_no_trigger.__class__(**{
-        **base_ctx_no_trigger.__dict__,
-        "hi_pp": 0.07,
-        "lo_pp": -0.03,  # cost_stop 不触发
-    })
+    ctx = replace(base_ctx_no_trigger,
+        hi_pp=0.07,
+        lo_pp=-0.03,  # cost_stop 不触发
+    )
     d = ExitDispatcher(strategies, Priority.STOP_FIRST)
     results = d.evaluate(base_pos, base_bar, ctx)
     assert results == []  # 没东西可触发

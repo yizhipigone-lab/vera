@@ -65,6 +65,16 @@ class ExitDispatcher:
     def __init__(self, strategies: Dict[str, ExitStrategy], priority: Priority):
         self.strategies = strategies
         self.priority = priority
+        # 2026-07-17 Phase 1 项3c: 预建求值序列, evaluate 热路径不再 dict.get / enum 比较。
+        # 求值顺序与 _PRIORITY_ORDER/_TAIL_ORDER/_eval_trailing_first 完全一致,
+        # 双触发语义在 ladder_partial 传递链里, 与查找方式无关。self.strategies 保留公开。
+        self._order = [strategies[n] for n in _PRIORITY_ORDER.get(priority, []) if n in strategies]
+        self._tail = [strategies[n] for n in _TAIL_ORDER if n in strategies]
+        self._ladder = strategies.get("ladder_tp")
+        self._trailing = strategies.get("trailing")
+        self._cost = strategies.get("cost_stop")
+        self._atr = strategies.get("atr_stop")
+        self._is_trailing_first = (priority == Priority.TRAILING_FIRST)
 
     def evaluate(self, pos: Position, bar: Bar,
                  ctx: Context) -> List[TriggerResult]:
@@ -74,13 +84,9 @@ class ExitDispatcher:
         - trailing_first: ladder 部分卖不阻塞, trailing/cost_stop 可追加 → 至多 2 个
         - 任一 priority block 无触发则走公共尾部（time_stop/cond_time/first_day）
         """
-        if self.priority == Priority.TRAILING_FIRST:
+        if self._is_trailing_first:
             return self._eval_trailing_first(pos, bar, ctx)
-        # M5: .get 防御, 即使新增 Priority 值也不 KeyError
-        for name in _PRIORITY_ORDER.get(self.priority, []):
-            s = self.strategies.get(name)
-            if s is None:
-                continue
+        for s in self._order:
             r = s.check(pos, bar, ctx)
             if r:
                 return [r[0]]
@@ -90,7 +96,7 @@ class ExitDispatcher:
                              ctx: Context) -> List[TriggerResult]:
         # 1. ladder（部分卖不阻塞, 全卖阻塞）
         ladder_partial = None
-        ladder = self.strategies.get("ladder_tp")
+        ladder = self._ladder
         if ladder is not None:
             r = ladder.check(pos, bar, ctx)
             if r:
@@ -99,7 +105,7 @@ class ExitDispatcher:
                 else:
                     return [r[0]]              # 全卖, 阻塞
         # 2. trailing（ladder 部分卖或未触发时检查; ladder 全卖已早退）
-        trailing = self.strategies.get("trailing")
+        trailing = self._trailing
         if trailing is not None:
             r = trailing.check(pos, bar, ctx)
             if r:
@@ -107,7 +113,7 @@ class ExitDispatcher:
                     return [ladder_partial, r[0]]   # 双触发: ladder 部分卖 + trailing 全卖剩余
                 return [r[0]]
         # 3. cost_stop 兜底（trailing 没触发才检查）
-        cost = self.strategies.get("cost_stop")
+        cost = self._cost
         if cost is not None:
             r = cost.check(pos, bar, ctx)
             if r:
@@ -115,7 +121,7 @@ class ExitDispatcher:
                     return [ladder_partial, r[0]]   # 双触发: ladder 部分卖 + cost_stop 全卖剩余
                 return [r[0]]
         # 3b. atr_stop 兜底（cost_stop 没触发才检查, 同款兜底语义）
-        atr = self.strategies.get("atr_stop")
+        atr = self._atr
         if atr is not None:
             r = atr.check(pos, bar, ctx)
             if r:
@@ -130,10 +136,7 @@ class ExitDispatcher:
 
     def _eval_tail(self, pos: Position, bar: Bar,
                    ctx: Context) -> List[TriggerResult]:
-        for name in _TAIL_ORDER:
-            s = self.strategies.get(name)
-            if s is None:
-                continue
+        for s in self._tail:
             r = s.check(pos, bar, ctx)
             if r:
                 return [r[0]]

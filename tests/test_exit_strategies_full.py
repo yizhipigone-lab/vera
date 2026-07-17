@@ -11,6 +11,8 @@ import math
 import sys
 from pathlib import Path
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -65,14 +67,14 @@ def bar_close():
 def test_cost_stop_no_trigger_when_above_threshold(empty_pos, empty_ctx, bar_close):
     """lo_pp > threshold → 不触发."""
     s = CostStopStrategy(threshold=-0.05)
-    empty_ctx_local = empty_ctx.__class__(**{**empty_ctx.__dict__, "lo_pp": -0.03})  # -3% > -5%
+    empty_ctx_local = replace(empty_ctx, lo_pp=-0.03)  # -3% > -5%
     assert s.check(empty_pos, bar_close, empty_ctx_local) == []
 
 
 def test_cost_stop_triggers_when_lo_below_threshold(empty_pos, empty_ctx, bar_close):
     """lo_pp <= threshold → 触发 reason=3."""
     s = CostStopStrategy(threshold=-0.05)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "lo_pp": -0.06})  # -6% <= -5%
+    ctx = replace(empty_ctx, lo_pp=-0.06)  # -6% <= -5%
     results = s.check(empty_pos, bar_close, ctx)
     assert len(results) == 1
     r = results[0]
@@ -85,7 +87,7 @@ def test_cost_stop_triggers_when_lo_below_threshold(empty_pos, empty_ctx, bar_cl
 def test_cost_stop_gap_protection_uses_open_when_lower(empty_pos, empty_ctx):
     """open < stop_price 时按 open 成交 (跳空保护)."""
     s = CostStopStrategy(threshold=-0.05)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "lo_pp": -0.06})
+    ctx = replace(empty_ctx, lo_pp=-0.06)
     # bar.open = 9.0 (低于 stop_price 9.5), 应取 open
     bar = Bar(close=10.0, high=11.0, low=9.5, open=9.0)
     results = s.check(empty_pos, bar, ctx)
@@ -95,7 +97,7 @@ def test_cost_stop_gap_protection_uses_open_when_lower(empty_pos, empty_ctx):
 def test_cost_stop_no_gap_protection_when_open_higher(empty_pos, empty_ctx):
     """open >= stop_price 时仍按 stop_price."""
     s = CostStopStrategy(threshold=-0.05)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "lo_pp": -0.06})
+    ctx = replace(empty_ctx, lo_pp=-0.06)
     bar = Bar(close=10.0, high=11.0, low=9.5, open=10.5)  # open > stop_price
     results = s.check(empty_pos, bar, ctx)
     assert results[0].execution_price == pytest.approx(9.5)
@@ -104,7 +106,7 @@ def test_cost_stop_no_gap_protection_when_open_higher(empty_pos, empty_ctx):
 def test_cost_stop_ignores_nan_open(empty_pos, empty_ctx):
     """open 为 NaN 时不触发跳空保护."""
     s = CostStopStrategy(threshold=-0.05)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "lo_pp": -0.06})
+    ctx = replace(empty_ctx, lo_pp=-0.06)
     bar = Bar(close=10.0, high=11.0, low=9.5, open=float("nan"))
     results = s.check(empty_pos, bar, ctx)
     assert results[0].execution_price == pytest.approx(9.5)
@@ -113,7 +115,7 @@ def test_cost_stop_ignores_nan_open(empty_pos, empty_ctx):
 def test_cost_stop_boundary_equal_threshold_triggers(empty_pos, empty_ctx, bar_close):
     """lo_pp == threshold → 触发 (<=, 不容差 — 业务铁律 F-H6)."""
     s = CostStopStrategy(threshold=-0.05)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "lo_pp": -0.05})
+    ctx = replace(empty_ctx, lo_pp=-0.05)
     results = s.check(empty_pos, bar_close, ctx)
     assert len(results) == 1
 
@@ -126,18 +128,17 @@ def test_cost_stop_boundary_equal_threshold_triggers(empty_pos, empty_ctx, bar_c
 def test_trailing_no_trigger_below_activation(empty_pos, empty_ctx, bar_close):
     """peak_hi_profit < activation → 不触发."""
     s = TrailingStrategy(activation=0.05, drawdown=0.03)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "peak_hi_profit": 0.04})  # 4% < 5%
+    ctx = replace(empty_ctx, peak_hi_profit=0.04)  # 4% < 5%
     assert s.check(empty_pos, bar_close, ctx) == []
 
 
 def test_trailing_triggers_after_activation_low_hits_line(empty_pos, empty_ctx, bar_close):
     """peak_hi_profit >= activation 且 bar.low <= trail_line → 触发."""
     s = TrailingStrategy(activation=0.05, drawdown=0.03)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "peak_hi_profit": 0.10,  # 10% >= 5%
-        "peak_hi": 11.0,          # trail_line = 11.0*(1-0.03) = 10.67
-    })
+    ctx = replace(empty_ctx,
+        peak_hi_profit=0.10,  # 10% >= 5%
+        peak_hi=11.0,          # trail_line = 11.0*(1-0.03) = 10.67
+    )
     bar = Bar(close=10.5, high=11.0, low=10.5, open=10.7)  # low=10.5 <= 10.67
     results = s.check(empty_pos, bar, ctx)
     assert len(results) == 1
@@ -156,11 +157,10 @@ def test_trailing_loss_reason_when_trail_below_entry(empty_pos, empty_ctx):
         high_px=np.float64(21.0), high_hi=np.float64(22.0),
         ladder_done=np.int32(0),
     )
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "peak_hi_profit": 0.10,
-        "peak_hi": 22.0,  # trail_line = 22*(1-0.10) = 19.8 < entry 20
-    })
+    ctx = replace(empty_ctx,
+        peak_hi_profit=0.10,
+        peak_hi=22.0,  # trail_line = 22*(1-0.10) = 19.8 < entry 20
+    )
     bar = Bar(close=19.0, high=22.0, low=19.0, open=21.0)
     results = s.check(pos, bar, ctx)
     assert results[0].reason == 4
@@ -175,11 +175,10 @@ def test_trailing_zero_entry_protection(empty_pos, empty_ctx):
         high_px=np.float64(11.0), high_hi=np.float64(11.0),
         ladder_done=np.int32(0),
     )
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "peak_hi_profit": 0.10,
-        "peak_hi": 11.0,
-    })
+    ctx = replace(empty_ctx,
+        peak_hi_profit=0.10,
+        peak_hi=11.0,
+    )
     bar = Bar(close=10.0, high=11.0, low=10.0, open=10.5)
     # 不应抛 ZeroDivisionError, 且 reason=4 (loss, 防 ep=0 误判 profit)
     results = s.check(pos, bar, ctx)
@@ -190,11 +189,10 @@ def test_trailing_zero_entry_protection(empty_pos, empty_ctx):
 def test_trailing_no_low_hits_trail_no_trigger(empty_pos, empty_ctx):
     """bar.low > trail_line → 不触发."""
     s = TrailingStrategy(activation=0.05, drawdown=0.03)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "peak_hi_profit": 0.10,
-        "peak_hi": 11.0,  # trail_line = 10.67
-    })
+    ctx = replace(empty_ctx,
+        peak_hi_profit=0.10,
+        peak_hi=11.0,  # trail_line = 10.67
+    )
     bar = Bar(close=10.8, high=11.0, low=10.7, open=10.8)  # low 10.7 > 10.67
     assert s.check(empty_pos, bar, ctx) == []
 
@@ -207,14 +205,14 @@ def test_trailing_no_low_hits_trail_no_trigger(empty_pos, empty_ctx):
 def test_time_stop_no_trigger_below_max_hold(empty_pos, empty_ctx, bar_close):
     """hold_days < max_hold_days → 不触发."""
     s = TimeStopStrategy(max_hold_days=20)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 15, "pp": 0.05})
+    ctx = replace(empty_ctx, hold_days=15, pp=0.05)
     assert s.check(empty_pos, bar_close, ctx) == []
 
 
 def test_time_stop_profit_reason_when_pp_positive(empty_pos, empty_ctx, bar_close):
     """hold_days >= max + pp > 0 → reason=9 (时间止盈)."""
     s = TimeStopStrategy(max_hold_days=20)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 20, "pp": 0.08})
+    ctx = replace(empty_ctx, hold_days=20, pp=0.08)
     results = s.check(empty_pos, bar_close, ctx)
     assert len(results) == 1
     assert results[0].reason == 9
@@ -225,7 +223,7 @@ def test_time_stop_profit_reason_when_pp_positive(empty_pos, empty_ctx, bar_clos
 def test_time_stop_loss_reason_when_pp_negative(empty_pos, empty_ctx, bar_close):
     """hold_days >= max + pp < 0 → reason=6 (时间止损)."""
     s = TimeStopStrategy(max_hold_days=20)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 25, "pp": -0.05})
+    ctx = replace(empty_ctx, hold_days=25, pp=-0.05)
     results = s.check(empty_pos, bar_close, ctx)
     assert results[0].reason == 6
 
@@ -233,7 +231,7 @@ def test_time_stop_loss_reason_when_pp_negative(empty_pos, empty_ctx, bar_close)
 def test_time_stop_loss_reason_when_pp_zero(empty_pos, empty_ctx, bar_close):
     """pp=0 (平盘) → reason=6 (亏, 不是盈 — 业务铁律 F-H6 浮点尾巴不算盈利)."""
     s = TimeStopStrategy(max_hold_days=20)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 20, "pp": 0.0})
+    ctx = replace(empty_ctx, hold_days=20, pp=0.0)
     results = s.check(empty_pos, bar_close, ctx)
     assert results[0].reason == 6
 
@@ -241,7 +239,7 @@ def test_time_stop_loss_reason_when_pp_zero(empty_pos, empty_ctx, bar_close):
 def test_time_stop_boundary_equal_max_hold_triggers(empty_pos, empty_ctx, bar_close):
     """hold_days == max → 触发 (<=, 不容差)."""
     s = TimeStopStrategy(max_hold_days=20)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 20, "pp": 0.0})
+    ctx = replace(empty_ctx, hold_days=20, pp=0.0)
     assert len(s.check(empty_pos, bar_close, ctx)) == 1
 
 
@@ -253,21 +251,21 @@ def test_time_stop_boundary_equal_max_hold_triggers(empty_pos, empty_ctx, bar_cl
 def test_cond_time_no_trigger_below_days(empty_pos, empty_ctx, bar_close):
     """hold_days < days → 不触发."""
     s = CondTimeStrategy(days=7, profit=0.10)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 5, "hi_pp": 0.15})
+    ctx = replace(empty_ctx, hold_days=5, hi_pp=0.15)
     assert s.check(empty_pos, bar_close, ctx) == []
 
 
 def test_cond_time_no_trigger_below_profit(empty_pos, empty_ctx, bar_close):
     """hi_pp < profit → 不触发."""
     s = CondTimeStrategy(days=7, profit=0.10)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 10, "hi_pp": 0.05})
+    ctx = replace(empty_ctx, hold_days=10, hi_pp=0.05)
     assert s.check(empty_pos, bar_close, ctx) == []
 
 
 def test_cond_time_triggers_when_both_met(empty_pos, empty_ctx, bar_close):
     """hold_days >= days 且 hi_pp >= profit → 触发 reason=7."""
     s = CondTimeStrategy(days=7, profit=0.10)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 10, "hi_pp": 0.15})
+    ctx = replace(empty_ctx, hold_days=10, hi_pp=0.15)
     results = s.check(empty_pos, bar_close, ctx)
     assert len(results) == 1
     assert results[0].reason == 7
@@ -277,7 +275,7 @@ def test_cond_time_triggers_when_both_met(empty_pos, empty_ctx, bar_close):
 def test_cond_time_boundary_both_equal(empty_pos, empty_ctx, bar_close):
     """hold_days == days 且 hi_pp == profit → 触发."""
     s = CondTimeStrategy(days=7, profit=0.10)
-    ctx = empty_ctx.__class__(**{**empty_ctx.__dict__, "hold_days": 7, "hi_pp": 0.10})
+    ctx = replace(empty_ctx, hold_days=7, hi_pp=0.10)
     assert len(s.check(empty_pos, bar_close, ctx)) == 1
 
 
@@ -290,10 +288,9 @@ def test_first_day_no_trigger_on_entry_day(empty_pos, empty_ctx, bar_close):
     """current_day == entry_day → 不触发."""
     # entry_idx=8, bpday=48, current bar=10 (同一天)
     s = FirstDayStrategy(target=0.05)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "bar_index": 10, "bpday": 48,
-    })
+    ctx = replace(empty_ctx,
+        bar_index=10, bpday=48,
+    )
     pos = Position(
         code=np.int32(0), shares=np.float64(100.0),
         entry_px=np.float64(10.0), entry_idx=np.int32(10),  # 同 bar_index
@@ -306,10 +303,9 @@ def test_first_day_no_trigger_on_entry_day(empty_pos, empty_ctx, bar_close):
 def test_first_day_no_trigger_on_day_after_next(empty_pos, empty_ctx, bar_close):
     """current_day > entry_day + 1 → 不触发."""
     s = FirstDayStrategy(target=0.05)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "bar_index": 200, "bpday": 48,  # day 200/48 = 4, entry day 0/48 = 0, +1 = 1
-    })
+    ctx = replace(empty_ctx,
+        bar_index=200, bpday=48,  # day 200/48 = 4, entry day 0/48 = 0, +1 = 1
+    )
     pos = Position(
         code=np.int32(0), shares=np.float64(100.0),
         entry_px=np.float64(10.0), entry_idx=np.int32(0),
@@ -324,10 +320,9 @@ def test_first_day_no_trigger_on_middle_bar(empty_pos, empty_ctx, bar_close):
     s = FirstDayStrategy(target=0.05)
     # entry_idx=0 (day 0), T+1 = day 1 = bar 48~95, 最后一根 = 95
     # bar_index=50 是 day 1 的中间 bar, 不应触发
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "bar_index": 50, "bpday": 48,
-    })
+    ctx = replace(empty_ctx,
+        bar_index=50, bpday=48,
+    )
     pos = Position(
         code=np.int32(0), shares=np.float64(100.0),
         entry_px=np.float64(10.0), entry_idx=np.int32(0),
@@ -341,10 +336,9 @@ def test_first_day_triggers_when_target_not_met(empty_pos, empty_ctx, bar_close)
     """T+1 收盘 + 日内最高涨幅 < target → 触发 reason=10."""
     s = FirstDayStrategy(target=0.05)
     # entry day 0, T+1 day 1 = bar 48~95, 最后一根 = bar 95 (95 % 48 = 47 = bpday-1)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "bar_index": 95, "bpday": 48,
-    })
+    ctx = replace(empty_ctx,
+        bar_index=95, bpday=48,
+    )
     pos = Position(
         code=np.int32(0), shares=np.float64(100.0),
         entry_px=np.float64(10.0), entry_idx=np.int32(0),
@@ -362,10 +356,9 @@ def test_first_day_triggers_when_target_not_met(empty_pos, empty_ctx, bar_close)
 def test_first_day_no_trigger_when_target_met(empty_pos, empty_ctx, bar_close):
     """T+1 收盘 + 日内最高涨幅 >= target → 不触发."""
     s = FirstDayStrategy(target=0.05)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "bar_index": 95, "bpday": 48,
-    })
+    ctx = replace(empty_ctx,
+        bar_index=95, bpday=48,
+    )
     pos = Position(
         code=np.int32(0), shares=np.float64(100.0),
         entry_px=np.float64(10.0), entry_idx=np.int32(0),
@@ -380,10 +373,9 @@ def test_first_day_no_trigger_when_target_met(empty_pos, empty_ctx, bar_close):
 def test_first_day_zero_ep_or_high_protection(empty_pos, empty_ctx, bar_close):
     """ep=0 或 day_high=0 时防御性不触发."""
     s = FirstDayStrategy(target=0.05)
-    ctx = empty_ctx.__class__(**{
-        **empty_ctx.__dict__,
-        "bar_index": 95, "bpday": 48,
-    })
+    ctx = replace(empty_ctx,
+        bar_index=95, bpday=48,
+    )
     pos = Position(
         code=np.int32(0), shares=np.float64(100.0),
         entry_px=np.float64(0.0), entry_idx=np.int32(0),  # entry=0

@@ -62,7 +62,7 @@ class BacktestParams:
 # ─────────────────────────────────────────────────────────────
 # 单 bar 市场数据
 # ─────────────────────────────────────────────────────────────
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Bar:
     """单只股票单根 bar 的 OHLC。frozen。"""
 
@@ -75,7 +75,7 @@ class Bar:
 # ─────────────────────────────────────────────────────────────
 # 评估上下文（CA3）
 # ─────────────────────────────────────────────────────────────
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Context:
     """单次 check() 调用的上下文（per bar per position）。frozen, 策略不得修改。
 
@@ -107,7 +107,7 @@ class Context:
 # ─────────────────────────────────────────────────────────────
 # 持仓（HA4: mutable, 跨 bar 累计状态）
 # ─────────────────────────────────────────────────────────────
-@dataclass
+@dataclass(slots=True)
 class Position:
     """单笔持仓。mutable — ladder_done bitmask 与 high_px/high_hi 跨 bar 累计。
 

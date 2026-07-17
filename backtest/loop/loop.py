@@ -111,9 +111,18 @@ class BacktestLoop:
         bpday = p.bpday
         slippage = p.slippage
         comm_factor = 1.0 - p.commission - p.stamp_tax
+        # 2026-07-17 Phase 1 项3b: 热路径提升为局部变量 (每 bar 每持仓省 6+ 次 property 调用,
+        # profile 实测这些 accessor 被调 4 万+ 次)。数组引用语义, remove_swap_pop 就地改内容
+        # 不换数组对象, 局部引用全程有效。
+        code_arr = book.code_arr
+        shares_arr = book.shares_arr
+        entry_px_arr = book.entry_px_arr
+        entry_idx_arr = book.entry_idx_arr
+        high_px_arr = book.high_px_arr
+        high_hi_arr = book.high_hi_arr
         pp = 0
         while pp < book.count:
-            ci = int(book.code_arr[pp])
+            ci = int(code_arr[pp])
             if ci < 0:
                 pp += 1
                 continue
@@ -124,14 +133,14 @@ class BacktestLoop:
                 if (last_tradable_idx is not None and last_tradable_idx[ci] >= 0
                         and i > last_tradable_idx[ci]):
                     # 退市: 强制平仓 (engine.py:99-129)
-                    total_sh = book.shares_arr[pp]
-                    ep_d = book.entry_px_arr[pp]
+                    total_sh = shares_arr[pp]
+                    ep_d = entry_px_arr[pp]
                     sell_price = xp if xp > 0 else ep_d
                     sell_eff = sell_price * (1.0 - slippage)
                     gross = total_sh * sell_eff * comm_factor
                     cash += gross
                     ret = (sell_price - ep_d) / ep_d if ep_d > 0.0 else 0.0
-                    trade_buf.append(ci, book.entry_idx_arr[pp], i, ep_d,
+                    trade_buf.append(ci, entry_idx_arr[pp], i, ep_d,
                                      sell_price, total_sh, gross - total_sh * ep_d,
                                      ret, 11)
                     book.remove_swap_pop(pp)
@@ -143,30 +152,30 @@ class BacktestLoop:
                 pp += 1
                 continue
             # ── T+1: 当日买入不可当日卖 ──
-            if (i // bpday) == (book.entry_idx_arr[pp] // bpday):
+            if (i // bpday) == (entry_idx_arr[pp] // bpday):
                 if high_np is not None:
                     hi_t = high_np[i, ci]
-                    if hi_t > book.high_hi_arr[pp]:
-                        book.high_hi_arr[pp] = hi_t
-                if xp > book.high_px_arr[pp]:
-                    book.high_px_arr[pp] = xp
+                    if hi_t > high_hi_arr[pp]:
+                        high_hi_arr[pp] = hi_t
+                if xp > high_px_arr[pp]:
+                    high_px_arr[pp] = xp
                 pp += 1
                 continue
 
             # ── 计算衍生量 (engine.py:146-167) ──
-            ep = book.entry_px_arr[pp]
+            ep = entry_px_arr[pp]
             pp_ret = (xp - ep) / ep if ep > 0.0 else 0.0
-            hp = max(book.high_px_arr[pp], xp)
-            book.high_px_arr[pp] = hp
+            hp = max(high_px_arr[pp], xp)
+            high_px_arr[pp] = hp
             hi = high_np[i, ci] if high_np is not None else xp
             lo = low_np[i, ci] if low_np is not None else xp
             hi_pp = (hi - ep) / ep if ep > 0.0 else 0.0
             lo_pp = (lo - ep) / ep if ep > 0.0 else 0.0
-            if high_np is not None and hi > book.high_hi_arr[pp]:
-                book.high_hi_arr[pp] = hi
-            peak_hi = book.high_hi_arr[pp] if book.high_hi_arr[pp] > 0 else ep
+            if high_np is not None and hi > high_hi_arr[pp]:
+                high_hi_arr[pp] = hi
+            peak_hi = high_hi_arr[pp] if high_hi_arr[pp] > 0 else ep
             peak_hi_profit = (peak_hi - ep) / ep if ep > 0.0 else 0.0
-            hold_days = i - book.entry_idx_arr[pp]
+            hold_days = i - entry_idx_arr[pp]
             # open_np=None 时 engine.py 不做跳空保护 → 传 NaN 让 CostStopStrategy 跳过
             op = open_np[i, ci] if open_np is not None else float("nan")
 
@@ -176,7 +185,7 @@ class BacktestLoop:
                 bar_index=i, ci=ci, bpday=bpday, hold_days=hold_days,
                 entry_px=ep, pp=pp_ret, hp_profit=(hp - ep) / ep if ep > 0.0 else 0.0,
                 peak_hi=peak_hi, peak_hi_profit=peak_hi_profit,
-                pos_high_px=book.high_px_arr[pp], pos_high_hi=book.high_hi_arr[pp],
+                pos_high_px=high_px_arr[pp], pos_high_hi=high_hi_arr[pp],
                 hi_pp=hi_pp, lo_pp=lo_pp,
                 ladder_profits=self.ladder_profits,
                 ladder_ratios=self.ladder_ratios, n_ladder=self.n_ladder,
