@@ -100,6 +100,21 @@ class Pipeline:
         sel_adj = sel_cfg.get("dividend_type", 1)
         assert_consistent(sel_adj, "front")
 
+        # P1-8: 选股/回测 period 一致性告警 (2026-07-17, 002008 bug)
+        # 不一致时 (如 selection=1d, backtest=5m) 选股与回测看到的数据覆盖不同,
+        # 5m 数据缺口会让选股信号在回测价格 index 中缺失, 信号被 _build_entry_signals 丢弃。
+        # 不中断 (1d 选股 + 5m 回测是合法组合), 仅告警提示。
+        sel_period = sel_cfg.get("period", "1d")
+        bt_period = bt_cfg.get("period", "1d")
+        if sel_period != bt_period:
+            logger.warning(
+                "period_mismatch: 选股 period=%s 与 回测 period=%s 不一致, "
+                "若回测 period 数据有缺口, 选股信号会被丢弃 (不顺延)。"
+                "1d 选股 + 5m 回测为合法组合, 数据完整时可忽略; "
+                "若非有意, 请统一 period 或补全回测 period 的盘后数据。",
+                sel_period, bt_period,
+            )
+
         self.backtest_engine = BacktestEngine(bt_cfg)
 
         start = time_cfg.get("start", "")

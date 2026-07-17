@@ -1185,21 +1185,46 @@ class BacktestEngine:
 
     def _build_entry_signals(self, selections, prices):
         entries = pd.DataFrame(False, index=prices.index, columns=prices.columns)
+        dropped_gap = 0  # 信号日整天缺失(数据缺口)被丢弃的计数
         for _, row in selections.iterrows():
             code = row["stock_code"]; dt = pd.to_datetime(row["select_date"])
             if code not in entries.columns: continue
             if dt in entries.index: entries.loc[dt, code] = True
             else:
-                # 寻找信号日之后的第一个bar
+                # 信号日 00:00 不在 index (5m: bar 在 9:35-15:00, 00:00 恒不在) → 找首个 >= 信号日的 bar
                 m = entries.index >= dt
                 if m.any():
                     first_bar = entries.index[m][0]
-                    # 尾盘买入：取信号日最后一根bar（1d不变，5m→15:00）
+                    # 数据缺口判定: 首个可用 bar 已跨到信号日之后某天 → 信号日整天缺失
+                    # (002008 bug, 2026-07-17: 5m 6.23-6.29 缺口曾把 6.23 信号顺延到 6.30,
+                    #  用未来价格成交旧信号, 违反"信号日 T 收盘价买入"铁律 + 隐性前视)
+                    if first_bar.normalize() != dt.normalize():
+                        logger.warning(
+                            "entry_signal_drop: %s 信号日 %s 在价格 index 缺失 "
+                            "(首个可用 bar=%s), 丢弃该信号 (不顺延, 避免用未来价格成交)",
+                            code, dt.strftime("%Y-%m-%d"), first_bar.strftime("%Y-%m-%d %H:%M"),
+                        )
+                        dropped_gap += 1
+                        continue
+                    # 同日顺延 (5m intended): 取信号日最后一根 bar (1d 不变, 5m→15:00)
                     day_mask = entries.index.normalize() == first_bar.normalize()
                     if day_mask.any():
                         entries.loc[entries.index[day_mask][-1], code] = True
                     else:
                         entries.loc[first_bar, code] = True
+                else:
+                    # 信号日晚于价格 index 最后一根 bar (价格数据未覆盖到信号日) → 丢弃并告警
+                    logger.warning(
+                        "entry_signal_drop: %s 信号日 %s 晚于价格数据最后一根 bar, 丢弃该信号",
+                        code, dt.strftime("%Y-%m-%d"),
+                    )
+                    dropped_gap += 1
+        if dropped_gap > 0:
+            logger.warning(
+                "entry_signal_drop: 共 %d 个信号因信号日数据缺失被丢弃 "
+                "(多为 5m K线未下载完整, 请补 TDX 盘后数据后重跑)",
+                dropped_gap,
+            )
         return entries
 
     def _filter_limit_up(self, entries, close):
