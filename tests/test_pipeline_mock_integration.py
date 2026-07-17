@@ -110,6 +110,8 @@ class TestEngineWithMockData:
         engine = BacktestEngine({
             "initial_capital": 10000000, "commission": 0.0003,
             "slippage": 0.001, "freq": "1d",
+            # 本测试 mock connector 测引擎逻辑, 不走真实磁盘缓存 (免疫 data/kline_cache 污染)
+            "use_kline_cache": False,
             "position_sizing": {"min_buy_amount": 2000, "max_buy_amount": 20000,
                                 "lot_size": 100, "min_lots": 1},
         })
@@ -153,6 +155,8 @@ class TestEngineWithMockData:
         engine = BacktestEngine({
             "initial_capital": 10000000, "commission": 0.0003,
             "slippage": 0.001, "freq": "1d",
+            # 本测试 mock connector 测引擎逻辑, 不走真实磁盘缓存 (免疫 data/kline_cache 污染)
+            "use_kline_cache": False,
             "position_sizing": {"min_buy_amount": 2000, "max_buy_amount": 20000,
                                 "lot_size": 100, "min_lots": 1},
         })

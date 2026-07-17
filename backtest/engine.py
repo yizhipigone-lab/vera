@@ -709,6 +709,8 @@ class BacktestEngine:
         self.min_lots = int(ps.get("min_lots", 1))
         # 2026-07-09: 单票仓位占比上限 (<1.0 启用, 基于上一bar总权益; 默认1.0=不约束, 老脚本零变化)
         self.max_position_pct = float(ps.get("max_position_pct", 1.0))
+        # 2026-07-17: 本地 K 线 parquet 缓存开关 (Phase 1, 默认 True 启用; 配置 use_kline_cache:false 回退 TDX 直拉)
+        self.use_kline_cache = bool(config.get("use_kline_cache", True))
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -775,7 +777,7 @@ class BacktestEngine:
                 window_trading_days=win_td, dividend_type="front", fill_data=False,
             )
         else:
-            kline = DataFetcher.get_kline(codes, start_time, end_time, dividend_type="front", period=self.period, fill_data=False)
+            kline = DataFetcher.get_kline(codes, start_time, end_time, dividend_type="front", period=self.period, fill_data=False, use_cache=self.use_kline_cache)
         if not kline or "Close" not in kline:
             return self._empty_result()
 
