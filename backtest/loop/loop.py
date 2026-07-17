@@ -27,6 +27,7 @@ from .absolute import FormulaSellStrategy
 from .entry import EntryEngine
 from .equity import EquityTracker
 from .signals import precompute_signal_lists
+from .prefilter import TriggerPreFilter
 
 from utils.logger import get_logger
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)。CLI/批量脚本从不置位, 行为不变。
@@ -57,6 +58,8 @@ class BacktestLoop:
         self.ladder_ratios = ladder_ratios
         self.n_ladder = n_ladder
         self._has_run = False  # 2026-07-18 F2: 单实例单次使用守卫
+        # 2026-07-18 Phase 3: 触发预筛 (跳过数学上不可能触发的持仓评估, 实测空跑率 84.7%)
+        self._prefilter = TriggerPreFilter(dispatcher, absolutes)
 
     def run(self, price_np: np.ndarray, entry_np: np.ndarray,
             high_np: Optional[np.ndarray], low_np: Optional[np.ndarray],
@@ -132,6 +135,7 @@ class BacktestLoop:
         entry_idx_arr = book.entry_idx_arr
         high_px_arr = book.high_px_arr
         high_hi_arr = book.high_hi_arr
+        ladder_done_arr = book.ladder_done_arr
         pp = 0
         while pp < book.count:
             ci = int(code_arr[pp])
@@ -188,6 +192,20 @@ class BacktestLoop:
             peak_hi = high_hi_arr[pp] if high_hi_arr[pp] > 0 else ep
             peak_hi_profit = (peak_hi - ep) / ep if ep > 0.0 else 0.0
             hold_days = i - entry_idx_arr[pp]
+
+            # ── Phase 3 预筛: 数学上不可能触发 → 跳过对象构造与策略评估 ──
+            # 状态安全: high_px/high_hi 已在上方更新; ladder_done 只在真触发时变;
+            # 零触发时 evaluate 后写回原值, 与跳过等价。推导见
+            # docs/audit/2026-07-18_Phase3预筛条件推导.md
+            if not self._prefilter.could_trigger(
+                    ci=ci, i=i, ep=ep, hi=hi, lo=lo, hi_pp=hi_pp, lo_pp=lo_pp,
+                    peak_hi=peak_hi, peak_hi_profit=peak_hi_profit,
+                    hold_days=hold_days, entry_idx=entry_idx_arr[pp], bpday=bpday,
+                    ladder_done=int(ladder_done_arr[pp]),
+                    ladder_profits=self.ladder_profits, n_ladder=self.n_ladder):
+                pp += 1
+                continue
+
             # open_np=None 时 engine.py 不做跳空保护 → 传 NaN 让 CostStopStrategy 跳过
             op = open_np[i, ci] if open_np is not None else float("nan")
 
