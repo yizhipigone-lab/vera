@@ -12,6 +12,12 @@ from typing import Dict, Optional, Any
 
 from backtest.metrics import MetricsCalculator
 from backtest.result import BacktestResult
+from backtest.degrade_5m import (
+    apply_5m_degradation,
+    recompute_last_tradable_idx,
+    scan_degraded_positions,
+    synthesize_5m_grid,
+)
 from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
 from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR
 from backtest.stop_config import (
@@ -715,6 +721,9 @@ class BacktestEngine:
         self.max_position_pct = float(ps.get("max_position_pct", 1.0))
         # 2026-07-17: 本地 K 线 parquet 缓存开关 (Phase 1, 默认 True 启用; 配置 use_kline_cache:false 回退 TDX 直拉)
         self.use_kline_cache = bool(config.get("use_kline_cache", True))
+        # 2026-07-18: 5m 数据层降级 (计划书 2026-07-18, 默认关 G4)。缺 5m 的股-天
+        # 用 1d OHLC 填充保住信号; 仅 period="5m" 等分钟级 + run() 路径生效。
+        self.degrade_5m = bool(config.get("degrade_5m", False))
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -800,6 +809,16 @@ class BacktestEngine:
         low_df = self._ensure_index(low_df_raw) if low_df_raw is not None else None
         open_df = self._ensure_index(open_df_raw) if open_df_raw is not None else None
 
+        # 2026-07-18: 5m 数据层降级 (opt-in, 计划书 2026-07-18)。必须在
+        # _build_entry_signals 之前 (信号日插行才有行可放信号) 且在 high/low
+        # ffill 之前 (否则前一日数据先 ffill 进缺口, 审计 MEDIUM-2)。
+        degraded_df = None
+        degrade_res = None
+        if self.degrade_5m and self.bars_per_day > 1:
+            close, high_df, low_df, open_df, degraded_df, degrade_res = \
+                self._apply_5m_degradation(
+                    close, high_df, low_df, open_df, selections, win_td)
+
         entries = self._build_entry_signals(selections, close)
         # 统一列对齐：close ∩ entries ∩ high ∩ low（open 不参与交集，缺失则回退 close）
         cols = sorted(close.columns.intersection(entries.columns))
@@ -818,6 +837,12 @@ class BacktestEngine:
         # P1-1/P1-2: Open 不做 ffill — 停牌日 open=NaN 应保留，让 T+1 买入自然跳过
         open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64) if open_df is not None else None
 
+        # degrade_5m: degraded_np 对齐最终 (idx, cols)
+        degraded_np = None
+        if degraded_df is not None:
+            degraded_np = degraded_df.reindex(
+                index=idx, columns=cols, fill_value=False).values.astype(bool)
+
         # 候选 A 审计 M1 修复: 改用公用 _build_tradable_from_raw helper
         # 消除 run 与 run_cached 的 drift (close_raw 是 line 671 重索引后的 DataFrame, helper 对 DataFrame 等价)
         tradable_np, last_tradable_idx = _build_tradable_from_raw(close_raw, close)
@@ -828,11 +853,14 @@ class BacktestEngine:
             wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
             tradable_np = tradable_np & wm
             # last_tradable_idx 重算为窗口内最后一个可交易 bar (每列)
-            last_tradable_idx = np.full(tradable_np.shape[1], -1, dtype=np.int64)
-            for ci in range(tradable_np.shape[1]):
-                nz = np.nonzero(tradable_np[:, ci])[0]
-                if nz.size:
-                    last_tradable_idx[ci] = int(nz[-1])
+            last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+
+        # degrade_5m (审计 CRITICAL-2): 降级 bar 恢复可交易 + 重算 last_tradable_idx。
+        # 必须在 window_mask 合并之后 — 缺口日在 mask 里没行会被 &= 杀掉,
+        # 放前面 OR 了也白搭 (计划书 §4.3 集成点笔误修正)。
+        if degraded_np is not None:
+            tradable_np = tradable_np | degraded_np
+            last_tradable_idx = recompute_last_tradable_idx(tradable_np)
 
         # 准备阶梯止盈数组
         levels = ladder.get("levels", [])
@@ -978,14 +1006,41 @@ class BacktestEngine:
         equity_curve, trades_df, metrics = self._post_process(equity_arr, raw_trades, close, bpday)
         self._log_results(metrics)
 
+        # degrade_5m: 降级交易事后扫描 (审计 HIGH-2 — degraded_np 不进 BacktestLoop,
+        # 报告走 _post_process 后扫描 raw_trades 的 (ci, entry_idx, exit_idx))。
+        # 部分出场 (阶梯分批卖) 按 (ci, entry_idx) 聚合成持仓再判定。
+        degradation = None
+        if degraded_np is not None and degrade_res is not None:
+            positions = scan_degraded_positions(raw_trades, degraded_np)
+            n_deg = sum(1 for p in positions if p["is_degraded"])
+            degradation = {
+                "enabled": True,
+                "degraded_trades": n_deg,
+                "total_trades": len(positions),
+                "total_trade_rows": int(len(raw_trades)),
+                "degraded_pct": (n_deg / len(positions)) if positions else 0.0,
+                "n_stock_days": degrade_res.n_stock_days,
+                "degraded_days": degrade_res.degraded_days,
+                "rejected_limit_up": degrade_res.rejected_limit_up,
+                "adjust_mismatches": degrade_res.adjust_mismatches,
+            }
+            logger.info(
+                "degrade_5m: 降级持仓 %d/%d (%.1f%%), 降级股-天 %d, 涨停拒绝 %d",
+                n_deg, len(positions), degradation["degraded_pct"] * 100,
+                degrade_res.n_stock_days, degrade_res.rejected_limit_up,
+            )
+
         # C2: stop_config_summary 改从函数生成（不再调用 StopManager，避免 compute_exit_signals 重复计算）
         from backtest.stop_config import get_stop_config_summary
 
-        return BacktestResult(
+        bt_kwargs = dict(
             equity_curve=equity_curve, trades=trades_df, metrics=metrics,
             stop_config_summary=get_stop_config_summary(stop),
             selections=selections, stock_count=len(cols),
         )
+        if degradation is not None:
+            bt_kwargs["degradation"] = degradation
+        return BacktestResult(**bt_kwargs)
 
     def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
                    ladder_profits, ladder_ratios, n_ladder, *,
@@ -1008,6 +1063,9 @@ class BacktestEngine:
         - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np（不从 close 自动建,
           防 ffill 调用方误触发退市）。
         - return_raw: True 时 result dict 加 raw_equity/raw_trades（收编脚本 + parity 测试用）。
+
+        ⚠️ degrade_5m (5m 数据层降级) 仅 run() 路径支持, run_cached 不做降级
+        (计划书 2026-07-18 LOW-3): 批量优化走预取数据, 缺 5m 的股-天照旧丢信号。
         """
         stop = stop_config or {}
         cost = stop.get("cost_stop", {})
@@ -1211,6 +1269,66 @@ class BacktestEngine:
         if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)
         return df.sort_index()
 
+    def _apply_5m_degradation(self, close, high_df, low_df, open_df, selections, win_td):
+        """5m 数据层降级编排 (计划书 2026-07-18 §4.1/4.2): 缺 5m 的股-天用 1d OHLC 填充。
+
+        步骤: 交易日历 → synthesize_5m_grid 合成完整网格 (每天恰好 48 根,
+        全市场缺口日也有行, 审计 CRITICAL-1) → 全部矩阵 reindex → 取 1d
+        (KlineCache) → apply_5m_degradation 填充 + degraded_np。
+        窗口边界复用 DataFetcher.compute_window_bounds (与稀疏窗口拉取同一套,
+        防 drift)。任何一步失败 → 告警并返回未降级原矩阵 (回退现状丢信号路径)。
+
+        返回 (close, high, low, open, degraded_df, DegradeResult);
+        失败/跳过返回原矩阵 + (None, None)。
+        """
+        orig = (close, high_df, low_df, open_df)
+        try:
+            days = DataFetcher.get_trading_days(
+                close.index.min().strftime("%Y%m%d"),
+                close.index.max().strftime("%Y%m%d"))
+            if not days:
+                logger.warning("degrade_5m: 交易日历为空, 跳过降级 (回退丢信号路径)")
+                return (*orig, None, None)
+            grid = synthesize_5m_grid(days)
+            off_grid = close.index.difference(grid)
+            if len(off_grid):
+                logger.warning(
+                    "degrade_5m: %d 个 5m bar 时间戳不在标准网格 (首处 %s), 将被丢弃",
+                    len(off_grid), off_grid[0])
+            close_g = close.reindex(grid)
+            high_g = high_df.reindex(grid) if high_df is not None else None
+            low_g = low_df.reindex(grid) if low_df is not None else None
+            open_g = open_df.reindex(grid) if open_df is not None else None
+
+            codes = list(close_g.columns)
+            # 1d 往前多取 10 天: 涨停判定需要前一交易日 1d 收盘
+            start_1d = (close_g.index.min() - pd.Timedelta(days=10)).strftime("%Y%m%d")
+            end_1d = close_g.index.max().strftime("%Y%m%d")
+            k1d = DataFetcher.get_kline(
+                codes, start_1d, end_1d, period="1d",
+                dividend_type="front", fill_data=False, use_cache=self.use_kline_cache)
+            if not k1d or "Close" not in k1d:
+                logger.warning("degrade_5m: 1d 数据为空, 跳过降级 (回退丢信号路径)")
+                return (*orig, None, None)
+
+            def _f(name):
+                df = k1d.get(name)
+                return self._ensure_index(df) if df is not None else None
+
+            win_start, win_end = DataFetcher.compute_window_bounds(selections, win_td)
+            bounds = {c: (win_start[c], win_end[c]) for c in codes if c in win_start}
+            ratio_vec = self._limit_ratio_vector(close_g.columns)
+            res = apply_5m_degradation(
+                close_g, high_g, low_g, open_g,
+                _f("Close"), _f("High"), _f("Low"), _f("Open"),
+                window_bounds=bounds, limit_ratio_vec=ratio_vec)
+            degraded_df = pd.DataFrame(
+                res.degraded_np, index=res.close.index, columns=res.close.columns)
+            return res.close, res.high, res.low, res.open, degraded_df, res
+        except Exception:
+            logger.exception("degrade_5m: 降级失败, 回退现状 (丢信号路径)")
+            return (*orig, None, None)
+
     def _build_entry_signals(self, selections, prices):
         entries = pd.DataFrame(False, index=prices.index, columns=prices.columns)
         dropped_gap = 0  # 信号日整天缺失(数据缺口)被丢弃的计数
@@ -1255,12 +1373,16 @@ class BacktestEngine:
             )
         return entries
 
+    _LIMIT_RATIO_CACHE_MAX = 32  # 2026-07-18 审计修复: 缓存上限, FIFO 淘汰防无界增长
+
     def _limit_ratio_vector(self, columns):
-        """每列涨停幅度向量 (0.10 主板 / 0.20 创业板+科创板 / 0.05 ST)。
+        """每列涨停幅度向量 (0.10 主板 / 0.20 创业板+科创板 / 0.30 北交所 / 0.05 ST)。
 
         2026-07-17 Phase 1: 按列集合缓存, 批量跑 N 个公式时 ST 信息只查一次。
         缓存有效期 = 进程内, 与 get_cached_info 自身缓存语义一致 (ST 标记日频更新)。
         判定优先级复刻旧逐列逻辑: 688/300/301 先判, 否则查 ST。
+        2026-07-18: 补北交所 30% (8xx/4xx/920 开头, 此前误按主板 10% 会过度滤信号);
+        缓存加 32 键上限 (FIFO), 防长驻进程无界增长。
         """
         key = tuple(str(c) for c in columns)
         cache = getattr(self, "_limit_ratio_cache", None)
@@ -1275,11 +1397,16 @@ class BacktestEngine:
                     vec[j] = 0.20
                 elif col_str.startswith('300') or col_str.startswith('301'):
                     vec[j] = 0.20
+                elif col_str.startswith(('4', '8', '920')):
+                    # 北交所: 43/83/87/88/920 开头, 涨跌幅 30%
+                    vec[j] = 0.30
                 else:
                     # P0-3: 用 TDX IsSTGP 真实判定 ST（原 'ST' in col_str 对纯代码恒 False）
                     info = get_cached_info(col_str)
                     if str(info.get('IsSTGP', '0')) == '1':
                         vec[j] = 0.05
+            if len(cache) >= self._LIMIT_RATIO_CACHE_MAX:
+                cache.pop(next(iter(cache)))  # FIFO 淘汰最旧键
             cache[key] = vec
         return vec
 
@@ -1292,12 +1419,22 @@ class BacktestEngine:
         """
         if not isinstance(entries, pd.DataFrame):
             return entries
+        if len(entries) == 0:
+            return entries.copy()  # 2026-07-18: 空帧守卫 (旧 shift(1) 天然安全, 向量化版需显式)
         close_aligned = close[entries.columns]  # 列缺失时与旧版一样 KeyError
         ratio_vec = self._limit_ratio_vector(entries.columns)
         cv = close_aligned.values
-        prev = np.empty_like(cv)
-        prev[0] = np.nan
-        prev[1:] = cv[:-1]
+        if self.bars_per_day > 1 and isinstance(close_aligned.index, pd.DatetimeIndex):
+            # 2026-07-18 修 5m 涨停过滤失效(MEMORY 老账): 分钟级必须相对
+            # 前一**交易日**收盘判定, 而非前一根 5m bar (5m 单 bar 涨 10% 几乎
+            # 不发生, 旧口径等于不过滤)。首日 prev=NaN → 不滤 (与 1d 首行一致)。
+            day_idx = close_aligned.index.normalize()
+            daily_close = close_aligned.groupby(day_idx).last()
+            prev = daily_close.shift(1).reindex(day_idx).values
+        else:
+            prev = np.empty_like(cv)
+            prev[0] = np.nan
+            prev[1:] = cv[:-1]
         # 接近涨停价(0.3%容差)则取消买入信号
         limit_up = cv >= prev * (1.0 + ratio_vec) * 0.997
         vals = entries.values.copy()

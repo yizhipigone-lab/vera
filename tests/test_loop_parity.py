@@ -401,3 +401,77 @@ def test_parity_slippage_stamp():
     eq_old, tr_old = _simulate_core_v3_legacy(*args)
     eq_new, tr_new = _simulate_core_v3(*args)
     assert_parity(eq_old, tr_old, eq_new, tr_new, "slippage=0.002 stamp=0.001")
+
+
+# ─────────────────────────────────────────────────────────────
+# 2026-07-18 审计 H3: 组合缺口补组
+# ─────────────────────────────────────────────────────────────
+def test_parity_trailing_first_delist_formula():
+    """trailing_first + 退市 + formula_exit 三者同开 (此前只在 stop_first 下测过)。"""
+    price, high, low, open_, entry = make_synthetic(seed=71, n_stocks=3)
+    n, k = price.shape
+    tradable = np.ones((n, k), dtype=bool)
+    tradable[15:, 0] = False
+    last_tradable = np.full(k, -1, dtype=np.int64)
+    last_tradable[0] = 14
+    fsig = np.zeros((n, k), dtype=bool)
+    fsig[15, 0] = True
+    eq_old, tr_old, eq_new, tr_new = run_both(
+        price, high, low, open_, entry,
+        tradable_np=tradable, last_tradable_idx=last_tradable,
+        formula_exit_np=fsig, trailing_first=True)
+    assert_parity(eq_old, tr_old, eq_new, tr_new,
+                  "trailing_first + delisting + formula_sell")
+
+
+@pytest.mark.parametrize("priority_flag", ["ladder_tp_first", "trailing_first"])
+def test_parity_cond_time_first_day_non_stop_first(priority_flag):
+    """cond_time + first_day 在非 stop_first 下的 tail 求值顺序对照。"""
+    price, high, low, open_, entry = make_synthetic(seed=66)
+    flags = {priority_flag: True}
+    eq_old, tr_old, eq_new, tr_new = run_both(
+        price, high, low, open_, entry,
+        cond_time_enabled=True, first_day_enabled=True, **flags)
+    assert_parity(eq_old, tr_old, eq_new, tr_new,
+                  f"cond_time+first_day under {priority_flag}")
+
+
+def test_parity_bpday48_real_5m():
+    """bpday=48 (真实 5m) 全 loop parity (此前最小只有 bpday=4)。"""
+    n, k, bpday = 96, 2, 48
+    rng = np.random.default_rng(9)
+    price = 10.0 * np.cumprod(1.0 + rng.normal(0, 0.004, (n, k)), axis=0)
+    high = price * (1 + np.abs(rng.normal(0, 0.004, (n, k))))
+    low = price * (1 - np.abs(rng.normal(0, 0.004, (n, k))))
+    op = price * (1 + rng.normal(0, 0.002, (n, k)))
+    entry = np.zeros((n, k), dtype=bool)
+    entry[3, 0] = True   # day0 第4根
+    entry[50, 1] = True  # day1 第3根
+    kw = dict(BASE_PARAMS)
+    args = (price, entry, kw["initial_capital"], kw["commission"],
+            kw["min_buy_amount"], kw["max_buy_amount"], kw["lot_size"], kw["min_lots"],
+            True, kw["cost_stop_threshold"], True, kw["trailing_activation"], kw["trailing_drawdown"],
+            True, kw["ladder_profits"], kw["ladder_ratios"], kw["n_ladder"],
+            True, kw["max_hold_days"], False, kw["cond_time_days"], kw["cond_time_profit"],
+            False, kw["first_day_target"], 1, high, low, bpday, kw["slippage"], kw["stamp_tax"],
+            None, None, op, None, 1.0, 1, False, False, 1.0)
+    eq_old, tr_old = _simulate_core_v3_legacy(*args)
+    eq_new, tr_new = _simulate_core_v3(*args)
+    assert_parity(eq_old, tr_old, eq_new, tr_new, "bpday=48 real 5m")
+
+
+def test_parity_suspension_and_formula_same_bar():
+    """临时停牌(非退市) + formula_sell 同 bar: 停牌跳过卖出检查优先于 formula。"""
+    price, high, low, open_, entry = make_synthetic(seed=88, n_stocks=3)
+    n, k = price.shape
+    tradable = np.ones((n, k), dtype=bool)
+    tradable[10:13, 1] = False  # stock1 bar10-12 临时停牌
+    last_tradable = np.full(k, n - 1, dtype=np.int64)  # 之后恢复, 非退市
+    fsig = np.zeros((n, k), dtype=bool)
+    fsig[11, 1] = True  # 停牌中发 formula_sell 信号
+    eq_old, tr_old, eq_new, tr_new = run_both(
+        price, high, low, open_, entry,
+        tradable_np=tradable, last_tradable_idx=last_tradable,
+        formula_exit_np=fsig)
+    assert_parity(eq_old, tr_old, eq_new, tr_new,
+                  "suspension + formula_sell same bar")
