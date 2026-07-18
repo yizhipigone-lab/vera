@@ -14,6 +14,38 @@ from utils.code_normalizer import normalize_list
 logger = get_logger(__name__)
 
 
+def _merge_window_masks(mask_frames: List[pd.DataFrame]) -> pd.DataFrame:
+    """合并各批窗口 mask: 时间轴取并集, 同 (行,列) 跨批取 OR。
+
+    2026-07-18 性能修复: 原 concat(axis=0) + groupby.max 在 bool+NaN→object
+    时退化为纯 Python 逐列聚合 (py-spy 实锤 ~0.84s/列 × 3873 列 ≈ 54 分钟,
+    回测假死事件)。各批 mask 列天然互斥 (每股 win_start 唯一 → 只属于一个
+    批次桶), 同 (行,列) 跨批取 OR 等价于"取唯一非空值", 故逐批 reindex 到
+    并集时间轴 (缺口填 False) 再 axis=1 拼列即等价 — 秒级完成, 内存峰值
+    从 ~5GB 降到 ~70MB。
+
+    兜底: 批间列重叠或批内重复时间戳 (按构造不应发生) 时退回原 groupby
+    慢速路径保正确性。
+    """
+    col_total = sum(len(m.columns) for m in mask_frames)
+    col_uniq = len({c for m in mask_frames for c in m.columns})
+    fast_ok = (col_total == col_uniq) and not any(
+        m.index.has_duplicates for m in mask_frames
+    )
+    if fast_ok:
+        union_idx = mask_frames[0].index
+        for m in mask_frames[1:]:
+            union_idx = union_idx.union(m.index)
+        return pd.concat(
+            [m.reindex(union_idx, fill_value=False) for m in mask_frames],
+            axis=1,
+        ).sort_index().fillna(False).astype(bool)
+    logger.warning("窗口 mask 批间列重叠/批内重复时间戳, 退回 groupby 慢速合并")
+    window_mask = pd.concat(mask_frames, axis=0)
+    # 同 (行,列) 跨批取 OR (任一批标记窗口内即为窗口内)
+    return window_mask.groupby(level=0).max().sort_index().fillna(False)
+
+
 class DataFetcher:
     """TDX 数据获取统一门面。所有调用前自动确保连接就绪。
 
@@ -356,9 +388,8 @@ class DataFetcher:
                 merged = merged.groupby(level=0).first().sort_index()
                 kline_out[f] = merged
 
-        window_mask = pd.concat(mask_frames, axis=0)
-        # 同 (行,列) 跨批取 OR (任一批标记窗口内即为窗口内)
-        window_mask = window_mask.groupby(level=0).max().sort_index().fillna(False)
+        # 合并各批窗口 mask (2026-07-18 抽为模块级函数, 见 _merge_window_masks docstring)
+        window_mask = _merge_window_masks(mask_frames)
         # 对齐到 Close 的行列 (兜底: 缺失填 False)
         if "Close" in kline_out:
             window_mask = window_mask.reindex(
