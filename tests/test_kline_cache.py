@@ -409,3 +409,114 @@ def test_get_kline_windowed_passes_use_cache(monkeypatch):
     df_mod.DataFetcher.get_kline_windowed(
         sel, period="5m", dividend_type="front", fill_data=False, use_cache=True)
     assert seen.get("use_cache") is True
+
+
+# ── 复权因子漂移探针 + force_refresh 绕冷却 (2026-07-18 数据层修复) ──
+
+
+def _const_fetcher(state):
+    """返回固定 close (= state['close']) 的 fake fetcher, 用于模拟因子 shift。"""
+    def fetch(stock_list, start, end, period="1d", dividend_type="front", **kw):
+        idx = pd.bdate_range(start, end)
+        close = pd.Series(state["close"], index=idx)
+        result = {"ErrorId": "0"}
+        for field in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
+            result[field] = pd.DataFrame({c: close for c in stock_list})
+        return result
+    return fetch
+
+
+def _backdate_probe(cache, code, period, hours=13):
+    """把 last_probe_at 改到 hours 小时前, 让探针到期。"""
+    old = (pd.Timestamp.now() - pd.Timedelta(hours=hours)).isoformat()
+    with cache._conn() as c:
+        c.execute("UPDATE manifest SET last_probe_at=? WHERE stock_code=? AND period=?",
+                  (old, code, period))
+
+
+def test_probe_detects_factor_shift_and_refetches(tmp_path):
+    """探针发现缓存末日 close 与 TDX 漂移 (复权因子 shift) → 全量重拉, 绕 F5 冷却。"""
+    state = {"close": 100.0}
+    cache = _make_cache(tmp_path, fetcher=_const_fetcher(state))
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert cache._close_at("600000.SH", "1d", pd.Timestamp("2024-01-31")) == 100.0
+
+    # 因子 shift: TDX 现值变 95.4; 上次全量拉取就在刚才 (F5 冷却 24h 内)
+    state["close"] = 95.4
+    _backdate_probe(cache, "600000.SH", "1d")
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    # 冷却没挡住: 确诊漂移直接全量重拉 (F6 同款路径)
+    assert cache._close_at("600000.SH", "1d", pd.Timestamp("2024-01-31")) == pytest.approx(95.4)
+
+
+def test_probe_no_shift_no_refetch(tmp_path):
+    """无漂移: 探针跑 (1 次小拉取) 但不全量重拉, last_probe_at 更新。"""
+    state = {"close": 100.0}
+    calls = {"n": 0}
+
+    def counting(stock_list, start, end, period="1d", dividend_type="front", **kw):
+        calls["n"] += 1
+        return _const_fetcher(state)(stock_list, start, end, period, dividend_type, **kw)
+
+    cache = _make_cache(tmp_path, fetcher=counting)
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 1
+    _backdate_probe(cache, "600000.SH", "1d")
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 2, "探针只做 1 次小拉取, 无漂移不重拉"
+    # last_probe_at 已刷新 → 12h 内不再探
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 2
+
+
+def test_probe_not_due_no_extra_call(tmp_path):
+    """新拉的数据自带探测标记 (12h 内), 命中缓存零额外 TDX 调用。"""
+    calls = {"n": 0}
+
+    def counting(stock_list, start, end, period="1d", dividend_type="front", **kw):
+        calls["n"] += 1
+        return _const_fetcher({"close": 100.0})(stock_list, start, end, period, dividend_type, **kw)
+
+    cache = _make_cache(tmp_path, fetcher=counting)
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 1
+
+
+def test_probe_failure_swallowed_serves_cache(tmp_path):
+    """探针拉取异常 (TDX 不可用) → 吞掉, 照常返回缓存数据。"""
+    state = {"close": 100.0}
+    cache = _make_cache(tmp_path, fetcher=_const_fetcher(state))
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+
+    def boom(*a, **kw):
+        raise RuntimeError("TDX down")
+
+    cache.tdx_fetcher = boom
+    _backdate_probe(cache, "600000.SH", "1d")
+    df = cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert not df["Close"].empty, "探针失败不得影响缓存服务"
+
+
+def test_force_invalidate_bypasses_cooldown(tmp_path):
+    """force_invalidate: intact=False + 清冷却标记 → 下次 get 必全量重拉 (显式强制优先)。"""
+    state = {"close": 100.0}
+    calls = {"n": 0}
+
+    def counting(stock_list, start, end, period="1d", dividend_type="front", **kw):
+        calls["n"] += 1
+        return _const_fetcher(state)(stock_list, start, end, period, dividend_type, **kw)
+
+    cache = _make_cache(tmp_path, fetcher=counting)
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 1
+    # 不 force: 冷却期内 intact=False 也不重拉 (F5 原语义)
+    cache._manifest_set_intact("600000.SH", "1d", False)
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 1, "F5 冷却挡住自动全量重拉"
+    # force_invalidate: 清冷却 → 必重拉
+    state["close"] = 95.4
+    cache.force_invalidate("600000.SH", "1d")
+    cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
+    assert calls["n"] == 2, "force_invalidate 后冷却不再挡"
+    assert cache._close_at("600000.SH", "1d", pd.Timestamp("2024-01-31")) == pytest.approx(95.4)

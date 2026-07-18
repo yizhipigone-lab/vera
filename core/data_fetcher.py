@@ -161,7 +161,9 @@ class DataFetcher:
                            calendar_fetcher=_calendar_fetcher)
         if force_refresh:
             for code in normalize_list(stock_list):
-                cache._manifest_set_intact(code, period, False)
+                # 2026-07-18: force_invalidate = intact=False + 清 F5 冷却标记,
+                # 显式强制不再被 24h 冷却吞掉
+                cache.force_invalidate(code, period)
         return cache.get(stock_list, start_time, end_time,
                          period=period, dividend_type=dividend_type)
 

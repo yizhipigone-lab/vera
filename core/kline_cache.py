@@ -44,7 +44,8 @@ class KlineCache:
     MANIFEST_COLUMNS = ["stock_code", "period", "first_date", "last_date",
                         "last_close", "rows", "fetched_at", "intact"]
 
-    def __init__(self, cache_dir, tdx_fetcher: Callable, calendar_fetcher: Callable):
+    def __init__(self, cache_dir, tdx_fetcher: Callable, calendar_fetcher: Callable,
+                 *, probe_hours: float = 12.0):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         (self.cache_dir / "calendar").mkdir(exist_ok=True)
@@ -54,6 +55,9 @@ class KlineCache:
         self.tdx_fetcher = tdx_fetcher
         self.calendar_fetcher = calendar_fetcher
         self._lock = threading.Lock()
+        # 2026-07-18: 复权因子漂移探针间隔 (0 = 禁用)。除权后前复权历史价整体
+        # 平移, F6 只在增量扩展时检测, 区间已覆盖时靠探针自愈。
+        self._probe_interval = pd.Timedelta(hours=float(probe_hours))
         self._init_db()
 
     # ───────────────────── sqlite manifest ─────────────────────
@@ -74,6 +78,11 @@ class KlineCache:
             # 迁移: 旧库无 last_full_refetch_at 列时补上 (F5 冷却)
             try:
                 c.execute("ALTER TABLE manifest ADD COLUMN last_full_refetch_at TEXT")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+            # 迁移: 2026-07-18 复权因子漂移探针
+            try:
+                c.execute("ALTER TABLE manifest ADD COLUMN last_probe_at TEXT")
             except sqlite3.OperationalError:
                 pass  # 列已存在
 
@@ -214,6 +223,11 @@ class KlineCache:
                     with self._lock:
                         self._fetch_and_store(code, period, start_ts, end_ts, dividend_type)
                     self._mark_refetch(code, period)
+        if need_fetch is None and self._probe_due(code, period):
+            # 2026-07-18: 复权因子漂移探针。F6 只在增量扩展时检测, 区间已覆盖
+            # (含 intact=false 冷却期内) 的因子漂移靠探针自愈 — 600000.SH 事件
+            # 里浦发 1d 缓存 intact=false, 探针挂在 intact 分支后永远到不了。
+            self._probe_shift(code, period, dividend_type)
         if period in ("1d", "5m") and not skip_gap_detection:
             self._detect_and_fill_gaps(code, period, start_ts, end_ts, dividend_type)
 
@@ -236,6 +250,85 @@ class KlineCache:
         with self._conn() as c:
             c.execute("UPDATE manifest SET last_full_refetch_at=? WHERE stock_code=? AND period=?",
                       (datetime.now().isoformat(), code, period))
+
+    # ── 复权因子漂移探针 (2026-07-18, 600000.SH 事件) ──
+
+    def _mark_probe(self, code: str, period: str):
+        with self._conn() as c:
+            c.execute("UPDATE manifest SET last_probe_at=? WHERE stock_code=? AND period=?",
+                      (datetime.now().isoformat(), code, period))
+
+    def _probe_due(self, code: str, period: str) -> bool:
+        """距上次探测超过间隔 → 该探。从未探过 (存量缓存) → 首次接触自愈。"""
+        if self._probe_interval <= pd.Timedelta(0):
+            return False
+        with self._conn() as c:
+            r = c.execute(
+                "SELECT last_probe_at FROM manifest WHERE stock_code=? AND period=?",
+                (code, period)).fetchone()
+        if not r or not r[0]:
+            return True
+        return (pd.Timestamp.now() - pd.Timestamp(r[0])) > self._probe_interval
+
+    def _probe_shift(self, code: str, period: str, dividend_type: str):
+        """复权因子漂移探针: 比对缓存末日 close 与 TDX 现值, 漂移 → 全量重拉。
+
+        背景 (600000.SH 事件): 除权后前复权历史价整体平移, F6 重叠 bar 检测只在
+        增量扩展时触发, 区间已覆盖时无任何检测 — 5m 缓存 9.26 / 1d 缓存 8.86 /
+        TDX 直拉 9.53 三基准并存。漂移确诊后照 F6 模式直接全量重拉
+        (绕 F5 冷却 — 冷却防的是停牌 thrash, 不是确诊漂移)。
+        探针异常 (TDX 不可用) → 吞掉, 用缓存现状, 不阻塞服务。
+        """
+        try:
+            rec = self._manifest_get(code, period)
+            if rec is None:
+                return
+            last_d = pd.Timestamp(rec[1])
+            df_day = self._read_parquet(code, period, last_d, last_d + pd.Timedelta(days=1))
+            old_close = None
+            if not df_day.empty and "close" in df_day.columns:
+                s = df_day["close"].dropna()
+                if not s.empty:
+                    old_close = float(s.iloc[-1])  # 末日最后一根 bar (5m 也正确)
+            raw = self.tdx_fetcher(
+                [code], (last_d - pd.Timedelta(days=10)).strftime("%Y%m%d"),
+                pd.Timestamp.now().strftime("%Y%m%d"),
+                period=period, dividend_type=dividend_type)
+            self._mark_probe(code, period)
+            new_close = None
+            if raw and "Close" in raw and code in raw["Close"].columns:
+                s = raw["Close"][code].dropna()
+                if not s.empty:
+                    if not isinstance(s.index, pd.DatetimeIndex):
+                        s.index = pd.to_datetime(s.index)
+                    same = s[s.index.normalize() == last_d.normalize()]
+                    if not same.empty:
+                        new_close = float(same.iloc[-1])
+            if (old_close is not None and new_close is not None
+                    and abs(new_close - old_close) > 1e-6):
+                logger.warning(
+                    "kline_factor_shift: %s %s 探针发现 %s close 缓存 %s vs TDX %s "
+                    "(复权因子漂移), 全量重拉",
+                    code, period, last_d.strftime("%Y-%m-%d"), old_close, new_close)
+                first_d = pd.Timestamp(rec[0])
+                with self._lock:
+                    self._fetch_and_store(code, period, first_d,
+                                          pd.Timestamp.now(), dividend_type)
+                self._mark_refetch(code, period)
+        except Exception:
+            logger.debug("kline_probe: %s %s 探针失败 (TDX 不可用?), 用缓存现状",
+                         code, period, exc_info=True)
+
+    def force_invalidate(self, code: str, period: str):
+        """显式强制失效 (force_refresh): intact=False + 清 F5 冷却标记。
+
+        F5 冷却防的是自动路径的停牌 thrash; 用户显式 force_refresh 意图优先,
+        下次 get 必全量重拉 (此前 force_refresh 被 24h 冷却静默吞掉)。
+        """
+        self._manifest_set_intact(code, period, False)
+        with self._conn() as c:
+            c.execute("UPDATE manifest SET last_full_refetch_at=NULL "
+                      "WHERE stock_code=? AND period=?", (code, period))
 
     def _close_at(self, code: str, period: str, date: pd.Timestamp) -> Optional[float]:
         """读 parquet 在 date 当日的 close (F6 重叠 bar 比对用)。"""
@@ -297,6 +390,8 @@ class KlineCache:
         last_close = float(df["close"].iloc[-1]) if "close" in df.columns else None
         self._manifest_upsert(code, period, first_d.strftime("%Y%m%d"),
                               last_d.strftime("%Y%m%d"), last_close, len(df), intact)
+        # 新拉的数据天然与 TDX 同步, 探测时间一并刷新 (12h 内不再探)
+        self._mark_probe(code, period)
 
     # ───────────────────── gap 检测 (1d 缺日 + 5m 缺 bar) ─────────────────────
 
