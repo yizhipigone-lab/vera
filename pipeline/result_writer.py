@@ -206,6 +206,14 @@ class ResultWriter:
                 })
             benchmark_data[name] = bm_list
 
+        # 2026-07-18: 超额汇总指标 (benchmark._align 挂在 DataFrame.attrs["stats"],
+        # 有才加 key 无则响应形状不变, 同 degradation 先例)
+        benchmark_stats = {}
+        for name, bm_df in (result.benchmark or {}).items():
+            st = getattr(bm_df, "attrs", {}).get("stats") if hasattr(bm_df, "attrs") else None
+            if st:
+                benchmark_stats[name] = {k: safe_serialize(v) for k, v in st.items()}
+
         resp = {
             "success": True,
             "metrics": metrics_clean,
@@ -219,6 +227,8 @@ class ResultWriter:
             "engine_version": ENGINE_VERSION,
             "entry_price_basis": ENTRY_PRICE_BASIS,
         }
+        if benchmark_stats:
+            resp["benchmark_stats"] = benchmark_stats
         # 2026-07-18 (计划书 §4.7 LOW-2): 5m 降级报告有才加 key, 无则响应形状不变
         degradation = backtest.get("degradation")
         if degradation is not None:

@@ -483,7 +483,8 @@ function collectConfigFromForm() {
     formula_sell_enabled: document.getElementById('cfgFormulaSellEn').checked,
     formula_sell_name: document.getElementById('cfgFormulaSellName').value.trim(),
     formula_sell_ratio: Math.max(0, Math.min(100, safeFloat('cfgFormulaSellRatio'))) / 100,
-    benchmark_indices: 'shanghai,chuangyeban,kechuang50,zhongzhengA500',
+    // 2026-07-18: 加 hs300 (沪深300) — 超额收益卡对比组; server.py:85 默认本就有, 前端表单此前漏配
+    benchmark_indices: 'shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500',
   };
 }
 
@@ -957,7 +958,16 @@ function fillHeroSub(m, data, c) {
     } else cumSub.textContent = '';
   }
   const ddSub = document.getElementById('kpiMaxDDSub');
-  if (ddSub) ddSub.innerHTML = m.max_drawdown != null ? '<span style="color:var(--text2)">峰值到谷值最大跌幅</span>' : '';
+  if (ddSub) {
+    if (m.max_drawdown != null) {
+      // 2026-07-18: 回撤修复天数 (false=到末尾仍未爬回前高)
+      let rec = '';
+      if (m.max_dd_recovery_days != null) {
+        rec = m.max_dd_recovered === false ? ' · ' + m.max_dd_recovery_days + '天仍未修复' : ' · 修复用' + m.max_dd_recovery_days + '天';
+      }
+      ddSub.innerHTML = '<span style="color:var(--text2)">峰值到谷值最大跌幅' + rec + '</span>';
+    } else ddSub.textContent = '';
+  }
   const shSub = document.getElementById('kpiSharpeSub');
   if (shSub) {
     if (m.sharpe_ratio != null) {
@@ -966,7 +976,9 @@ function fillHeroSub(m, data, c) {
       else if (m.sharpe_ratio >= 1) { grade = '良好'; cls = 'delta-up'; }
       else if (m.sharpe_ratio >= 0) { grade = '一般'; cls = ''; }
       else { grade = '不佳'; cls = 'delta-down'; }
-      shSub.innerHTML = '<span class="' + cls + '">' + grade + '</span>';
+      // 2026-07-18: Sortino 同行展示 (只罚下行波动, 贴中等回撤偏好)
+      const srt = m.sortino_ratio != null ? '<span style="color:var(--text2)"> · Sortino ' + Number(m.sortino_ratio).toFixed(2) + '</span>' : '';
+      shSub.innerHTML = '<span class="' + cls + '">' + grade + '</span>' + srt;
     } else shSub.textContent = '';
   }
   // B-13: 累计收益 + 最大回撤 sparkline（权益曲线 / 回撤曲线）
@@ -1021,6 +1033,21 @@ function renderAllCharts(data) {
   setKpi('kpiProfitF', m.profit_factor, v => v != null ? v.toFixed(2) : '--');
   setKpi('kpiBest', m.max_single_gain, v => v != null ? (v*100).toFixed(2)+'%' : '--');
 
+  // 2026-07-18: 超额收益卡 (对比组: 沪深300 + 创业板指; 子行: 年化超额 · IR · 月度胜率)
+  const bs = data.benchmark_stats || {};
+  const fillExcess = (id, subId, st) => {
+    setKpi(id, st && st.total_excess, v => v != null ? (v >= 0 ? '+' : '') + (v*100).toFixed(2)+'%' : '--');
+    const sub = document.getElementById(subId);
+    if (!sub) return;
+    if (st && st.annual_excess != null) {
+      const ir = st.information_ratio != null ? ' · IR ' + Number(st.information_ratio).toFixed(2) : '';
+      const mw = st.excess_monthly_win_rate != null ? ' · 月胜率 ' + (st.excess_monthly_win_rate*100).toFixed(0) + '%' : '';
+      sub.innerHTML = '<span style="color:var(--text2)">年化 ' + (st.annual_excess >= 0 ? '+' : '') + (st.annual_excess*100).toFixed(2) + '%' + ir + mw + '</span>';
+    } else sub.textContent = '';
+  };
+  fillExcess('kpiExcessHS300', 'kpiExcessHS300Sub', bs.hs300);
+  fillExcess('kpiExcessCYB', 'kpiExcessCYBSub', bs.chuangyeban);
+
   // P2-3: 更新图表标题
   const formula = data.formula_name || (lastResult && lastResult.formula_name) || '';
   const dateRange = (document.getElementById('cfgStart').value||'') + '~' + (document.getElementById('cfgEnd').value||'');
@@ -1045,7 +1072,7 @@ function renderAllCharts(data) {
     ];
     // H4 修正：基准线从首个有效数据点重归一化，消除与策略起始日的视觉偏移
     if (data.benchmarks) {
-      const bmNames = { shanghai: '上证', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
+      const bmNames = { shanghai: '上证', hs300: '沪深300', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
       const bmColors = [c.warn, c.accent2, c.accent, c.down];
       let ci = 0;
       for (const [name, bm] of Object.entries(data.benchmarks)) {

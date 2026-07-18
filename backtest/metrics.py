@@ -37,6 +37,12 @@ class MetricsCalculator:
             metrics["annualized_return"] = 0.0
         metrics["max_drawdown"] = float((equity / equity.expanding().max() - 1).min())
         metrics["sharpe_ratio"] = MetricsCalculator._sharpe(equity, risk_free, periods_per_year)
+        # 2026-07-18: Sortino (只罚下行波动, 贴合中等回撤偏好) + 最大回撤修复天数
+        metrics["sortino_ratio"] = MetricsCalculator._sortino(equity, periods_per_year)
+        rec_periods, rec_ok = MetricsCalculator._max_dd_recovery(equity)
+        # equity 对分钟级是逐 bar 的, 换算回交易日 (1d 时 ppy=252 恒等)
+        metrics["max_dd_recovery_days"] = int(round(rec_periods * 252 / periods_per_year))
+        metrics["max_dd_recovered"] = bool(rec_ok)  # False = 到末尾仍未爬回前高
         metrics["calmar_ratio"] = (
             metrics["annualized_return"] / abs(metrics["max_drawdown"])
             if abs(metrics["max_drawdown"]) > 0.0001 else 0.0
@@ -78,6 +84,44 @@ class MetricsCalculator:
             return 0.0
         excess = returns - risk_free / periods_per_year
         return float(excess.mean() / excess.std() * np.sqrt(periods_per_year))
+
+    @staticmethod
+    def _sortino(equity: pd.Series, periods_per_year: int = 252) -> float:
+        """索提诺比率: 年化收益 / 年化下行波动 (只罚负收益, 不罚上涨波动)。
+
+        下行波动取负收益序列的 std。无负收益 (全程不亏) 返回 0.0 而非 inf,
+        避免前端显示异常值 — 该场景夏普同样失真, 以 Calmar 为准。
+        """
+        returns = equity.pct_change().dropna()
+        if len(returns) < 2:
+            return 0.0
+        downside = returns[returns < 0]
+        if len(downside) < 2 or downside.std() == 0:
+            return 0.0
+        n = len(equity)
+        ann_ret = (equity.iloc[-1] / equity.iloc[0]) ** (periods_per_year / n) - 1
+        dd_ann = float(downside.std() * np.sqrt(periods_per_year))
+        return float(ann_ret / dd_ann) if dd_ann > 0 else 0.0
+
+    @staticmethod
+    def _max_dd_recovery(equity: pd.Series) -> tuple:
+        """最大回撤的修复时长 (period 数) 与是否已修复。
+
+        定位最大回撤谷底 → 找谷底之后首个涨回前高的点。到末尾仍未涨回
+        返回 (谷底到末尾的 period 数, False)。
+        """
+        if len(equity) < 2:
+            return 0, True
+        peak = equity.expanding().max()
+        dd = equity / peak - 1
+        trough_i = int(dd.values.argmin())
+        peak_val = float(peak.iloc[trough_i])
+        after = equity.iloc[trough_i + 1:]
+        hit = after[after >= peak_val]
+        if len(hit) > 0:
+            rec_i = int(equity.index.get_loc(hit.index[0]))
+            return rec_i - trough_i, True
+        return len(equity) - 1 - trough_i, False
 
     @staticmethod
     def max_drawdown(equity: pd.Series) -> float:

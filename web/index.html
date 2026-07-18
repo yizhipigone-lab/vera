@@ -485,6 +485,11 @@ input.invalid~.input-error{display:block}
         <div class="kpi-card" title="总盈利金额 / 总亏损金额，>1 为盈利"><div class="kpi-label">盈利因子</div><div class="kpi-value" id="kpiProfitF">--</div></div>
         <div class="kpi-card" title="年化收益 / 最大回撤，衡量风险调整后收益"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div></div>
       </div>
+      <!-- 2026-07-18: 超额收益卡 (对比组: 沪深300 + 创业板指; 子行: 年化超额 · IR · 月度胜率) -->
+      <div class="kpi-row kpi-row-secondary">
+        <div class="kpi-card" title="策略累计收益对比沪深300同期 (几何口径); 子行: 年化超额 · 信息比率 · 月度胜率"><div class="kpi-label">超额 vs 沪深300</div><div class="kpi-value" id="kpiExcessHS300">--</div><div class="kpi-sub" id="kpiExcessHS300Sub"></div></div>
+        <div class="kpi-card" title="策略累计收益对比创业板指同期 (几何口径); 子行: 年化超额 · 信息比率 · 月度胜率"><div class="kpi-label">超额 vs 创业板指</div><div class="kpi-value" id="kpiExcessCYB">--</div><div class="kpi-sub" id="kpiExcessCYBSub"></div></div>
+      </div>
       <div class="kpi-row kpi-row-tertiary">
         <div class="kpi-card" title="回测期间的总交易次数"><div class="kpi-label">交易笔数</div><div class="kpi-value" id="kpiTrades">--</div></div>
         <div class="kpi-card" title="所有交易中单笔最大收益率"><div class="kpi-label">最大单笔盈</div><div class="kpi-value" id="kpiBest">--</div></div>

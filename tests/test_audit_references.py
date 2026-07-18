@@ -96,8 +96,11 @@ def test_verify_existing_file_with_valid_line():
 
 
 def test_verify_existing_file_with_valid_range():
-    """存在文件 + 合法范围 → valid + 含 snippet."""
-    ref = Reference(file="backtest/metrics.py", start=67, end=68, raw="[backtest/metrics.py:67-68]")
+    """存在文件 + 合法范围 → valid + 含 snippet (行号随代码演进, 动态定位)."""
+    src = (PROJECT_ROOT / "backtest" / "metrics.py").read_text(encoding="utf-8").splitlines()
+    ln_no = next(i + 1 for i, ln in enumerate(src) if "except Exception" in ln)
+    ref = Reference(file="backtest/metrics.py", start=ln_no, end=ln_no + 1,
+                    raw=f"[backtest/metrics.py:{ln_no}-{ln_no + 1}]")
     results = verify_references([ref], PROJECT_ROOT)
     assert len(results) == 1
     assert results[0].is_valid
@@ -142,14 +145,23 @@ def test_verify_line_zero_is_invalid():
 
 
 def test_metrics_67_actual_code_has_as_e():
-    """C1 假阳性防回归: metrics.py:67 必须有 'as e' (报告错引 = 审计失败)."""
-    ref = Reference(file="backtest/metrics.py", start=67, end=68, raw="[backtest/metrics.py:67-68]")
-    results = verify_references([ref], PROJECT_ROOT)
-    assert results[0].is_valid
-    # 关键: 实际代码第 67 行必须有 'as e'
-    assert "as e" in (results[0].content_snippet or ""), (
-        "metrics.py:67 必须含 'as e', 若不含则审计报告 C1 错引回归"
-    )
+    """C1 假阳性防回归: metrics.py 的 except 行必须有 'as e' (报告错引 = 审计失败).
+
+    2026-07-18: 不再硬编码行号 67 (metrics.py 加 Sortino/修复天数后行号漂移),
+    改为动态定位 except Exception 行再校验 — 防回归意图不变。
+    """
+    src = (PROJECT_ROOT / "backtest" / "metrics.py").read_text(encoding="utf-8").splitlines()
+    except_lines = [i + 1 for i, ln in enumerate(src) if "except Exception" in ln]
+    assert except_lines, "metrics.py 应有 except Exception 块"
+    for ln_no in except_lines:
+        ref = Reference(file="backtest/metrics.py", start=ln_no, end=ln_no + 1,
+                        raw=f"[backtest/metrics.py:{ln_no}-{ln_no + 1}]")
+        results = verify_references([ref], PROJECT_ROOT)
+        assert results[0].is_valid
+        # 关键: 实际代码 except 行必须有 'as e'
+        assert "as e" in (results[0].content_snippet or ""), (
+            f"metrics.py:{ln_no} 必须含 'as e', 若不含则审计报告 C1 错引回归"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════

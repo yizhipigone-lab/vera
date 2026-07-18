@@ -1,5 +1,6 @@
 """基准指数对比器 — 将策略收益与大盘指数进行对比。"""
 
+import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional
 
@@ -10,6 +11,60 @@ from core.data_fetcher import DataFetcher
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def compute_comparison_stats(comparison: pd.DataFrame,
+                             periods_per_year: int = 252) -> dict:
+    """从对齐后的对比帧算超额汇总指标 (2026-07-18; 此前这些数只打日志不输出)。
+
+    Args:
+        comparison: _align 产物 (date 索引, strategy_equity/index_close/
+                    strategy_return/index_return/excess_return 列)
+        periods_per_year: 年化周期数 (与 BenchmarkComparator 口径一致)
+
+    Returns:
+        dict: strategy_total / index_total (区间累计涨跌),
+              total_excess (几何口径累计超额), annual_excess (复合年化超额),
+              information_ratio (年化超额 ÷ 年化跟踪误差, 超额稳定性),
+              excess_monthly_win_rate (月度跑赢基准的月份占比, <2 个月为 None)
+    """
+    if comparison is None or comparison.empty or len(comparison) < 2:
+        return {}
+    total_strategy = float(comparison["strategy_equity"].iloc[-1])
+    total_index = float(comparison["index_close"].iloc[-1])
+    stats = {
+        "strategy_total": total_strategy - 1,
+        "index_total": total_index - 1,
+    }
+    total_excess = (total_strategy / total_index) - 1 if total_index > 0 else 0.0
+    n_years = len(comparison) / periods_per_year if periods_per_year > 0 else 0
+    stats["total_excess"] = float(total_excess)
+    stats["annual_excess"] = (
+        float((1 + total_excess) ** (1 / n_years) - 1) if n_years > 0 else 0.0)
+
+    ex = comparison["excess_return"].dropna()
+    # std 阈值 1e-12: 恒定超额场景只剩浮点尾差 (~1e-16), 不能当有效波动除
+    if len(ex) >= 2 and ex.std() > 1e-12:
+        # IR = 年化超额均值 ÷ 年化跟踪误差 (算术年化, IR 标准口径)
+        stats["information_ratio"] = float(
+            ex.mean() * periods_per_year / (ex.std() * np.sqrt(periods_per_year)))
+    else:
+        stats["information_ratio"] = None
+
+    # 月度跑赢比例: 逐月几何收益, 策略 > 基准的月份占比
+    try:
+        monthly = comparison[["strategy_return", "index_return"]].resample("ME").apply(
+            lambda s: (1 + s.dropna()).prod() - 1)
+        monthly = monthly.dropna()
+        if len(monthly) >= 2:
+            stats["excess_monthly_win_rate"] = float(
+                (monthly["strategy_return"] > monthly["index_return"]).mean())
+        else:
+            stats["excess_monthly_win_rate"] = None
+    except Exception as e:
+        logger.warning("月度胜率计算失败: %s", e)
+        stats["excess_monthly_win_rate"] = None
+    return stats
 
 
 class BenchmarkComparator:
@@ -142,5 +197,10 @@ class BenchmarkComparator:
             f"指数累计={comparison['index_close'].iloc[-1]:.3f}, "
             f"超额收益={total_excess:.2%}"
         )
+
+        # 2026-07-18: 汇总指标挂 attrs (不动函数签名, 下游 report/可视化零影响;
+        # result_writer 读取后输出到前端超额卡片)
+        comparison.attrs["stats"] = compute_comparison_stats(
+            comparison, periods_per_year)
 
         return comparison
