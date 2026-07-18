@@ -383,3 +383,29 @@ def test_get_close_price_passes_use_cache(monkeypatch, tmp_path):
     assert seen["use_cache"] is True, "get_close_price 应把 use_cache 透传给 get_kline"
 
 
+
+
+def test_get_kline_windowed_passes_use_cache(monkeypatch):
+    """use_cache=True 时, get_kline_windowed 应把 use_cache 透传给 get_kline。"""
+    import core.data_fetcher as df_mod
+
+    seen = {}
+
+    def fake_get_kline(stock_list, start_time="", end_time="", period="1d",
+                       dividend_type="front", count=-1, fill_data=True,
+                       field_list=None, *, use_cache=False, force_refresh=False):
+        seen["use_cache"] = use_cache
+        idx = pd.DatetimeIndex(["2026-06-30 09:35", "2026-06-30 09:40"])
+        close = pd.DataFrame({"000001": [10.0, 10.1]}, index=idx)
+        return {f: close.copy() for f in ["Open", "High", "Low", "Close", "Volume", "Amount"]}
+
+    monkeypatch.setattr(df_mod.DataFetcher, "get_kline", fake_get_kline)
+    # get_trading_days 底层 _ensure_ready() 会触 TDX, 必须 mock (铁律: 测试不触 TDX)
+    monkeypatch.setattr(
+        df_mod.DataFetcher, "get_trading_days",
+        classmethod(lambda cls, s, e, market="SH":
+                    list(pd.bdate_range("2026-06-30", "2026-08-31"))))
+    sel = pd.DataFrame({"stock_code": ["000001"], "select_date": ["2026-06-30"]})
+    df_mod.DataFetcher.get_kline_windowed(
+        sel, period="5m", dividend_type="front", fill_data=False, use_cache=True)
+    assert seen.get("use_cache") is True

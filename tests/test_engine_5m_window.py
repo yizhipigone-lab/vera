@@ -26,15 +26,17 @@ def _make_5m(n_bars=96, n_stocks=2):
     return close, codes, idx
 
 
-def _run_5m(monkeypatch, close, mask, stop_config=None, capture=None):
+def _run_5m(monkeypatch, close, mask, stop_config=None, capture=None, config=None):
     """公共驱动: mock 窗口拉取 + 捕获 _simulate_core_v3 入参。"""
-    eng = BacktestEngine({'period': '5m'})
+    eng = BacktestEngine(config or {'period': '5m'})
     kline = {'Close': close, 'High': close * 1.01, 'Low': close * 0.99,
              'Open': close.copy()}
     called = {}
 
-    def fake_windowed(selections, period, window_trading_days, dividend_type, fill_data):
+    def fake_windowed(selections, period, window_trading_days, dividend_type,
+                      fill_data, *, use_cache=False):
         called['window_trading_days'] = window_trading_days
+        called['use_cache'] = use_cache
         return kline, mask
 
     monkeypatch.setattr(engine_module.DataFetcher, 'get_kline_windowed', fake_windowed)
@@ -114,3 +116,20 @@ def test_last_tradable_idx_recomputed_inside_window(monkeypatch):
     cols = sorted(close.columns)
     assert lti[cols.index('600001')] == len(idx) - 1
     assert lti[cols.index('688001')] == 59
+
+
+def test_engine_5m_passes_use_kline_cache(monkeypatch):
+    """engine.use_kline_cache (默认 True) 应透传到 get_kline_windowed 的 use_cache。"""
+    close, codes, idx = _make_5m()
+    mask = pd.DataFrame(True, index=idx, columns=codes)
+    called = _run_5m(monkeypatch, close, mask, capture={})
+    assert called.get('use_cache') is True
+
+
+def test_engine_5m_passes_use_kline_cache_false(monkeypatch):
+    """反向 (审计 LOW-1): use_kline_cache=False 必须透传 False — 防误改硬编码 True。"""
+    close, codes, idx = _make_5m()
+    mask = pd.DataFrame(True, index=idx, columns=codes)
+    called = _run_5m(monkeypatch, close, mask, capture={},
+                     config={'period': '5m', 'use_kline_cache': False})
+    assert called.get('use_cache') is False

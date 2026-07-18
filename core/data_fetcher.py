@@ -260,6 +260,8 @@ class DataFetcher:
         window_trading_days: int = 45,
         dividend_type: str = "front",
         fill_data: bool = False,
+        *,
+        use_cache: bool = False,
     ) -> tuple:
         """稀疏窗口拉取: 只拉每只股票信号日往后 window_trading_days 交易日的 K 线。
 
@@ -272,6 +274,8 @@ class DataFetcher:
             window_trading_days: 每只股信号日往后拉多少交易日 (默认 45, 覆盖 30 天持仓+15 缓冲)。
             dividend_type: 复权口径 (默认 "front", 与 engine 对齐)。
             fill_data: 是否让 TDX 前向填充 (默认 False, 保留停牌 NaN)。
+            use_cache: 是否走 KlineCache 三级漏斗 (默认 False 向后兼容; True 时
+                fill_data 无效, 缓存 miss-fetch 恒按 fill_data=False 拉, 见 _get_kline_via_cache)。
 
         Returns:
             (kline_dict, window_mask):
@@ -313,6 +317,7 @@ class DataFetcher:
                 period=period,
                 dividend_type=dividend_type,
                 fill_data=fill_data,
+                use_cache=use_cache,
             )
             if not data or "Close" not in data:
                 continue

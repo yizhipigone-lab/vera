@@ -793,6 +793,7 @@ class BacktestEngine:
             kline, window_mask = DataFetcher.get_kline_windowed(
                 selections, period=self.period,
                 window_trading_days=win_td, dividend_type="front", fill_data=False,
+                use_cache=self.use_kline_cache,
             )
         else:
             kline = DataFetcher.get_kline(codes, start_time, end_time, dividend_type="front", period=self.period, fill_data=False, use_cache=self.use_kline_cache)

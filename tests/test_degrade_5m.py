@@ -339,7 +339,7 @@ def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
     monkeypatch.setattr(
         engine_module.DataFetcher, 'get_kline_windowed',
         staticmethod(lambda selections, period, window_trading_days, dividend_type,
-                     fill_data: (kline, mask)))
+                     fill_data, use_cache=False: (kline, mask)))
     monkeypatch.setattr(
         engine_module.DataFetcher, 'get_trading_days',
         classmethod(lambda cls, start, end, market="SH": list(trading_days)))
