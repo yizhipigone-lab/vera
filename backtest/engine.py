@@ -722,6 +722,11 @@ class BacktestEngine:
         # 2026-07-18: 5m 数据层降级 (计划书 2026-07-18, 默认关 G4)。缺 5m 的股-天
         # 用 1d OHLC 填充保住信号; 仅 period="5m" 等分钟级 + run() 路径生效。
         self.degrade_5m = bool(config.get("degrade_5m", False))
+        # 2026-07-18: 矩阵级缓存 (backtest/matrix_cache.py, 默认关 — 测试隔离;
+        # pipeline server 路径 setdefault 开)。止盈止损参数不影响准备段产物,
+        # 命中时改参数重跑只剩核心循环。degrade_5m=on 时自动跳过。
+        self.matrix_cache = bool(config.get("matrix_cache", False))
+        self.matrix_cache_dir = config.get("matrix_cache_dir")  # None → data/matrix_cache
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -734,71 +739,48 @@ class BacktestEngine:
             self.eff_slippage = self.slippage
             self.eff_stamp_tax = self.stamp_tax
 
-    def run(self, selections, start_time="", end_time="", stop_config=None):
-        """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
+    def _resolve_window_td(self, stop) -> Optional[int]:
+        """5m 稀疏窗口长度 (交易日); 1d 路径返回 None。
 
-        调用方注意：若 selections 来自不复权数据源，需通过 Pipeline.run() 统一入口，
-        pipeline 会在 step1 之后校验复权口径一致性。直接调 engine.run() 绕过了此校验。
+        窗口尾部安全校验: 窗口必须 > max_hold_days, 否则时间止损来不及触发,
+        持仓被窗口边界当退市强平(reason=11)。见 loop.py:107。
         """
-        if selections.empty: return self._empty_result()
-
-        stop = stop_config or {}
-        # 2026-07-05: 优先级 (ladder_tp_first / trailing_first)
-        # 2026-07-18 审计 F5: 补 run_cached 同款合法性校验 + 常量收口 stop_config
-        priority = str(stop.get("priority", DEFAULT_PRIORITY))
-        if priority not in VALID_PRIORITIES:
+        if self.bars_per_day <= 1:
+            return None
+        win_td = int(getattr(self, "_window_trading_days", 45))
+        _mhd = int(stop.get("time_stop", {}).get("max_hold_days", 20))
+        if win_td <= _mhd + 5:
+            win_td = _mhd + 15
             logger.warning(
-                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
-                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
+                "5m稀疏窗口: max_hold_days=%d 接近窗口, 自动加长窗口到 %d 交易日防退市误杀",
+                _mhd, win_td,
             )
-            priority = DEFAULT_PRIORITY
-        ladder_tp_first = (priority == "ladder_tp_first")
-        trailing_first = (priority == "trailing_first")
-        cost = stop.get("cost_stop", {})
-        trail = stop.get("trailing_stop", {})
-        trailing_activation = trail.get("activation")
-        if trailing_activation is None:
-            trailing_activation = DEFAULT_TRAILING_ACTIVATION
-        trailing_drawdown = trail.get("drawdown")
-        if trailing_drawdown is None:
-            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
-        ladder = stop.get("ladder_tp", {})
-        time_s = stop.get("time_stop", {})
-        cond_t = stop.get("cond_time_stop", {})
-        first_day = stop.get("first_day", {})
+        if not stop.get("time_stop", {}).get("enabled", True):
+            logger.warning(
+                "5m稀疏窗口模式建议开启时间止损(time_stop.enabled); "
+                "否则窗口尾部未平持仓会被当退市强平(reason=11)"
+            )
+        return win_td
 
-        codes = selections["stock_code"].unique().tolist()
+    def _prepare_run_matrices(self, selections, start_time, end_time, win_td):
+        """run() 的准备段 (2026-07-18 抽出, 供矩阵级缓存复用)。
 
-        # 始终获取完整OHLC数据（不再仅首日规则）
-        # P0-1: fill_data=False — 让停牌以 NaN 显式暴露，避免 TDX 源头前向填充掩盖前视偏差
-        # 2026-07-16: 5m/分钟级走稀疏窗口拉取, 只拉每只股信号日往后 45 交易日,
-        #   避免 4889 只×4.5年 5m 全量(~15亿点)拉取卡死。日线路径一字不变(向后兼容)。
+        取数 → 非标准bar过滤 → degrade → entries → 列对齐 → ffill → tradable。
+        产物只依赖 选股结果/区间/period/窗口/复权/数据, 与止盈止损参数无关。
+        取数为空返回 None (调用方转 _empty_result)。
+        """
         window_mask = None
         if self.bars_per_day > 1:
-            win_td = int(getattr(self, "_window_trading_days", 45))
-            # 窗口尾部安全校验: 窗口必须 > max_hold_days, 否则时间止损来不及触发,
-            #   持仓被窗口边界当退市强平(reason=11)。见 loop.py:107。
-            _mhd = int(stop.get("time_stop", {}).get("max_hold_days", 20))
-            if win_td <= _mhd + 5:
-                win_td = _mhd + 15
-                logger.warning(
-                    "5m稀疏窗口: max_hold_days=%d 接近窗口, 自动加长窗口到 %d 交易日防退市误杀",
-                    _mhd, win_td,
-                )
-            if not stop.get("time_stop", {}).get("enabled", True):
-                logger.warning(
-                    "5m稀疏窗口模式建议开启时间止损(time_stop.enabled); "
-                    "否则窗口尾部未平持仓会被当退市强平(reason=11)"
-                )
             kline, window_mask = DataFetcher.get_kline_windowed(
                 selections, period=self.period,
                 window_trading_days=win_td, dividend_type="front", fill_data=False,
                 use_cache=self.use_kline_cache,
             )
         else:
+            codes = selections["stock_code"].unique().tolist()
             kline = DataFetcher.get_kline(codes, start_time, end_time, dividend_type="front", period=self.period, fill_data=False, use_cache=self.use_kline_cache)
         if not kline or "Close" not in kline:
-            return self._empty_result()
+            return None
 
         close = self._ensure_index(kline["Close"])
         high_df_raw = kline.get("High")
@@ -867,6 +849,84 @@ class BacktestEngine:
         if degraded_np is not None:
             tradable_np = tradable_np | degraded_np
             last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+
+        return {
+            "close": close, "entries": entries,
+            "high": high_np, "low": low_np, "open": open_np,
+            "tradable": tradable_np, "last_tradable_idx": last_tradable_idx,
+            "idx": idx, "cols": cols,
+            "degraded_np": degraded_np, "degrade_res": degrade_res,
+        }
+
+    def run(self, selections, start_time="", end_time="", stop_config=None):
+        """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
+
+        调用方注意：若 selections 来自不复权数据源，需通过 Pipeline.run() 统一入口，
+        pipeline 会在 step1 之后校验复权口径一致性。直接调 engine.run() 绕过了此校验。
+        """
+        if selections.empty: return self._empty_result()
+
+        stop = stop_config or {}
+        # 2026-07-05: 优先级 (ladder_tp_first / trailing_first)
+        # 2026-07-18 审计 F5: 补 run_cached 同款合法性校验 + 常量收口 stop_config
+        priority = str(stop.get("priority", DEFAULT_PRIORITY))
+        if priority not in VALID_PRIORITIES:
+            logger.warning(
+                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
+                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
+            )
+            priority = DEFAULT_PRIORITY
+        ladder_tp_first = (priority == "ladder_tp_first")
+        trailing_first = (priority == "trailing_first")
+        cost = stop.get("cost_stop", {})
+        trail = stop.get("trailing_stop", {})
+        trailing_activation = trail.get("activation")
+        if trailing_activation is None:
+            trailing_activation = DEFAULT_TRAILING_ACTIVATION
+        trailing_drawdown = trail.get("drawdown")
+        if trailing_drawdown is None:
+            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
+        ladder = stop.get("ladder_tp", {})
+        time_s = stop.get("time_stop", {})
+        cond_t = stop.get("cond_time_stop", {})
+        first_day = stop.get("first_day", {})
+
+        codes = selections["stock_code"].unique().tolist()
+
+        # 始终获取完整OHLC数据（不再仅首日规则）
+        # P0-1: fill_data=False — 让停牌以 NaN 显式暴露，避免 TDX 源头前向填充掩盖前视偏差
+        # 2026-07-16: 5m/分钟级走稀疏窗口拉取, 只拉每只股信号日往后 45 交易日,
+        #   避免 4889 只×4.5年 5m 全量(~15亿点)拉取卡死。日线路径一字不变(向后兼容)。
+        # 2026-07-18: 准备段抽为 _prepare_run_matrices + 矩阵级缓存接缝。
+        #   止盈止损参数不进 key (win_td 由 max_hold_days 推出, 已在 key 里),
+        #   命中时改参数重跑只剩核心循环; degrade_5m=on 跳过缓存
+        #   (degrade_res 含非序列化对象, 见 backtest/matrix_cache.py docstring)。
+        win_td = self._resolve_window_td(stop)
+        use_mc = (self.matrix_cache
+                  and not (self.degrade_5m and self.bars_per_day > 1))
+        prep = None
+        if use_mc:
+            from backtest import matrix_cache as _mc
+            mc_root = self.matrix_cache_dir or _mc.default_cache_root()
+            mc_key = _mc.build_key(selections, start_time, end_time, self.period,
+                                   win_td, self.use_kline_cache, ENGINE_VERSION)
+            prep = _mc.load(mc_root, mc_key, ENGINE_VERSION)
+        if prep is None:
+            prep = self._prepare_run_matrices(selections, start_time, end_time, win_td)
+            if prep is None:
+                return self._empty_result()
+            if use_mc:
+                _mc.save(mc_root, mc_key, ENGINE_VERSION, prep)
+        close = prep["close"]
+        entries = prep["entries"]
+        high_np = prep["high"]
+        low_np = prep["low"]
+        open_np = prep["open"]
+        tradable_np = prep["tradable"]
+        last_tradable_idx = prep["last_tradable_idx"]
+        cols = prep["cols"]
+        degraded_np = prep.get("degraded_np")
+        degrade_res = prep.get("degrade_res")
 
         # 准备阶梯止盈数组
         levels = ladder.get("levels", [])

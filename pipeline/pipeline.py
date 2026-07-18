@@ -115,6 +115,9 @@ class Pipeline:
                 sel_period, bt_period,
             )
 
+        # 2026-07-18: 矩阵级缓存 server 路径默认开 (bt_cfg 显式 matrix_cache:false 可关)。
+        # 止盈止损参数不影响准备段产物, 命中时改参数重跑只剩核心循环。
+        bt_cfg = {**bt_cfg, "matrix_cache": bt_cfg.get("matrix_cache", True)}
         self.backtest_engine = BacktestEngine(bt_cfg)
 
         start = time_cfg.get("start", "")
