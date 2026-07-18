@@ -17,11 +17,15 @@ from backtest.engine import BacktestEngine
 
 
 def _make_5m(n_bars=96, n_stocks=2):
-    """2 天 × 48 根 5m bar。"""
-    idx = pd.date_range('2024-01-02 09:35', periods=n_bars, freq='5min')
+    """2 天 × 48 根 5m bar (标准时刻, 9:35-11:30 + 13:05-15:00, 含午间断档)。"""
+    day1 = (pd.date_range('2024-01-02 09:35', periods=24, freq='5min')
+            .append(pd.date_range('2024-01-02 13:05', periods=24, freq='5min')))
+    day2 = (pd.date_range('2024-01-03 09:35', periods=24, freq='5min')
+            .append(pd.date_range('2024-01-03 13:05', periods=24, freq='5min')))
+    idx = day1.append(day2)[:n_bars]
     codes = ['600001', '688001'][:n_stocks]
     close = pd.DataFrame(
-        10.0 + np.arange(n_bars)[:, None] * 0.01 + np.arange(n_stocks)[None, :],
+        10.0 + np.arange(len(idx))[:, None] * 0.01 + np.arange(n_stocks)[None, :],
         index=idx, columns=codes)
     return close, codes, idx
 
@@ -133,3 +137,57 @@ def test_engine_5m_passes_use_kline_cache_false(monkeypatch):
     called = _run_5m(monkeypatch, close, mask, capture={},
                      config={'period': '5m', 'use_kline_cache': False})
     assert called.get('use_cache') is False
+
+
+def _make_5m_with_extra_bar():
+    """3 天 5m, day2 多一根 13:00 复牌竞价 bar (2026-07-18 实盘事件:
+    300665/600228/688689 盘中临停 13:00 复牌, 给全市场网格注入 +1 行,
+    导致 i//bpday 日界错位, T+1 把次日早盘卖出锁到 14:55)。"""
+    idx1 = pd.date_range('2024-01-02 09:35', periods=24, freq='5min').append(
+           pd.date_range('2024-01-02 13:05', periods=24, freq='5min'))
+    idx2 = idx1.append(pd.DatetimeIndex(['2024-01-03 13:00']))  # day2 +13:00
+    idx3 = idx2.append(pd.DatetimeIndex(
+        pd.date_range('2024-01-04 09:35', periods=24, freq='5min').append(
+        pd.date_range('2024-01-04 13:05', periods=24, freq='5min'))))
+    # 修正: idx2 应为 day1+day2
+    idx = (pd.date_range('2024-01-02 09:35', periods=24, freq='5min')
+           .append(pd.date_range('2024-01-02 13:05', periods=24, freq='5min'))
+           .append(pd.date_range('2024-01-03 09:35', periods=24, freq='5min'))
+           .append(pd.date_range('2024-01-03 13:05', periods=24, freq='5min'))
+           .append(pd.DatetimeIndex(['2024-01-03 13:00']))
+           .append(pd.date_range('2024-01-04 09:35', periods=24, freq='5min'))
+           .append(pd.date_range('2024-01-04 13:05', periods=24, freq='5min')))
+    idx = idx.sort_values()
+    close = pd.DataFrame(10.0, index=idx, columns=['600001'])
+    # day3 (1-04) 09:50 bar low 9.4 破止损线 (-4.6% → 9.54)
+    return close, idx
+
+
+def test_extra_13xx_bar_dropped_and_t1_aligned(monkeypatch):
+    """非标准时刻 bar (13:00 复牌竞价) 必须被滤掉: 网格每天恰好 48 根,
+    T+1 日界不错位 — day2 入场, day3 早盘 09:50 就触发成本止损 (而非错位到午后)。"""
+    close, idx = _make_5m_with_extra_bar()
+    eng = BacktestEngine({'period': '5m', 'initial_capital': 100000.0})
+    high = close.copy(); low = close.copy(); open_ = close.copy()
+    high.loc[pd.Timestamp('2024-01-04 09:50')] = 10.0
+    low.loc[pd.Timestamp('2024-01-04 09:50')] = 9.40
+    kline = {'Close': close, 'High': high, 'Low': low, 'Open': open_}
+    mask = pd.DataFrame(True, index=idx, columns=['600001'])
+    monkeypatch.setattr(
+        engine_module.DataFetcher, 'get_kline_windowed',
+        staticmethod(lambda selections, period, window_trading_days, dividend_type,
+                     fill_data, **kw: (kline, mask)))
+    monkeypatch.setattr(BacktestEngine, '_filter_limit_up',
+                        lambda self, entries, prices: entries)
+    selections = pd.DataFrame([{'select_date': pd.Timestamp('2024-01-03'),
+                                'stock_code': '600001'}])
+    result = eng.run(selections=selections, start_time='20240102', end_time='20240104',
+                     stop_config={'cost_stop': {'enabled': True, 'threshold': -0.046},
+                                  'trailing_stop': {'enabled': False},
+                                  'ladder_tp': {'enabled': False},
+                                  'time_stop': {'enabled': True, 'max_hold_days': 20}})
+    assert not result.trades.empty, "应有成交"
+    t = result.trades.iloc[0]
+    assert str(t['exit_date'])[11:16] == '09:50', \
+        f"成本止损应在 day3 09:50 触发 (实际 {t['exit_date']}) — 13:00 多余 bar 导致日界错位"
+    assert t['exit_price'] == pytest.approx(9.54, abs=1e-4)

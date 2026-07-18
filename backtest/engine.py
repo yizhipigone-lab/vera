@@ -19,7 +19,7 @@ from backtest.degrade_5m import (
     synthesize_5m_grid,
 )
 from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
-from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR
+from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
 from backtest.stop_config import (
     DEFAULT_TRAILING_ACTIVATION,
     DEFAULT_TRAILING_DRAWDOWN,
@@ -808,6 +808,13 @@ class BacktestEngine:
         low_df = self._ensure_index(low_df_raw) if low_df_raw is not None else None
         open_df = self._ensure_index(open_df_raw) if open_df_raw is not None else None
 
+        # 2026-07-18: 5m 非标准时刻 bar 过滤 (48 根/天不变量, 001399/300227 实盘事件)。
+        # 盘中临停股 13:00 复牌竞价 bar 会给并集网格注入 +1 行, loop 的 T+1
+        # i//bpday 日界随之错位, 次日早盘卖出被锁到 14:55 (止损延迟 +5%)。
+        if self.bars_per_day == 48:
+            close, high_df, low_df, open_df = self._drop_nonstandard_5m_bars(
+                close, high_df, low_df, open_df)
+
         # 2026-07-18: 5m 数据层降级 (opt-in, 计划书 2026-07-18)。必须在
         # _build_entry_signals 之前 (信号日插行才有行可放信号) 且在 high/low
         # ffill 之前 (否则前一日数据先 ffill 进缺口, 审计 MEDIUM-2)。
@@ -1284,6 +1291,30 @@ class BacktestEngine:
     def _ensure_index(self, df):
         if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)
         return df.sort_index()
+
+    @staticmethod
+    def _drop_nonstandard_5m_bars(close, high_df, low_df, open_df):
+        """丢弃时刻不在标准 48 槽位 (STD_5M_BAR_TIMES) 的 bar (2026-07-18)。
+
+        盘中临停股 13:00 复牌竞价 bar 等非标准时刻会让并集网格某天 ≠48 根,
+        破坏 loop 的 T+1 i//bpday 日界。被丢 bar 多为临停复牌竞价打印,
+        该股的当日数据会缺一根 (NaN, 按停牌语义处理), 日志明示。
+        """
+        times = close.index.strftime("%H:%M")
+        keep = pd.Index(times).isin(STD_5M_BAR_TIMES)
+        n_drop = int((~keep).sum())
+        if not n_drop:
+            return close, high_df, low_df, open_df
+        odd_days = sorted({d.strftime("%Y-%m-%d") for d in close.index[~keep]})
+        logger.warning(
+            "5m 非标准时刻 bar 过滤: 丢弃 %d 根 (时刻 %s, 涉及 %d 天 %s), "
+            "保持 48 根/天不变量 (临停复牌竞价 bar 所致)",
+            n_drop, sorted(set(times[~keep])), len(odd_days), odd_days[:5])
+        close = close.loc[keep]
+        high_df = high_df.loc[keep] if high_df is not None else None
+        low_df = low_df.loc[keep] if low_df is not None else None
+        open_df = open_df.loc[keep] if open_df is not None else None
+        return close, high_df, low_df, open_df
 
     def _apply_5m_degradation(self, close, high_df, low_df, open_df, selections, win_td):
         """5m 数据层降级编排 (计划书 2026-07-18 §4.1/4.2): 缺 5m 的股-天用 1d OHLC 填充。

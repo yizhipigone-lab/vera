@@ -33,3 +33,26 @@ _PERIODS_PER_YEAR = {
 
 BARS_PER_DAY = MappingProxyType(_BARS_PER_DAY)
 PERIODS_PER_YEAR = MappingProxyType(_PERIODS_PER_YEAR)
+
+
+def _std_5m_bar_times() -> tuple:
+    """A股 5m 标准 48 根 bar 时刻 (HH:MM): 9:35..11:30 (24) + 13:05..15:00 (24)。
+
+    2026-07-18 实盘事件: 盘中临停股 13:00 复牌竞价 bar 会混进 TDX 返回,
+    给全市场并集网格注入 +1 行, 破坏 48 根/天不变量 (loop 的 T+1 i//bpday
+    日界错位, 次日早盘卖出被锁到 14:55)。engine 5m 路径据此集合过滤非标准 bar。
+    """
+    import pandas as pd
+    times = []
+    t = pd.Timestamp("2000-01-01 09:35")
+    for _ in range(24):
+        times.append(t.strftime("%H:%M"))
+        t += pd.Timedelta(minutes=5)
+    t = pd.Timestamp("2000-01-01 13:05")
+    for _ in range(24):
+        times.append(t.strftime("%H:%M"))
+        t += pd.Timedelta(minutes=5)
+    return tuple(times)
+
+
+STD_5M_BAR_TIMES = frozenset(_std_5m_bar_times())
