@@ -1,18 +1,17 @@
 """
-UPN 基线回测(阶段 B)— 落盘 selections + per-trade trades
+基线回测(阶段 B)— 落盘 selections + per-trade trades
 
-复用 gs_run_one 的调用模式(StockSelector → BacktestEngine.run),
-额外把 selections 和 per-trade trades 落盘,供阶段 C 评分分析。
-
-审计 H1:gs_run_one 只输出聚合 JSON,无 per-trade 明细;per-trade 真实来源是
-result['trades'](engine.run 返回)。本脚本补这个落盘。
+两种模式:
+  1. --formula UPN(默认):用 default.yaml 的 formula_arg + stop_config
+  2. --strategy-yaml config/strategy_QUANTQQ.yaml:读 strategy yaml 的 selection + stop_loss(真实策略)
 
 用法:
     python tools/run_upn_baseline.py --start 20250719 --end 20260718
+    python tools/run_upn_baseline.py --strategy-yaml config/strategy_QUANTQQ.yaml --start 20250719 --end 20260718
 
 落盘(data/baseline/):
-    {formula}_selections_<tag>.parquet   — 选股信号(stock_code, select_date, ...)
-    {formula}_trades_<tag>.parquet       — per-trade 明细(stock_code, entry_date, exit_date, profit_pct, ...)
+    {label}_selections_<tag>.parquet
+    {label}_trades_<tag>.parquet
 """
 import sys
 import os
@@ -44,24 +43,42 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", required=True, help="开始日期 YYYYMMDD")
     ap.add_argument("--end", required=True, help="结束日期 YYYYMMDD")
-    ap.add_argument("--formula", default="UPN", help="公式名(默认 UPN)")
+    ap.add_argument("--formula", default="UPN", help="公式名(无 --strategy-yaml 时用)")
+    ap.add_argument("--strategy-yaml", default=None,
+                    help="strategy yaml 路径(读 selection+stop_loss,跑真实策略)")
     args = ap.parse_args()
 
-    defaults = ConfigLoader.load_defaults()
-    bt_cfg = defaults.get("backtest", {})
-    sel_tmpl = defaults.get("selection", {})
-    formula_arg = str(sel_tmpl.get("formula_arg", ""))
+    if args.strategy_yaml:
+        # 模式 2:从 strategy yaml 读 selection + backtest + stop_loss(真实策略)
+        strat = ConfigLoader.load_yaml(args.strategy_yaml)
+        sel_section = strat.get("selection", {})
+        bt_cfg = strat.get("backtest", ConfigLoader.load_defaults().get("backtest", {}))
+        sel_cfg = {
+            "formula_name": sel_section.get("formula_name", args.formula),
+            "formula_arg": str(sel_section.get("formula_arg", "")),
+            "universe": sel_section.get("universe", {"type": "50", "exclude_st": True}),
+            "period": sel_section.get("period", "1d"),
+            "dividend_type": sel_section.get("dividend_type", 1),
+        }
+        stop_config = load_stop_config(args.strategy_yaml)   # 读 strategy 的 stop_loss
+        label = sel_cfg["formula_name"]
+        print(f"[INFO] strategy={args.strategy_yaml}")
+    else:
+        # 模式 1:--formula + default.yaml
+        defaults = ConfigLoader.load_defaults()
+        bt_cfg = defaults.get("backtest", {})
+        sel_tmpl = defaults.get("selection", {})
+        sel_cfg = {
+            "formula_name": args.formula,
+            "formula_arg": str(sel_tmpl.get("formula_arg", "")),
+            "universe": sel_tmpl.get("universe", {"type": "50", "exclude_st": True}),
+            "period": sel_tmpl.get("period", "1d"),
+            "dividend_type": sel_tmpl.get("dividend_type", 1),
+        }
+        stop_config = load_stop_config()
+        label = args.formula
 
-    sel_cfg = {
-        "formula_name": args.formula,
-        "formula_arg": formula_arg,
-        "universe": sel_tmpl.get("universe", {"type": "50", "exclude_st": True}),
-        "period": sel_tmpl.get("period", "1d"),
-        "dividend_type": sel_tmpl.get("dividend_type", 1),
-    }
-    stop_config = load_stop_config()
-
-    print(f"[INFO] {args.formula}(arg={formula_arg}) {args.start}~{args.end}")
+    print(f"[INFO] {label}(arg={sel_cfg['formula_arg']}) {args.start}~{args.end}")
 
     # 1. 选股
     selector = StockSelector(sel_cfg)
@@ -79,7 +96,6 @@ def main() -> None:
         end_time=args.end,
         stop_config=stop_config,
     )
-
     if "metrics" not in result or not result["metrics"]:
         print("[FAIL] 无 metrics")
         sys.exit(1)
@@ -87,21 +103,21 @@ def main() -> None:
     m = result["metrics"]
     trades = result.get("trades", [])
 
-    # 落盘 selections + trades
+    # 3. 落盘 selections + trades
     tag = f"{args.start}_{args.end}"
-    selections.to_parquet(BASELINE_DIR / f"{args.formula}_selections_{tag}.parquet")
+    selections.to_parquet(BASELINE_DIR / f"{label}_selections_{tag}.parquet")
     if hasattr(trades, "to_parquet"):
-        trades.to_parquet(BASELINE_DIR / f"{args.formula}_trades_{tag}.parquet")
+        trades.to_parquet(BASELINE_DIR / f"{label}_trades_{tag}.parquet")
         trades_cols = list(trades.columns)
         trades_len = len(trades)
     else:
-        pd.DataFrame(trades).to_parquet(BASELINE_DIR / f"{args.formula}_trades_{tag}.parquet", index=False)
+        pd.DataFrame(trades).to_parquet(BASELINE_DIR / f"{label}_trades_{tag}.parquet", index=False)
         trades_cols = list(pd.DataFrame(trades).columns)
         trades_len = len(trades)
     print(f"[INFO] trades {trades_len} 笔,列: {trades_cols}")
 
-    # 聚合 metrics(含 Calmar/回撤 — CLAUDE.md 铁律4)
-    print(f"\n=== 基线 {args.formula} {tag} ===")
+    # 4. 聚合 metrics(含 Calmar/回撤 — CLAUDE.md 铁律4)
+    print(f"\n=== 基线 {label} {tag} ===")
     print(f"信号数: {len(selections)}")
     print(f"交易数: {trades_len}")
     print(f"累积收益: {m.get('cumulative_return', 0):.4f}")
@@ -111,7 +127,6 @@ def main() -> None:
     print(f"胜率:     {m.get('win_rate', 0):.4f}")
     calmar = m.get("calmar_ratio")
     print(f"Calmar:   {calmar:.4f}" if calmar else "[Calmar 未提供]")
-
     print(f"\n[OK] 落盘到 {BASELINE_DIR}")
 
 
