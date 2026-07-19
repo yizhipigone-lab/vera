@@ -238,9 +238,34 @@ input.invalid~.input-error{display:block}
 .sector-item.hidden{display:none}
 .sector-item mark{background:color-mix(in srgb,var(--warn) 35%,transparent);color:inherit;border-radius:2px;padding:0 1px}
 .sector-empty{font-size:10px;color:var(--text2);padding:12px;text-align:center}
+/* ===== 页签栏 + 公式体检页 (2026-07-20) ===== */
+.tab-bar{display:flex;gap:4px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:60}
+.tab-btn{padding:6px 18px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:13px}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{background:var(--card);color:var(--text);border-color:var(--border);font-weight:600}
+#pageLab{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
+#pageLab.active{display:block}
+.lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+.lab-card h3{margin:0 0 12px;font-size:13px;color:var(--text2);letter-spacing:.5px}
+.lab-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px dashed var(--border);font-size:12px}
+.lab-row:last-child{border-bottom:none}
+.lab-badge{padding:1px 8px;border-radius:8px;font-size:10px;white-space:nowrap}
+.lab-badge.ok{background:rgba(42,157,143,.15);color:#2a9d8f}
+.lab-badge.fail{background:rgba(220,80,80,.12);color:#d05050}
+.lab-badge.run{background:rgba(80,140,220,.15);color:#5080dc}
+.lab-badge.wait{background:var(--surface);color:var(--text2)}
+.lab-rules{margin:4px 0 4px 24px;font-size:11px;color:var(--text2)}
+.lab-rules div{padding:2px 0}
+.lab-input{padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px}
+.lab-pre{background:var(--bg);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:420px;overflow-y:auto}
 </style>
 </head>
 <body>
+<!-- ===== 页签栏 (2026-07-20): 回测 / 公式体检 ===== -->
+<div class="tab-bar">
+  <button class="tab-btn active" id="tabBtnBacktest" onclick="switchTab('backtest')">回测</button>
+  <button class="tab-btn" id="tabBtnLab" onclick="switchTab('lab')">公式体检</button>
+</div>
 <div class="app">
   <!-- ===== 左侧配置面板 ===== -->
   <aside class="sidebar">
@@ -589,10 +614,43 @@ input.invalid~.input-error{display:block}
   </main>
 </div>
 
+<!-- ===== 公式体检页 (2026-07-20, 独立页签) ===== -->
+<div id="pageLab">
+  <div class="lab-card">
+    <h3>提交体检</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input class="lab-input" id="labFormulas" placeholder="公式名(多个用逗号隔开), 如 QUANTQQ, UPN" style="flex:2;min-width:280px">
+      <select class="lab-input" id="labTag"><option value="">近1年</option><option value="custom">自定义…</option></select>
+      <select class="lab-input" id="labTag2"><option value="">近3年</option><option value="none">仅短窗(待复核)</option></select>
+      <button class="btn btn-primary" onclick="labSubmit()">▶ 开始体检</button>
+    </div>
+    <div id="labCustomDates" style="display:none;margin-top:8px;gap:8px;align-items:center">
+      短窗 <input class="lab-input" id="labStart1" placeholder="20250719" size="9"> ~ <input class="lab-input" id="labEnd1" placeholder="20260718" size="9">
+      长窗 <input class="lab-input" id="labStart2" placeholder="20230719" size="9"> ~ <input class="lab-input" id="labEnd2" placeholder="20260718" size="9">
+    </div>
+    <div id="labHint" style="font-size:11px;color:var(--text2);margin-top:8px"></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>体检队列</h3>
+    <div id="labQueue"><div style="color:var(--text2);font-size:12px">暂无任务</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>历史体检(规则登记处)</h3>
+    <div id="labHistory"><div style="color:var(--text2);font-size:12px">加载中…</div></div>
+  </div>
+
+  <div class="lab-card" id="labReportCard" style="display:none">
+    <h3 id="labReportTitle">体检报告</h3>
+    <div class="lab-pre" id="labReportBody"></div>
+  </div>
+</div>
+
 <!-- P1-4: Toast 容器 -->
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/web/echarts.min.js"></script>
-<script src="/web/vera-ui.js?v=20260709b2"></script>
+<script src="/web/vera-ui.js?v=20260720"></script>
 </body>
 </html>

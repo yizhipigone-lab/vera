@@ -1472,11 +1472,19 @@ function renderFactorRules() {
   }
   box.innerHTML = d.rules.map(rule => {
     const checked = state.rules.includes(rule.id) ? 'checked' : '';
-    const badge = rule.adopted
-      ? '<span style="color:var(--green,#2a9d8f);font-size:10px">双窗 PASS</span>'
-      : '<span style="color:var(--text2);font-size:10px">未通过,仅参考</span>';
-    const disabled = rule.adopted ? '' : 'disabled';
-    return '<div style="margin:3px 0"><label style="' + (rule.adopted ? '' : 'opacity:.5') + '">'
+    let badge, selectable;
+    if (rule.adopted) {
+      badge = '<span style="color:var(--green,#2a9d8f);font-size:10px">双窗 PASS</span>';
+      selectable = true;
+    } else if (rule.pending_review) {
+      badge = '<span style="color:#c89030;font-size:10px">单窗通过,待复核</span>';
+      selectable = false;
+    } else {
+      badge = '<span style="color:var(--text2);font-size:10px">未通过,仅参考</span>';
+      selectable = false;
+    }
+    const disabled = selectable ? '' : 'disabled';
+    return '<div style="margin:3px 0"><label style="' + (selectable ? '' : 'opacity:.5') + '">'
       + '<input type="checkbox" class="ff-rule" value="' + rule.id + '" ' + checked + ' ' + disabled
       + ' onchange="saveFactorFilterState()"> ' + rule.label + ' ' + badge + '</label></div>';
   }).join('');
@@ -1505,6 +1513,111 @@ function applyFactorFilterDict(ff) {
 
 // 公式名变化 → 重新拉该公式的规则
 document.getElementById('cfgFormula').addEventListener('change', loadFactorRules);
+
+// ====== 公式体检页 (2026-07-20) ======
+let _labPollTimer = null;
+
+function switchTab(name) {
+  const isLab = name === 'lab';
+  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab);
+  document.getElementById('tabBtnLab').classList.toggle('active', isLab);
+  document.querySelector('.app').style.display = isLab ? 'none' : '';
+  document.getElementById('pageLab').classList.toggle('active', isLab);
+  if (isLab) { refreshLabStatus(); loadLabHistory(); startLabPoll(); }
+  else stopLabPoll();
+}
+
+function startLabPoll() {
+  stopLabPoll();
+  _labPollTimer = setInterval(refreshLabStatus, 2000);
+}
+function stopLabPoll() {
+  if (_labPollTimer) { clearInterval(_labPollTimer); _labPollTimer = null; }
+}
+
+function labSubmit() {
+  const raw = document.getElementById('labFormulas').value;
+  const formulas = raw.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  if (!formulas.length) { showToast('请先填公式名', 'error'); return; }
+  const body = { formulas };
+  if (document.getElementById('labTag').value === 'custom') {
+    const s1 = document.getElementById('labStart1').value.trim();
+    const e1 = document.getElementById('labEnd1').value.trim();
+    if (!/^\d{8}$/.test(s1) || !/^\d{8}$/.test(e1)) { showToast('自定义短窗日期格式应为 YYYYMMDD', 'error'); return; }
+    body.tag = s1 + '_' + e1;
+    const s2 = document.getElementById('labStart2').value.trim();
+    const e2 = document.getElementById('labEnd2').value.trim();
+    if (/^\d{8}$/.test(s2) && /^\d{8}$/.test(e2)) body.tag2 = s2 + '_' + e2;
+  } else if (document.getElementById('labTag2').value === 'none') {
+    body.tag2 = '';  // 空串 = 显式单窗口(服务端转 None, 报告标"待复核")
+  }
+  fetch('/api/lab/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => r.json().then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (!ok || !d.success) { showToast('提交失败: ' + (d.error || ''), 'error'); return; }
+      showToast('已入队' + (d.queued_behind_pipeline ? '(回测运行中,排队等待)' : ''), 'success');
+      refreshLabStatus();
+    })
+    .catch(e => showToast('提交异常: ' + e, 'error'));
+}
+
+function _labStatusBadge(t) {
+  if (t.status === 'done') return '<span class="lab-badge ok">完成</span>';
+  if (t.status === 'failed') return '<span class="lab-badge fail">失败</span>';
+  if (t.status === 'queued') return '<span class="lab-badge wait">排队中</span>';
+  return '<span class="lab-badge run">运行中</span>';
+}
+
+function refreshLabStatus() {
+  fetch('/api/lab/status').then(r => r.json()).then(d => {
+    const box = document.getElementById('labQueue');
+    const hint = document.getElementById('labHint');
+    hint.textContent = d.current
+      ? `当前: ${d.current.formulas.join(',')} — ${d.current.stage}(已 ${Math.floor(d.current.elapsed_s / 60)} 分钟) · 基线股票池 ${d.current.universe_note || ''}`
+      : (d.running ? '' : '空闲(回测运行中提交的体检会自动排队)');
+    if (!d.queue || !d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无任务</div>'; return; }
+    box.innerHTML = d.queue.slice().reverse().map(t => {
+      const mins = Math.floor(t.elapsed_s / 60);
+      let html = `<div class="lab-row">${_labStatusBadge(t)} <b>${t.formulas.join(',')}</b>`
+        + `<span style="color:var(--text2)">${t.stage}${t.status !== 'queued' && mins ? ` · ${mins}分钟` : ''}</span></div>`;
+      if (t.status === 'failed' && t.error)
+        html += `<div class="lab-rules"><div style="color:#d05050">${t.error.slice(0, 200)}</div></div>`;
+      if (t.status === 'done')
+        html += `<div class="lab-rules"><div>✅ 规则已登记 — <a href="javascript:void(0)" onclick="viewLabReport('${t.formulas[0]}')" style="color:var(--accent)">查看报告</a></div></div>`;
+      return html;
+    }).join('');
+    if (d.running || d.queue.some(t => t.status === 'queued')) startLabPoll();
+    loadLabHistory();
+  }).catch(() => {});
+}
+
+function loadLabHistory() {
+  fetch('/api/lab/history').then(r => r.json()).then(d => {
+    const box = document.getElementById('labHistory');
+    if (!d.items || !d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无体检记录</div>'; return; }
+    box.innerHTML = d.items.map(i =>
+      `<div class="lab-row"><b>${i.formula}</b>`
+      + `<span style="color:var(--text2)">${i.report_date || i.generated_at || ''}</span>`
+      + `<span class="lab-badge ${i.adopted ? 'ok' : 'wait'}">${i.rules} 规则 / ${i.adopted} 通过</span>`
+      + `<a href="javascript:void(0)" onclick="viewLabReport('${i.formula}')" style="color:var(--accent);font-size:11px">查看</a>`
+      + `</div>`).join('');
+  }).catch(() => {});
+}
+
+function viewLabReport(formula) {
+  fetch('/api/lab/report?formula=' + encodeURIComponent(formula)).then(r => r.json()).then(d => {
+    if (!d.success) { showToast(d.error || '无报告', 'error'); return; }
+    document.getElementById('labReportCard').style.display = '';
+    document.getElementById('labReportTitle').textContent = '体检报告: ' + d.file;
+    document.getElementById('labReportBody').textContent = d.markdown;
+    document.getElementById('labReportCard').scrollIntoView({ behavior: 'smooth' });
+  });
+}
+
+// 自定义日期开/关
+document.getElementById('labTag').addEventListener('change', e => {
+  document.getElementById('labCustomDates').style.display = e.target.value === 'custom' ? 'flex' : 'none';
+});
 
 // ====== Init ======
 document.getElementById('statusDot').className = 'status-dot on';
