@@ -22,6 +22,7 @@
 | 模块 | 路径 | 职责 |
 |---|---|---|
 | 公式因子体检 | `tools/formula_lab.py` | 任意公式一条命令做因子体检(S0-S5):IC 筛选 → 族归纳 → A/B 终审 → 报告。方法论见 `docs/公式因子体检方法论.md`(五条纪律:IC 非终审/双窗口/数族不数因子/因果测试/必带警告) |
+| 公式体检页面 | `tools/lab_runner.py` + `/api/lab/*` | web 独立页签版体检(2026-07-20):严格串行队列 + baseline 自动串联 + 与回测不对称互斥(体检永远排队,回测提交在体检中 → 409)。规则 JSON 供回测页因子过滤区按公式动态渲染 |
 | 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`_simulate_core_v3` 现为兼容壳(2026-07-14 候选 A 阶段2,ENGINE_VERSION v3.4-loop-refactor),转调 `backtest/loop/BacktestLoop.run()`;旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):9 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径。**5m 数据层降级(2026-07-18)**:`degrade_5m: true` 时缺 5m 的股-天用 1d OHLC 填满 48 根 bar 保信号(`backtest/degrade_5m.py`),降级影响报告在 `result.degradation`(`backtest/degrade_report.py`);默认关,仅 run() 路径 |
 | 选股 | `selection/selector.py` | 股票池筛选(ST/涨停/停牌过滤) |
 | 止损管理 | `backtest/stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复)。stop_manager.py 已于候选 D C2 删除 |

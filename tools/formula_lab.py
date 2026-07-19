@@ -146,7 +146,10 @@ def build_rules_json(formula: str, tags: list, yaml_path: str, quals: list,
                     v_by_win[tag] = r["verdict"]
                     s_by_win[tag] = {"annret": float(r["annret"]), "maxdd": float(r["maxdd"]),
                                      "calmar": float(r["calmar"]) if pd.notna(r["calmar"]) else None}
-            adopted = bool(v_by_win) and all(str(v).startswith("PASS") for v in v_by_win.values())
+            adopted = (len(tags) >= 2 and len(v_by_win) >= len(tags)
+                       and all(str(v).startswith("PASS") for v in v_by_win.values()))
+            pending_review = (not adopted) and any(str(v).startswith("PASS")
+                                                   for v in v_by_win.values())
             fl = FACTOR_LABEL.get(q["factor"], q["factor"])
             rules.append({
                 "id": rid, "factor": q["factor"], "family": q["family"], "rule": f"{side}{cut}",
@@ -154,6 +157,7 @@ def build_rules_json(formula: str, tags: list, yaml_path: str, quals: list,
                          else f"剔除{fl}{RULE_LABEL[f'{side}{cut}']}",
                 "ic_per_win": q["per_win"], "verdict_by_win": v_by_win,
                 "stats_by_win": s_by_win, "adopted": adopted,
+                "pending_review": pending_review,
             })
     return {
         "formula": formula, "generated_at": started, "tags": tags,
@@ -295,12 +299,12 @@ def main() -> None:
             tb = pd.read_csv(ab_csv(args.formula, tag))
             ab_by_win[tag] = tb
             ab_tables[tag] = tb.to_string(index=False)
-        # 双窗口判定
+        # 双窗口判定(纪律 2: 单窗口一律"待复核", 不算通过 — 2026-07-20 UPN 冒烟抓出)
         cand = set(ab_by_win[tags[0]]["arm"]) - {"base"}
         for arm in sorted(cand):
             oks = [str(ab_by_win[tag].set_index("arm").loc[arm, "verdict"]).startswith("PASS")
                    for tag in tags]
-            if all(oks):
+            if len(tags) >= 2 and all(oks):
                 final.append(arm)
             elif any(oks):
                 print(f"[S4] {arm}: 单窗口通过, 标'待复核'")
