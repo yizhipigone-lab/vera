@@ -51,9 +51,11 @@ def score_selections(selections: pd.DataFrame,
     bt = block_trade.copy()
     bt["trade_date"] = pd.to_datetime(bt["trade_date"], errors="coerce")
 
-    # 预排序,加速 tail(1)
-    mf_sorted = mf.sort_values(["ts_code", "trade_date"])
-    ti_valid = ti[ti["exalter"].str.contains("机构", na=False)]
+    # 预分组 by ts_code(避免 iterrows 时 filter 百万级大表,大幅加速)
+    mf_by_code = {c: g.sort_values("trade_date") for c, g in mf.groupby("ts_code")}
+    ti_inst = ti[ti["exalter"].str.contains("机构", na=False)]
+    inst_by_code = {c: g for c, g in ti_inst.groupby("ts_code")}
+    bt_by_code = {c: g for c, g in bt.groupby("ts_code")}
 
     mf_scores, dragon_scores, block_scores = [], [], []
     for _, row in sel.iterrows():
@@ -61,24 +63,33 @@ def score_selections(selections: pd.DataFrame,
         sd = row["select_date"]
 
         # mf: 该股 trade_date < sd 的最近一条净额
-        mf_v = mf_sorted[(mf_sorted["ts_code"] == code) & (mf_sorted["trade_date"] < sd)]
-        mf_amt = mf_v["net_mf_amount"].iloc[-1] if len(mf_v) > 0 else None
+        g = mf_by_code.get(code)
+        if g is not None and len(g) > 0:
+            v = g[g["trade_date"] < sd]
+            mf_amt = v["net_mf_amount"].iloc[-1] if len(v) > 0 else None
+        else:
+            mf_amt = None
         mf_scores.append(mf_to_score(mf_amt))
 
         # dragon: 该股 trade_date<sd 的机构席位 net_buy 汇总
-        inst = ti_valid[(ti_valid["ts_code"] == code) & (ti_valid["trade_date"] < sd)]
-        if len(inst) > 0:
-            net = inst["net_buy"].sum()
-            dragon_scores.append(1 if net > 0 else -1)
+        ig = inst_by_code.get(code)
+        if ig is not None and len(ig) > 0:
+            iv = ig[ig["trade_date"] < sd]
+            net = iv["net_buy"].sum() if len(iv) > 0 else 0
+            dragon_scores.append(1 if net > 0 else (-1 if net < 0 else 0))
         else:
             dragon_scores.append(0)
 
         # block: 该股 trade_date<sd 的买方机构 - 卖方机构
-        bv = bt[(bt["ts_code"] == code) & (bt["trade_date"] < sd)]
-        buy_n = bv["buyer"].str.contains("机构", na=False).sum() if "buyer" in bv.columns else 0
-        sell_n = bv["seller"].str.contains("机构", na=False).sum() if "seller" in bv.columns else 0
-        diff = buy_n - sell_n
-        block_scores.append(1 if diff > 0 else (-1 if diff < 0 else 0))
+        bg = bt_by_code.get(code)
+        if bg is not None and len(bg) > 0:
+            bv = bg[bg["trade_date"] < sd]
+            buy_n = bv["buyer"].str.contains("机构", na=False).sum() if "buyer" in bv.columns else 0
+            sell_n = bv["seller"].str.contains("机构", na=False).sum() if "seller" in bv.columns else 0
+            diff = buy_n - sell_n
+            block_scores.append(1 if diff > 0 else (-1 if diff < 0 else 0))
+        else:
+            block_scores.append(0)
 
     sel["mf_score"] = mf_scores
     sel["dragon_score"] = dragon_scores
