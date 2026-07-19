@@ -24,3 +24,5 @@ config/current.yaml.bak
 
 # 本地 K 线 parquet 缓存（运行时生成，数 GB，不入 git）
 data/kline_cache/
+data/factors/
+data/baseline/
