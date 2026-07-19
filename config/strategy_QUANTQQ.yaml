@@ -25,17 +25,20 @@ backtest:
     lot_size: 100
     min_lots: 1
 
-# 先生前端最新参数
+# 5m 参数优化冠军结构(2026-07-19 起生效, 依据 docs/audit/2026-07-18_QUANTQQ_5m参数优化报告.md §九 实盘首选:
+# 硬止损 -50%(≈仅防退市灾难) / 移动止盈 6% 激活 + 0.3% 回撤(执行可行性放宽) / 阶梯全关 / 60 天)
+# 替换旧"先生前端参数"(快进快出结构, 3 年窗回测 -37.6%/年 已证伪)
 stop_loss:
+  priority: "trailing_first"   # 移动止盈优先(5m 报告口径)
   cost_stop:
     enabled: true
-    threshold: -0.046
+    threshold: -0.50
   trailing_stop:
     enabled: true
-    activation: 0.039
-    drawdown: 0.017
+    activation: 0.06
+    drawdown: 0.003
   ladder_tp:
-    enabled: true
+    enabled: false
     levels:
       - profit: 0.03
         sell_ratio: 0.20
@@ -43,9 +46,9 @@ stop_loss:
         sell_ratio: 0.60
   time_stop:
     enabled: true
-    max_hold_days: 12
+    max_hold_days: 60
   cond_time_stop:
-    enabled: true
+    enabled: false
     days: 7
     profit: 0.015
   first_day:
