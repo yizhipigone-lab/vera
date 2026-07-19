@@ -1475,21 +1475,16 @@ function renderFactorRules() {
   }
   box.innerHTML = d.rules.map(rule => {
     const checked = state.rules.includes(rule.id) ? 'checked' : '';
-    let badge, selectable;
-    if (rule.adopted) {
-      badge = '<span style="color:var(--green,#2a9d8f);font-size:10px">双窗 PASS</span>';
-      selectable = true;
-    } else if (rule.pending_review) {
-      badge = '<span style="color:#c89030;font-size:10px">单窗通过,待复核</span>';
-      selectable = false;
-    } else {
-      badge = '<span style="color:var(--text2);font-size:10px">未通过,仅参考</span>';
-      selectable = false;
-    }
+    let badgeCls, badgeText, selectable;
+    if (rule.adopted) { badgeCls = 'ff-badge-ok'; badgeText = '双窗 PASS'; selectable = true; }
+    else if (rule.pending_review) { badgeCls = 'ff-badge-pending'; badgeText = '单窗通过,待复核'; selectable = false; }
+    else { badgeCls = 'ff-badge-fail'; badgeText = '未通过'; selectable = false; }
     const disabled = selectable ? '' : 'disabled';
-    return '<div style="margin:3px 0"><label style="' + (selectable ? '' : 'opacity:.5') + '">'
-      + '<input type="checkbox" class="ff-rule" value="' + escAttr(rule.id) + '" ' + checked + ' ' + disabled
-      + ' onchange="saveFactorFilterState()"> ' + esc(rule.label) + ' ' + badge + '</label></div>';
+    return '<div class="ff-rule-row" style="' + (selectable ? '' : 'opacity:.5') + '">'
+      + '<input type="checkbox" class="ff-rule" id="ffr_' + escAttr(rule.id.replace(/[:]/g, '_')) + '" value="' + escAttr(rule.id) + '" ' + checked + ' ' + disabled
+      + ' onchange="saveFactorFilterState()">'
+      + '<label class="ff-label" for="ffr_' + escAttr(rule.id.replace(/[:]/g, '_')) + '">' + esc(rule.label) + '</label>'
+      + '<span class="ff-badge ' + badgeCls + '">' + badgeText + '</span></div>';
   }).join('');
 }
 
