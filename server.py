@@ -8,7 +8,7 @@ import sys
 import os
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # F2 回归保护常量（与 pipeline/result_writer.py 共用，破解循环 import 后统一引用）
 from pipeline.result_writer import ENGINE_VERSION, ENTRY_PRICE_BASIS
@@ -88,6 +88,9 @@ class StrategyConfig(BaseModel):
     etf_only: bool = False
     # P-v3.4: 行业板块 (逗号分隔代码, 如 "881319.SH,881326.SH")
     sectors: str = ""
+    # 2026-07-19: 因子过滤(按公式存终审规则勾选状态)
+    # 形如 {"QUANTQQ": {"enabled": true, "rules": ["dist_ma20:top10"]}}
+    factor_filter: Optional[Dict[str, Any]] = None
 
     def get(self, key: str, default=None):
         """安全获取字段值，None 时返回默认值。"""
@@ -203,6 +206,8 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             },
         },
         "benchmark": {"indices": [s.strip() for s in cfg.benchmark_indices.split(",") if s.strip()]},
+        # 2026-07-19: 因子过滤(按公式存; pipeline 在选股后/回测前应用)
+        "factor_filter": cfg.factor_filter or {},
     }
 
 
@@ -280,6 +285,22 @@ async def delete_saved_config():
     except Exception as e:
         logger.error(f"删除配置失败: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/factor-rules")
+async def get_factor_rules(formula: str):
+    """读 formula_lab 产出的过滤规则 JSON(output/reports/{formula}_filter_rules.json),
+    供前端因子过滤区按公式动态渲染。未体检过返回 exists:false。"""
+    import json as _json
+    path = Path(__file__).resolve().parent / "output" / "reports" / f"{formula}_filter_rules.json"
+    if not path.exists():
+        return {"success": True, "exists": False, "rules": [],
+                "hint": f"{formula} 未体检, 先跑: python tools/formula_lab.py --formula {formula} --tag <短窗> --tag2 <长窗>"}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        return {"success": True, "exists": True, **data}
+    except Exception as e:
+        return {"success": False, "exists": False, "error": f"规则文件解析失败: {e}"}
 
 
 # ====== 管线端点 ======

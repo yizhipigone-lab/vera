@@ -446,6 +446,23 @@ input.invalid~.input-error{display:block}
         </div>
       </div>
 
+      <!-- 因子过滤 (2026-07-19): 按公式动态渲染体检终审规则, 勾选存 current.yaml -->
+      <div class="form-section">
+        <div class="form-section-title">因子过滤</div>
+        <div class="config-block">
+          <div class="cfg-fields" style="display:block">
+            <div class="form-group">
+              <label><input type="checkbox" id="cfgFactorFilterEn" onchange="saveFactorFilterState()"> 启用因子过滤</label>
+            </div>
+            <div id="factorRuleList" style="font-size:11px;color:var(--text2)">规则加载中…</div>
+            <div style="font-size:10px;color:var(--text2);margin-top:6px">
+              规则来自 <code>formula_lab</code> 体检终审(docs/audit/),按当前公式动态加载;
+              终审未通过的规则标灰不可选。
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <div class="sidebar-footer">

@@ -485,6 +485,8 @@ function collectConfigFromForm() {
     formula_sell_ratio: Math.max(0, Math.min(100, safeFloat('cfgFormulaSellRatio'))) / 100,
     // 2026-07-18: 加 hs300 (沪深300) — 超额收益卡对比组; server.py:85 默认本就有, 前端表单此前漏配
     benchmark_indices: 'shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500',
+    // 2026-07-19: 因子过滤(按公式存; 由下方模块维护全量 dict, 含其他公式的勾选)
+    factor_filter: collectFactorFilter(),
   };
 }
 
@@ -562,6 +564,8 @@ function applyConfigDict(cfg) {
       toggleUniverseDropdown();
     }
   }
+  // 2026-07-19: 因子过滤勾选状态回填(按公式)
+  if (cfg.factor_filter) applyFactorFilterDict(cfg.factor_filter);
 }
 
 // 2026-07-10: 前端配置存取 current.yaml（保存/加载/删除，单一覆盖文件）
@@ -1426,10 +1430,87 @@ function filterTrades() {
   renderTradeTable(filtered);
 }
 
+// ====== 因子过滤 (2026-07-19) — 按公式动态渲染体检终审规则 ======
+// 数据源: GET /api/factor-rules?formula=X (读 output/reports/{formula}_filter_rules.json)
+// 勾选状态: localStorage vera_factor_filter, 按公式分别存 {enabled, rules[]},
+// 随 collectConfigFromForm 进 payload → current.yaml → pipeline 选股后应用。
+const FACTOR_FILTER_KEY = 'vera_factor_filter';
+let _factorFilter = {};
+try { _factorFilter = JSON.parse(localStorage.getItem(FACTOR_FILTER_KEY) || '{}'); } catch(e) {}
+let _factorRulesData = null;   // 当前公式的规则 JSON(exists/rules/note/...)
+
+function _ffFormula() { return (document.getElementById('cfgFormula').value || '').trim(); }
+
+function _ffState() {
+  const f = _ffFormula();
+  if (!_factorFilter[f]) _factorFilter[f] = { enabled: false, rules: [] };
+  return _factorFilter[f];
+}
+
+async function loadFactorRules() {
+  const box = document.getElementById('factorRuleList');
+  const formula = _ffFormula();
+  if (!formula) { box.textContent = '先填公式名'; return; }
+  try {
+    const r = await fetch('/api/factor-rules?formula=' + encodeURIComponent(formula));
+    _factorRulesData = await r.json();
+  } catch(e) {
+    _factorRulesData = { exists: false, rules: [] };
+  }
+  renderFactorRules();
+}
+
+function renderFactorRules() {
+  const box = document.getElementById('factorRuleList');
+  const d = _factorRulesData || { exists: false, rules: [] };
+  const state = _ffState();
+  document.getElementById('cfgFactorFilterEn').checked = !!state.enabled;
+  if (!d.exists || !d.rules || d.rules.length === 0) {
+    box.innerHTML = '<div style="color:var(--text2)">该公式暂无体检规则 — 先跑 <code>formula_lab</code> 生成('
+      + (d.hint || '') + ')</div>';
+    return;
+  }
+  box.innerHTML = d.rules.map(rule => {
+    const checked = state.rules.includes(rule.id) ? 'checked' : '';
+    const badge = rule.adopted
+      ? '<span style="color:var(--green,#2a9d8f);font-size:10px">双窗 PASS</span>'
+      : '<span style="color:var(--text2);font-size:10px">未通过,仅参考</span>';
+    const disabled = rule.adopted ? '' : 'disabled';
+    return '<div style="margin:3px 0"><label style="' + (rule.adopted ? '' : 'opacity:.5') + '">'
+      + '<input type="checkbox" class="ff-rule" value="' + rule.id + '" ' + checked + ' ' + disabled
+      + ' onchange="saveFactorFilterState()"> ' + rule.label + ' ' + badge + '</label></div>';
+  }).join('');
+}
+
+function saveFactorFilterState() {
+  const state = _ffState();
+  state.enabled = document.getElementById('cfgFactorFilterEn').checked;
+  state.rules = Array.from(document.querySelectorAll('.ff-rule:checked')).map(el => el.value);
+  try { localStorage.setItem(FACTOR_FILTER_KEY, JSON.stringify(_factorFilter)); } catch(e) {}
+}
+
+function collectFactorFilter() {
+  saveFactorFilterState();
+  return _factorFilter;   // 全量 dict(含其他公式), 后端按 formula_name 取用
+}
+
+// applyConfigDict 回填(从文件加载配置时还原勾选)
+function applyFactorFilterDict(ff) {
+  if (ff && typeof ff === 'object') {
+    _factorFilter = ff;
+    try { localStorage.setItem(FACTOR_FILTER_KEY, JSON.stringify(_factorFilter)); } catch(e) {}
+    renderFactorRules();
+  }
+}
+
+// 公式名变化 → 重新拉该公式的规则
+document.getElementById('cfgFormula').addEventListener('change', loadFactorRules);
+
 // ====== Init ======
 document.getElementById('statusDot').className = 'status-dot on';
 loadConfig();
 loadSectors();   // P-v3.4: 加载行业板块列表
+loadFactorRules();   // 2026-07-19: 加载当前公式的因子过滤规则
 // 2026-07-10: 探测 current.yaml 是否存在（只控 Load/Delete 按钮启用态；不填表单——遵循"打开网页不自动加载"）
 fetch('/api/config/saved').then(r => r.json()).then(res => {
   _savedFileExists = !!(res && res.exists);

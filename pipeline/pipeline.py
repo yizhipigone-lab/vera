@@ -88,6 +88,31 @@ class Pipeline:
 
         return picks
 
+    def _apply_factor_filter(self, selections: pd.DataFrame) -> pd.DataFrame:
+        """因子过滤(2026-07-19): 读 config 的 factor_filter[formula_name],
+        enabled 且有 rules 时应用实验室终审规则; 任何失败回退为未过滤(不中断管线)。"""
+        ff = self.config.get("factor_filter") or {}
+        formula = self.config.get("selection", {}).get("formula_name", "")
+        entry = ff.get(formula) or {}
+        rules = entry.get("rules") or []
+        if not entry.get("enabled") or not rules:
+            return selections
+        try:
+            from selection.factor_filter import filter_selections
+            filtered, info = filter_selections(selections, rules)
+            logger.info(
+                "因子过滤[%s]: %s 剔除 %d/%d 条 → 剩 %d 条(%ss)",
+                formula, info["rules"], info["removed"], info["before"],
+                info["after"], info["elapsed_s"],
+            )
+            if not len(filtered):
+                logger.warning("因子过滤剔除了全部信号, 回退为未过滤")
+                return selections
+            return filtered
+        except Exception as e:
+            logger.warning(f"因子过滤失败(回退为未过滤): {e}")
+            return selections
+
     def step2_backtest(self, selections: pd.DataFrame) -> dict:
         """执行回测。"""
         bt_cfg = self.config.get("backtest", {})
@@ -243,6 +268,18 @@ class Pipeline:
                 error="no_selections",
             )
         _cb(20, "保存选股结果")
+
+        # 因子过滤(2026-07-19): current.yaml 的 factor_filter[formula] 启用时,
+        # 应用实验室终审通过的规则(剔除日截面过热等), 失败回退为未过滤不中断
+        selections = self._apply_factor_filter(selections)
+        if selections.empty:
+            logger.warning("因子过滤后选股为空, 管线终止")
+            if close_on_finish:
+                TdxConnector.close()
+            return PipelineResult(
+                selections=pd.DataFrame(), backtest=None, benchmark={}, reports={},
+                error="filtered_empty",
+            )
 
         # Step 3: 回测
         logger.info("[Step 2/5] 执行回测...")
