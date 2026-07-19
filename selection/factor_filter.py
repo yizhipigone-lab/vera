@@ -51,25 +51,33 @@ def apply_rules(df: pd.DataFrame, rules: list[str]) -> pd.DataFrame:
     return out
 
 
-def _load_closes(codes: list[str], start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    """只读选股池涉及个股的 1d 收盘(kline_cache 本地 parquet, 无 TDX 依赖)。"""
+def _load_panels(codes: list[str], start: pd.Timestamp, end: pd.Timestamp) -> dict:
+    """只读选股池涉及个股的 1d OHLCV 面板(kline_cache 本地 parquet, 无 TDX 依赖)。
+
+    2026-07-20 审计 CRITICAL-1 修复: 必须读全列——注册表中约半数因子需要
+    open/high/low/volume/amount(如 intraday20/volr5_20/kdj_k), 只喂 close 必 KeyError。
+    """
     kdir = ROOT / "data" / "kline_cache" / "1d"
-    warmup = start - pd.Timedelta(days=90)   # dist_ma20/RSI 等最多 ~60 交易日暖机, 留余量
-    series = {}
+    warmup = start - pd.Timedelta(days=400)   # 与实验室 warmup_days=400 对齐(覆盖 dist_high250 等长窗因子)
+    series: dict[str, dict[str, pd.Series]] = {}
     for c in dict.fromkeys(codes):
         f = kdir / f"{c}.parquet"
         if not f.exists():
             continue
         try:
-            d = pd.read_parquet(f, columns=["date", "close"])
+            d = pd.read_parquet(f, columns=["date", "open", "high", "low", "close", "volume", "amount"])
         except Exception:
             continue
         d = d[(d["date"] >= warmup) & (d["date"] <= end)]
         if len(d):
-            series[c] = pd.Series(d["close"].values, index=pd.to_datetime(d["date"]))
+            idx = pd.to_datetime(d["date"])
+            series[c] = {k: pd.Series(d[k].values, index=idx) for k in
+                         ("open", "high", "low", "close", "volume", "amount")}
     if not series:
-        return pd.DataFrame()
-    return pd.concat(series, axis=1).sort_index()
+        return {}
+    keys = ("close", "high", "low", "open", "volume", "amount")
+    return {k: pd.concat({c: s[k] for c, s in series.items()}, axis=1).sort_index()
+            for k in keys}
 
 
 def _panel_factor_fn(name: str):
@@ -97,8 +105,8 @@ def compute_factor_values(selections: pd.DataFrame, factors: list[str]) -> pd.Da
     need_db = [f for f in factors if f in DB_FACTORS]
 
     if need_panel:
-        closes = _load_closes(sel["stock_code"].tolist(), start, end)
-        if closes.empty:
+        panels = _load_panels(sel["stock_code"].tolist(), start, end)
+        if not panels:
             raise RuntimeError("kline_cache 无选股池个股数据, 无法计算面板因子")
         sys.path.insert(0, str(ROOT / "tools"))
         from factor_ic_screen import lookup
@@ -106,7 +114,7 @@ def compute_factor_values(selections: pd.DataFrame, factors: list[str]) -> pd.Da
             fn = _panel_factor_fn(f)
             if fn.__code__.co_argcount == 2:
                 raise NotImplementedError(f"因子 {f} 需要 ctx(板块/指数), 生产过滤暂不支持")
-            panel = fn({"close": closes})
+            panel = fn(panels)
             sel[f] = lookup(panel, sel["select_date"], sel["stock_code"])
 
     if need_db:

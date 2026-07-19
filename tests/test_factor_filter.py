@@ -64,3 +64,17 @@ def test_compute_panel_factor_causal():
     cut = 60
     trunc = f_dist_ma20({"close": closes.iloc[:cut]})
     pd.testing.assert_frame_equal(full.iloc[:cut], trunc, check_names=False)
+
+
+def test_compute_factor_values_full_panel_factors():
+    """审计 CRITICAL-1 回归: 需要 open/volume 的因子(intraday20/volr5_20)在生产路径必须可算。
+    用真实 kline_cache(000001.SZ 必在), 验证不再 KeyError。"""
+    code = "000001.SZ"
+    if not (ROOT / "data" / "kline_cache" / "1d" / f"{code}.parquet").exists():
+        pytest.skip("kline_cache 无 000001.SZ")
+    k = pd.read_parquet(ROOT / "data" / "kline_cache" / "1d" / f"{code}.parquet")
+    date = str(k["date"].iloc[-1])[:10]
+    sel = pd.DataFrame([(code, date, "Q")], columns=["stock_code", "select_date", "formula_name"])
+    out = compute_factor_values(sel, ["intraday20", "volr5_20", "dist_ma20"])
+    assert "intraday20" in out.columns and out["intraday20"].notna().iloc[0]
+    assert "volr5_20" in out.columns and out["volr5_20"].notna().iloc[0]

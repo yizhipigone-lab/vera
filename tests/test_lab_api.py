@@ -71,6 +71,32 @@ def test_lab_report_endpoint(client):
     assert r2.json()["success"] is False
 
 
+def test_factor_rules_rejects_bad_formula(client):
+    """审计 H2/L5: /api/factor-rules 公式名白名单(防穿越+反射 XSS)。"""
+    r = client.get("/api/factor-rules", params={"formula": "../../etc"})
+    assert r.status_code == 400
+    r2 = client.get("/api/factor-rules", params={"formula": "<script>"})
+    assert r2.status_code == 400
+    r3 = client.get("/api/factor-rules", params={"formula": "QUANTQQ"})
+    assert r3.status_code == 200 and r3.json()["exists"]
+
+
+def test_lab_report_rejects_glob_injection(client):
+    """审计 glob 注入: formula='*' 曾返回任意报告。"""
+    r = client.get("/api/lab/report", params={"formula": "*"})
+    assert r.status_code == 400
+
+
+def test_lab_run_rejects_bad_tag(client):
+    r = client.post("/api/lab/run", json={"formulas": ["TESTFX_T"], "tag": "2025-07-19"})
+    assert r.status_code == 400
+    r2 = client.post("/api/lab/run", json={"formulas": ["TESTFX_T2"], "tag": "20250719_20260718"})
+    assert r2.status_code == 200
+    for t in lab_status._tasks:
+        if "TESTFX_T2" in t.formulas:
+            t.status = "failed"
+
+
 def test_run_409_when_lab_running(client, monkeypatch):
     class _FakeLab:
         running = True

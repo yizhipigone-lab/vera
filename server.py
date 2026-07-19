@@ -126,6 +126,10 @@ class PipelineStatus:
 
 pipeline_status = PipelineStatus()
 
+# 2026-07-20 审计 H1: /api/run 检查+置位原子锁
+import threading as _threading
+_run_lock = _threading.Lock()
+
 # ====== 公式体检队列(2026-07-20, 计划书 docs/plan/2026-07-20_公式体检页面_计划书.md) ======
 # 严格串行; 与 /api/run 不对称互斥: 体检永远排队, 回测提交在体检运行中 → 409
 sys.path.insert(0, str(_PROJECT_ROOT / "tools"))
@@ -299,6 +303,9 @@ async def get_factor_rules(formula: str):
     """读 formula_lab 产出的过滤规则 JSON(output/reports/{formula}_filter_rules.json),
     供前端因子过滤区按公式动态渲染。未体检过返回 exists:false。"""
     import json as _json
+    from lab_runner import FORMULA_RE
+    if not FORMULA_RE.match(formula or ""):
+        return JSONResponse(status_code=400, content={"success": False, "error": "公式名含非法字符"})
     path = Path(__file__).resolve().parent / "output" / "reports" / f"{formula}_filter_rules.json"
     if not path.exists():
         return {"success": True, "exists": False, "rules": [],
@@ -331,10 +338,16 @@ def _default_tags() -> tuple:
 async def lab_run(req: LabRunRequest):
     """提交体检任务(永远 FIFO 排队; 回测在跑时显示排队原因)。"""
     formulas = [str(f).strip() for f in req.formulas if str(f).strip()]
+    if len(formulas) > 10:
+        return JSONResponse(status_code=400, content={"success": False, "error": "单次最多 10 个公式"})
     tag, tag2_default = _default_tags()
     tag = req.tag or tag
     tag2 = req.tag2 if req.tag2 is not None else tag2_default
     tag2 = tag2 or None   # 2026-07-20 冒烟修复: 空串 = 显式单窗口(报告标"待复核"); 缺省 = 近3年
+    import re as _re
+    for t in [tag, tag2]:
+        if t and not _re.match(r"^\d{8}_\d{8}$", t):
+            return JSONResponse(status_code=400, content={"success": False, "error": f"窗口格式应为 YYYYMMDD_YYYYMMDD: {t}"})
     ids, err = lab_status.submit(formulas, tag, tag2)
     if err:
         return JSONResponse(status_code=400, content={"success": False, "error": err})
@@ -375,12 +388,18 @@ async def lab_history():
 @app.get("/api/lab/report")
 async def lab_report(formula: str):
     """返回该公式最近一次体检报告 markdown。"""
+    from lab_runner import FORMULA_RE
+    if not FORMULA_RE.match(formula or ""):
+        return JSONResponse(status_code=400, content={"success": False, "error": "公式名含非法字符"})
     audit_dir = Path(__file__).resolve().parent / "docs" / "audit"
     cands = sorted(audit_dir.glob(f"*_{formula}_*因子体检报告.md"))
     if not cands:
         return {"success": False, "error": f"{formula} 无体检报告"}
     p = cands[-1]
-    return {"success": True, "file": p.name, "markdown": p.read_text(encoding="utf-8")}
+    try:
+        return {"success": True, "file": p.name, "markdown": p.read_text(encoding="utf-8")}
+    except Exception as e:
+        return {"success": False, "error": f"报告读取失败: {e}"}
 
 
 # ====== 管线端点 ======
@@ -407,17 +426,18 @@ def run_pipeline(cfg: StrategyConfig):
     """
     global pipeline_status
 
-    if pipeline_status.running:
-        return JSONResponse(status_code=409, content={"success": False, "error": "管线正在运行中"})
-    # 2026-07-20: 体检运行中 → 409(不对称互斥; 体检提交则永远排队, 见 /api/lab/run)
-    if lab_status.running:
-        return JSONResponse(status_code=409, content={"success": False, "error": "公式体检运行中,请稍后"})
-
-    clear_stop()  # 2026-07-17: 清掉上一次停止残留的标志, 防新回测被秒杀
-    pipeline_status.running = True
-    pipeline_status.progress = 0
-    pipeline_status.step = "初始化"
-    pipeline_status.error = ""
+    # 2026-07-20 审计 H1: 检查+置位必须原子(sync def 在线程池真并发, 竞态可双跑回测)
+    with _run_lock:
+        if pipeline_status.running:
+            return JSONResponse(status_code=409, content={"success": False, "error": "管线正在运行中"})
+        # 2026-07-20: 体检运行中 → 409(不对称互斥; 体检提交则永远排队, 见 /api/lab/run)
+        if lab_status.running:
+            return JSONResponse(status_code=409, content={"success": False, "error": "公式体检运行中,请稍后"})
+        clear_stop()  # 2026-07-17: 清掉上一次停止残留的标志, 防新回测被秒杀
+        pipeline_status.running = True
+        pipeline_status.progress = 0
+        pipeline_status.step = "初始化"
+        pipeline_status.error = ""
 
     # 输入校验（保留）
     import re

@@ -13,11 +13,14 @@ function hexToRgba(color, alpha) {
 }
 
 // ====== C2 修正：XSS 防御 — innerHTML 转义函数 ======
+// 2026-07-20 审计 M1: textContent→innerHTML 只转义 & < >, 属性上下文还需引号
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = String(s == null ? '' : s);
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+// 属性/事件插值专用别名(语义同上, 调用点可读性)
+const escAttr = esc;
 
 // ====== P1-4: Toast 通知 ======
 function showToast(msg, type) {
@@ -1467,7 +1470,7 @@ function renderFactorRules() {
   document.getElementById('cfgFactorFilterEn').checked = !!state.enabled;
   if (!d.exists || !d.rules || d.rules.length === 0) {
     box.innerHTML = '<div style="color:var(--text2)">该公式暂无体检规则 — 先跑 <code>formula_lab</code> 生成('
-      + (d.hint || '') + ')</div>';
+      + esc(d.hint || '') + ')</div>';
     return;
   }
   box.innerHTML = d.rules.map(rule => {
@@ -1485,8 +1488,8 @@ function renderFactorRules() {
     }
     const disabled = selectable ? '' : 'disabled';
     return '<div style="margin:3px 0"><label style="' + (selectable ? '' : 'opacity:.5') + '">'
-      + '<input type="checkbox" class="ff-rule" value="' + rule.id + '" ' + checked + ' ' + disabled
-      + ' onchange="saveFactorFilterState()"> ' + rule.label + ' ' + badge + '</label></div>';
+      + '<input type="checkbox" class="ff-rule" value="' + escAttr(rule.id) + '" ' + checked + ' ' + disabled
+      + ' onchange="saveFactorFilterState()"> ' + esc(rule.label) + ' ' + badge + '</label></div>';
   }).join('');
 }
 
@@ -1555,7 +1558,7 @@ function labSubmit() {
     .then(r => r.json().then(d => ({ ok: r.ok, d })))
     .then(({ ok, d }) => {
       if (!ok || !d.success) { showToast('提交失败: ' + (d.error || ''), 'error'); return; }
-      showToast('已入队' + (d.queued_behind_pipeline ? '(回测运行中,排队等待)' : ''), 'success');
+      showToast('已入队' + (d.queued_behind_pipeline ? '(回测运行中,排队等待)' : ''), 'ok');
       refreshLabStatus();
     })
     .catch(e => showToast('提交异常: ' + e, 'error'));
@@ -1578,12 +1581,12 @@ function refreshLabStatus() {
     if (!d.queue || !d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无任务</div>'; return; }
     box.innerHTML = d.queue.slice().reverse().map(t => {
       const mins = Math.floor(t.elapsed_s / 60);
-      let html = `<div class="lab-row">${_labStatusBadge(t)} <b>${t.formulas.join(',')}</b>`
-        + `<span style="color:var(--text2)">${t.stage}${t.status !== 'queued' && mins ? ` · ${mins}分钟` : ''}</span></div>`;
+      let html = `<div class="lab-row">${_labStatusBadge(t)} <b>${esc(t.formulas.join(','))}</b>`
+        + `<span style="color:var(--text2)">${esc(t.stage)}${t.status !== 'queued' && mins ? ` · ${mins}分钟` : ''}</span></div>`;
       if (t.status === 'failed' && t.error)
-        html += `<div class="lab-rules"><div style="color:#d05050">${t.error.slice(0, 200)}</div></div>`;
+        html += `<div class="lab-rules"><div style="color:#d05050">${esc(t.error.slice(0, 200))}</div></div>`;
       if (t.status === 'done')
-        html += `<div class="lab-rules"><div>✅ 规则已登记 — <a href="javascript:void(0)" onclick="viewLabReport('${t.formulas[0]}')" style="color:var(--accent)">查看报告</a></div></div>`;
+        html += `<div class="lab-rules"><div>✅ 规则已登记 — <a href="javascript:void(0)" onclick="viewLabReport('${escAttr(t.formulas[0])}')" style="color:var(--accent)">查看报告</a></div></div>`;
       return html;
     }).join('');
     if (d.running || d.queue.some(t => t.status === 'queued')) startLabPoll();
@@ -1596,10 +1599,10 @@ function loadLabHistory() {
     const box = document.getElementById('labHistory');
     if (!d.items || !d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无体检记录</div>'; return; }
     box.innerHTML = d.items.map(i =>
-      `<div class="lab-row"><b>${i.formula}</b>`
-      + `<span style="color:var(--text2)">${i.report_date || i.generated_at || ''}</span>`
+      `<div class="lab-row"><b>${esc(i.formula)}</b>`
+      + `<span style="color:var(--text2)">${esc(i.report_date || i.generated_at || '')}</span>`
       + `<span class="lab-badge ${i.adopted ? 'ok' : 'wait'}">${i.rules} 规则 / ${i.adopted} 通过</span>`
-      + `<a href="javascript:void(0)" onclick="viewLabReport('${i.formula}')" style="color:var(--accent);font-size:11px">查看</a>`
+      + `<a href="javascript:void(0)" onclick="viewLabReport('${escAttr(i.formula)}')" style="color:var(--accent);font-size:11px">查看</a>`
       + `</div>`).join('');
   }).catch(() => {});
 }
