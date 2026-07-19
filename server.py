@@ -126,6 +126,13 @@ class PipelineStatus:
 
 pipeline_status = PipelineStatus()
 
+# ====== 公式体检队列(2026-07-20, 计划书 docs/plan/2026-07-20_公式体检页面_计划书.md) ======
+# 严格串行; 与 /api/run 不对称互斥: 体检永远排队, 回测提交在体检运行中 → 409
+sys.path.insert(0, str(_PROJECT_ROOT / "tools"))
+from lab_runner import LabQueue  # noqa: E402
+
+lab_status = LabQueue(pipeline_busy=lambda: pipeline_status.running)
+
 
 # ====== 配置端点 ======
 
@@ -303,6 +310,79 @@ async def get_factor_rules(formula: str):
         return {"success": False, "exists": False, "error": f"规则文件解析失败: {e}"}
 
 
+# ====== 公式体检端点(2026-07-20) ======
+
+class LabRunRequest(BaseModel):
+    formulas: list
+    tag: Optional[str] = None
+    tag2: Optional[str] = None
+
+
+def _default_tags() -> tuple:
+    """缺省窗口: 近1年 / 近3年(按当日滚动), tag 格式 YYYYMMDD_YYYYMMDD。"""
+    from datetime import datetime as _dt, timedelta as _td
+    end = _dt.now()
+    def _t(d): return d.strftime("%Y%m%d")
+    return (_t(end - _td(days=365)) + "_" + _t(end),
+            _t(end - _td(days=365 * 3)) + "_" + _t(end))
+
+
+@app.post("/api/lab/run")
+async def lab_run(req: LabRunRequest):
+    """提交体检任务(永远 FIFO 排队; 回测在跑时显示排队原因)。"""
+    formulas = [str(f).strip() for f in req.formulas if str(f).strip()]
+    tag, tag2_default = _default_tags()
+    tag = req.tag or tag
+    tag2 = req.tag2 if req.tag2 is not None else tag2_default
+    tag2 = tag2 or None   # 2026-07-20 冒烟修复: 空串 = 显式单窗口(报告标"待复核"); 缺省 = 近3年
+    ids, err = lab_status.submit(formulas, tag, tag2)
+    if err:
+        return JSONResponse(status_code=400, content={"success": False, "error": err})
+    return {"success": True, "task_ids": ids, "tag": tag, "tag2": tag2,
+            "queued_behind_pipeline": bool(pipeline_status.running)}
+
+
+@app.get("/api/lab/status")
+async def lab_status_api():
+    return lab_status.snapshot()
+
+
+@app.get("/api/lab/history")
+async def lab_history():
+    """历史体检: 按公式聚合 规则JSON + 体检报告 md。"""
+    import json as _json
+    out = {}
+    rep_dir = Path(__file__).resolve().parent / "output" / "reports"
+    for p in rep_dir.glob("*_filter_rules.json"):
+        try:
+            d = _json.loads(p.read_text(encoding="utf-8"))
+            formula = d.get("formula") or p.name.replace("_filter_rules.json", "")
+            adopted = sum(1 for r in d.get("rules", []) if r.get("adopted"))
+            out.setdefault(formula, {"formula": formula, "generated_at": d.get("generated_at", ""),
+                                     "rules": len(d.get("rules", [])), "adopted": adopted,
+                                     "tags": d.get("tags", [])})
+        except Exception:
+            continue
+    audit_dir = Path(__file__).resolve().parent / "docs" / "audit"
+    for p in sorted(audit_dir.glob("*因子体检报告.md")):
+        for formula in out:
+            if f"_{formula}_" in p.name:
+                out[formula]["report"] = p.name
+                out[formula]["report_date"] = p.name[:10]
+    return {"success": True, "items": sorted(out.values(), key=lambda x: x.get("generated_at", ""), reverse=True)}
+
+
+@app.get("/api/lab/report")
+async def lab_report(formula: str):
+    """返回该公式最近一次体检报告 markdown。"""
+    audit_dir = Path(__file__).resolve().parent / "docs" / "audit"
+    cands = sorted(audit_dir.glob(f"*_{formula}_*因子体检报告.md"))
+    if not cands:
+        return {"success": False, "error": f"{formula} 无体检报告"}
+    p = cands[-1]
+    return {"success": True, "file": p.name, "markdown": p.read_text(encoding="utf-8")}
+
+
 # ====== 管线端点 ======
 
 @app.get("/api/status")
@@ -329,6 +409,9 @@ def run_pipeline(cfg: StrategyConfig):
 
     if pipeline_status.running:
         return JSONResponse(status_code=409, content={"success": False, "error": "管线正在运行中"})
+    # 2026-07-20: 体检运行中 → 409(不对称互斥; 体检提交则永远排队, 见 /api/lab/run)
+    if lab_status.running:
+        return JSONResponse(status_code=409, content={"success": False, "error": "公式体检运行中,请稍后"})
 
     clear_stop()  # 2026-07-17: 清掉上一次停止残留的标志, 防新回测被秒杀
     pipeline_status.running = True
