@@ -27,7 +27,7 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from utils.config_loader import ConfigLoader
+from utils.config_loader import ConfigLoader, resolve_strategy_yaml
 from backtest.engine import BacktestEngine
 from backtest.stop_config import load_stop_config
 from factor_score import score_selections
@@ -62,10 +62,13 @@ def print_metrics(r):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--strategy-yaml", required=True)
+    ap.add_argument("--strategy-yaml", default=None,
+                    help="策略 yaml; 缺省自动解析: current.yaml(前端保存) > strategy_QUANTQQ.yaml")
     ap.add_argument("--tag", required=True, help="区间标签 20250719_20260718")
     ap.add_argument("--threshold", type=int, default=-2, help="剔除阈值 total≤此值")
     args = ap.parse_args()
+    args.strategy_yaml = resolve_strategy_yaml(args.strategy_yaml)
+    print(f"[INFO] 策略配置: {args.strategy_yaml}")
 
     strat = ConfigLoader.load_yaml(args.strategy_yaml)
     sel_section = strat["selection"]

@@ -26,7 +26,7 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from utils.config_loader import ConfigLoader
+from utils.config_loader import ConfigLoader, resolve_strategy_yaml
 from backtest.engine import BacktestEngine
 from backtest.stop_config import load_stop_config
 from factor_score import score_selections
@@ -50,10 +50,12 @@ def run_bt(selections, bt_cfg, stop_config, start, end):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--strategy-yaml", required=True)
+    ap.add_argument("--strategy-yaml", default=None,
+                    help="策略 yaml; 缺省自动解析: current.yaml(前端保存) > strategy_QUANTQQ.yaml")
     ap.add_argument("--tag", required=True)
     ap.add_argument("--thresholds", default="-3,-2,-1,0", help="逗号分隔的阈值")
     args = ap.parse_args()
+    args.strategy_yaml = resolve_strategy_yaml(args.strategy_yaml)
 
     strat = ConfigLoader.load_yaml(args.strategy_yaml)
     sel_section = strat["selection"]
