@@ -31,13 +31,14 @@ def resolve_strategy_yaml(arg: Optional[str] = None,
                           current: Optional[str] = None,
                           fallback: Optional[str] = None) -> str:
     """CLI --strategy-yaml 统一解析(2026-07-19 配置源统一,防页面/实验室两套事实源漂移):
-    显式指定 > config/current.yaml(前端保存,存在即用) > config/strategy_QUANTQQ.yaml(兜底)。
+    显式指定 > config/current.yaml(前端保存,存在即用) > config/default.yaml(兜底)。
+    2026-07-20 用户拍板: 兜底用 default.yaml(与公式无关的通用基线)。
     current/fallback 可注入(测试用)。"""
     if arg:
         return arg
     cur = Path(current) if current else _CURRENT_PATH
     fb = Path(fallback) if fallback else (
-        Path(__file__).resolve().parents[1] / "config" / "strategy_QUANTQQ.yaml")
+        Path(__file__).resolve().parents[1] / "config" / "default.yaml")
     return str(cur) if cur.exists() else str(fb)
 
 

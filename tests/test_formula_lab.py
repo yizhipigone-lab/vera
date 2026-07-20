@@ -91,6 +91,14 @@ def test_arms_spec_negative_ic_top_rules():
     assert lab.arms_spec(quals) == "fb:top10,fb:top20"
 
 
+def test_arms_spec_appends_combos_when_two_families():
+    """2026-07-20 用户拍板: ≥2 族时追加同款档位组合臂。"""
+    quals = [{"family": "A", "factor": "f1", "ic_sign": -1, "strength": 0.6, "per_win": {}},
+             {"family": "B", "factor": "f2", "ic_sign": 1, "strength": 0.5, "per_win": {}}]
+    spec = lab.arms_spec(quals)
+    assert "f1:top10+f2:bottom10" in spec and "f1:top20+f2:bottom20" in spec
+
+
 # ── S5 报告模板 ──────────────────────────────────────────────
 
 def test_report_contains_verdict_and_warnings():

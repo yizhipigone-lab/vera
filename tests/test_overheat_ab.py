@@ -70,3 +70,31 @@ def test_verdict_pass_dd():
 def test_verdict_fail_calmar():
     base = {"annret": 0.175, "maxdd": -0.045, "calmar": 3.86}
     assert ab.verdict({"annret": 0.15, "maxdd": -0.05, "calmar": 3.0}, base) == "FAIL"
+
+
+# ── 组合臂(2026-07-20 用户拍板: 组合也要终审) ─────────────────
+
+def test_parse_arms_combo():
+    arms = ab.parse_arms("f1:top10,f2:top10+f3:top20")
+    assert arms[0] == ("base", None, None)
+    assert ("f1_top10", "f1", "top10") in arms
+    assert ("combo_f2_top10+f3_top20", None, "f2:top10+f3:top20") in arms
+
+
+def test_parse_arms_combo_bad_rule():
+    import pytest
+    with pytest.raises(ValueError):
+        ab.parse_arms("f2:top99+f3:top20")
+
+
+def test_combo_filter_matches_production_semantics():
+    """组合臂过滤 = 生产 apply_rules 顺序语义(与 tests/test_factor_filter 同预期)。"""
+    rows = []
+    for d in ("2026-07-15", "2026-07-16"):
+        for i in range(10):
+            rows.append((f"S{i}.SZ", d, "Q", float(i), float(i)))
+    sel = pd.DataFrame(rows, columns=["stock_code", "select_date", "formula_name", "f2", "f3"])
+    out = ab.apply_filter(sel, None, "f2:top10+f3:top10")
+    assert "S9.SZ" not in out["stock_code"].values
+    assert len(out) == 16                     # 每条规则每天各剔 1 只
+

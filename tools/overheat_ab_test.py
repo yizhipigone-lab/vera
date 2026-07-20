@@ -58,10 +58,21 @@ KEEP_COLS = ["stock_code", "select_date", "formula_name"]
 
 def parse_arms(s: str) -> list:
     """解析 --arms "turnover_rate:top10,dist_ma20:top20,circ_mv:bottom20" → (名称, 因子, 规则)。
-    规则: top10/top20 = 剔日截面最高 10%/20%(负 IC 因子用); bottom10/bottom20 = 剔最低(正 IC 因子用)。"""
+    规则: top10/top20 = 剔日截面最高 10%/20%(负 IC 因子用); bottom10/bottom20 = 剔最低(正 IC 因子用)。
+    组合臂(2026-07-20 用户拍板): "f1:top10+f2:top10" → factor=None, rule="f1:top10+f2:top10",
+    按生产 selection/factor_filter.apply_rules 同款顺序语义执行。"""
     arms = [("base", None, None)]
     for item in s.split(","):
-        factor, rule = item.strip().split(":")
+        item = item.strip()
+        if "+" in item:
+            parts = item.split("+")
+            for p in parts:
+                _f, r = p.strip().split(":")
+                if r not in ("top10", "top20", "bottom10", "bottom20"):
+                    raise ValueError(f"未知规则: {r}")
+            arms.append(("combo_" + item.replace(":", "_").replace("+", "+"), None, item))
+            continue
+        factor, rule = item.split(":")
         if rule not in ("top10", "top20", "bottom10", "bottom20"):
             raise ValueError(f"未知规则: {rule}(支持 top10/top20/bottom10/bottom20)")
         arms.append((f"{factor}_{rule}", factor, rule))
@@ -69,7 +80,11 @@ def parse_arms(s: str) -> list:
 
 
 def apply_filter(sel: pd.DataFrame, factor: str | None, rule: str | None) -> pd.DataFrame:
-    """按日截面 rank 过滤。缺失因子值的行保留(不构成过热/小市值证据)。"""
+    """按日截面 rank 过滤。缺失因子值的行保留(不构成过热/小市值证据)。
+    factor=None 且 rule 含 '+' 时为组合臂: 走生产同款 selection/factor_filter.apply_rules。"""
+    if rule and "+" in rule:
+        from selection.factor_filter import apply_rules
+        return apply_rules(sel, [p.strip() for p in rule.split("+")])[KEEP_COLS].copy()
     if factor is None:
         return sel[KEEP_COLS].copy()
     rank = sel.groupby("select_date")[factor].rank(pct=True)
@@ -125,7 +140,14 @@ def main() -> None:
         sel = pd.read_parquet(mpath)
         sel["select_date"] = pd.to_datetime(sel["select_date"])
         arms = parse_arms(args.arms)
-        missing = [f for _, f, _ in arms if f and f not in sel.columns]
+        # 缺列检查: 单臂因子 + 组合臂展开的全部因子
+        need = []
+        for _n, f, r in arms:
+            if f:
+                need.append(f)
+            elif r and "+" in r:
+                need += [p.strip().split(":")[0] for p in r.split("+")]
+        missing = [f for f in dict.fromkeys(need) if f not in sel.columns]
         if missing:
             raise SystemExit(f"[FAIL] 因子矩阵缺列: {missing}(先跑 factor_ic_screen 生成矩阵)")
         print(f"[INFO] 矩阵模式: {mpath} {len(sel)} 行, 臂: {[a[0] for a in arms]}")

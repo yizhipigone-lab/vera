@@ -108,11 +108,16 @@ def select_arms(ic_by_win: dict, family_of: dict, primary: str | None = None,
 
 
 def arms_spec(quals: list) -> str:
-    """选臂结果 → overheat_ab_test --arms 字符串。负 IC 剔高端, 正 IC 剔低端。"""
+    """选臂结果 → overheat_ab_test --arms 字符串。负 IC 剔高端, 正 IC 剔低端。
+    ≥2 族时追加同款档位的组合臂(2026-07-20 用户拍板: 组合也要终审)。"""
     parts = []
     for q in quals:
         side = "top" if q["ic_sign"] < 0 else "bottom"
         parts += [f"{q['factor']}:{side}10", f"{q['factor']}:{side}20"]
+    if len(quals) >= 2:
+        sides = ["top" if q["ic_sign"] < 0 else "bottom" for q in quals[:2]]
+        parts += [f"{quals[0]['factor']}:{sides[0]}10+{quals[1]['factor']}:{sides[1]}10",
+                  f"{quals[0]['factor']}:{sides[0]}20+{quals[1]['factor']}:{sides[1]}20"]
     return ",".join(parts)
 
 
@@ -159,9 +164,29 @@ def build_rules_json(formula: str, tags: list, yaml_path: str, quals: list,
                 "stats_by_win": s_by_win, "adopted": adopted,
                 "pending_review": pending_review,
             })
+    # 组合臂终审结果(2026-07-20 用户拍板: 组合也要终审)
+    combos = []
+    combo_ids = sorted({a for df in ab_by_win.values() for a in df["arm"] if str(a).startswith("combo_")})
+    for cid in combo_ids:
+        v_by_win = {}
+        s_by_win = {}
+        for tag, df in ab_by_win.items():
+            row = df[df["arm"] == cid]
+            if len(row):
+                r = row.iloc[0]
+                v_by_win[tag] = r["verdict"]
+                s_by_win[tag] = {"annret": float(r["annret"]), "maxdd": float(r["maxdd"]),
+                                 "calmar": float(r["calmar"]) if pd.notna(r["calmar"]) else None}
+        combos.append({
+            "arm": cid,
+            "label": cid.replace("combo_", "").replace("_", " ").replace("+", " + "),
+            "verdict_by_win": v_by_win, "stats_by_win": s_by_win,
+            "adopted": (len(tags) >= 2 and len(v_by_win) >= len(tags)
+                        and all(str(v).startswith("PASS") for v in v_by_win.values())),
+        })
     return {
         "formula": formula, "generated_at": started, "tags": tags,
-        "strategy_yaml": yaml_path, "rules": rules,
+        "strategy_yaml": yaml_path, "rules": rules, "combos": combos,
         "note": "规则仅对本公式信号池成立(IC 海选 + A/B 终审双窗口判定); "
                 "止损参数变更后需在新基线上复跑终审。",
     }

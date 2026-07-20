@@ -17,7 +17,7 @@ selection:
   formula_name: "UPN"
   formula_arg: "3"
   universe:
-    type: "50"                  # 沪深A股
+    type: "23"                  # 沪深300 (本任务 prep 瓶颈优化, 2026-07-19; 原全A="50")
     exclude_st: true
     exclude_new_listings_days: 60
     include_etf: false          # P-v3.4: A股 + ETF 混合 (list_type=31)
