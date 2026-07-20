@@ -1510,6 +1510,13 @@ function applyFactorFilterDict(ff) {
 }
 
 // 公式名变化 → 重新拉该公式的规则
+// 2026-07-21 修复: 只用 change 有盲区(值与 localStorage 恢复值相同时 blur 不触发);
+// 改为 input(防抖 400ms) + change 双通道
+let _ffLoadTimer = null;
+document.getElementById('cfgFormula').addEventListener('input', () => {
+  clearTimeout(_ffLoadTimer);
+  _ffLoadTimer = setTimeout(loadFactorRules, 400);
+});
 document.getElementById('cfgFormula').addEventListener('change', loadFactorRules);
 
 // ====== 公式体检页 (2026-07-20) ======
