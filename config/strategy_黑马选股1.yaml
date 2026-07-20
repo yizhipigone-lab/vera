@@ -1,0 +1,28 @@
+# 黑马选股1 / 日线 / 全A / 因子挖掘专用策略配置
+# 2026-07-20: 用户请求对"黑马选股1"做因子挖掘(formula_lab 全流程)。
+# 探针实测(2026-07-20): 公式存在, 全A 2026-04~07 信号 19436 条(高密度 ~266条/日)。
+# 止损/资金继承 default.yaml(2026-07-20 拍板: 终审兜底配置); universe 显式全A(不随 default.yaml 漂移)。
+
+strategy:
+  name: "黑马选股1_日线_全A_因子挖掘"
+
+selection:
+  formula_name: "黑马选股1"
+  formula_arg: ""
+  universe:
+    type: "50"                  # 全A(显式指定, 防 default.yaml universe 改动漂移)
+    exclude_st: true
+  period: "1d"
+  dividend_type: 1              # 前复权
+
+time_range:
+  start: "20230719"
+  end: "20260718"
+
+backtest:
+  initial_capital: 1000000.0
+  position_sizing:
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
