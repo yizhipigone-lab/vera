@@ -127,9 +127,19 @@ def arms_spec(quals: list) -> str:
 
 FACTOR_LABEL = {
     "turnover_rate": "换手率", "dist_ma20": "偏离MA20", "intraday20": "日内涨幅",
-    "vol20": "20日波动率", "mom5": "5日动量", "mom20": "20日动量",
+    "vol20": "20日波动率", "mom5": "5日动量", "mom20": "20日动量", "mom60": "60日动量",
     "circ_mv": "流通市值", "total_mv": "总市值", "pv_corr20": "量价相关性",
     "rsi14": "RSI14", "volr5_20": "量比", "turnover5": "活跃度",
+    "volume_ratio": "量比(官方)", "dist_high20": "距20日高点", "dist_high250": "距年高点",
+    "ret1": "昨日涨幅", "maxret20": "彩票因子", "macd_hist": "MACD柱",
+    "boll_pct": "布林位置", "kdj_k": "KDJ-K", "price": "价格水平",
+    "amihud20": "非流动性", "ret_skew20": "收益偏度", "volvol20": "量能波动",
+    "overnight20": "隔夜收益", "corr_index20": "跟盘程度", "beta60": "贝塔",
+    "amt20": "日均成交额", "sector_heat5": "板块热度5日", "sector_heat20": "板块热度20日",
+    "pe_ttm": "市盈率", "pb": "市净率", "ps_ttm": "市销率", "dv_ratio": "股息率",
+    "rzye_ratio": "融资占比", "hk_ratio": "北向占比",
+    "mf_score": "资金流评分", "dragon_score": "龙虎榜评分",
+    "block_score": "大宗评分", "total_score": "综合评分",
 }
 RULE_LABEL = {"top10": "最高10%", "top20": "最高20%", "bottom10": "最低10%", "bottom20": "最低20%"}
 
@@ -213,51 +223,133 @@ def ab_csv(formula: str, tag: str) -> Path:
     return ROOT / "output" / "reports" / f"overheat_ab_{formula}_{tag}.csv"
 
 
+# ═══════════════════════════════════════════════════════════════
+# S5 报告(大白话版, 2026-07-21 用户要求: 看不懂术语, 全部大白话 + 因子排名)
+# ═══════════════════════════════════════════════════════════════
+
+FACTOR_DESC = {
+    "turnover_rate": "当天买卖活跃程度(换手率)", "volume_ratio": "量比(官方口径)",
+    "dist_ma20": "股价比20日均线高多少(涨过头程度)", "intraday20": "当天盘中涨了多少(追高程度)",
+    "vol20": "股价波动大小", "mom5": "最近5天涨了多少", "mom20": "最近20天涨了多少",
+    "mom60": "最近60天涨了多少", "volr5_20": "最近放量倍数", "turnover5": "近期成交活跃度变化",
+    "dist_high20": "离20日最高点有多远", "dist_high250": "离一年最高点有多远",
+    "ret1": "昨天一天涨了多少", "maxret20": "最近20天单日最大涨幅(彩票感)",
+    "rsi14": "技术指标RSI(超买超卖)", "macd_hist": "技术指标MACD柱",
+    "boll_pct": "股价在布林通道里的位置", "kdj_k": "技术指标KDJ的K值",
+    "price": "股价的绝对高低", "amihud20": "流动性(小成交就能推动价格)",
+    "ret_skew20": "暴涨暴跌倾向(收益偏度)", "volvol20": "成交量的波动大小",
+    "pv_corr20": "量价齐升/背离程度", "overnight20": "隔夜跳空收益(开盘缺口)",
+    "corr_index20": "跟随大盘的程度", "beta60": "对大盘的敏感度(贝塔)",
+    "amt20": "日均成交额", "sector_heat5": "所属板块最近5天热度", "sector_heat20": "所属板块最近20天热度",
+    "pe_ttm": "市盈率(贵不贵)", "pb": "市净率", "ps_ttm": "市销率", "dv_ratio": "股息率",
+    "total_mv": "总市值", "circ_mv": "流通市值",
+    "rzye_ratio": "融资盘占比(杠杆资金)", "hk_ratio": "北向资金持股占比",
+    "mf_score": "主力资金流评分", "dragon_score": "龙虎榜机构评分",
+    "block_score": "大宗交易评分", "total_score": "三因子综合评分",
+}
+
+
+def _strength(ic: float) -> str:
+    a = abs(ic)
+    return "强" if a >= 0.10 else ("中" if a >= 0.05 else "弱")
+
+
+def _stability(icir: float) -> str:
+    a = abs(icir)
+    return "很稳" if a >= 0.5 else ("稳" if a >= 0.3 else "一般")
+
+
+def _verdict_cn(v: str) -> str:
+    s = str(v)
+    if s.startswith("PASS"):
+        return "✅ 通过(更赚钱)"
+    if s == "BASE":
+        return "基准"
+    return "❌ 没通过"
+
+
 def render_report(formula: str, tags: list, yaml: str, s0_notes: dict, quals: list,
-                  ab_tables: dict, final: list, started: str) -> str:
-    """S5 报告(固定模板, 含可信度警告)。"""
-    lines = [
-        f"# {formula} 公式因子体检报告",
-        "",
-        f"> 生成: {started} | 驱动: `tools/formula_lab.py` | 配置: `{yaml}`",
-        f"> 窗口: {', '.join(tags)}{' ⚠️ 单窗口, 结论待复核' if len(tags) < 2 else ''}",
-        f"> 方法: docs/公式因子体检方法论.md(S0-S5, 五条纪律)",
-        "",
-        "## S0 前置检查",
-        ""]
-    lines += [f"- {t}: {n}" for t, n in s0_notes.items()]
-    lines += ["", "## S3 族归纳选臂(预注册规则)", ""]
-    if not quals:
-        lines.append("**零族达标** — 两个窗口 fwd10 均满足 |IC|≥0.03 且 |ICIR|≥0.3 的族不存在。"
-                     "结论: 无可行动因子, 建议保持现状, 不加过滤。")
-    else:
-        lines += [f"- 族 `{q['family']}` 代表 `{q['factor']}` "
-                  f"(IC 符号 {'负→剔高端' if q['ic_sign'] < 0 else '正→剔低端'}, "
-                  f"min|ICIR|={q['strength']:.2f}, "
-                  f"分窗: {', '.join(f'{t}: IC {v['ic_mean']:+.3f}/ICIR {v['icir']:+.2f}' for t, v in q['per_win'].items())})"
-                  for q in quals]
-    lines += ["", "## S4 A/B 终审(同 stop_config)", ""]
-    for tag, tb in ab_tables.items():
-        lines += [f"### {tag}", "", "```", tb, "```", ""]
-    lines += ["## 判定结论", ""]
+                  ab_by_win: dict, final: list, started: str,
+                  ic_primary: pd.DataFrame | None = None) -> str:
+    """S5 报告(大白话版): 一句话结论 + 裸跑表现 + 因子排名 + 终审对决 + 判定 + 提醒。"""
+    L = [f"# {formula} 体检报告(大白话版)", ""]
+    L.append(f"> 体检时间: {started} | 用的配置: `{yaml}` | 窗口: {' + '.join(tags)}"
+             f"{' ⚠️ 只有一个窗口, 结论先记着别当真(待复核)' if len(tags) < 2 else ''}")
+    L.append("")
+
+    # ── 一句话结论 ──
+    L.append("## 一句话结论")
+    L.append("")
     if final:
-        lines.append("**双窗口均 PASS 的臂(可纳入生产候选)**:")
-        lines += [f"- ✅ `{a}`" for a in final]
-        lines.append("")
-        lines.append("纳入前注意: 判定相对当前 stop_config 成立; 若生产止损参数变更, 需在新基线上复跑终审。")
+        L.append(f"**这个公式建议加过滤:** {'、'.join(final)} —— 两个窗口都验证过, 确实更赚钱。")
+    elif quals:
+        L.append("**有候选过滤规则, 但两个窗口没全通过 —— 先别用, 继续观察。**")
     else:
-        lines.append("**无臂双窗口通过** — 保持现状, 不加过滤(负结果同样有价值)。")
-    lines += [
-        "",
-        "## 可信度警告(五条纪律, 必读)",
-        "",
-        "1. 以上结论**仅对该公式的信号池成立**, 不外推到其他公式/全市场;",
-        "2. 回测系统性乐观(CLAUDE.md 7.5/10), 相对排序可参考, 绝对年化不可全信;",
-        "3. IC 是相关性海选, A/B 是终审; 本报告任何 IC 数字不构成进策略的依据;",
-        "4. 批量跑多个公式挑最优组合 = 又一层多重检验, 跨公式结论需样外验证;",
-        "5. 数据边界: 北向日频 2024-08 起断供; 两融/陆股通仅覆盖子集; 事件因子仅近 1 年窗。",
-    ]
-    return "\n".join(lines) + "\n"
+        L.append("**没什么好加的 —— 这个公式按现状跑就行, 别折腾过滤。**")
+    L.append("")
+
+    # ── 裸跑表现 ──
+    L.append("## 这个公式本身(不加任何过滤)赚不赚钱")
+    L.append("")
+    L.append("| 窗口 | 年化收益 | 最大回撤 | 收益回撤比(越大越好) |")
+    L.append("|---|---|---|---|")
+    for tag, df in ab_by_win.items():
+        b = df[df["arm"] == "base"]
+        if len(b):
+            r = b.iloc[0]
+            L.append(f"| {tag} | {r['annret']:+.1%} | {r['maxdd']:.1%} | {r['calmar']:.2f} |")
+    L.append("")
+
+    # ── 因子排名 ──
+    if ic_primary is not None and len(ic_primary):
+        L += ["## 因子排名(哪些因子和'买入后 10 天涨不涨'关系最大, 前 15 名)", "",
+              "| 排名 | 因子 | 大白话意思 | 方向 | 关系强度 | 稳定度 |",
+              "|---|---|---|---|---|---|"]
+        top = ic_primary.dropna(subset=["icir", "ic_mean"]).sort_values(
+            "icir", key=abs, ascending=False).head(15)
+        for i, (_, r) in enumerate(top.iterrows(), 1):
+            f = r["factor"]
+            direction = "越高越跌(要躲)" if r["ic_mean"] < 0 else "越高越涨"
+            L.append(f"| {i} | {FACTOR_LABEL.get(f, f)} | {FACTOR_DESC.get(f, f)} | "
+                     f"{direction} | {_strength(r['ic_mean'])} | {_stability(r['icir'])} |")
+        L.append("")
+        L.append("> 读法: 排名靠前又'很稳'的因子, 就是这个公式信号池里最硬的规律。"
+                 "'越高越跌'的因子可以拿来躲(剔除最高的); '越高越涨'的可以拿来挑。")
+        L.append("")
+
+    # ── 终审对决 ──
+    L.append("## 终审对决(同一段历史跑两遍: 裸跑 vs 加过滤)")
+    L.append("")
+    for tag, df in ab_by_win.items():
+        L.append(f"### 窗口 {tag}")
+        L.append("")
+        L.append("| 过滤方案 | 年化收益 | 最大回撤 | 收益回撤比 | 判定 |")
+        L.append("|---|---|---|---|---|")
+        for _, r in df.iterrows():
+            L.append(f"| {r['arm']} | {r['annret']:+.1%} | {r['maxdd']:.1%} | "
+                     f"{r['calmar']:.2f} | {_verdict_cn(r['verdict'])} |")
+        L.append("")
+
+    # ── 最终判定 ──
+    L.append("## 最终判定")
+    L.append("")
+    if final:
+        L.append("**✅ 这两个窗口都验证通过的规则(可以上生产):**")
+        L += [f"- {a}" for a in final]
+        L.append("")
+        L.append("注意: 判定是相对当前这套止损参数说的; 以后改了止损参数, 要重新终审一遍。")
+    else:
+        L.append("**❌ 没有规则两个窗口都通过 —— 保持现状不加过滤(没通过也是值钱的信息)。**")
+    L.append("")
+
+    # ── 大白话提醒 ──
+    L += ["## 必须知道的提醒(大白话)", "",
+          "1. 以上结论**只对这个公式的信号池成立**——换个公式, 答案可能完全不一样, 别外推;",
+          "2. 回测算出来的数字**整体偏乐观**(成交价假设往好了算), 看'谁比谁好'可以, 别全信绝对年化;",
+          "3. 因子排名是'相关性海选', 终审对决才是'真刀真枪'; 排名好看 ≠ 能进策略;",
+          "4. 如果你拿很多公式都跑一遍再挑最好的用, 那又多了一层'挑数据'风险, 留点心;",
+          "5. 数据边界: 北向资金 2024-08 后没有日度数据; 两融/陆股通只覆盖部分股票; 事件因子只有近一年。"]
+    return "\n".join(L) + "\n"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -275,7 +367,20 @@ def main() -> None:
                     help="只重建报告+规则JSON(复用已有 IC/A/B CSV, 不跑回测)")
     args = ap.parse_args()
     from utils.config_loader import resolve_strategy_yaml
+    _explicit_yaml = args.strategy_yaml          # 用户显式指定的优先, 不被溯源覆盖
     args.strategy_yaml = resolve_strategy_yaml(args.strategy_yaml)
+    # --report-only 配置溯源: 数字来自上次终审用的配置, 以 rules JSON 记录为准
+    # (仅未显式指定时启用; 兜底规则若已变更, 防止报告头部张冠李戴)
+    if args.report_only and _explicit_yaml is None:
+        import json as _json0
+        _rj = ROOT / "output" / "reports" / f"{args.formula}_filter_rules.json"
+        if _rj.exists():
+            try:
+                _prev = _json0.loads(_rj.read_text(encoding="utf-8")).get("strategy_yaml")
+                if _prev:
+                    args.strategy_yaml = _prev
+            except Exception:
+                pass
     tags = [t for t in (args.tag, args.tag2) if t]
     started = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -314,16 +419,14 @@ def main() -> None:
     print(f"[S3] 选臂: {[(q['family'], q['factor'], q['ic_sign']) for q in quals] or '零族达标'}")
 
     # S4 A/B 终审(有臂才跑; --report-only 复用已有结果)
-    ab_tables, ab_by_win, final = {}, {}, []
+    ab_by_win, final = {}, []
     if quals:
         spec = arms_spec(quals)
         for tag in tags:
             if not args.report_only:
                 run(["tools/overheat_ab_test.py", "--tag", tag, "--formula", args.formula,
                      "--strategy-yaml", args.strategy_yaml, "--arms", spec], f"S4 A/B {tag}")
-            tb = pd.read_csv(ab_csv(args.formula, tag))
-            ab_by_win[tag] = tb
-            ab_tables[tag] = tb.to_string(index=False)
+            ab_by_win[tag] = pd.read_csv(ab_csv(args.formula, tag))
         # 双窗口判定(纪律 2: 单窗口一律"待复核", 不算通过 — 2026-07-20 UPN 冒烟抓出)
         cand = set(ab_by_win[tags[0]]["arm"]) - {"base"}
         for arm in sorted(cand):
@@ -334,11 +437,12 @@ def main() -> None:
             elif any(oks):
                 print(f"[S4] {arm}: 单窗口通过, 标'待复核'")
 
-    # S5 报告 + S5b 规则 JSON(前端数据源)
+    # S5 报告(大白话版, 含因子排名: 用证据窗 fwd10 IC 表) + S5b 规则 JSON(前端数据源)
     out = (ROOT / "docs" / "audit"
            / f"{datetime.now().strftime('%Y-%m-%d')}_{args.formula}_{'_'.join(tags)}_因子体检报告.md")
     out.write_text(render_report(args.formula, tags, args.strategy_yaml, s0_notes,
-                                 quals, ab_tables, final, started), encoding="utf-8")
+                                 quals, ab_by_win, final, started,
+                                 ic_primary=ic_by_win.get(tags[-1])), encoding="utf-8")
     import json as _json
     rules_path = ROOT / "output" / "reports" / f"{args.formula}_filter_rules.json"
     rules_path.parent.mkdir(parents=True, exist_ok=True)

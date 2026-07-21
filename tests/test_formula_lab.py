@@ -99,19 +99,38 @@ def test_arms_spec_appends_combos_when_two_families():
     assert "f1:top10+f2:bottom10" in spec and "f1:top20+f2:bottom20" in spec
 
 
-# ── S5 报告模板 ──────────────────────────────────────────────
+# ── S5 报告模板(大白话版) ─────────────────────────────────────
+
+def _ab_df():
+    return pd.DataFrame([
+        {"arm": "base", "kept": 100, "removed": 0, "annret": 0.10, "maxdd": -0.05,
+         "sharpe": 1.0, "winrate": 0.6, "calmar": 2.0, "verdict": "BASE"},
+        {"arm": "fb_top10", "kept": 90, "removed": 10, "annret": 0.12, "maxdd": -0.04,
+         "sharpe": 1.2, "winrate": 0.62, "calmar": 3.0, "verdict": "PASS(增收)"},
+    ])
+
+
+def _ic_df():
+    return pd.DataFrame([
+        {"factor": "turnover_rate", "ic_mean": -0.15, "icir": -0.8},
+        {"factor": "dist_ma20", "ic_mean": -0.12, "icir": -0.6},
+        {"factor": "circ_mv", "ic_mean": 0.06, "icir": 0.2},
+    ])
+
 
 def test_report_contains_verdict_and_warnings():
     md = lab.render_report("TESTF", ["t1", "t2"], "cfg.yaml",
                            {"t1": "OK", "t2": "OK"},
                            [{"family": "族A", "factor": "fb", "ic_sign": -1,
                              "strength": 0.6, "per_win": {}}],
-                           {"t1": "table1", "t2": "table2"},
-                           ["fb_top10"], "2026-07-19 15:00")
-    assert "fb_top10" in md and "双窗口均 PASS" in md and "可信度警告" in md and "TESTF" in md
+                           {"t1": _ab_df(), "t2": _ab_df()},
+                           ["fb_top10"], "2026-07-19 15:00",
+                           ic_primary=_ic_df())
+    assert "fb_top10" in md and "两个窗口都验证通过" in md and "必须知道的提醒" in md
+    assert "因子排名" in md and "换手率" in md and "越高越跌" in md
 
 
 def test_report_zero_family_path():
     md = lab.render_report("TESTF", ["t1"], "cfg.yaml", {"t1": "OK"}, [], {}, [],
-                           "2026-07-19 15:00")
-    assert "无可行动因子" in md and "待复核" in md
+                           "2026-07-19 15:00", ic_primary=_ic_df())
+    assert "没什么好加的" in md and "待复核" in md
