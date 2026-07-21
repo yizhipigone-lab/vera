@@ -42,6 +42,9 @@ def build_backtest_loop(
     atr_enabled: bool = False,
     atr_matrix: Optional[np.ndarray] = None,
     atr_multiplier: float = 3.0,
+    # 移动止盈跳空保护 (2026-07-21 用户拍板, opt-in 默认关):
+    # 跳空低开跌穿回撤线时按 min(回撤线, 开盘价) 成交
+    trailing_gap_protection: bool = False,
 ) -> BacktestLoop:
     """从 _simulate_core_v3 的参数构造 BacktestLoop。
 
@@ -66,7 +69,8 @@ def build_backtest_loop(
         strategies["ladder_tp"] = LadderTpStrategy()
     if trailing_enabled:
         strategies["trailing"] = TrailingStrategy(
-            activation=trailing_activation, drawdown=trailing_drawdown)
+            activation=trailing_activation, drawdown=trailing_drawdown,
+            gap_protection=trailing_gap_protection)
     if time_enabled:
         strategies["time_stop"] = TimeStopStrategy(max_hold_days=max_hold_days)
     if cond_time_enabled:

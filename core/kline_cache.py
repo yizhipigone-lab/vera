@@ -377,7 +377,20 @@ class KlineCache:
         out = combined.reset_index()
         tmp = pfile.with_suffix(".parquet.tmp")
         pq.write_table(pa.Table.from_pandas(out, preserve_index=False), tmp)
-        os.replace(tmp, pfile)
+        # 2026-07-21: Windows 下杀软/索引器常在 write→replace 间隙短暂锁定 parquet,
+        # os.replace 抛 PermissionError(WinError 5), 已 3 次杀死长批任务(301528/603192 等)。
+        # 短暂退避重试 3 次; 仍失败则保留 tmp 并抛错(不静默丢数据)。
+        last_err = None
+        for _attempt in range(3):
+            try:
+                os.replace(tmp, pfile)
+                break
+            except PermissionError as e:
+                last_err = e
+                import time as _time
+                _time.sleep(0.5 * (_attempt + 1))
+        else:
+            raise last_err
 
     def _refresh_manifest(self, code: str, period: str):
         """读 parquet 实际内容回填 manifest (first/last/rows/last_close/intact)。"""

@@ -76,6 +76,8 @@ def _simulate_core_v3(
     max_position_pct=1.0,
     # ATR 波动率止损 (新 API 策略, opt-in; legacy 无此能力, 默认禁用保持 parity)
     atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
+    # 移动止盈跳空保护 (2026-07-21, opt-in 默认关; gap bar 按 min(回撤线,开盘价) 成交)
+    trailing_gap_protection=False,
 ):
     """兼容壳（候选 A 阶段 2, ENGINE_VERSION v3.4-loop-refactor-20260714）。
 
@@ -101,6 +103,7 @@ def _simulate_core_v3(
         ladder_tp_first, trailing_first,
         formula_exit_np, formula_exit_ratio, formula_exit_lag_bars,
         atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
+        trailing_gap_protection=trailing_gap_protection,
     )
     return loop.run(price_np, entry_np, high_np, low_np, open_np,
                     tradable_np, last_tradable_idx, formula_exit_np)
@@ -1062,6 +1065,8 @@ class BacktestEngine:
             max_position_pct=float(self.max_position_pct),
             # ATR 波动率止损 (新策略, opt-in)
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
+            # 移动止盈跳空保护 (opt-in, 2026-07-21)
+            trailing_gap_protection=bool(trail.get("gap_protection", False)),
         )
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         # DEBUG: check raw bar differences from Numba output directly
@@ -1257,6 +1262,8 @@ class BacktestEngine:
             formula_exit_lag_bars=formula_exit_lag_bars,
             # ATR 波动率止损 (新策略, opt-in)
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
+            # 移动止盈跳空保护 (opt-in, 2026-07-21)
+            trailing_gap_protection=bool(trail.get("gap_protection", False)),
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
