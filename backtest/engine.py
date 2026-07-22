@@ -1,9 +1,9 @@
 """VeraCore 回测引擎 — 纯Python，内置OHLC止盈止损判断。
 
-候选 A 阶段 2（2026-07-14, v3.4-loop-refactor）: 核心循环已拆到 `backtest/loop/` 子包。
-`_simulate_core_v3` 现为 ~45 行兼容壳, 转调 `backtest.loop.BacktestLoop.run()`;
-旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。
-新结构设计说明见 `docs/architecture/loop.md`。对外签名零改动, 所有调用方零改动。
+核心循环: `backtest/loop/BacktestLoop` (候选 A 阶段 2, 2026-07-14)。
+run()/run_cached() 直接调用 `build_backtest_loop` + `loop.run()`。
+`_simulate_core_v3` 保留为测试兼容壳 (53行, 转调 build_backtest_loop)。
+设计说明: `docs/architecture/loop.md`。
 """
 
 import pandas as pd
@@ -19,6 +19,83 @@ from backtest.degrade_5m import (
     synthesize_5m_grid,
 )
 from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
+from backtest.loop import build_backtest_loop
+from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
+from backtest.stop_config import (
+    DEFAULT_TRAILING_ACTIVATION,
+    DEFAULT_TRAILING_DRAWDOWN,
+    DEFAULT_PRIORITY,
+    VALID_PRIORITIES,
+)
+from core.data_fetcher import DataFetcher
+from core.stock_filter import get_cached_info
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+ENGINE_VERSION = "v3.6-no-legacy-20260723"
+
+# ═══════════════════════════════════════════════════════════════
+# 测试兼容壳: _simulate_core_v3 — 保留给 7 个测试文件
+# 生产路径(run/run_cached)已直接使用 build_backtest_loop
+# ═══════════════════════════════════════════════════════════════
+
+def _simulate_core_v3(
+    price_np, entry_np,
+    initial_capital, commission,
+    min_buy_amount, max_buy_amount, lot_size, min_lots,
+    cost_stop_enabled, cost_stop_threshold,
+    trailing_enabled, trailing_activation, trailing_drawdown,
+    ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
+    time_enabled, max_hold_days,
+    cond_time_enabled, cond_time_days, cond_time_profit,
+    first_day_enabled=False, first_day_target=0.03,
+    first_day_n_bars=1, high_np=None, low_np=None, bpday=1,
+    slippage=0.0, stamp_tax=0.0,
+    tradable_np=None, last_tradable_idx=None,
+    open_np=None,
+    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
+    ladder_tp_first=False,
+    trailing_first=False,
+    max_position_pct=1.0,
+    atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
+    trailing_gap_protection=False,
+):
+    """测试兼容壳 — 转调 build_backtest_loop + BacktestLoop.run()。
+    保留给 7 个测试文件 (test_priority_switch 等) 的 import 兼容。
+    """
+    loop = build_backtest_loop(
+        initial_capital, commission,
+        min_buy_amount, max_buy_amount, lot_size, min_lots,
+        cost_stop_enabled, cost_stop_threshold,
+        trailing_enabled, trailing_activation, trailing_drawdown,
+        ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
+        time_enabled, max_hold_days,
+        cond_time_enabled, cond_time_days, cond_time_profit,
+        first_day_enabled, first_day_target,
+        bpday, slippage, stamp_tax, max_position_pct,
+        ladder_tp_first, trailing_first,
+        formula_exit_np, formula_exit_ratio, formula_exit_lag_bars,
+        atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
+        trailing_gap_protection=trailing_gap_protection,
+    )
+    return loop.run(price_np, entry_np, high_np, low_np, open_np,
+                    tradable_np, last_tradable_idx, formula_exit_np)
+
+import pandas as pd
+import numpy as np
+from typing import Dict, Optional, Any
+
+from backtest.metrics import MetricsCalculator
+from backtest.result import BacktestResult
+from backtest.degrade_5m import (
+    apply_5m_degradation,
+    recompute_last_tradable_idx,
+    scan_degraded_positions,
+    synthesize_5m_grid,
+)
+from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
+from backtest.loop import build_backtest_loop
 from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
 from backtest.stop_config import (
     DEFAULT_TRAILING_ACTIVATION,
@@ -42,7 +119,6 @@ ENGINE_VERSION = "v3.5-window-clip-degrade-20260721"
 # 实例挂到这里, run() 路径读 loop.final_positions (loop.py 期末快照) 导出
 # open_positions。server 回测串行提交 (_run_lock), 无线程竞争; run_cached
 # 同样会写但无人读 (该路径不导出未平仓, 与 degrade_5m 同限制)。
-_LAST_LOOP = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -65,592 +141,7 @@ _LAST_LOOP = None
 #   其他     → Close
 # ═══════════════════════════════════════════════════════════════
 
-def _simulate_core_v3(
-    price_np, entry_np,
-    initial_capital, commission,
-    min_buy_amount, max_buy_amount, lot_size, min_lots,
-    cost_stop_enabled, cost_stop_threshold,
-    trailing_enabled, trailing_activation, trailing_drawdown,
-    ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
-    time_enabled, max_hold_days,
-    cond_time_enabled, cond_time_days, cond_time_profit,
-    first_day_enabled=False, first_day_target=0.03,
-    first_day_n_bars=1, high_np=None, low_np=None, bpday=1,
-    slippage=0.0, stamp_tax=0.0,
-    tradable_np=None, last_tradable_idx=None,
-    open_np=None,
-    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
-    ladder_tp_first=False,
-    trailing_first=False,
-    max_position_pct=1.0,
-    # ATR 波动率止损 (新 API 策略, opt-in; legacy 无此能力, 默认禁用保持 parity)
-    atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
-    # 移动止盈跳空保护 (2026-07-21, opt-in 默认关; gap bar 按 min(回撤线,开盘价) 成交)
-    trailing_gap_protection=False,
-):
-    """兼容壳（候选 A 阶段 2, ENGINE_VERSION v3.4-loop-refactor-20260714）。
 
-    39 参数签名零改动（22 必需 + 17 可选, 全 positional, 无 `*`）, 所有调用方零改动。
-    转调 backtest.loop.BacktestLoop.run()。行为与 _simulate_core_v3_legacy 字节级一致
-    （见 tests/test_loop_parity.py 55 组对照; ATR 默认禁用, 不参与 parity）。
-
-    first_day_n_bars 为历史半死参数（legacy 函数体从未引用, 仅调用方传入）, 此处接收但忽略。
-    atr_* 为新增 keyword (默认禁用), 启用时走 BacktestLoop 新 API, legacy 无对应能力。
-    返回 (equity_arr, raw_trades[:count]) 与 legacy 完全一致 (ATR 禁用时)。
-    """
-    from backtest.loop import build_backtest_loop
-    global _LAST_LOOP
-    loop = build_backtest_loop(
-        initial_capital, commission,
-        min_buy_amount, max_buy_amount, lot_size, min_lots,
-        cost_stop_enabled, cost_stop_threshold,
-        trailing_enabled, trailing_activation, trailing_drawdown,
-        ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
-        time_enabled, max_hold_days,
-        cond_time_enabled, cond_time_days, cond_time_profit,
-        first_day_enabled, first_day_target,
-        bpday, slippage, stamp_tax, max_position_pct,
-        ladder_tp_first, trailing_first,
-        formula_exit_np, formula_exit_ratio, formula_exit_lag_bars,
-        atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
-        trailing_gap_protection=trailing_gap_protection,
-    )
-    _LAST_LOOP = loop  # 2026-07-21: run() 读回 loop.final_positions (期末未平仓)
-    return loop.run(price_np, entry_np, high_np, low_np, open_np,
-                    tradable_np, last_tradable_idx, formula_exit_np)
-
-
-def _simulate_core_v3_legacy(
-    price_np, entry_np,
-    initial_capital, commission,
-    min_buy_amount, max_buy_amount, lot_size, min_lots,
-    cost_stop_enabled, cost_stop_threshold,
-    trailing_enabled, trailing_activation, trailing_drawdown,
-    ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
-    time_enabled, max_hold_days,
-    cond_time_enabled, cond_time_days, cond_time_profit,
-    first_day_enabled=False, first_day_target=0.03,
-    first_day_n_bars=1, high_np=None, low_np=None, bpday=1,
-    slippage=0.0, stamp_tax=0.0,
-    tradable_np=None, last_tradable_idx=None,
-    open_np=None,
-    # P-v3.4: 公式卖出机制 (formula_sell) — TDX 信号驱动, 最高优先级 (reason 12)
-    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
-    # 2026-07-05: 阶梯止盈/成本止损优先级开关 (config: stop_loss.priority)
-    #   ladder_tp_first=False (stop_first, 历史默认) → cost_stop 先于 ladder_tp
-    #   ladder_tp_first=True  (ladder_tp_first 新模式) → ladder_tp 先于 cost_stop
-    #   注: formula_sell (12) 仍最高, 不受此开关影响; 其他止盈 (trailing/time/cond_time) 不动
-    ladder_tp_first=False,
-    # 2026-07-05 v3: 移动止损优先级开关 (trailing_first)
-    #   trailing_first=True → ladder_tp > trailing > cost_stop (trailing 只越过 cost_stop)
-    #   注: trailing 语义改造 (Low 触发 + 回撤线价 + 跳空保护) 是全局, 不受此开关影响
-    trailing_first=False,
-    # 2026-07-09: 单票占比上限 (<1.0 启用; 默认1.0=不约束, 老行为)
-    max_position_pct=1.0,
-    # ATR kwargs: legacy 无 ATR 能力, 接收但忽略 (保持与壳可互换, 作 parity 甲骨文)
-    atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
-    # 移动止盈跳空保护 (2026-07-21): legacy 无此能力, 接收但忽略 (保持 parity 甲骨文)
-    trailing_gap_protection=False,
-):
-    n_dates = price_np.shape[0]
-    n_stocks = price_np.shape[1]
-    MAX_POS = 5000
-
-    pos_code = np.full(MAX_POS, -1, dtype=np.int32)
-    pos_shares = np.zeros(MAX_POS, dtype=np.float64)
-    pos_entry_px = np.zeros(MAX_POS, dtype=np.float64)
-    pos_entry_idx = np.full(MAX_POS, -1, dtype=np.int32)
-    pos_high_px = np.zeros(MAX_POS, dtype=np.float64)      # 持仓期间最高收盘价
-    pos_high_hi = np.zeros(MAX_POS, dtype=np.float64)      # 持仓期间最高价(来自high_np)
-    pos_ladder_done = np.zeros(MAX_POS, dtype=np.int32)     # 阶梯止盈已触发档位(bitmask)
-    pos_count = 0
-
-    cash = float(initial_capital)
-    equity_arr = np.empty(n_dates, dtype=np.float64)
-    max_trades = n_dates * n_stocks // 4 + 1000
-    trades = np.empty((max_trades, 9), dtype=np.float64)
-    trade_count = 0
-
-    # P1-8: trades 数组动态扩容（替换原静默截断）
-    def _grow_trades():
-        nonlocal trades, max_trades
-        new_max = max_trades * 2
-        new_trades = np.empty((new_max, 9), dtype=np.float64)
-        new_trades[:trade_count] = trades[:trade_count]
-        trades = new_trades
-        max_trades = new_max
-        logger.warning("trades 数组扩容至 %d (n_dates=%d n_stocks=%d)", max_trades, n_dates, n_stocks)
-
-    # reason codes: 3=cost_stop 4=trailing_stop 5=ladder_tp 6=time_stop 7=cond_time 8=trailing_tp 9=time_tp 10=first_day 1=replace
-    for i in range(n_dates):
-        # ── 1. 卖出（内部止损判断）──
-        p = 0
-        while p < pos_count:
-            ci = pos_code[p]
-            if ci < 0:
-                p += 1; continue
-            xp = price_np[i, ci]
-            # P1-3: 停牌/退市处理（tradable_np 来自原始未 ffill 价）
-            if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
-                if last_tradable_idx is not None and last_tradable_idx[ci] >= 0 and i > last_tradable_idx[ci]:
-                    # 退市：之后再无可交易 bar → 强制平仓（按 ffill 最后已知价）
-                    total_sh = pos_shares[p]
-                    ep_d = pos_entry_px[p]
-                    sell_price = xp if xp > 0 else ep_d
-                    sell_eff = sell_price * (1.0 - slippage)
-                    gross = total_sh * sell_eff * (1.0 - commission - stamp_tax)
-                    cash += gross
-                    if trade_count >= max_trades:
-                        _grow_trades()
-                    trades[trade_count, 0] = float(ci)
-                    trades[trade_count, 1] = float(pos_entry_idx[p])
-                    trades[trade_count, 2] = float(i)
-                    trades[trade_count, 3] = ep_d
-                    trades[trade_count, 4] = sell_price
-                    trades[trade_count, 5] = total_sh
-                    trades[trade_count, 6] = gross - total_sh * ep_d
-                    trades[trade_count, 7] = (sell_price - ep_d) / ep_d if ep_d > 0.0 else 0.0
-                    trades[trade_count, 8] = 11.0  # 退市
-                    trade_count += 1
-                    pos_count -= 1
-                    if p < pos_count:
-                        pos_code[p] = pos_code[pos_count]
-                        pos_shares[p] = pos_shares[pos_count]
-                        pos_entry_px[p] = pos_entry_px[pos_count]
-                        pos_entry_idx[p] = pos_entry_idx[pos_count]
-                        pos_high_px[p] = pos_high_px[pos_count]
-                        pos_high_hi[p] = pos_high_hi[pos_count]
-                        pos_ladder_done[p] = pos_ladder_done[pos_count]
-                    continue
-                # 临时停牌：跳过卖出检查，按 ffill 价 mark-to-market（equity 段处理）
-                p += 1; continue
-            if np.isnan(xp) or xp <= 0.0:
-                p += 1; continue
-
-            # A 股 T+1 交易制度: 当日买入不可当日卖出 (国内交易所规则)
-            if (i // bpday) == (pos_entry_idx[p] // bpday):
-                # 同在一天，只更新最高价，不检查卖出
-                if high_np is not None:
-                    hi = high_np[i, ci]
-                    if hi > pos_high_hi[p]:
-                        pos_high_hi[p] = hi
-                if xp > pos_high_px[p]:
-                    pos_high_px[p] = xp
-                p += 1; continue
-
-            ep = pos_entry_px[p]
-            pp = (xp - ep) / ep if ep > 0.0 else 0.0
-            hp = max(pos_high_px[p], xp)
-            pos_high_px[p] = hp
-            hp_profit = (hp - ep) / ep if ep > 0.0 else 0.0
-
-            # 获取当前bar的OHLC价格（用于检测日内触发）
-            hi = high_np[i, ci] if high_np is not None else xp
-            lo = low_np[i, ci] if low_np is not None else xp
-            hi_pp = (hi - ep) / ep if ep > 0.0 else 0.0
-            lo_pp = (lo - ep) / ep if ep > 0.0 else 0.0
-
-            # 跟踪实际最高价（用于首日规则和移动止损峰值）
-            # 2026-07-05 v3: trailing 用"更新后"的 peak_hi (含当根 high), 符合用户意图
-            #   "当根 high=103 激活, 回撤线 = 103*(1-drawdown) = 101.97"
-            if high_np is not None:
-                if hi > pos_high_hi[p]:
-                    pos_high_hi[p] = hi
-            peak_hi = pos_high_hi[p] if pos_high_hi[p] > 0 else ep
-            peak_hi_profit = (peak_hi - ep) / ep if ep > 0.0 else 0.0
-
-            hold_days = i - pos_entry_idx[p]
-
-            triggered = -1  # reason code, -1 = none
-
-            ladder_sell_ratio = 0.0  # 本 bar 阶梯止盈的卖出比例（默认 0 = 不触发）
-            ladder_partial_pending = False  # 2026-07-07: trailing_first 双触发标记
-
-            # P-v3.4: 公式卖出 (formula_sell, reason=12) — 最高优先级, 早于 cost_stop
-            # 信号日 T+1 触发 (与 entry 同套规则): 查 formula_exit_np[i - lag, ci]
-            # i >= formula_exit_lag_bars 防止 i<1 时越界
-            if (formula_exit_np is not None
-                    and i >= formula_exit_lag_bars
-                    and 0 <= ci < formula_exit_np.shape[1]
-                    and bool(formula_exit_np[i - formula_exit_lag_bars, ci])):
-                triggered = 12
-
-            # 2026-07-05 v3: 三档 priority 开关 (stop_first / ladder_tp_first / trailing_first)
-            #   trailing_first      → ladder_tp > trailing > cost_stop
-            #   ladder_tp_first     → ladder_tp > cost_stop > trailing
-            #   stop_first (默认)   → cost_stop > ladder_tp > trailing
-            # 注: trailing 语义改造 (Low 触发 + 回撤线价) 是全局, 三个分支用同一 trailing 块
-            if trailing_first:
-                # ── trailing_first (2026-07-07 改): ladder 部分卖后继续检查 trailing, cost_stop 兜底 ──
-                # 语义: 止盈优先. ladder 冲高部分卖 → 剩余用 trailing 跟踪最高点回撤 → 没触发则 cost_stop 兜底
-                ladder_partial_pending = False  # 2026-07-07: 标记 ladder 部分卖待执行, 不阻塞后续检查
-                if triggered < 0 and ladder_enabled:
-                    prev_mask = int(pos_ladder_done[p])
-                    new_mask = compute_ladder_trigger(prev_mask, hi_pp, ladder_profits[:n_ladder])
-                    if new_mask != prev_mask:
-                        pos_ladder_done[p] = new_mask
-                        ladder_sell_ratio = compute_ladder_sell_ratio(
-                            prev_mask, new_mask,
-                            ladder_profits[:n_ladder], ladder_ratios[:n_ladder],
-                        )
-                        if ladder_sell_ratio < 1.0:
-                            ladder_partial_pending = True  # 部分卖, 继续检查 trailing
-                        else:
-                            triggered = 5  # 全卖, 不继续检查 (ladder 已清仓)
-                # trailing 块 (不阻塞: 不管 ladder 是否触发都检查, 用剩余仓位)
-                if triggered < 0 and trailing_enabled and peak_hi_profit >= trailing_activation:
-                    trail_line = peak_hi * (1.0 - trailing_drawdown)
-                    if lo <= trail_line:
-                        triggered = 8 if (trail_line - ep) / ep > 0.0 else 4  # reason 按回撤线价判断
-                # cost_stop 兜底 (trailing 没触发才检查)
-                if triggered < 0 and cost_stop_enabled and lo_pp <= cost_stop_threshold:
-                    triggered = 3
-                # 如果 trailing/cost_stop 都没触发, 但 ladder 触发了 → 只 ladder 部分卖
-                if triggered < 0 and ladder_partial_pending:
-                    triggered = 5
-            elif ladder_tp_first:
-                # ── ladder_tp_first: ladder_tp > cost_stop > trailing ──
-                if triggered < 0 and ladder_enabled:
-                    prev_mask = int(pos_ladder_done[p])
-                    new_mask = compute_ladder_trigger(prev_mask, hi_pp, ladder_profits[:n_ladder])
-                    if new_mask != prev_mask:
-                        pos_ladder_done[p] = new_mask
-                        ladder_sell_ratio = compute_ladder_sell_ratio(
-                            prev_mask, new_mask,
-                            ladder_profits[:n_ladder], ladder_ratios[:n_ladder],
-                        )
-                        triggered = 5
-                if triggered < 0 and cost_stop_enabled and lo_pp <= cost_stop_threshold:
-                    triggered = 3
-                # trailing 块 (新语义)
-                if triggered < 0 and trailing_enabled and peak_hi_profit >= trailing_activation:
-                    trail_line = peak_hi * (1.0 - trailing_drawdown)
-                    if lo <= trail_line:
-                        triggered = 8 if (trail_line - ep) / ep > 0.0 else 4  # 2026-07-05: reason 按回撤线价(实际成交价)判断, 不是 Close
-            else:
-                # ── stop_first (历史默认): cost_stop > ladder_tp > trailing ──
-                # 原逻辑一字不动
-                if cost_stop_enabled and lo_pp <= cost_stop_threshold:
-                    triggered = 3
-                if triggered < 0 and ladder_enabled:
-                    prev_mask = int(pos_ladder_done[p])
-                    new_mask = compute_ladder_trigger(prev_mask, hi_pp, ladder_profits[:n_ladder])
-                    if new_mask != prev_mask:
-                        pos_ladder_done[p] = new_mask
-                        ladder_sell_ratio = compute_ladder_sell_ratio(
-                            prev_mask, new_mask,
-                            ladder_profits[:n_ladder], ladder_ratios[:n_ladder],
-                        )
-                        triggered = 5
-                # trailing 块 (新语义)
-                if triggered < 0 and trailing_enabled and peak_hi_profit >= trailing_activation:
-                    trail_line = peak_hi * (1.0 - trailing_drawdown)
-                    if lo <= trail_line:
-                        triggered = 8 if (trail_line - ep) / ep > 0.0 else 4  # 2026-07-05: reason 按回撤线价(实际成交价)判断, 不是 Close
-            # 移动止损/止盈：[已并入上方三分支, 新语义: Low 触及回撤线即触发]
-            # (旧 Close 回撤逻辑已废弃, 见 v3 计划书)  # 8=移动止盈 4=移动止损
-            # 时间止损/止盈 (根据盈亏区分)
-            if triggered < 0 and time_enabled and hold_days >= max_hold_days:
-                triggered = 9 if pp > 0 else 6  # 9=时间止盈 6=时间止损
-            # 条件时间止盈：持仓N天后，当前bar的High达到盈利目标%清仓
-            if triggered < 0 and cond_time_enabled and hold_days >= cond_time_days and hi_pp >= cond_time_profit:
-                triggered = 7
-            # 首日未达标：第一可交易日收盘时，持仓期间最高价涨幅<目标 → 强制卖出
-            if triggered < 0 and first_day_enabled:
-                current_day = i // bpday
-                entry_day = pos_entry_idx[p] // bpday
-                # 第一个可交易日的最后一根bar（T+1下即入场次日收盘）
-                if current_day == entry_day + 1 and (i % bpday) == bpday - 1:
-                    day_high = pos_high_hi[p] if pos_high_hi[p] > 0 else (high_np[i, ci] if high_np is not None else xp)
-                    if day_high > 0 and ep > 0:
-                        day1_return = (day_high - ep) / ep
-                        if day1_return < first_day_target:
-                            triggered = 10  # 首日未达标
-
-            if triggered >= 0:
-                total_sh = pos_shares[p]
-                # ── 计算执行价格（根据触发类型）──
-                # 成本止损: stop_price 简化模式 (ep * (1 + threshold))
-                # 阶梯止盈: ladder_price 简化模式 (ep * (1 + profit))
-                # 其他: Close 价格
-                if triggered == 3:
-                    # 硬止损【简化模式】：使用stop_price执行
-                    # P1-1: 跌停保护 — 跳空低开时取 min(stop_price, open)
-                    stop_price = ep * (1.0 + cost_stop_threshold)
-                    if open_np is not None:
-                        op = open_np[i, ci]
-                        if not np.isnan(op) and op < stop_price:
-                            stop_price = op
-                    sell_price = stop_price
-                    actual_ret = (sell_price - ep) / ep if ep > 0.0 else 0.0
-                elif triggered == 5:
-                    # 阶梯止盈【简化模式】：使用ladder_price执行
-                    # BUG-5 修复: 旧实现取"已触发且 hi_pp 满足"的最后一档 profit
-                    #   （与 sell_ratio 同一 bug），现改为取最大值。
-                    # 卖出价取 hi 实际到达过的最高档位的 profit（保守估计成交价）。
-                    tp_profit = 0.0
-                    cur_mask = int(pos_ladder_done[p])  # 触发后已写回 new_mask
-                    for li in range(n_ladder):
-                        if (cur_mask >> li) & 1 and hi_pp >= ladder_profits[li]:
-                            if ladder_profits[li] > tp_profit:
-                                tp_profit = ladder_profits[li]
-                    sell_price = ep * (1.0 + tp_profit)
-                    actual_ret = tp_profit
-                elif triggered in (4, 8):
-                    # 2026-07-05 v3: 移动止损/止盈 — 按回撤线价执行 (盘中锁利语义)
-                    #   sell_price = peak_hi * (1 - drawdown)
-                    #   语义: 止盈线是限价单, 盘中 Low 触及回撤线即按回撤线价成交
-                    #   不做跳空保护 (跟 cost_stop 不同): trailing 是锁利工具, 始终按回撤线价
-                    #   即使跳空低开 open < trail_line, 仍按 trail_line 成交 (乐观假设)
-                    sell_price = peak_hi * (1.0 - trailing_drawdown)
-                    actual_ret = (sell_price - ep) / ep if ep > 0.0 else 0.0
-                else:
-                    # 时间止损/止盈、cond_time、first_day 等使用Close
-                    sell_price = xp
-                    actual_ret = (sell_price - ep) / ep if ep > 0.0 else 0.0
-
-                # 阶梯止盈：根据本次新触发档位的比例决定部分/全卖
-                # BUG-5 修复: 旧实现 sell_ratio = ladder_ratios[li] 每次覆盖，
-                #   最终只取最后一档；现改为累加"本 bar 新触发"档位的比例
-                if triggered == 5:
-                    sell_ratio = ladder_sell_ratio
-                    if sell_ratio < 1.0:
-                        # 部分卖出
-                        sell_sh = int(total_sh * sell_ratio)
-                        sell_sh = max((sell_sh // lot_size) * lot_size, lot_size)
-                        if sell_sh < total_sh:
-                            # C1 修复: 卖出叠加滑点 + 印花税 (eff_*=0 时等价于旧版)
-                            sell_eff = sell_price * (1.0 - slippage)
-                            gross = sell_sh * sell_eff * (1.0 - commission - stamp_tax)
-                            cash += gross
-                            if trade_count >= max_trades:
-                                _grow_trades()
-                            trades[trade_count, 0] = float(ci)
-                            trades[trade_count, 1] = float(pos_entry_idx[p])
-                            trades[trade_count, 2] = float(i)
-                            trades[trade_count, 3] = ep
-                            trades[trade_count, 4] = sell_price
-                            trades[trade_count, 5] = float(sell_sh)
-                            trades[trade_count, 6] = gross - sell_sh * ep
-                            trades[trade_count, 7] = actual_ret
-                            trades[trade_count, 8] = 5.0
-                            trade_count += 1
-                            pos_shares[p] = total_sh - sell_sh
-                            p += 1; continue  # 保留仓位，继续检查
-
-                # 2026-07-07: trailing_first 双触发 — ladder 部分卖 + trailing/cost_stop 全卖剩余
-                # 场景: ladder 冲高部分卖 → 剩余用 trailing 跟踪回撤清仓 (或 cost_stop 兜底)
-                # 两笔交易同 bar: 第一笔 ladder (reason=5), 第二笔 trailing/cost_stop (reason=8/4/3)
-                if ladder_partial_pending and triggered in (3, 4, 8):
-                    # 1. 算 ladder 执行价 (本 bar 新触发档位的最高 profit)
-                    tp_profit = 0.0
-                    cur_mask = int(pos_ladder_done[p])
-                    for li in range(n_ladder):
-                        if (cur_mask >> li) & 1 and hi_pp >= ladder_profits[li]:
-                            if ladder_profits[li] > tp_profit:
-                                tp_profit = ladder_profits[li]
-                    ladder_sell_price = ep * (1.0 + tp_profit)
-                    # 2. ladder 部分卖 (记录第一笔, reason=5)
-                    sell_ratio = ladder_sell_ratio
-                    remaining_sh = total_sh
-                    if sell_ratio < 1.0:
-                        sell_sh = int(total_sh * sell_ratio)
-                        sell_sh = max((sell_sh // lot_size) * lot_size, lot_size)
-                        if 0 < sell_sh < total_sh:
-                            sell_eff = ladder_sell_price * (1.0 - slippage)
-                            gross = sell_sh * sell_eff * (1.0 - commission - stamp_tax)
-                            cash += gross
-                            if trade_count >= max_trades:
-                                _grow_trades()
-                            trades[trade_count, 0] = float(ci)
-                            trades[trade_count, 1] = float(pos_entry_idx[p])
-                            trades[trade_count, 2] = float(i)
-                            trades[trade_count, 3] = ep
-                            trades[trade_count, 4] = ladder_sell_price
-                            trades[trade_count, 5] = float(sell_sh)
-                            trades[trade_count, 6] = gross - sell_sh * ep
-                            trades[trade_count, 7] = (ladder_sell_price - ep) / ep if ep > 0.0 else 0.0
-                            trades[trade_count, 8] = 5.0  # ladder
-                            trade_count += 1
-                            pos_shares[p] = total_sh - sell_sh
-                            remaining_sh = total_sh - sell_sh
-                    # 3. 全卖剩余 (trailing/cost_stop, 记录第二笔; sell_price 已按 triggered 算好)
-                    if remaining_sh > 0:
-                        sell_eff = sell_price * (1.0 - slippage)
-                        gross = remaining_sh * sell_eff * (1.0 - commission - stamp_tax)
-                        cash += gross
-                        if trade_count >= max_trades:
-                            _grow_trades()
-                        trades[trade_count, 0] = float(ci)
-                        trades[trade_count, 1] = float(pos_entry_idx[p])
-                        trades[trade_count, 2] = float(i)
-                        trades[trade_count, 3] = ep
-                        trades[trade_count, 4] = sell_price
-                        trades[trade_count, 5] = float(remaining_sh)
-                        trades[trade_count, 6] = gross - remaining_sh * ep
-                        trades[trade_count, 7] = actual_ret
-                        trades[trade_count, 8] = float(triggered)  # 8=移动止盈 4=移动止损 3=cost_stop
-                        trade_count += 1
-                    # 清仓
-                    pos_count -= 1
-                    if p < pos_count:
-                        pos_code[p] = pos_code[pos_count]
-                        pos_shares[p] = pos_shares[pos_count]
-                        pos_entry_px[p] = pos_entry_px[pos_count]
-                        pos_entry_idx[p] = pos_entry_idx[pos_count]
-                        pos_high_px[p] = pos_high_px[pos_count]
-                        pos_high_hi[p] = pos_high_hi[pos_count]
-                        pos_ladder_done[p] = pos_ladder_done[pos_count]
-                    continue
-
-                # P-v3.4: 公式卖出 (triggered=12) — 按 formula_exit_ratio 部分卖出
-                # sell_ratio=1.0 → 全卖 (走下方"全卖"路径); <1.0 → 部分卖 (类似 ladder)
-                if triggered == 12 and formula_exit_ratio < 1.0:
-                    sell_ratio = float(formula_exit_ratio)
-                    sell_sh = int(total_sh * sell_ratio)
-                    sell_sh = max((sell_sh // lot_size) * lot_size, lot_size)
-                    if sell_sh < total_sh and sell_sh > 0:
-                        sell_eff = sell_price * (1.0 - slippage)
-                        gross = sell_sh * sell_eff * (1.0 - commission - stamp_tax)
-                        cash += gross
-                        if trade_count >= max_trades:
-                            _grow_trades()
-                        trades[trade_count, 0] = float(ci)
-                        trades[trade_count, 1] = float(pos_entry_idx[p])
-                        trades[trade_count, 2] = float(i)
-                        trades[trade_count, 3] = ep
-                        trades[trade_count, 4] = sell_price
-                        trades[trade_count, 5] = float(sell_sh)
-                        trades[trade_count, 6] = gross - sell_sh * ep
-                        trades[trade_count, 7] = actual_ret
-                        trades[trade_count, 8] = 12.0   # formula_sell
-                        trade_count += 1
-                        pos_shares[p] = total_sh - sell_sh
-                        p += 1; continue  # 保留仓位，继续检查
-
-                # 全卖（所有非部分卖出场景）
-                # C1 修复: 卖出叠加滑点 + 印花税 (eff_*=0 时等价于旧版)
-                sell_eff = sell_price * (1.0 - slippage)
-                gross = total_sh * sell_eff * (1.0 - commission - stamp_tax)
-                cash += gross
-                if trade_count >= max_trades:
-                    _grow_trades()
-                trades[trade_count, 0] = float(ci)
-                trades[trade_count, 1] = float(pos_entry_idx[p])
-                trades[trade_count, 2] = float(i)
-                trades[trade_count, 3] = ep
-                trades[trade_count, 4] = sell_price
-                trades[trade_count, 5] = total_sh
-                trades[trade_count, 6] = gross - total_sh * ep
-                trades[trade_count, 7] = actual_ret
-                trades[trade_count, 8] = float(triggered)
-                trade_count += 1
-                pos_count -= 1
-                if p < pos_count:
-                    pos_code[p] = pos_code[pos_count]
-                    pos_shares[p] = pos_shares[pos_count]
-                    pos_entry_px[p] = pos_entry_px[pos_count]
-                    pos_entry_idx[p] = pos_entry_idx[pos_count]
-                    pos_high_px[p] = pos_high_px[pos_count]
-                    pos_high_hi[p] = pos_high_hi[pos_count]
-                    pos_ladder_done[p] = pos_ladder_done[pos_count]
-                continue
-            p += 1
-
-        # ── 2. 买入（同股先卖旧）──
-        for ci in range(n_stocks):
-            # 基本原则: 尾盘选股 → 信号日收盘价买入 (T 日成交)
-            #   entry_np[i, ci]=True → 信号日 i, 以当日收盘价 price_np[i] 成交
-            #   (原 P1-2 的 T+1 次日开盘买入路径违背该原则, 已废止 — 2026-07-04)
-            #
-            # 为什么不构成"未来函数" / 偷看:
-            #   1. 选股公式 QUANTQQ 是按历史 K 线算的趋势触发, 信号本身只用 i 之前的数据
-            #   2. A 股 14:57 集合竞价可按当日收盘价成交, 真实可交易
-            #   3. 出场判断全部基于 entry 之后的 bar, 无未来
-            if not entry_np[i, ci]:
-                continue
-            # 信号日停牌 → skip (避免用 ffill 假价成交)
-            if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
-                continue
-            bp = price_np[i, ci]
-            if np.isnan(bp) or bp <= 0.0:
-                # 信号日无收盘价 / 退市价, 无法成交, 跳过
-                continue
-            entry_i = i  # 实际买入 bar = 信号日 i
-            # 已持有同股票 → 卖出旧仓位
-            for old_p in range(pos_count):
-                if pos_code[old_p] == ci:
-                    os_sh = pos_shares[old_p]
-                    os_ep = pos_entry_px[old_p]
-                    os_ei = pos_entry_idx[old_p]
-                    gross = os_sh * bp * (1.0 - commission)
-                    cash += gross
-                    os_pp = (bp - os_ep) / os_ep if os_ep > 0.0 else 0.0
-                    if trade_count >= max_trades:
-                        _grow_trades()
-                    trades[trade_count, 0] = float(ci)
-                    trades[trade_count, 1] = float(os_ei)
-                    trades[trade_count, 2] = float(i)
-                    trades[trade_count, 3] = os_ep
-                    trades[trade_count, 4] = bp
-                    trades[trade_count, 5] = os_sh
-                    trades[trade_count, 6] = gross - os_sh * os_ep
-                    trades[trade_count, 7] = os_pp
-                    trades[trade_count, 8] = 1.0  # 换股
-                    trade_count += 1
-                    pos_count -= 1
-                    if old_p < pos_count:
-                        pos_code[old_p] = pos_code[pos_count]
-                        pos_shares[old_p] = pos_shares[pos_count]
-                        pos_entry_px[old_p] = pos_entry_px[pos_count]
-                        pos_entry_idx[old_p] = pos_entry_idx[pos_count]
-                        pos_high_px[old_p] = pos_high_px[pos_count]
-                        pos_high_hi[old_p] = pos_high_hi[pos_count]
-                        pos_ladder_done[old_p] = pos_ladder_done[pos_count]
-                    break
-            # 买入新仓位
-            buy_amount = min(cash, max_buy_amount)
-            # 2026-07-09: 单票占比上限 — 基于上一bar总权益约束单票买入金额
-            if max_position_pct < 1.0:
-                ref_equity = equity_arr[i-1] if i > 0 else float(initial_capital)
-                buy_amount = min(buy_amount, ref_equity * max_position_pct)
-            if buy_amount < min_buy_amount: continue
-            raw_sh = int(buy_amount / bp)
-            sh = (raw_sh // lot_size) * lot_size
-            if sh < lot_size * min_lots: continue
-            # C1 修复: 买入叠加滑点 (eff_slippage=0 时等价于旧版)
-            bp_eff = bp * (1.0 + slippage)
-            cost = sh * bp_eff * (1.0 + commission)
-            if cost <= cash and pos_count < MAX_POS:
-                cash -= cost
-                pos_code[pos_count] = ci
-                pos_shares[pos_count] = float(sh)
-                pos_entry_px[pos_count] = bp
-                pos_entry_idx[pos_count] = entry_i  # 信号日 i（收盘价买入日）
-                pos_high_px[pos_count] = bp
-                pos_high_hi[pos_count] = bp
-                pos_ladder_done[pos_count] = 0
-                pos_count += 1
-
-        # ── 3. 计算权益 ──
-        pv = 0.0
-        for p in range(pos_count):
-            ci = pos_code[p]
-            if ci >= 0:
-                px = price_np[i, ci]
-                if not np.isnan(px): pv += pos_shares[p] * px
-        equity_arr[i] = cash + pv
-
-    # ── 4. 最终权益（期末不平仓，按市值计入）──
-    last = n_dates - 1
-    pv = 0.0
-    for p in range(pos_count):
-        ci = pos_code[p]
-        if ci >= 0:
-            px = price_np[last, ci]
-            if not np.isnan(px): pv += pos_shares[p] * px
-    equity_arr[last] = cash + pv
-    return equity_arr, trades[:trade_count]
 
 
 def _build_tradable_from_raw(close_raw, close):
@@ -1051,10 +542,8 @@ class BacktestEngine:
             else:
                 logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
                 atr_enabled = False
-        equity_arr, raw_trades = _simulate_core_v3(
-            close.values.astype(np.float64), entries.values,
-            float(self.initial_capital),
-            float(self.eff_commission),
+        loop = build_backtest_loop(
+            float(self.initial_capital), float(self.eff_commission),
             float(self.min_buy_amount), float(self.max_buy_amount),
             int(self.lot_size), int(self.min_lots),
             cost.get("enabled", True), float(cost.get("threshold", -0.12)),
@@ -1065,27 +554,21 @@ class BacktestEngine:
             cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
             first_day_enabled=first_day.get("enabled", False),
             first_day_target=float(first_day.get("target", 0.03)),
-            first_day_n_bars=fd_bars,
-            high_np=high_np, low_np=low_np, bpday=bpday,
-            slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
-            tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
-            open_np=open_np,
-            # P-v3.4: 公式卖出矩阵 + 卖出比例
-            formula_exit_np=formula_exit_np,
-            formula_exit_ratio=formula_exit_ratio,
-            formula_exit_lag_bars=1,
-            # 2026-07-05: 阶梯止盈/成本止损优先级
-            ladder_tp_first=ladder_tp_first,
-            trailing_first=trailing_first,
-            # 2026-07-09: 单票占比上限
+            bpday=bpday, slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
             max_position_pct=float(self.max_position_pct),
-            # ATR 波动率止损 (新策略, opt-in)
+            ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
+            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio, formula_exit_lag_bars=1,
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
-            # 移动止盈跳空保护 (opt-in, 2026-07-21)
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
         )
-        # 2026-07-21: 期末未平仓持仓快照 (loop.run 内 finalize 后导出, 见 loop.py)
-        final_positions = list(getattr(_LAST_LOOP, "final_positions", None) or [])
+        self._last_loop = loop
+        equity_arr, raw_trades = loop.run(
+            close.values.astype(np.float64), entries.values,
+            high_np, low_np, open_np,
+            tradable_np, last_tradable_idx, formula_exit_np,
+        )
+        # 2026-07-21: 期末未平仓持仓快照
+        final_positions = list(getattr(self._last_loop, "final_positions", None) or [])
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         # DEBUG: check raw bar differences from Numba output directly
         raw_holds = [int(row[2]) - int(row[1]) for row in raw_trades]
@@ -1286,8 +769,7 @@ class BacktestEngine:
                 atr_enabled = False
 
         entries = self._filter_limit_up(entries, close) if filter_limit_up else entries
-        equity_arr, raw_trades = _simulate_core_v3(
-            close.values.astype(np.float64), entries.values,
+        loop = build_backtest_loop(
             float(self.initial_capital), float(self.eff_commission),
             float(self.min_buy_amount), float(self.max_buy_amount),
             int(self.lot_size), int(self.min_lots),
@@ -1299,23 +781,19 @@ class BacktestEngine:
             cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
             first_day_enabled=first_day.get("enabled", False),
             first_day_target=float(first_day.get("target", 0.03)),
-            first_day_n_bars=fd_bars,
-            high_np=high_np, low_np=low_np, bpday=bpday,
-            slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
-            # 2026-07-05: 阶梯止盈/成本止损优先级
-            ladder_tp_first=ladder_tp_first,
-            trailing_first=trailing_first,
-            # 2026-07-09: 单票占比上限
+            bpday=bpday, slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
             max_position_pct=float(self.max_position_pct),
-            # 候选 A 阶段 1: 补齐三类能力 keyword (旧版静默丢, 现按 capabilities 开关透传)
-            tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
-            open_np=open_np,
+            ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
             formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
             formula_exit_lag_bars=formula_exit_lag_bars,
-            # ATR 波动率止损 (新策略, opt-in)
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
-            # 移动止盈跳空保护 (opt-in, 2026-07-21)
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
+        )
+        self._last_loop = loop
+        equity_arr, raw_trades = loop.run(
+            close.values.astype(np.float64), entries.values,
+            high_np, low_np, open_np,
+            tradable_np, last_tradable_idx, formula_exit_np,
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）

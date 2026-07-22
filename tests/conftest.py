@@ -99,3 +99,20 @@ def _reset_all_connectors():
     from core.formula_runner import FormulaRunner
     DataFetcher.reset_connector()
     FormulaRunner.reset_connector()
+
+
+class FakeLoop:
+    """Mock BacktestLoop for monkeypatch tests. Captures run() args, returns stub equity/trades."""
+    def __init__(self, equity=None, trades=None):
+        self._equity = equity
+        self._trades = trades if trades is not None else np.empty((0, 9))
+        self.captured = {}
+
+    def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
+            tradable_np=None, last_tradable_idx=None, formula_exit_np=None):
+        import numpy as np
+        self.captured = dict(price_np=price_np, entry_np=entry_np,
+                             high_np=high_np, tradable_np=tradable_np,
+                             last_tradable_idx=last_tradable_idx)
+        eq = self._equity if self._equity is not None else np.full(price_np.shape[0], 100000.0)
+        return eq, np.atleast_2d(self._trades)

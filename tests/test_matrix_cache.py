@@ -145,17 +145,19 @@ class TestEngineSeam:
                             lambda self, entries, prices: entries)
         captured = []
 
-        def fake_core(price_np, entry_np, *args, **kwargs):
-            captured.append({
-                "price": price_np.copy(), "entry": entry_np.copy(),
-                "tradable": kwargs["tradable_np"].copy(),
-                "lti": kwargs["last_tradable_idx"].copy(),
-                "high": kwargs["high_np"].copy(), "low": kwargs["low_np"].copy(),
-                "open": kwargs["open_np"].copy(),
-            })
-            return np.full(price_np.shape[0], 100000.0), np.empty((0, 9))
-
-        monkeypatch.setattr(engine_module, "_simulate_core_v3", fake_core)
+        class _MockLoop:
+            def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
+                    tradable_np=None, last_tradable_idx=None, formula_exit_np=None):
+                captured.append({
+                    "price": price_np.copy(), "entry": entry_np.copy(),
+                    "tradable": tradable_np.copy() if tradable_np is not None else None,
+                    "lti": last_tradable_idx.copy() if last_tradable_idx is not None else None,
+                    "high": high_np.copy() if high_np is not None else None,
+                    "low": low_np.copy() if low_np is not None else None,
+                    "open": open_np.copy() if open_np is not None else None,
+                })
+                return np.full(price_np.shape[0], 100000.0), np.empty((0, 9))
+        monkeypatch.setattr(engine_module, "build_backtest_loop", lambda *a, **kw: _MockLoop())
         eng = BacktestEngine({"period": "5m", "matrix_cache": True,
                               "matrix_cache_dir": str(tmp_path / "mc")})
         sel = _selections()

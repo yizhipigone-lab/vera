@@ -48,13 +48,14 @@ def _run_5m(monkeypatch, close, mask, stop_config=None, capture=None, config=Non
     monkeypatch.setattr(BacktestEngine, '_filter_limit_up',
                         lambda self, entries, prices: entries)
 
-    def fake_core(price_np, entry_np, *args, **kwargs):
-        if capture is not None:
-            capture['tradable_np'] = kwargs.get('tradable_np')
-            capture['last_tradable_idx'] = kwargs.get('last_tradable_idx')
-        return np.full(price_np.shape[0], 100000.0), np.empty((0, 9))
-
-    monkeypatch.setattr(engine_module, '_simulate_core_v3', fake_core)
+    class _MockLoop:
+        def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
+                tradable_np=None, last_tradable_idx=None, formula_exit_np=None):
+            if capture is not None:
+                capture['tradable_np'] = tradable_np
+                capture['last_tradable_idx'] = last_tradable_idx
+            return np.full(price_np.shape[0], 100000.0), np.empty((0, 9))
+    monkeypatch.setattr(engine_module, 'build_backtest_loop', lambda *a, **kw: _MockLoop())
 
     selections = pd.DataFrame([
         {'select_date': close.index[0], 'stock_code': c} for c in close.columns])

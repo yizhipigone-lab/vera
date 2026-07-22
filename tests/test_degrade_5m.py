@@ -355,18 +355,19 @@ def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
     monkeypatch.setattr(BacktestEngine, '_limit_ratio_vector',
                         lambda self, columns: np.full(len(columns), 0.10))
 
-    def fake_core(price_np, entry_np, *args, **kwargs):
-        if capture is not None:
-            capture['price_np'] = price_np
-            capture['entry_np'] = entry_np
-            capture['high_np'] = kwargs.get('high_np')
-            capture['tradable_np'] = kwargs.get('tradable_np')
-            capture['last_tradable_idx'] = kwargs.get('last_tradable_idx')
-            capture['shape'] = price_np.shape
-        return np.full(price_np.shape[0], 100000.0), (
-            core_raw_trades if core_raw_trades is not None else np.empty((0, 9)))
-
-    monkeypatch.setattr(engine_module, '_simulate_core_v3', fake_core)
+    class _MockLoop:
+        def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
+                tradable_np=None, last_tradable_idx=None, formula_exit_np=None):
+            if capture is not None:
+                capture['price_np'] = price_np
+                capture['entry_np'] = entry_np
+                capture['high_np'] = high_np
+                capture['tradable_np'] = tradable_np
+                capture['last_tradable_idx'] = last_tradable_idx
+                capture['shape'] = price_np.shape
+            return np.full(price_np.shape[0], 100000.0), (
+                core_raw_trades if core_raw_trades is not None else np.empty((0, 9)))
+    monkeypatch.setattr(engine_module, 'build_backtest_loop', lambda *a, **kw: _MockLoop())
     result = eng.run(selections=selections, start_time='20260622', end_time='20260624',
                      stop_config=stop_config or {'time_stop': {'enabled': True, 'max_hold_days': 20}})
     return result

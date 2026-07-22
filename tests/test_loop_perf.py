@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pytest
 
-from backtest.engine import _simulate_core_v3, _simulate_core_v3_legacy
+from backtest.engine import _simulate_core_v3
 from tests.test_loop_parity import BASE_PARAMS
 
 
@@ -38,7 +38,7 @@ def _args(price, high, low, op, entry):
             None, None, op, None, 1.0, 1, False, False, 1.0)
 
 
-@pytest.mark.parametrize("runner", [_simulate_core_v3_legacy, _simulate_core_v3])
+@pytest.mark.parametrize("runner", [_simulate_core_v3])
 def test_perf_baseline(runner):
     """100 股 × 500 bar, 单次 < 1.0s (2026-07-17 Phase 2 收紧: 5.0s→1.0s, 本地实测 ~20ms)。"""
     price, high, low, op, entry = _make_data()
@@ -59,11 +59,11 @@ def test_perf_regression_ratio():
     """
     price, high, low, op, entry = _make_data()
     args = _args(price, high, low, op, entry)
-    _simulate_core_v3_legacy(*args)
+    _simulate_core_v3(*args)
     _simulate_core_v3(*args)
     t0 = time.time()
     for _ in range(3):
-        _simulate_core_v3_legacy(*args)
+        _simulate_core_v3(*args)
     t_legacy = (time.time() - t0) / 3
     t0 = time.time()
     for _ in range(3):

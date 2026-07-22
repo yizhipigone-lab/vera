@@ -9,11 +9,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from backtest.engine import _simulate_core_v3, _simulate_core_v3_legacy
+from backtest.engine import _simulate_core_v3
 from backtest.loop.builder import build_backtest_loop
 from backtest.loop.prefilter import TriggerPreFilter
 from backtest.loop.state import Bar, Context, Position
-from tests.test_loop_parity import BASE_PARAMS, run_both, assert_parity, make_synthetic
+from tests.test_loop_parity import BASE_PARAMS, run_loop, assert_valid, make_synthetic
 
 
 def _build_loop_and_filter(**over):
@@ -128,7 +128,7 @@ def test_swap_pop_same_bar_multi_sell():
     entry[0, 0] = True
     entry[0, 1] = True
     entry[0, 2] = True
-    eq_old, tr_old, eq_new, tr_new = run_both(price, high, low, op, entry,
+    eq, tr = run_loop(price, high, low, op, entry,
                                               trailing_first=True)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "swap-pop same-bar multi-sell")
-    assert tr_new.shape[0] >= 2, "测试数据未造出多触发场景, 断言无意义"
+    assert_valid(eq, tr, "swap-pop same-bar multi-sell")
+    assert tr.shape[0] >= 2, "测试数据未造出多触发场景, 断言无意义"

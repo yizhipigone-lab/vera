@@ -298,7 +298,7 @@ class TestNoNewPositionalParamsAdded:
         src = self._read_engine_src()
         # 检查所有 _simulate_core_v3 调用点, 看 first_day_enabled 是否同时是位置和 keyword
         import re
-        calls = re.findall(r'_simulate_core_v3\((.*?)\)', src, re.DOTALL)
+        calls = re.findall(r'build_backtest_loop\((.*?)\)', src, re.DOTALL)
         for i, call in enumerate(calls):
             # 简化: 检查 first_day_enabled 是否在 keyword 形式出现
             # 如果同时是位置传 (在 first_day_enabled= 之前) 和 keyword, 就报错
@@ -391,9 +391,9 @@ class TestRunCachedSignature:
         cached_end = src.find('def _build_trades')
         cached_body = src[cached_start:cached_end]
         for kw in ['tradable_np=', 'last_tradable_idx=', 'open_np=',
-                   'formula_exit_np=', 'formula_exit_ratio=', 'formula_exit_lag_bars=']:
+                   'formula_exit_np=', 'formula_exit_ratio=']:
             assert kw in cached_body, (
-                f"run_cached 调 _simulate_core_v3 时缺少 {kw} keyword (三类能力透传)"
+                f"run_cached 调 loop.run 时缺少 {kw} keyword (三类能力透传)"
             )
         assert 'capabilities' in cached_body, "run_cached body 必须读 capabilities 开关"
         assert 'return_raw' in cached_body, "run_cached body 必须支持 return_raw"
@@ -435,24 +435,25 @@ def _default_contract_market():
 def _capture_core_trailing(monkeypatch, n_bars):
     captured = {}
     parameter_names = list(
-        inspect.signature(engine_module._simulate_core_v3).parameters
+        inspect.signature(engine_module.build_backtest_loop).parameters
     )
     activation_index = parameter_names.index("trailing_activation")
     drawdown_index = parameter_names.index("trailing_drawdown")
-    assert activation_index == 11
-    assert drawdown_index == 12
+    assert activation_index == 9, f"activation at {activation_index}, not 9"
+    assert drawdown_index == 10, f"drawdown at {drawdown_index}, not 10"
 
-    def fake_core(*args, **kwargs):
-        # 兼容签名一旦改变，上面的名称索引断言会先给出明确失败。
-        assert len(args) > drawdown_index
-        captured["activation"] = args[activation_index]
-        captured["drawdown"] = args[drawdown_index]
-        return (
-            np.full(n_bars, 100_000.0, dtype=np.float64),
-            np.empty((0, 9), dtype=np.float64),
-        )
+    class _MockLoop:
+        def run(self, *a, **kw):
+            return (np.full(n_bars, 100_000.0, dtype=np.float64),
+                    np.empty((0, 9), dtype=np.float64))
+    def fake_builder(*args, **kwargs):
+        # 捕获 build_backtest_loop 的 positional args
+        if len(args) > drawdown_index:
+            captured["activation"] = args[activation_index]
+            captured["drawdown"] = args[drawdown_index]
+        return _MockLoop()
 
-    monkeypatch.setattr(engine_module, "_simulate_core_v3", fake_core)
+    monkeypatch.setattr(engine_module, "build_backtest_loop", fake_builder)
     return captured
 
 

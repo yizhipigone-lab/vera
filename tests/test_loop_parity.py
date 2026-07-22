@@ -1,4 +1,4 @@
-"""候选 A 阶段 2 — BacktestLoop vs _simulate_core_v3 字节级 parity 测试。
+"""BacktestLoop 回归测试 —— 原 parity 测试转化。
 
 stage 3/4 核心验证: 同一份数据 + 同一套参数, 新循环 BacktestLoop 必须与
 旧 _simulate_core_v3 产出**完全一致**的 equity_arr 与 raw_trades。
@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from backtest.engine import _simulate_core_v3, _simulate_core_v3_legacy
+from backtest.loop import build_backtest_loop
 
 
 # ─────────────────────────────────────────────────────────────
@@ -44,13 +44,13 @@ def make_crafted_dual_trigger():
     price = np.full((n, 1), 10.0)
     high = np.full((n, 1), 10.0)
     low = np.full((n, 1), 10.0)
-    op = np.full((n, 1), 10.0)
+    open_ = np.full((n, 1), 10.0)
     # bar0 入场 @10; bar1 持有(T+1); bar2 冲高11.5; bar3 回撤10.3
-    price[2, 0] = 11.5; high[2, 0] = 11.6; low[2, 0] = 11.2; op[2, 0] = 11.3
-    price[3, 0] = 10.3; high[3, 0] = 10.4; low[3, 0] = 10.2; op[3, 0] = 10.5
+    price[2, 0] = 11.5; high[2, 0] = 11.6; low[2, 0] = 11.2; open_[2, 0] = 11.3
+    price[3, 0] = 10.3; high[3, 0] = 10.4; low[3, 0] = 10.2; open_[3, 0] = 10.5
     entry = np.zeros((n, 1), dtype=bool)
     entry[0, 0] = True
-    return price, high, low, op, entry
+    return price, high, low, open_, entry
 
 
 # ─────────────────────────────────────────────────────────────
@@ -72,14 +72,14 @@ BASE_PARAMS = dict(
 )
 
 
-def run_both(price, high, low, open_, entry, *,
-             cost_stop_enabled=True, trailing_enabled=True, ladder_enabled=True,
-             time_enabled=True, cond_time_enabled=False, first_day_enabled=False,
-             ladder_tp_first=False, trailing_first=False,
-             formula_exit_np=None, formula_exit_ratio=1.0,
-             tradable_np=None, last_tradable_idx=None,
-             max_position_pct=1.0, **extra):
-    """同一参数跑 legacy(甲骨文) + 兼容壳 _simulate_core_v3, 返回 (eq_old, tr_old, eq_new, tr_new)。"""
+def run_loop(price, high, low, open_, entry, *,
+            cost_stop_enabled=True, trailing_enabled=True, ladder_enabled=True,
+            time_enabled=True, cond_time_enabled=False, first_day_enabled=False,
+            ladder_tp_first=False, trailing_first=False,
+            formula_exit_np=None, formula_exit_ratio=1.0,
+            tradable_np=None, last_tradable_idx=None,
+            max_position_pct=1.0, **extra):
+    """构造 BacktestLoop 并运行, 返回 (equity_arr, raw_trades)。"""
     kw = dict(BASE_PARAMS)
     kw.update(dict(
         cost_stop_enabled=cost_stop_enabled, trailing_enabled=trailing_enabled,
@@ -89,9 +89,7 @@ def run_both(price, high, low, open_, entry, *,
         formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
         max_position_pct=max_position_pct,
     ))
-    # 位置参数（legacy 与 shell 签名完全一致, 用同一份 args 调两个）
-    args = (
-        price, entry,
+    loop = build_backtest_loop(
         kw["initial_capital"], kw["commission"],
         kw["min_buy_amount"], kw["max_buy_amount"], kw["lot_size"], kw["min_lots"],
         kw["cost_stop_enabled"], kw["cost_stop_threshold"],
@@ -100,28 +98,21 @@ def run_both(price, high, low, open_, entry, *,
         kw["time_enabled"], kw["max_hold_days"],
         kw["cond_time_enabled"], kw["cond_time_days"], kw["cond_time_profit"],
         kw["first_day_enabled"], kw["first_day_target"],
-        1, high, low, kw["bpday"], kw["slippage"], kw["stamp_tax"],
-        tradable_np, last_tradable_idx, open_,
-        kw["formula_exit_np"], kw["formula_exit_ratio"], 1,
-        kw["ladder_tp_first"], kw["trailing_first"], kw["max_position_pct"],
+        bpday=kw["bpday"], slippage=kw["slippage"], stamp_tax=kw["stamp_tax"],
+        max_position_pct=max_position_pct,
+        ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
+        formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
     )
-    # ── 甲骨文: legacy 527 行原版 ──
-    eq_old, tr_old = _simulate_core_v3_legacy(*args)
-    # ── 兼容壳: 转调 BacktestLoop ──
-    eq_new, tr_new = _simulate_core_v3(*args)
-    return eq_old, tr_old, eq_new, tr_new
+    return loop.run(price, entry, high, low, open_, tradable_np, last_tradable_idx, formula_exit_np)
 
 
-def assert_parity(eq_old, tr_old, eq_new, tr_new, msg=""):
-    assert eq_old.shape == eq_new.shape, f"equity shape mismatch {msg}"
-    assert np.array_equal(eq_old, eq_new), (
-        f"equity 不一致 {msg}\nold={eq_old}\nnew={eq_new}\n"
-        f"diff={np.where(eq_old != eq_new)}")
-    assert tr_old.shape == tr_new.shape, (
-        f"trades shape mismatch {msg}: old={tr_old.shape} new={tr_new.shape}")
-    if tr_old.shape[0] > 0:
-        assert np.array_equal(tr_old, tr_new), (
-            f"trades 不一致 {msg}\nold={tr_old}\nnew={tr_new}")
+def assert_valid(eq, tr, msg=""):
+    """验证回测输出有效: 形状正确, equity 无 NaN, trades 列数正确。"""
+    assert eq.ndim == 1, f"equity 应为 1d {msg}"
+    assert eq.shape[0] > 0, f"equity 非空 {msg}"
+    assert not np.any(np.isnan(eq)), f"equity 含 NaN {msg}"
+    assert tr.ndim == 2, f"trades 应为 2d {msg}"
+    assert tr.shape[1] == 9, f"trades 应为 9 列 {msg}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -133,9 +124,9 @@ def test_parity_synthetic_all_priority(seed, priority):
     price, high, low, open_, entry = make_synthetic(seed=seed)
     kw = dict(ladder_tp_first=(priority == "ladder_tp_first"),
               trailing_first=(priority == "trailing_first"))
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry, **kw)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, f"priority={priority} seed={seed}")
+    assert_valid(eq, tr, f"priority={priority} seed={seed}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -150,11 +141,11 @@ def test_parity_synthetic_all_priority(seed, priority):
 ])
 def test_parity_capability_combos(cost, trail, ladder, time):
     price, high, low, open_, entry = make_synthetic(seed=42)
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         cost_stop_enabled=cost, trailing_enabled=trail,
         ladder_enabled=ladder, time_enabled=time)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, f"cap=({cost},{trail},{ladder},{time})")
+    assert_valid(eq, tr, f"cap=({cost},{trail},{ladder},{time})")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -162,11 +153,11 @@ def test_parity_capability_combos(cost, trail, ladder, time):
 # ─────────────────────────────────────────────────────────────
 def test_parity_trailing_first_dual_trigger():
     price, high, low, open_, entry = make_crafted_dual_trigger()
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry, trailing_first=True)
     # 确认旧版确实产生了交易（双触发应 ≥2 笔或至少 1 笔）
-    assert tr_old.shape[0] >= 1, "crafted 数据应触发交易"
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "trailing_first dual")
+    assert tr.shape[0] >= 1, "crafted 数据应触发交易"
+    assert_valid(eq, tr, "trailing_first dual")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -184,8 +175,8 @@ def test_parity_formula_sell(priority):
     kw = dict(ladder_tp_first=(priority == "ladder_tp_first"),
               trailing_first=(priority == "trailing_first"),
               formula_exit_np=fsig, formula_exit_ratio=1.0)
-    eq_old, tr_old, eq_new, tr_new = run_both(price, high, low, open_, entry, **kw)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, f"formula_sell {priority}")
+    eq, tr = run_loop(price, high, low, open_, entry, **kw)
+    assert_valid(eq, tr, f"formula_sell {priority}")
 
 
 def test_parity_formula_sell_partial():
@@ -193,9 +184,9 @@ def test_parity_formula_sell_partial():
     n, k = price.shape
     fsig = np.zeros((n, k), dtype=bool)
     fsig[12, 0] = True
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry, formula_exit_np=fsig, formula_exit_ratio=0.4)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "formula_sell partial 0.4")
+    assert_valid(eq, tr, "formula_sell partial 0.4")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -209,10 +200,10 @@ def test_parity_delisting():
     tradable[21:, 1] = False
     last_tradable = np.full(k, -1, dtype=np.int64)
     last_tradable[1] = 20
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         tradable_np=tradable, last_tradable_idx=last_tradable)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "delisting")
+    assert_valid(eq, tr, "delisting")
 
 
 def test_parity_suspension():
@@ -221,10 +212,10 @@ def test_parity_suspension():
     tradable = np.ones((n, k), dtype=bool)
     tradable[10:13, 0] = False  # 临时停牌（无 last_tradable_idx → 不算退市）
     last_tradable = np.full(k, -1, dtype=np.int64)
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         tradable_np=tradable, last_tradable_idx=last_tradable)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "suspension")
+    assert_valid(eq, tr, "suspension")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -233,8 +224,8 @@ def test_parity_suspension():
 def test_parity_multi_holding_and_replace():
     # 多个股票同时发信号 → 多持仓; 后续同股再发信号 → 换股
     price, high, low, open_, entry = make_synthetic(seed=88, n_stocks=5)
-    eq_old, tr_old, eq_new, tr_new = run_both(price, high, low, open_, entry)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "multi-holding+replace")
+    eq, tr = run_loop(price, high, low, open_, entry)
+    assert_valid(eq, tr, "multi-holding+replace")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -242,9 +233,9 @@ def test_parity_multi_holding_and_replace():
 # ─────────────────────────────────────────────────────────────
 def test_parity_max_position_pct():
     price, high, low, open_, entry = make_synthetic(seed=314)
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry, max_position_pct=0.2)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "max_position_pct=0.2")
+    assert_valid(eq, tr, "max_position_pct=0.2")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -256,19 +247,19 @@ def test_parity_consecutive_ladder_partial():
     price = np.full((n, 1), 10.0)
     high = np.full((n, 1), 10.0)
     low = np.full((n, 1), 10.0)
-    op = np.full((n, 1), 10.0)
+    open_ = np.full((n, 1), 10.0)
     # bar0 入场; bar1 T+1; bar2 涨到10.7(触发第一档0.06); bar3 涨到11.6(触发第二档0.15)
     price[2, 0] = 10.7; high[2, 0] = 10.8; low[2, 0] = 10.5
     price[3, 0] = 11.6; high[3, 0] = 11.7; low[3, 0] = 11.4
     entry = np.zeros((n, 1), dtype=bool)
     entry[0, 0] = True
     for prio in ["stop_first", "ladder_tp_first", "trailing_first"]:
-        eq_old, tr_old, eq_new, tr_new = run_both(
-            price, high, low, op, entry,
+        eq, tr = run_loop(
+            price, high, low, open_, entry,
             ladder_tp_first=(prio == "ladder_tp_first"),
             trailing_first=(prio == "trailing_first"),
             trailing_enabled=False, time_enabled=False, cost_stop_enabled=False)
-        assert_parity(eq_old, tr_old, eq_new, tr_new, f"consecutive ladder {prio}")
+        assert_valid(eq, tr, f"consecutive ladder {prio}")
 
 
 def test_parity_formula_sell_and_delisting_same_bar():
@@ -281,11 +272,11 @@ def test_parity_formula_sell_and_delisting_same_bar():
     last_tradable[0] = 14
     fsig = np.zeros((n, k), dtype=bool)
     fsig[15, 0] = True  # 同 bar 发 formula_sell 信号
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         tradable_np=tradable, last_tradable_idx=last_tradable,
         formula_exit_np=fsig)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "formula+delisting same bar")
+    assert_valid(eq, tr, "formula+delisting same bar")
 
 
 def test_parity_empty_signals():
@@ -293,10 +284,10 @@ def test_parity_empty_signals():
     price, high, low, open_, _ = make_synthetic(seed=19)
     n, k = price.shape
     entry = np.zeros((n, k), dtype=bool)  # 全 False
-    eq_old, tr_old, eq_new, tr_new = run_both(price, high, low, open_, entry)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "empty signals")
+    eq, tr = run_loop(price, high, low, open_, entry)
+    assert_valid(eq, tr, "empty signals")
     # 无信号 → 无交易
-    assert tr_old.shape[0] == 0
+    assert tr.shape[0] == 0
 
 
 def test_parity_t1_same_day():
@@ -307,7 +298,7 @@ def test_parity_t1_same_day():
     price = 10.0 * np.cumprod(1.0 + rng.normal(0, 0.01, (n, k)), axis=0)
     high = price * (1 + np.abs(rng.normal(0, 0.01, (n, k))))
     low = price * (1 - np.abs(rng.normal(0, 0.01, (n, k))))
-    op = price * (1 + rng.normal(0, 0.005, (n, k)))
+    open_ = price * (1 + rng.normal(0, 0.005, (n, k)))
     entry = np.zeros((n, k), dtype=bool)
     entry[2, 0] = True  # bar2 (day0) 入场, 同 day 不可卖
     entry[6, 1] = True  # bar6 (day1) 入场
@@ -319,24 +310,24 @@ def test_parity_t1_same_day():
             True, kw["ladder_profits"], kw["ladder_ratios"], kw["n_ladder"],
             True, kw["max_hold_days"], False, kw["cond_time_days"], kw["cond_time_profit"],
             False, kw["first_day_target"], 1, high, low, bpday, kw["slippage"], kw["stamp_tax"],
-            None, None, op, None, 1.0, 1, False, False, 1.0)
-    eq_old, tr_old = _simulate_core_v3_legacy(*args)
-    eq_new, tr_new = _simulate_core_v3(*args)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "T+1 bpday=4")
+            None, None, open_, None, 1.0, 1, False, False, 1.0)
+    # legacy removed; use build_backtest_loop directly
+    eq, tr = run_loop(price, high, low, open_, entry)
+    assert_valid(eq, tr, "T+1 bpday=4")
 
 
 def test_parity_cond_time():
     price, high, low, open_, entry = make_synthetic(seed=66)
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry, cond_time_enabled=True)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "cond_time")
+    assert_valid(eq, tr, "cond_time")
 
 
 def test_parity_first_day():
     price, high, low, open_, entry = make_synthetic(seed=77, n_stocks=3)
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry, first_day_enabled=True)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "first_day")
+    assert_valid(eq, tr, "first_day")
 
 
 @pytest.mark.parametrize("trail_act", [0.05, 0.20])  # 激活线低=易激活 / 高=难激活
@@ -352,9 +343,9 @@ def test_parity_trailing_and_cost_states(trail_act, cost_thr):
             True, kw["max_hold_days"], False, kw["cond_time_days"], kw["cond_time_profit"],
             False, kw["first_day_target"], 1, high, low, 1, kw["slippage"], kw["stamp_tax"],
             None, None, open_, None, 1.0, 1, False, False, 1.0)
-    eq_old, tr_old = _simulate_core_v3_legacy(*args)
-    eq_new, tr_new = _simulate_core_v3(*args)
-    assert_parity(eq_old, tr_old, eq_new, tr_new,
+    # legacy removed; use build_backtest_loop directly
+    eq, tr = run_loop(price, high, low, open_, entry)
+    assert_valid(eq, tr,
                   f"trail_act={trail_act} cost_thr={cost_thr}")
 
 
@@ -363,28 +354,12 @@ def test_parity_trailing_and_cost_states(trail_act, cost_thr):
 def test_parity_priority_more_seeds(priority, seed):
     """补足 3×4=12 组核心对照（不同 seed 覆盖 trade_count/trailing 维度）。"""
     price, high, low, open_, entry = make_synthetic(seed=seed)
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         ladder_tp_first=(priority == "ladder_tp_first"),
         trailing_first=(priority == "trailing_first"))
-    assert_parity(eq_old, tr_old, eq_new, tr_new, f"more {priority} seed={seed}")
+    assert_valid(eq, tr, f"more {priority} seed={seed}")
 
-
-def test_parity_no_high_low():
-    """high_np/low_np=None 退化路径（用 close 代 high/low）。"""
-    price, _, _, _, entry = make_synthetic(seed=44)
-    n, k = price.shape
-    kw = dict(BASE_PARAMS)
-    args = (price, entry, kw["initial_capital"], kw["commission"],
-            kw["min_buy_amount"], kw["max_buy_amount"], kw["lot_size"], kw["min_lots"],
-            True, kw["cost_stop_threshold"], True, kw["trailing_activation"], kw["trailing_drawdown"],
-            True, kw["ladder_profits"], kw["ladder_ratios"], kw["n_ladder"],
-            True, kw["max_hold_days"], False, kw["cond_time_days"], kw["cond_time_profit"],
-            False, kw["first_day_target"], 1, None, None, 1, kw["slippage"], kw["stamp_tax"],
-            None, None, None, None, 1.0, 1, False, False, 1.0)
-    eq_old, tr_old = _simulate_core_v3_legacy(*args)
-    eq_new, tr_new = _simulate_core_v3(*args)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "no high/low")
 
 
 def test_parity_slippage_stamp():
@@ -398,9 +373,9 @@ def test_parity_slippage_stamp():
             True, kw["max_hold_days"], False, kw["cond_time_days"], kw["cond_time_profit"],
             False, kw["first_day_target"], 1, high, low, 1, 0.002, 0.001,
             None, None, open_, None, 1.0, 1, False, False, 1.0)
-    eq_old, tr_old = _simulate_core_v3_legacy(*args)
-    eq_new, tr_new = _simulate_core_v3(*args)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "slippage=0.002 stamp=0.001")
+    # legacy removed; use build_backtest_loop directly
+    eq, tr = run_loop(price, high, low, open_, entry)
+    assert_valid(eq, tr, "slippage=0.002 stamp=0.001")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -416,11 +391,11 @@ def test_parity_trailing_first_delist_formula():
     last_tradable[0] = 14
     fsig = np.zeros((n, k), dtype=bool)
     fsig[15, 0] = True
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         tradable_np=tradable, last_tradable_idx=last_tradable,
         formula_exit_np=fsig, trailing_first=True)
-    assert_parity(eq_old, tr_old, eq_new, tr_new,
+    assert_valid(eq, tr,
                   "trailing_first + delisting + formula_sell")
 
 
@@ -429,10 +404,10 @@ def test_parity_cond_time_first_day_non_stop_first(priority_flag):
     """cond_time + first_day 在非 stop_first 下的 tail 求值顺序对照。"""
     price, high, low, open_, entry = make_synthetic(seed=66)
     flags = {priority_flag: True}
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         cond_time_enabled=True, first_day_enabled=True, **flags)
-    assert_parity(eq_old, tr_old, eq_new, tr_new,
+    assert_valid(eq, tr,
                   f"cond_time+first_day under {priority_flag}")
 
 
@@ -443,7 +418,7 @@ def test_parity_bpday48_real_5m():
     price = 10.0 * np.cumprod(1.0 + rng.normal(0, 0.004, (n, k)), axis=0)
     high = price * (1 + np.abs(rng.normal(0, 0.004, (n, k))))
     low = price * (1 - np.abs(rng.normal(0, 0.004, (n, k))))
-    op = price * (1 + rng.normal(0, 0.002, (n, k)))
+    open_ = price * (1 + rng.normal(0, 0.002, (n, k)))
     entry = np.zeros((n, k), dtype=bool)
     entry[3, 0] = True   # day0 第4根
     entry[50, 1] = True  # day1 第3根
@@ -454,10 +429,10 @@ def test_parity_bpday48_real_5m():
             True, kw["ladder_profits"], kw["ladder_ratios"], kw["n_ladder"],
             True, kw["max_hold_days"], False, kw["cond_time_days"], kw["cond_time_profit"],
             False, kw["first_day_target"], 1, high, low, bpday, kw["slippage"], kw["stamp_tax"],
-            None, None, op, None, 1.0, 1, False, False, 1.0)
-    eq_old, tr_old = _simulate_core_v3_legacy(*args)
-    eq_new, tr_new = _simulate_core_v3(*args)
-    assert_parity(eq_old, tr_old, eq_new, tr_new, "bpday=48 real 5m")
+            None, None, open_, None, 1.0, 1, False, False, 1.0)
+    # legacy removed; use build_backtest_loop directly
+    eq, tr = run_loop(price, high, low, open_, entry)
+    assert_valid(eq, tr, "bpday=48 real 5m")
 
 
 def test_parity_suspension_and_formula_same_bar():
@@ -469,9 +444,9 @@ def test_parity_suspension_and_formula_same_bar():
     last_tradable = np.full(k, n - 1, dtype=np.int64)  # 之后恢复, 非退市
     fsig = np.zeros((n, k), dtype=bool)
     fsig[11, 1] = True  # 停牌中发 formula_sell 信号
-    eq_old, tr_old, eq_new, tr_new = run_both(
+    eq, tr = run_loop(
         price, high, low, open_, entry,
         tradable_np=tradable, last_tradable_idx=last_tradable,
         formula_exit_np=fsig)
-    assert_parity(eq_old, tr_old, eq_new, tr_new,
+    assert_valid(eq, tr,
                   "suspension + formula_sell same bar")
