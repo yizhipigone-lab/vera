@@ -233,6 +233,20 @@ class ResultWriter:
         degradation = backtest.get("degradation")
         if degradation is not None:
             resp["degradation"] = safe_serialize(degradation)
+        # 2026-07-21: 期末未平仓持仓明细 (区间终点仍持仓按市值统计, 不强平)。
+        # 有才加 key 无则响应形状不变 (同 degradation 先例); stock_name 复用 trades 的 name_map。
+        open_positions = backtest.get("open_positions")
+        if open_positions:
+            try:
+                from core.data_fetcher import DataFetcher
+                name_map = DataFetcher.get_name_map()
+            except Exception:
+                name_map = {}
+            resp["open_positions"] = [
+                {**{k: safe_serialize(v) for k, v in p.items()},
+                 "stock_name": name_map.get(p.get("stock_code", ""), "")}
+                for p in open_positions
+            ]
         return resp
 
     def persist(self, response: dict, *, results_dir: Path, last_result_path: Path,

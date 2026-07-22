@@ -591,6 +591,19 @@ input.invalid~.input-error{display:block}
       <div class="summary-box" id="degradationContent"></div>
     </div>
 
+    <!-- 2026-07-21: 期末未平仓持仓 (请求区间终点仍持仓按市值统计, 不做退市强平) -->
+    <div class="chart-box full" id="openPosBox" style="display:none">
+      <div class="chart-box-header">未平仓持仓 <span style="font-weight:400;color:var(--text2)" id="openPosCount"></span></div>
+      <div class="trade-table-wrap">
+        <table class="trade-table">
+          <thead><tr>
+            <th>#</th><th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>持仓量</th><th>最新价</th><th>市值</th><th>浮动盈亏%</th>
+          </tr></thead>
+          <tbody id="openPosTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- 系统日志 -->
     <div class="chart-box full">
       <div class="chart-box-header">系统日志</div>

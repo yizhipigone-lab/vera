@@ -34,6 +34,13 @@ def main():
     parser.add_argument("--batch", type=int, default=100, help="每批只数 (默认 100)")
     args = parser.parse_args()
 
+    # 防系统休眠 (预热数小时, 跑期间不休眠). 2026-07-19
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+    except Exception:
+        pass
+
     end = args.end or time.strftime("%Y%m%d")
     TdxConnector.initialize()
     try:

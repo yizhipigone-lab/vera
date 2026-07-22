@@ -136,7 +136,7 @@ class TestEngineSeam:
         calls = {"n": 0}
 
         def fake_windowed(selections, period, window_trading_days, dividend_type,
-                          fill_data, *, use_cache=False):
+                          fill_data, *, use_cache=False, end_time=None):
             calls["n"] += 1
             return kline, mask
 

@@ -14,6 +14,39 @@ from utils.code_normalizer import normalize_list
 
 logger = get_logger(__name__)
 
+# 各周期每个自然日的 bar 数 (用于自适应扫描深度)。
+# 注意：语义与 backtest._constants.BARS_PER_DAY（交易日 bar 数 / 年化基数）不同，
+# 这里用于把请求区间跨度（日历日）换算成需要扫描的 bar 数。
+_CALENDAR_BARS_PER_DAY = {"1d": 1.0, "1w": 1.0 / 7.0, "5m": 48.0}
+
+# 指标预热缓冲 (bar): 覆盖 MA250/HHV(250) 一类长窗口指标, 留 ~20% 余量
+_WARMUP_BARS = 300
+
+# TDX 扫描深度上限：历史最大深度，覆盖 ~12 年日线
+_MAX_SCAN_COUNT = 3000
+
+
+def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> int:
+    """按请求区间自适应 TDX 扫描深度 (2026-07-23).
+
+    原写死 3000 (~12年日线), 2024 起点也会扫 2013 起的数据 —— 约 4 倍浪费,
+    且是当年逼出 BATCH_SIZE=100 ("返回数据过大") 的根因。
+    现改为: 区间交易日估算 + 300 根预热缓冲, 下限 400, 封顶 3000 (保持旧上限,
+    5m 等长区间行为不劣化)。无法估算时回退 3000。
+    """
+    rate = _CALENDAR_BARS_PER_DAY.get(stock_period)
+    if rate is None or not start_time or not end_time:
+        return _MAX_SCAN_COUNT
+    try:
+        span_days = (pd.to_datetime(end_time) - pd.to_datetime(start_time)).days
+    except (ValueError, TypeError):
+        return _MAX_SCAN_COUNT
+    if span_days < 0:
+        return _MAX_SCAN_COUNT
+    # 244/365 ≈ 每年交易日占比
+    bars = int(span_days * 244 / 365 * rate) + _WARMUP_BARS
+    return max(400, min(_MAX_SCAN_COUNT, bars))
+
 # T-H-2 connector seam
 _connector_override = None
 
@@ -99,9 +132,8 @@ class FormulaRunner:
         total_batches = (len(str_codes) - 1) // BATCH_SIZE + 1
 
         # count 决定 TDX 从 end_time 往前扫多少根 bar
-        # 500 根 ≈ 2年，2022-2025 跨越 ~1000 个交易日，需足够大
-        # 保守取 3000（覆盖 ~12年日线），让 TDX 扫全量历史数据
-        count = 3000
+        # 2026-07-23: 自适应 (区间交易日 + 预热缓冲), 原写死 3000 扫 ~12年全历史
+        count = _adaptive_scan_count(start_time, end_time, stock_period)
 
         for batch_start in range(0, len(str_codes), BATCH_SIZE):
             batch = str_codes[batch_start:batch_start + BATCH_SIZE]
@@ -149,7 +181,15 @@ class FormulaRunner:
                     for entry in entries:
                         if not isinstance(entry, dict):
                             continue
-                        if str(entry.get("Value", "")) != "1":
+                        # 口径: Value 非0即信号 (修 ==1 过严 bug, 2026-07-19)
+                        # 通达信 XG 返回公式输出值: 选股输出 1 或 30/15 等"选中值",
+                        # 指标返回 None, 真·零信号输出 0。数字非0=信号, None/非数字跳过。
+                        _v = entry.get("Value")
+                        try:
+                            _is_signal = float(_v) != 0
+                        except (ValueError, TypeError):
+                            _is_signal = False
+                        if not _is_signal:
                             continue
                         date_str = str(entry.get("Date", ""))
                         if not date_str:

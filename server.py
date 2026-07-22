@@ -182,6 +182,9 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             "commission": cfg.get("commission", 0.0003),
             "slippage": cfg.get("slippage", 0.001),
             "period": bt_period,
+            # 2026-07-21 用户决策: web 回测默认开启 5m 数据层降级
+            # (没有 5M 线的时段降级为日线, 回测区间完整覆盖请求起点)
+            "degrade_5m": bool(getattr(cfg, "degrade_5m", True)),
             "position_sizing": {
                 "max_positions": cfg.max_positions,
                 "min_buy_amount": cfg.get("min_buy_amount", 2000.0),
@@ -246,7 +249,7 @@ async def get_sectors():
 
 @app.post("/api/config/validate")
 async def validate_config(cfg: StrategyConfig):
-    """校验策略配置。"""
+    """校验策略配置（前端未调用，save 端点自带 validate；保留供外部脚本使用）。"""
     config_dict = _config_to_yaml_dict(cfg)
     warnings = ConfigLoader.validate_stop_config(config_dict)
     return {"success": True, "warnings": warnings, "config": config_dict}

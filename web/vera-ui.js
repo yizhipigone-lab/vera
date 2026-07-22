@@ -1324,6 +1324,31 @@ function renderAllCharts(data) {
     degrBox.style.display = 'none';
   }
 
+  // 2026-07-21: 期末未平仓持仓卡片 (请求区间终点仍持仓按市值统计, 不做退市强平)
+  const opBox = document.getElementById('openPosBox');
+  if (data.open_positions && data.open_positions.length > 0) {
+    const ops = data.open_positions;
+    const mvSum = ops.reduce((s, p) => s + (p.market_value || 0), 0);
+    document.getElementById('openPosCount').textContent =
+      '(' + ops.length + ' 笔, 市值合计 ' + mvSum.toLocaleString('zh-CN', {maximumFractionDigits: 0}) + ' 元, 已按市值计入权益)';
+    document.getElementById('openPosTableBody').innerHTML = ops.map((p, i) => {
+      const pct = (p.unrealized_pct || 0) * 100;
+      const cls = pct > 0 ? 'td-up' : pct < 0 ? 'td-down' : '';
+      return '<tr><td>' + (i + 1) + '</td>'
+        + '<td>' + esc(p.stock_code || '') + '</td>'
+        + '<td>' + esc(p.stock_name || '') + '</td>'
+        + '<td>' + esc(String(p.entry_date || '').slice(0, 10)) + '</td>'
+        + '<td>' + (p.entry_price != null ? p.entry_price : '—') + '</td>'
+        + '<td>' + (p.shares != null ? p.shares : '—') + '</td>'
+        + '<td>' + (p.last_price != null ? p.last_price : '—') + '</td>'
+        + '<td>' + (p.market_value != null ? Number(p.market_value).toLocaleString('zh-CN', {maximumFractionDigits: 0}) : '—') + '</td>'
+        + '<td class="' + cls + '">' + pct.toFixed(2) + '%</td></tr>';
+    }).join('');
+    opBox.style.display = '';
+  } else {
+    opBox.style.display = 'none';
+  }
+
   // B-11/12: hero 子行（趋势/评级 + vs 上证）+ 卡片 stagger 入场
   fillHeroSub(m, data, c);
   revealResults();

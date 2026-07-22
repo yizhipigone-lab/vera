@@ -98,17 +98,27 @@ class TdxConnector:
 
     @classmethod
     def ensure_connected(cls) -> None:
-        """确保连接就绪，否则抛出异常。"""
+        """确保连接就绪, 掉线自动重连. 否则抛异常.
+
+        2026-07-21 修: 原 initialize() 单例保护 (cls._initialized True 直接 return),
+        但 tq._initialized 可能在长时间无活动/超时后变 False (连接掉), cls._initialized
+        不同步 → 不重连 → RuntimeError "无法连接 TDX". 通达信进程其实开着.
+        现在 is_ready False 时先 close 重置单例状态, 再 initialize 重连.
+        """
+        if cls.is_ready():
+            return
+        # tq._initialized False (连接掉), 重置单例状态 + 重连
+        if cls._initialized:
+            cls.close()
+        cls.initialize()
         if not cls.is_ready():
-            cls.initialize()
-            if not cls.is_ready():
-                raise RuntimeError(
-                    "无法连接到 TDX。请确认：\n"
-                    "1. 通达信客户端已启动并登录\n"
-                    f"2. 通达信安装路径正确（当前: {_TDX_PATH}）\n"
-                    "3. TQ 策略框架版本兼容\n"
-                    "4. 可通过环境变量 TDX_HOME 修改安装路径"
-                )
+            raise RuntimeError(
+                "无法连接到 TDX。请确认：\n"
+                "1. 通达信客户端已启动并登录\n"
+                f"2. 通达信安装路径正确（当前: {_TDX_PATH}）\n"
+                "3. TQ 策略框架版本兼容\n"
+                "4. 可通过环境变量 TDX_HOME 修改安装路径"
+            )
 
     @classmethod
     def get_data_dir(cls) -> str:

@@ -65,6 +65,7 @@ class StockSelector:
             logger.info(f"仅ETF模式: list_type=31, 拉到 {len(stocks)} 只 ETF")
         elif sectors:
             # 选了行业板块 — 拉每个板块成份股并集
+            logger.info(f"已选 {len(sectors)} 个行业板块, 股票池下拉框 (type={utype}) 被忽略, 仅用板块并集")
             stocks = []
             for i, code in enumerate(sectors):
                 sector_stocks = DataFetcher.get_sector_stocks(code)
@@ -85,6 +86,16 @@ class StockSelector:
                 etf_stocks = DataFetcher.get_stock_universe("31")
                 stocks = list(set(stocks) | set(etf_stocks))
                 logger.info(f"包含ETF模式: A股 + ETF → 合并 {len(stocks)}")
+
+        # 2026-07-23: 北交所口径过滤 — 板块成份股可能含 .BJ (实测 881008 含 920088.BJ),
+        # 仅"全部A股/北交所"口径保留, 其余 (沪深A股/沪深300/板块等) 一律剔除。
+        # 对 TDX 本就干净的池 ('50' 实测 0 BJ) 是防御性 no-op。
+        _BJ_OK_TYPES = {"5", "all_a", "53", "beijingsuo"}
+        if str(utype) not in _BJ_OK_TYPES:
+            before = len(stocks)
+            stocks = [c for c in stocks if not str(c).upper().endswith(".BJ")]
+            if len(stocks) < before:
+                logger.info(f"剔除北交所: {before} → {len(stocks)} (universe type={utype})")
 
         if not stocks:
             logger.warning(f"股票池 {utype} 返回空，请检查 TDX 客户端数据")

@@ -198,3 +198,140 @@ def test_periods_per_year_still_readable():
     assert PERIODS_PER_YEAR["1w"] == 52
     assert PERIODS_PER_YEAR.get("1d") == 252
     assert len(PERIODS_PER_YEAR) == 3
+
+
+# ---------- 2026-07-21: step3_benchmark 基准拉取区间回归 ----------
+
+def _make_pipeline_stub(config):
+    """不跑 Pipeline.__init__ (避免读 yaml/建目录), 只注入 config."""
+    from pipeline.pipeline import Pipeline
+    pipe = Pipeline.__new__(Pipeline)
+    pipe.config = config
+    return pipe
+
+
+def test_step3_benchmark_uses_equity_actual_range(monkeypatch):
+    """5m 稀疏窗口下 equity 超出请求区间: 基准拉取必须用 equity 实际首尾,
+    否则 equity 尾部基准整段缺失 (请求 end=20250101 时基准只到 2024-12-31)."""
+    pipe = _make_pipeline_stub({
+        "time_range": {"start": "20240101", "end": "20250101"},
+        "backtest": {"period": "5m"},
+    })
+    # equity 实际区间: 2024-06-27 ~ 2025-04-25 (起点被 5m 深度截断, 终点含窗口缓冲)
+    equity = pd.DataFrame({
+        "date": pd.to_datetime(["2024-06-27 09:35", "2024-12-31 15:00",
+                                "2025-04-25 15:00"]),
+        "equity": [1.0, 1.2, 1.27],
+    })
+
+    captured = {}
+    _patch_comparator(monkeypatch, captured)
+
+    pipe.step3_benchmark({"equity_curve": equity})
+    assert captured["start_time"] == "20240627"
+    assert captured["end_time"] == "20250425"
+    # 回测 period 注入基准 config, 保证 5m 对齐
+    assert captured["config"]["period"] == "5m"
+
+
+def test_step3_benchmark_empty_equity_no_fetch(monkeypatch):
+    """equity 为空 → 直接返回 {}, 不触发基准拉取."""
+    pipe = _make_pipeline_stub({"backtest": {"period": "5m"}})
+
+    captured = {}
+    _patch_comparator(monkeypatch, captured)
+
+    assert pipe.step3_benchmark({"equity_curve": pd.DataFrame()}) == {}
+    assert "start_time" not in captured
+
+
+def _patch_comparator(monkeypatch, captured):
+    """把 pipeline 模块内可见的 BenchmarkComparator 换成探针假类。
+
+    必须 patch pipeline.pipeline 的模块属性, 不能 patch backtest.benchmark
+    里的类 — 本文件 test_benchmark_does_not_import_engine 会 importlib.reload
+    backtest.benchmark, reload 后 pipeline 绑定的是新类对象, patch 旧类不生效。
+    """
+    import pipeline.pipeline as pl
+
+    class FakeComparator:
+        def __init__(self, config=None):
+            captured["config"] = config
+
+        def fetch_and_compare(self, equity_curve, start_time="", end_time=""):
+            captured["start_time"] = start_time
+            captured["end_time"] = end_time
+            return {}
+
+    monkeypatch.setattr(pl, "BenchmarkComparator", FakeComparator)
+
+# ---------- 2026-07-21: 基准日粒度回退 (用户决策: 基准也降级为日线) ----------
+
+def _bars_5m(day):
+    return [pd.Timestamp(f"{day} 09:35"), pd.Timestamp(f"{day} 15:00")]
+
+
+def test_benchmark_daily_fallback_when_index5m_starts_late(monkeypatch):
+    """分钟级回测, 权益起点早于指数 5m 可得起点 (TDX 深度限制) →
+    基准对比整体回退日粒度, 覆盖完整请求区间; granularity 标记 1d。"""
+    cmp = BenchmarkComparator({"period": "5m"})
+    # 权益: 5m 网格 2024-01-02 ~ 2024-06-28 (起点早于指数 5m 深度)
+    eq_days = ["2024-01-02", "2024-01-03", "2024-06-27", "2024-06-28"]
+    eq_dates = [t for d in eq_days for t in _bars_5m(d)]
+    equity = pd.DataFrame({
+        "date": pd.to_datetime(eq_dates),
+        "equity": [1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07],
+    })
+    # 指数 5m: 仅从 2024-06-27 起 (模拟 TDX 5m 深度上限)
+    idx5m_dates = [t for d in ["2024-06-27", "2024-06-28"] for t in _bars_5m(d)]
+    idx_5m = pd.DataFrame({
+        "date": pd.to_datetime(idx5m_dates), "close": [3000, 3010, 3020, 3030]})
+    # 指数 1d: 全区间
+    idx_1d = pd.DataFrame({
+        "date": pd.to_datetime(eq_days), "close": [2900, 2910, 3000, 3030]})
+
+    monkeypatch.setattr(cmp, "_fetch_index", lambda self, name, s="", e="": idx_5m)
+
+    from core.data_fetcher import DataFetcher
+    calls = {}
+
+    def fake_index_data(index_name, start_time="", end_time="",
+                        dividend_type="none", period="1d"):
+        calls["period"] = period
+        return idx_1d
+    monkeypatch.setattr(DataFetcher, "get_index_data",
+                        classmethod(lambda cls, *a, **kw: fake_index_data(*a, **kw)))
+
+    result = cmp.fetch_and_compare(equity, "20240101", "20250101")
+    assert calls.get("period") == "1d", "应回退拉 1d 指数数据"
+    comp = result["shanghai"]
+    assert not comp.empty
+    # 覆盖完整请求区间 (日粒度), 不再从 2024-06-27 才开始
+    assert comp.index.min() == pd.Timestamp("2024-01-02")
+    assert comp.index.max() == pd.Timestamp("2024-06-28")
+    assert len(comp) == len(eq_days)
+    assert comp.attrs["stats"]["granularity"] == "1d"
+
+
+def test_benchmark_keeps_5m_when_index_covers_equity_start(monkeypatch):
+    """权益起点 ≥ 指数 5m 起点 → 维持 5m 路径, 不拉 1d。"""
+    cmp = BenchmarkComparator({"period": "5m"})
+    eq_dates = [t for d in ["2024-06-27", "2024-06-28"] for t in _bars_5m(d)]
+    equity = pd.DataFrame({
+        "date": pd.to_datetime(eq_dates), "equity": [1.0, 1.01, 1.02, 1.03]})
+    idx_5m = pd.DataFrame({
+        "date": pd.to_datetime(eq_dates), "close": [3000, 3010, 3020, 3030]})
+
+    monkeypatch.setattr(cmp, "_fetch_index", lambda self, name, s="", e="": idx_5m)
+
+    from core.data_fetcher import DataFetcher
+
+    def _boom(*a, **kw):
+        raise AssertionError("5m 覆盖权益起点时不应回退拉 1d")
+    monkeypatch.setattr(DataFetcher, "get_index_data",
+                        classmethod(lambda cls, *a, **kw: _boom()))
+
+    result = cmp.fetch_and_compare(equity, "20240627", "20250101")
+    comp = result["shanghai"]
+    assert len(comp) == len(eq_dates)  # 5m 粒度
+    assert "granularity" not in comp.attrs.get("stats", {})

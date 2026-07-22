@@ -33,7 +33,16 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ENGINE VERSION: increment to bust Python .pyc cache
-ENGINE_VERSION = "v3.4-loop-refactor-20260714"
+# 2026-07-21 v3.5: 执行窗口=请求区间 (end_time 截断) + 降级网格起止=请求区间 +
+# 期末未平仓 open_positions 导出 — 准备段语义变化, bump 以作废旧 matrix_cache。
+ENGINE_VERSION = "v3.5-window-clip-degrade-20260721"
+
+# 2026-07-21: 期末未平仓持仓读回接缝。_simulate_core_v3 是冻结 39 参壳
+# (tests/test_engine_run_path.py 签名守卫), 不能加返回值; 壳执行时把 loop
+# 实例挂到这里, run() 路径读 loop.final_positions (loop.py 期末快照) 导出
+# open_positions。server 回测串行提交 (_run_lock), 无线程竞争; run_cached
+# 同样会写但无人读 (该路径不导出未平仓, 与 degrade_5m 同限制)。
+_LAST_LOOP = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -90,6 +99,7 @@ def _simulate_core_v3(
     返回 (equity_arr, raw_trades[:count]) 与 legacy 完全一致 (ATR 禁用时)。
     """
     from backtest.loop import build_backtest_loop
+    global _LAST_LOOP
     loop = build_backtest_loop(
         initial_capital, commission,
         min_buy_amount, max_buy_amount, lot_size, min_lots,
@@ -105,6 +115,7 @@ def _simulate_core_v3(
         atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
         trailing_gap_protection=trailing_gap_protection,
     )
+    _LAST_LOOP = loop  # 2026-07-21: run() 读回 loop.final_positions (期末未平仓)
     return loop.run(price_np, entry_np, high_np, low_np, open_np,
                     tradable_np, last_tradable_idx, formula_exit_np)
 
@@ -138,6 +149,8 @@ def _simulate_core_v3_legacy(
     max_position_pct=1.0,
     # ATR kwargs: legacy 无 ATR 能力, 接收但忽略 (保持与壳可互换, 作 parity 甲骨文)
     atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
+    # 移动止盈跳空保护 (2026-07-21): legacy 无此能力, 接收但忽略 (保持 parity 甲骨文)
+    trailing_gap_protection=False,
 ):
     n_dates = price_np.shape[0]
     n_stocks = price_np.shape[1]
@@ -774,10 +787,12 @@ class BacktestEngine:
         """
         window_mask = None
         if self.bars_per_day > 1:
+            # 2026-07-21: end_time 透传 — 窗口终点截断到请求区间终点,
+            # 执行窗口=请求区间 (不再延长 +win_td 尾巴); 期末持仓按市值计价。
             kline, window_mask = DataFetcher.get_kline_windowed(
                 selections, period=self.period,
                 window_trading_days=win_td, dividend_type="front", fill_data=False,
-                use_cache=self.use_kline_cache,
+                use_cache=self.use_kline_cache, end_time=end_time,
             )
         else:
             codes = selections["stock_code"].unique().tolist()
@@ -808,7 +823,8 @@ class BacktestEngine:
         if self.degrade_5m and self.bars_per_day > 1:
             close, high_df, low_df, open_df, degraded_df, degrade_res = \
                 self._apply_5m_degradation(
-                    close, high_df, low_df, open_df, selections, win_td)
+                    close, high_df, low_df, open_df, selections, win_td,
+                    start_time, end_time)
 
         entries = self._build_entry_signals(selections, close)
         # 统一列对齐：close ∩ entries ∩ high ∩ low（open 不参与交集，缺失则回退 close）
@@ -1068,6 +1084,8 @@ class BacktestEngine:
             # 移动止盈跳空保护 (opt-in, 2026-07-21)
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
         )
+        # 2026-07-21: 期末未平仓持仓快照 (loop.run 内 finalize 后导出, 见 loop.py)
+        final_positions = list(getattr(_LAST_LOOP, "final_positions", None) or [])
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
         # DEBUG: check raw bar differences from Numba output directly
         raw_holds = [int(row[2]) - int(row[1]) for row in raw_trades]
@@ -1121,6 +1139,38 @@ class BacktestEngine:
         # C2: stop_config_summary 改从函数生成（不再调用 StopManager，避免 compute_exit_signals 重复计算）
         from backtest.stop_config import get_stop_config_summary
 
+        # 2026-07-21 用户决策: 请求区间终点仍持仓的, 不平仓不强平, 按市值统计
+        # (equity 已由 EquityTracker.finalize 计入), 此处导出明细供报告展示。
+        open_positions = []
+        if final_positions and len(close.index) and len(close.columns):
+            dates = close.index
+            last_close = close.values[-1]  # 已 ffill, 与 equity 市值计价同源
+            for pos in final_positions:
+                ci = int(pos.code)
+                if not (0 <= ci < len(cols)):
+                    continue
+                last_px = float(last_close[ci])
+                if np.isnan(last_px) or last_px <= 0:
+                    continue
+                entry_px = float(pos.entry_px)
+                shares = float(pos.shares)
+                mv = round(shares * last_px, 2)
+                ei = int(pos.entry_idx)
+                open_positions.append({
+                    "stock_code": cols[ci],
+                    "entry_date": str(dates[ei]) if 0 <= ei < len(dates) else "",
+                    "entry_price": round(entry_px, 4),
+                    "shares": int(shares),
+                    "last_price": round(last_px, 4),
+                    "market_value": mv,
+                    "unrealized_pnl": round(shares * (last_px - entry_px), 2),
+                    "unrealized_pct": round(last_px / entry_px - 1, 4) if entry_px > 0 else 0.0,
+                })
+            if open_positions:
+                mv_sum = sum(p["market_value"] for p in open_positions)
+                logger.info("期末未平仓 %d 笔, 市值合计 %.0f (按市值计入权益)",
+                            len(open_positions), mv_sum)
+
         bt_kwargs = dict(
             equity_curve=equity_curve, trades=trades_df, metrics=metrics,
             stop_config_summary=get_stop_config_summary(stop),
@@ -1128,6 +1178,8 @@ class BacktestEngine:
         )
         if degradation is not None:
             bt_kwargs["degradation"] = degradation
+        if open_positions:
+            bt_kwargs["open_positions"] = open_positions
         return BacktestResult(**bt_kwargs)
 
     def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
@@ -1383,7 +1435,8 @@ class BacktestEngine:
         open_df = open_df.loc[keep] if open_df is not None else None
         return close, high_df, low_df, open_df
 
-    def _apply_5m_degradation(self, close, high_df, low_df, open_df, selections, win_td):
+    def _apply_5m_degradation(self, close, high_df, low_df, open_df, selections, win_td,
+                              start_time="", end_time=""):
         """5m 数据层降级编排 (计划书 2026-07-18 §4.1/4.2): 缺 5m 的股-天用 1d OHLC 填充。
 
         步骤: 交易日历 → synthesize_5m_grid 合成完整网格 (每天恰好 48 根,
@@ -1392,19 +1445,24 @@ class BacktestEngine:
         窗口边界复用 DataFetcher.compute_window_bounds (与稀疏窗口拉取同一套,
         防 drift)。任何一步失败 → 告警并返回未降级原矩阵 (回退现状丢信号路径)。
 
+        2026-07-21: 网格起止改为请求区间 [start_time, end_time] (原取
+        close.index 首末, 导致 5m 数据深度 (2024-06-27) 之前的时段永远进不了
+        网格, 信号照丢)。起点之前的无 5m 时段由 1d 填充覆盖, 权益从请求起点开始。
+
         返回 (close, high, low, open, degraded_df, DegradeResult);
         失败/跳过返回原矩阵 + (None, None)。
 
-        ⚠️ 性能注意 (审计 MEDIUM-2): 网格 = [最早信号, 最晚信号+窗口] 内每个日历
+        ⚠️ 性能注意 (审计 MEDIUM-2): 网格 = [请求起点, 请求终点] 内每个日历
         交易日 × 48 根 × 全部股票列。信号稀疏分布在大区间时, reindex 会制造大量
         全 NaN 日, loop 主循环按膨胀后的行数跑 (4.5 年 ≈ 5.3 万行/股)。
         002008 类短区间场景无感; 长区间 5m 回测开启降级时会感知内存/耗时增长。
         """
         orig = (close, high_df, low_df, open_df)
         try:
-            days = DataFetcher.get_trading_days(
-                close.index.min().strftime("%Y%m%d"),
-                close.index.max().strftime("%Y%m%d"))
+            # 2026-07-21: 网格起止 = 请求区间 (缺省回退 close.index 首末, 兼容旧调用)
+            grid_start = str(start_time) if start_time else close.index.min().strftime("%Y%m%d")
+            grid_end = str(end_time) if end_time else close.index.max().strftime("%Y%m%d")
+            days = DataFetcher.get_trading_days(grid_start, grid_end)
             if not days:
                 logger.warning("degrade_5m: 交易日历为空, 跳过降级 (回退丢信号路径)")
                 return (*orig, None, None)
@@ -1434,12 +1492,35 @@ class BacktestEngine:
                 df = k1d.get(name)
                 return self._ensure_index(df) if df is not None else None
 
-            win_start, win_end = DataFetcher.compute_window_bounds(selections, win_td)
+            c1 = _f("Close")
+            # 2026-07-21 审计修复: 请求终点晚于数据末端时 (如缓存只到 7-17,
+            # end=7-31), 网格尾部全 NaN 日会让持仓被 i > last_tradable_idx
+            # 误判退市强平 (reason=11)。网格裁到最后一个有数据 (5m 或 1d)
+            # 的交易日 — 那之后没有行情可计价, 持仓保持 open 到数据末端。
+            data_days = close_g.index[close_g.notna().any(axis=1)]
+            if c1 is not None and not c1.empty:
+                data_days = data_days.union(c1.index[c1.notna().any(axis=1)])
+            if len(data_days):
+                horizon = data_days.max().normalize()
+                tail = grid.normalize() > horizon
+                if tail.any():
+                    logger.warning(
+                        "degrade_5m: 请求终点晚于数据末端, 裁掉 %d 根无数据 bar "
+                        "(最后数据日 %s) — 防全 NaN 日误判退市强平",
+                        int(tail.sum()), horizon.date())
+                    grid = grid[~tail]
+                    close_g = close_g.reindex(grid)
+                    high_g = high_g.reindex(grid) if high_g is not None else None
+                    low_g = low_g.reindex(grid) if low_g is not None else None
+                    open_g = open_g.reindex(grid) if open_g is not None else None
+
+            win_start, win_end = DataFetcher.compute_window_bounds(
+                selections, win_td, end_time=end_time or None)
             bounds = {c: (win_start[c], win_end[c]) for c in codes if c in win_start}
             ratio_vec = self._limit_ratio_vector(close_g.columns)
             res = apply_5m_degradation(
                 close_g, high_g, low_g, open_g,
-                _f("Close"), _f("High"), _f("Low"), _f("Open"),
+                c1, _f("High"), _f("Low"), _f("Open"),
                 window_bounds=bounds, limit_ratio_vec=ratio_vec)
             degraded_df = pd.DataFrame(
                 res.degraded_np, index=res.close.index, columns=res.close.columns)

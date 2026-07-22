@@ -27,19 +27,19 @@ backtest:
     lot_size: 100
     min_lots: 1
 
-# 止损(与 default.yaml 一致的通用结构; load_stop_config 要求文件内显式含 stop_loss 节点,
-# 不做跨文件合并 — 2026-07-20 基线生成报错后补)
+# 止损(2026-07-20 用户指定优化参数组: 硬止损20% 移动止盈激活8% 回撤0.5% 无阶梯 时间止损12天;
+# 原 default 通用结构见 git 历史)
 stop_loss:
   priority: trailing_first
   cost_stop:
     enabled: true
-    threshold: -0.12
+    threshold: -0.20
   trailing_stop:
     enabled: true
-    activation: 0.035
-    drawdown: 0.01
+    activation: 0.08
+    drawdown: 0.005
   ladder_tp:
-    enabled: true
+    enabled: false
     levels:
       - profit: 0.06
         sell_ratio: 0.30
@@ -47,7 +47,7 @@ stop_loss:
         sell_ratio: 0.30
   time_stop:
     enabled: true
-    max_hold_days: 20
+    max_hold_days: 12
   cond_time_stop:
     enabled: false
   first_day:

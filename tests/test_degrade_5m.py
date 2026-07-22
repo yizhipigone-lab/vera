@@ -339,7 +339,7 @@ def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
     monkeypatch.setattr(
         engine_module.DataFetcher, 'get_kline_windowed',
         staticmethod(lambda selections, period, window_trading_days, dividend_type,
-                     fill_data, use_cache=False: (kline, mask)))
+                     fill_data, use_cache=False, end_time=None: (kline, mask)))
     monkeypatch.setattr(
         engine_module.DataFetcher, 'get_trading_days',
         classmethod(lambda cls, start, end, market="SH": list(trading_days)))
@@ -467,3 +467,31 @@ def test_limit_up_degraded_day_rejected_engine(monkeypatch, caplog):
     assert capture['shape'][0] == 3 * BARS_5M_PER_DAY
     assert not capture['tradable_np'][BARS_5M_PER_DAY:2 * BARS_5M_PER_DAY, 0].any()
     assert any('涨停' in r.message for r in caplog.records)
+
+
+def test_grid_starts_at_requested_start_before_5m_depth(monkeypatch):
+    """2026-07-21: 网格起点 = 请求起点 — 5m 数据深度之前的时段也插行 + 1d 填充,
+    信号保留并按 1d 收盘成交 (TDX 5m 深度上限 2024-06-27 场景, 用户决策:
+    没有 5M 线的时段降级为日线, 回测区间完整覆盖请求起点)。
+
+    旧行为: 网格 = close.index 首末 (从 5m 首 bar 起), 之前的信号 entry_signal_drop。"""
+    code = "600001.SH"
+    days_ts = [pd.Timestamp(d) for d in DAYS]
+    # 5m 只有第 3 天有数据 (模拟 5m 深度起点), 第 1~2 天全靠 1d 降级
+    close_5m = _mk_5m({code: {"2026-06-22": None, "2026-06-23": None, "2026-06-24": 10.2}})
+    close_5m = close_5m.dropna()
+    mask = pd.DataFrame(True, index=close_5m.index, columns=close_5m.columns)
+    c1 = _mk_1d({code: {"2026-06-22": 10.0, "2026-06-23": 10.1, "2026-06-24": 10.2}})
+    kline_1d = {'Close': c1, 'High': c1 + 0.1, 'Low': c1 - 0.1, 'Open': c1 - 0.05}
+    # 信号在 5m 深度之前的第 1 天
+    selections = pd.DataFrame([{'select_date': pd.Timestamp('2026-06-22'), 'stock_code': code}])
+    capture = {}
+    _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, days_ts, selections,
+                   capture=capture)
+    # 网格 = 3 天 × 48 (从请求起点 6.22 起, 不再从 5m 首 bar 6.24 起)
+    assert capture['shape'][0] == 3 * BARS_5M_PER_DAY
+    # 6.22 (无 5m) 降级填充 → 可交易, 信号保留, 入场价 = 1d 收盘 10.0
+    entry_bar = BARS_5M_PER_DAY - 1  # 6.22 15:00
+    assert capture['entry_np'][entry_bar, 0]
+    assert capture['price_np'][entry_bar, 0] == pytest.approx(10.0)
+    assert capture['tradable_np'][:BARS_5M_PER_DAY, 0].all()

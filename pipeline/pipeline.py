@@ -160,7 +160,6 @@ class Pipeline:
     def step3_benchmark(self, backtest_result: dict) -> dict:
         """基准对比。"""
         bench_cfg = self.config.get("benchmark", {})
-        time_cfg = self.config.get("time_range", {})
         # 传入回测周期，让基准对齐
         bt_cfg = self.config.get("backtest", {})
         if "period" in bt_cfg and "period" not in bench_cfg:
@@ -172,10 +171,21 @@ class Pipeline:
         if equity_curve.empty:
             return {}
 
+        # 基准拉取区间以 equity 实际首尾为准, 不用请求区间 (2026-07-21 修复):
+        # 5m 稀疏窗口模式下 equity 会超出请求区间 — 起点被 5m 数据深度截断,
+        # 终点 = 最晚信号日 + win_td 窗口缓冲。若传请求区间, equity 尾部的
+        # 基准曲线整段缺失 (如请求 end=20250101 时基准只画到 2024-12-31)。
+        eq_dates = pd.to_datetime(
+            equity_curve["date"] if "date" in equity_curve.columns
+            else equity_curve.index
+        )
+        if len(eq_dates) == 0:
+            return {}
+
         return comparator.fetch_and_compare(
             equity_curve,
-            start_time=time_cfg.get("start", ""),
-            end_time=time_cfg.get("end", ""),
+            start_time=eq_dates.min().strftime("%Y%m%d"),
+            end_time=eq_dates.max().strftime("%Y%m%d"),
         )
 
     def step4_report(

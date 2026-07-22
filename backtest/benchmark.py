@@ -5,7 +5,7 @@ import pandas as pd
 from typing import Dict, List, Optional
 
 # P2-6 (2026-07-15): 直接 import 纯数据常量, 无需拖入整个 BacktestEngine 模块
-from backtest._constants import PERIODS_PER_YEAR
+from backtest._constants import PERIODS_PER_YEAR, BARS_PER_DAY
 
 from core.data_fetcher import DataFetcher
 from utils.logger import get_logger
@@ -99,10 +99,32 @@ class BenchmarkComparator:
         """
         # P1-4: 1w 用 52 周/年，避免 *252 高估 4.8 倍。P2-6 (2026-07-15): 直接引用 _constants
         periods_per_year = PERIODS_PER_YEAR.get(self.period, 252)
+        # 2026-07-21 用户决策: 分钟级回测时, 若权益起点早于指数 5m 数据可得起点
+        # (TDX 5m 深度限制, 如 2024-06-27), 基准对比整体回退日粒度 (基准也降级
+        # 为日线, 与个股 degrade_5m 同一哲学), 保证基准曲线覆盖完整请求区间。
+        is_minute = BARS_PER_DAY.get(self.period, 1) > 1
+        eq_start = self._series_start(equity_curve)
         results = {}
         for idx_name in self.index_names:
             logger.info(f"获取指数 [{idx_name}] 数据进行对比...")
             index_df = self._fetch_index(idx_name, start_time, end_time)
+            idx_start = self._series_start(index_df)
+            if is_minute and eq_start is not None and (
+                    idx_start is None or idx_start > eq_start):
+                index_1d = DataFetcher.get_index_data(
+                    idx_name, start_time, end_time,
+                    dividend_type="none", period="1d")
+                if index_1d.empty:
+                    logger.warning(f"指数 [{idx_name}] 5m/1d 数据均为空，跳过")
+                    continue
+                logger.info(
+                    f"[{idx_name}] 指数 5m 起点 {idx_start} 晚于权益起点 {eq_start}, "
+                    f"基准对比回退日粒度")
+                comparison = self._align_daily(equity_curve, index_1d, idx_name)
+                if not comparison.empty:
+                    comparison.attrs.setdefault("stats", {})["granularity"] = "1d"
+                results[idx_name] = comparison
+                continue
             if index_df.empty:
                 logger.warning(f"指数 [{idx_name}] 数据为空，跳过")
                 continue
@@ -111,6 +133,41 @@ class BenchmarkComparator:
             results[idx_name] = comparison
 
         return results
+
+    @staticmethod
+    def _series_start(df: pd.DataFrame) -> Optional[pd.Timestamp]:
+        """DataFrame (date 列或 DatetimeIndex) 的最早日期 (normalize 到日); 空 → None。"""
+        if df is None or df.empty:
+            return None
+        idx = df["date"] if "date" in df.columns else df.index
+        if len(idx) == 0:
+            return None
+        return pd.to_datetime(idx).min().normalize()
+
+    @staticmethod
+    def _to_daily_last(df: pd.DataFrame) -> pd.DataFrame:
+        """将分钟级 DataFrame 按日重采样为每日最后一根 bar。
+
+        - 若含 'date' 列则设为索引；否则使用当前索引。
+        - 索引 normalize 到日期后 groupby.last()。
+        """
+        if "date" in df.columns:
+            df = df.set_index("date")
+        df.index = pd.to_datetime(df.index).normalize()
+        return df.groupby(level=0).last()
+
+    def _align_daily(
+        self,
+        equity_curve: pd.DataFrame,
+        index_df: pd.DataFrame,
+        index_name: str,
+    ) -> pd.DataFrame:
+        """日粒度对齐 (2026-07-21): 分钟级权益按日重采样 (每日最后 bar), 两边索引
+        normalize 到日期后走 _align (periods_per_year=252)。
+        用于指数 5m 数据深度不足时的基准降级 (基准也降级为日线)。"""
+        eq = self._to_daily_last(equity_curve.copy())
+        idx = self._to_daily_last(index_df.copy())
+        return self._align(eq, idx, index_name, periods_per_year=252)
 
     def _fetch_index(
         self,

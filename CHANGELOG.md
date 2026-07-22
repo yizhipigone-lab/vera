@@ -88,6 +88,49 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-07-21 — 回测区间精确化 + 5m 缺失降级日线 + 期末未平仓市值计价
+
+**触发**: 用户复核「黑马选股1」2024-01-01~2025-01-01 5m 回测: 权益曲线显示 2024-06-27~2025-04-25
+(起点被 TDX 5m 深度截断、终点含 +75 交易日窗口尾巴)、基准曲线 2024-12-31 后缺失。
+**计划书**: [2026-07-18_5m数据层降级与降级影响报告_计划书.md](docs/plan/2026-07-18_5m数据层降级与降级影响报告_计划书.md) 实施状态追加条目。
+
+### 用户三条语义决策 → 落地
+
+| 决策 | 落地 | 关键文件 |
+|---|---|---|
+| 回测哪个区间图表就显示哪个区间, 不延长 | `compute_window_bounds`/`get_kline_windowed` 新增 `end_time` 截断, engine 透传 | `core/data_fetcher.py`, `backtest/engine.py` |
+| 没有 5M 线的时段降级为日线 (默认开) | 降级网格起止 = 请求区间 (不再从 5m 首 bar 起); `default.yaml` + `server.py` 默认开启 | `backtest/engine.py`, `config/default.yaml`, `server.py` |
+| 期末未平仓按市值统计, 不做退市强平 | loop 新增 `final_positions` 快照 → `open_positions` 明细全链路输出 | `backtest/loop/loop.py`, `backtest/engine.py`, `backtest/result.py`, `pipeline/result_writer.py`, `web/index.html`, `web/vera-ui.js` |
+| (附) 基准曲线缺失修复 | `step3_benchmark` 拉取区间 = equity 实际首尾 (非请求区间); 基准在日粒度回退 | `pipeline/pipeline.py`, `backtest/benchmark.py` |
+
+### 测试
+
+新增 `tests/test_window_end_clip.py` (7) + `tests/test_open_positions.py` (3) + `test_degrade_5m` (+1)
++ `test_benchmark` (+2 含 step3 区间修复回归) + `test_result_writer` (+1);
+`test_engine_5m_window`/`test_matrix_cache` mock 签名补 `end_time`。全量套件零回归。
+
+### 行为变更提示 (语义修正, 非回归)
+
+- 5m 回测执行窗口从此 = 请求区间: 期末仍持仓的不再获得窗口尾巴自然平仓, 改按市值计入权益
+  (trades 不再出现期末强平记录, win_rate 等按已平仓交易统计)。
+- `degrade_5m` 默认开 (config 置 false 回退丢信号旧行为); 开启时 `matrix_cache` 对 5m 自动跳过。
+- 降级占比在长区间会显著变大 (如半年无 5m 数据), degradation 报告数字变大属预期。
+- run_cached/批量优化路径不支持降级, 也不导出 open_positions (与既有 LOW-3 限制一致)。
+
+### 质量审计 (2026-07-22, [报告](docs/audit/2026-07-22_区间精确化迭代_质量审计报告.md))
+
+- **F1 HIGH 已修**: 请求终点晚于数据末端时, 降级网格尾部全 NaN 日会把期末持仓误判退市强平
+  (reason=11) → `_apply_5m_degradation` 网格裁到最后有数据的交易日 + 探针测试。
+- **F2 LOW 已修**: end_time 早于信号日 (异常输入) 窗口倒置 → `compute_window_bounds` 钳制
+  win_end ≥ win_start + 测试。
+- MEDIUM 记录: 长区间网格内存 (计划书既有标注); 5m/1d 复权口径漂移 — 已专项定位:
+  TDX K线前复权只应用请求窗口内除权事件 + TDX 5m 数据滞后 (只到 07-17, 其后的
+  除权进不了 5m 复权) + 缓存逐股锚定不一, 全量扫描 5517 只中 231 只漂移 (4.2%,
+  清单 output/f4_adjust_drift_scan.csv, 工具 tools/scan_adjust_drift.py);
+  修复路径 = 终端同步 5m 数据到最新 → --probe 验证 → 删漂移股 parquet 重建 → 复扫。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:

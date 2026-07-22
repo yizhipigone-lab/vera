@@ -110,6 +110,15 @@ class BacktestLoop:
 
         # ── 4. 期末不平仓 ──
         equity.finalize(n_dates - 1, cash, price_np, book)
+        # 2026-07-21: 期末未平仓持仓快照 (用户决策: 请求区间终点仍持仓的,
+        # 按市值统计不平仓不强平)。挂实例属性, engine run() 路径读回导出
+        # open_positions; _simulate_core_v3 冻结壳签名/返回不变。
+        final_positions = []
+        for pp in range(book.count):
+            pos = book.get(pp)
+            if pos.code >= 0:
+                final_positions.append(pos)
+        self.final_positions = final_positions
         # F7 [H4]: 汇总 entry 被停牌/数据缺失 skip 的告警 (补圆"不静默吞信号")
         skipped = getattr(self.entry_engine, "skipped_signal_count", 0)
         if skipped:

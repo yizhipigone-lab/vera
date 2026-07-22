@@ -26,3 +26,4 @@ config/current.yaml.bak
 data/kline_cache/
 data/factors/
 data/baseline/
+data/matrix_cache/

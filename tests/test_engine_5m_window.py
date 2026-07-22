@@ -38,9 +38,10 @@ def _run_5m(monkeypatch, close, mask, stop_config=None, capture=None, config=Non
     called = {}
 
     def fake_windowed(selections, period, window_trading_days, dividend_type,
-                      fill_data, *, use_cache=False):
+                      fill_data, *, use_cache=False, end_time=None):
         called['window_trading_days'] = window_trading_days
         called['use_cache'] = use_cache
+        called['end_time'] = end_time
         return kline, mask
 
     monkeypatch.setattr(engine_module.DataFetcher, 'get_kline_windowed', fake_windowed)

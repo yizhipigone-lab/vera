@@ -99,11 +99,11 @@ def combo_key(c):
     return k
 
 
-def combo_stop_config(c):
+def combo_stop_config(c, priority="trailing_first"):
     levels = [{"profit": p, "sell_ratio": r}
               for p, r in sorted(c["levels"], key=lambda x: x[0])]  # L1: 升序保证
     cfg = {
-        "priority": "trailing_first",
+        "priority": priority,
         "cost_stop": {"enabled": True, "threshold": float(c["cost"])},
         "trailing_stop": {"enabled": True, "activation": float(c["act"]),
                           "drawdown": float(c["dd"])},

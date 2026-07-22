@@ -229,3 +229,28 @@ def test_serialize_includes_degradation_only_when_present():
     # 无 degradation → key 不出现 (响应形状不变)
     resp2 = writer.serialize(_make_result())
     assert "degradation" not in resp2
+
+
+def test_serialize_includes_open_positions_only_when_present(monkeypatch):
+    """2026-07-21: open_positions 有才加 key (同 degradation 先例) + stock_name 回填."""
+    import core.data_fetcher as dfm
+    monkeypatch.setattr(dfm.DataFetcher, "get_name_map", lambda: {"600001.SH": "测试股"})
+    writer = ResultWriter()
+
+    # 无 open_positions → 响应形状不变
+    resp = writer.serialize(_make_result())
+    assert "open_positions" not in resp
+
+    # 有 → 序列化 + stock_name
+    pr = _make_result()
+    pr.backtest["open_positions"] = [{
+        "stock_code": "600001.SH", "entry_date": "2024-12-30 15:00:00",
+        "entry_price": 10.0, "shares": 2000, "last_price": 11.0,
+        "market_value": 22000.0, "unrealized_pnl": 2000.0, "unrealized_pct": 0.1,
+    }]
+    resp = writer.serialize(pr)
+    assert len(resp["open_positions"]) == 1
+    op = resp["open_positions"][0]
+    assert op["stock_code"] == "600001.SH"
+    assert op["stock_name"] == "测试股"
+    assert op["market_value"] == 22000.0

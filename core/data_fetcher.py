@@ -232,12 +232,16 @@ class DataFetcher:
         selections: pd.DataFrame,
         window_trading_days: int,
         trading_days: Optional[List[pd.Timestamp]] = None,
+        end_time: Optional[str] = None,
     ) -> tuple:
         """每只股的稀疏窗口 [窗口起, 窗口止] = [最早信号日, 最晚信号日+N 交易日]。
 
         2026-07-18 从 get_kline_windowed 抽出 (degrade_5m 降级填充需要同一套
         窗口边界判定"窗口内才可交易", 防两份逻辑 drift)。行为与原内联实现一致。
         trading_days 传入则跳过交易日历拉取 (测试/复用)。
+        2026-07-21: end_time (可选, 'yyyymmdd') — 窗口终点截断到请求区间终点,
+        回测执行窗口=请求区间 (不再延长 +N 交易日尾巴); 期末持仓由 loop
+        "期末不平仓"按市值计价, 不被窗口边界当退市强平 (reason=11)。
 
         Returns:
             (win_start, win_end): 两个 dict {stock_code: pd.Timestamp}。
@@ -284,6 +288,12 @@ class DataFetcher:
         # 每只股的 [窗口起, 窗口止]
         win_start = {c: first_sig[c] for c in first_sig.index}
         win_end = {c: _window_end(last_sig[c]) for c in last_sig.index}
+        # 2026-07-21: 请求区间终点截断 (end_time 可为非交易日, 下游取数/日历
+        # 自然对齐到最后交易日 ≤ end_time); 钳制 win_end >= win_start 防
+        # 信号日晚于 end_time 时窗口倒置 (正常管线信号已被区间过滤, 属防御)。
+        if end_time:
+            end_ts = pd.Timestamp(str(end_time))
+            win_end = {c: max(win_start[c], min(w, end_ts)) for c, w in win_end.items()}
         return win_start, win_end
 
     @classmethod
@@ -296,6 +306,7 @@ class DataFetcher:
         fill_data: bool = False,
         *,
         use_cache: bool = False,
+        end_time: Optional[str] = None,
     ) -> tuple:
         """稀疏窗口拉取: 只拉每只股票信号日往后 window_trading_days 交易日的 K 线。
 
@@ -310,6 +321,7 @@ class DataFetcher:
             fill_data: 是否让 TDX 前向填充 (默认 False, 保留停牌 NaN)。
             use_cache: 是否走 KlineCache 三级漏斗 (默认 False 向后兼容; True 时
                 fill_data 无效, 缓存 miss-fetch 恒按 fill_data=False 拉, 见 _get_kline_via_cache)。
+            end_time: 可选 ('yyyymmdd'), 窗口终点截断到请求区间终点 (2026-07-21)。
 
         Returns:
             (kline_dict, window_mask):
@@ -321,7 +333,8 @@ class DataFetcher:
         if selections is None or selections.empty:
             return {}, pd.DataFrame()
 
-        win_start, win_end = cls.compute_window_bounds(selections, window_trading_days)
+        win_start, win_end = cls.compute_window_bounds(
+            selections, window_trading_days, end_time=end_time)
 
         # 按 (窗口起月份) 分桶批量拉取, 减少 tq 往返
         sel_codes = list(win_start.keys())
