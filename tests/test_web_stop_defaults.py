@@ -41,7 +41,7 @@ def test_html_trailing_summary_matches_input_defaults():
 
 
 def test_local_storage_contract_keys_remain_unchanged():
-    script = (PROJECT_ROOT / "web" / "vera-ui.js").read_text(encoding="utf-8")
-    assert "const STORAGE_KEY = 'vera_all_config';" in script
+    script = (PROJECT_ROOT / "web" / "js" / "config.js").read_text(encoding="utf-8")
+    assert "export const STORAGE_KEY = 'vera_all_config';" in script
     assert "'cfgTrailingAct'" in script
     assert "'cfgTrailingDD'" in script

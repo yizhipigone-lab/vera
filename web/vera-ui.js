@@ -1705,6 +1705,66 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200);
 });
 
+// ====== Event bindings（从 index.html 内联 onclick/onchange/oninput 迁移至此） ======
+// Step 0: ES module 化前置 —— 所有事件绑定集中管理，不再依赖 HTML 属性 + 全局函数
+
+// Tab
+document.getElementById('tabBtnBacktest').addEventListener('click', () => switchTab('backtest'));
+document.getElementById('tabBtnLab').addEventListener('click', () => switchTab('lab'));
+
+// Theme & Sidebar
+document.querySelector('.theme-btn').addEventListener('click', toggleTheme);
+document.querySelector('.sidebar-toggle').addEventListener('click', toggleSidebar);
+
+// History
+document.getElementById('historySelect').addEventListener('change', function() { loadHistory(this.value); });
+
+// Sector panel
+const sectorHeader = document.querySelector('.sector-header');
+if (sectorHeader) sectorHeader.addEventListener('click', toggleSectorPanel);
+document.getElementById('sectorSearch').addEventListener('input', filterSectors);
+document.getElementById('btnClearSectors').addEventListener('click', clearSectors);
+
+// Factor filter
+document.getElementById('cfgFactorFilterEn').addEventListener('change', saveFactorFilterState);
+
+// Form validation — 用事件委托在 sidebar 上统一监听
+const sidebar = document.querySelector('.sidebar');
+sidebar.addEventListener('input', function(e) {
+  const el = e.target;
+  if (el.id === 'cfgStart' || el.id === 'cfgEnd') validateDate(el);
+  else if (el.id === 'cfgCapital') validatePositive(el);
+  else if (el.id === 'cfgCommission' || el.id === 'cfgSlippage') validateNonNeg(el);
+  else if (el.id === 'cfgLadderVal') validateLadder(el);
+});
+
+// Block edit/save/cancel — 8 blocks, 用事件委托在 sidebar 上统一处理
+sidebar.addEventListener('click', function(e) {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const block = btn.closest('[id^="blk"]');
+  if (!block) return;
+  const blockId = block.id;
+  if (btn.classList.contains('edit-btn')) toggleEdit(blockId);
+  else if (btn.classList.contains('save-btn')) saveBlock(blockId);
+  else if (btn.classList.contains('cancel-btn')) cancelEdit(blockId);
+});
+
+// Main action buttons
+document.getElementById('btnRun').addEventListener('click', runPipeline);
+document.getElementById('btnResetDefaults').addEventListener('click', resetDefaults);
+document.getElementById('btnSaveToFile').addEventListener('click', saveConfigToFile);
+document.getElementById('btnLoadFile').addEventListener('click', loadConfigFromFile);
+document.getElementById('btnDeleteFile').addEventListener('click', deleteSavedConfig);
+
+// Trade filter
+document.getElementById('tradeSearch').addEventListener('input', filterTrades);
+document.getElementById('tradeFilter').addEventListener('change', filterTrades);
+document.getElementById('tradeReason').addEventListener('change', filterTrades);
+
+// Lab
+document.getElementById('btnLabSubmit').addEventListener('click', labSubmit);
+
 // ====== 测试导出（Node 端单测用，浏览器中 typeof module === 'undefined 不会执行） ======
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { tryRecoverAbortedResult, resetRunUI, RECOVER };

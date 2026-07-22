@@ -272,8 +272,8 @@ input.invalid~.input-error{display:block}
 <body>
 <!-- ===== 页签栏 (2026-07-20): 回测 / 公式体检 ===== -->
 <div class="tab-bar">
-  <button class="tab-btn active" id="tabBtnBacktest" onclick="switchTab('backtest')">回测</button>
-  <button class="tab-btn" id="tabBtnLab" onclick="switchTab('lab')">公式体检</button>
+  <button class="tab-btn active" id="tabBtnBacktest">回测</button>
+  <button class="tab-btn" id="tabBtnLab">公式体检</button>
 </div>
 <div class="app">
   <!-- ===== 左侧配置面板 ===== -->
@@ -283,7 +283,7 @@ input.invalid~.input-error{display:block}
         <div class="logo-icon">V</div>
         <div class="logo-text"><h1>VERA</h1><span>量化回测系统 v1.0</span></div>
         <!-- P3-2: 主题切换重定位到 logo 右侧 -->
-        <button class="theme-btn" onclick="toggleTheme()" title="切换明暗主题">
+        <button class="theme-btn" title="切换明暗主题">
           <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         </button>
       </div>
@@ -297,7 +297,7 @@ input.invalid~.input-error{display:block}
       <!-- 历史回测 -->
       <div class="form-section" id="historySection">
         <div class="form-section-title">历史回测 <span style="font-weight:400;color:var(--text2);font-size:10px" id="historyCount">(暂无)</span></div>
-        <select id="historySelect" onchange="loadHistory(this.value)" style="font-size:11px">
+        <select id="historySelect" style="font-size:11px">
           <option value="">-- 暂无历史记录 --</option>
         </select>
       </div>
@@ -320,8 +320,8 @@ input.invalid~.input-error{display:block}
         </div>
         <div class="form-row">
           <!-- P1-5: 加即时校验 -->
-          <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD" oninput="validateDate(this)"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
-          <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD" oninput="validateDate(this)"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
+          <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
+          <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
         </div>
         <div class="checkbox-group"><input type="checkbox" id="cfgExcludeST" checked><label>排除ST股票</label></div>
         <!-- P-v3.4: ETF 开关 — list_type=31 (含 51/56/58/511, 排除 501/508 LOF) -->
@@ -330,7 +330,7 @@ input.invalid~.input-error{display:block}
 
         <!-- B-14: 行业板块 — 可折叠面板 + 搜索高亮 + 已选计数徽章 -->
         <div class="sector-section">
-          <div class="sector-header" onclick="toggleSectorPanel()" title="点击展开/收起">
+          <div class="sector-header" title="点击展开/收起">
             <span class="sector-header-title"><svg class="sector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>行业板块</span>
             <span class="sector-count-badge" id="sectorCountBadge">0 / 128</span>
           </div>
@@ -338,8 +338,8 @@ input.invalid~.input-error{display:block}
             <div class="sector-hint">可多选，与 ETF 叠加；勾选"仅ETF"时板块被忽略</div>
             <div class="sector-selected" id="sectorSelected"></div>
             <div class="sector-toolbar">
-              <input id="sectorSearch" placeholder="搜索名称或代码…" oninput="filterSectors()">
-              <button class="btn btn-sm btn-secondary" onclick="clearSectors()">清空</button>
+              <input id="sectorSearch" placeholder="搜索名称或代码…">
+              <button class="btn btn-sm btn-secondary" id="btnClearSectors">清空</button>
             </div>
             <div class="sector-match-info" id="sectorMatchInfo"></div>
             <div class="sector-grid" id="sectorGrid">
@@ -355,7 +355,7 @@ input.invalid~.input-error{display:block}
         <div class="config-block">
           <div class="cfg-fields" style="display:block">
             <div class="ff-master">
-              <input type="checkbox" id="cfgFactorFilterEn" onchange="saveFactorFilterState()">
+              <input type="checkbox" id="cfgFactorFilterEn">
               <label for="cfgFactorFilterEn" style="margin:0">启用因子过滤</label>
             </div>
             <div id="factorRuleList" style="margin-top:4px;color:var(--text2)">规则加载中…</div>
@@ -371,10 +371,10 @@ input.invalid~.input-error{display:block}
       <div class="form-section">
         <div class="form-section-title">资金与仓位</div>
         <!-- P1-5: 初始资金加即时校验 -->
-        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="1000000" type="number" oninput="validatePositive(this)"><div class="input-error">必须大于 0</div></div>
+        <div class="form-group"><label>初始资金</label><input id="cfgCapital" value="1000000" type="number"><div class="input-error">必须大于 0</div></div>
         <div class="form-row">
-          <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001" oninput="validateNonNeg(this)"><div class="input-error">不能为负数</div></div>
-          <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001" oninput="validateNonNeg(this)"><div class="input-error">不能为负数</div></div>
+          <div class="form-group"><label>手续费</label><input id="cfgCommission" value="0.0003" step="0.0001"><div class="input-error">不能为负数</div></div>
+          <div class="form-group"><label>滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"><div class="input-error">不能为负数</div></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>最低买入额</label><input id="cfgMinBuy" value="2000" type="number"></div>
@@ -404,7 +404,7 @@ input.invalid~.input-error{display:block}
               </div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkPriority')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkPriority')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkPriority')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- 成本止损 -->
         <div class="config-block" id="blkCostStop">
@@ -415,7 +415,7 @@ input.invalid~.input-error{display:block}
             <div class="checkbox-group"><input type="checkbox" id="cfgCostStopEn" checked><label>启用成本止损</label></div>
             <div class="form-group"><label>亏损阈值 (%)</label><input id="cfgCostStopVal" value="12" type="number"></div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkCostStop')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkCostStop')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkCostStop')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- 移动止盈 -->
         <div class="config-block" id="blkTrailing">
@@ -429,7 +429,7 @@ input.invalid~.input-error{display:block}
               <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="1" type="number"></div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkTrailing')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkTrailing')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkTrailing')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- 阶梯止盈 -->
         <div class="config-block" id="blkLadder">
@@ -439,9 +439,9 @@ input.invalid~.input-error{display:block}
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgLadderEn" checked><label>启用阶梯止盈</label></div>
             <!-- P1-5: 阶梯格式校验 -->
-            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="6:30,15:30" oninput="validateLadder(this)"><div class="input-error">格式：盈利%:卖出%，如 6:30,15:30</div></div>
+            <div class="form-group"><label>档位 (盈利%:卖出%，逗号分隔)</label><input id="cfgLadderVal" value="6:30,15:30"><div class="input-error">格式：盈利%:卖出%，如 6:30,15:30</div></div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkLadder')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkLadder')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkLadder')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- 时间止盈 -->
         <div class="config-block" id="blkTime">
@@ -452,7 +452,7 @@ input.invalid~.input-error{display:block}
             <div class="checkbox-group"><input type="checkbox" id="cfgTimeEn" checked><label>启用无条件时间止盈</label></div>
             <div class="form-group"><label>最大持仓 (天)</label><input id="cfgTimeVal" value="20" type="number"></div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkTime')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkTime')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkTime')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- 条件时间止盈 -->
         <div class="config-block" id="blkCondTime">
@@ -466,7 +466,7 @@ input.invalid~.input-error{display:block}
               <div class="form-group"><label>盈利阈值 (%)</label><input id="cfgCondTimeProfit" value="2" type="number"></div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkCondTime')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkCondTime')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkCondTime')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- 首日未达标卖出 -->
         <div class="config-block" id="blkFirstDay">
@@ -479,7 +479,7 @@ input.invalid~.input-error{display:block}
               <div class="form-group"><label>目标涨幅 (%)</label><input id="cfgFirstDayTarget" value="3" type="number"></div>
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkFirstDay')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkFirstDay')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkFirstDay')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
         <!-- P-v3.4: 公式止损 (formula_sell) — TDX 信号驱动, 最高优先级 -->
         <div class="config-block" id="blkFormulaSell">
@@ -494,30 +494,30 @@ input.invalid~.input-error{display:block}
               ⭐ 优先级最高（早于成本止损触发）。需要 TDX 客户端在线，公式命中即止损，不看盈亏。
             </div>
           </div>
-          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn" onclick="toggleEdit('blkFormulaSell')">编辑</button> <button class="btn btn-sm btn-primary save-btn" onclick="saveBlock('blkFormulaSell')">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" onclick="cancelEdit('blkFormulaSell')" style="display:none">取消</button></div>
+          <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
       </div>
 
     </div>
 
     <div class="sidebar-footer">
-      <button class="btn btn-primary btn-block" id="btnRun" onclick="runPipeline()">
+      <button class="btn btn-primary btn-block" id="btnRun">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         执行回测
       </button>
       <!-- P1-2: 恢复默认配置按钮（调后端 API） -->
-      <button class="btn btn-secondary btn-block btn-sm" onclick="resetDefaults()" style="margin-top:6px">恢复默认配置</button>
+      <button class="btn btn-secondary btn-block btn-sm" id="btnResetDefaults" style="margin-top:6px">恢复默认配置</button>
       <!-- 2026-07-10: 前端配置存取 current.yaml（保存/加载/删除，单一覆盖文件） -->
-      <button class="btn btn-secondary btn-block btn-sm" onclick="saveConfigToFile()" style="margin-top:6px">保存配置到文件</button>
-      <button class="btn btn-secondary btn-block btn-sm" id="btnLoadFile" onclick="loadConfigFromFile()" style="margin-top:6px" disabled>从文件加载配置</button>
-      <button class="btn btn-secondary btn-block btn-sm" id="btnDeleteFile" onclick="deleteSavedConfig()" style="margin-top:6px" disabled>删除已保存配置</button>
+      <button class="btn btn-secondary btn-block btn-sm" id="btnSaveToFile" style="margin-top:6px">保存配置到文件</button>
+      <button class="btn btn-secondary btn-block btn-sm" id="btnLoadFile" style="margin-top:6px" disabled>从文件加载配置</button>
+      <button class="btn btn-secondary btn-block btn-sm" id="btnDeleteFile" style="margin-top:6px" disabled>删除已保存配置</button>
       <div class="progress-bar" style="display:none" id="progressBar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
       <div class="progress-text" id="progressText"></div>
     </div>
   </aside>
 
   <!-- Sidebar Toggle -->
-  <div class="sidebar-toggle" onclick="toggleSidebar()" title="收起/展开侧边栏">
+  <div class="sidebar-toggle" title="收起/展开侧边栏">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
   </div>
 
@@ -614,13 +614,13 @@ input.invalid~.input-error{display:block}
     <div class="chart-box full" id="tradeTableBox" style="display:none">
       <div class="chart-box-header">交易明细 <span style="font-weight:400;color:var(--text2)" id="tradeCount"></span></div>
       <div class="trade-toolbar">
-        <input id="tradeSearch" placeholder="搜索代码/名称" style="width:160px;font-size:11px;padding:4px 8px" oninput="filterTrades()">
-        <select id="tradeFilter" style="font-size:11px;padding:4px 8px" onchange="filterTrades()">
+        <input id="tradeSearch" placeholder="搜索代码/名称" style="width:160px;font-size:11px;padding:4px 8px">
+        <select id="tradeFilter" style="font-size:11px;padding:4px 8px">
           <option value="all">全部交易</option>
           <option value="win">仅盈利</option>
           <option value="loss">仅亏损</option>
         </select>
-        <select id="tradeReason" style="font-size:11px;padding:4px 8px" onchange="filterTrades()">
+        <select id="tradeReason" style="font-size:11px;padding:4px 8px">
           <option value="">所有退出原因</option>
         </select>
         <span id="tradeFiltered" style="font-size:10px;color:var(--text2);margin-left:auto"></span>
@@ -645,7 +645,7 @@ input.invalid~.input-error{display:block}
       <input class="lab-input" id="labFormulas" placeholder="公式名(多个用逗号隔开), 如 QUANTQQ, UPN" style="flex:2;min-width:280px">
       <select class="lab-input" id="labTag"><option value="">近1年</option><option value="custom">自定义…</option></select>
       <select class="lab-input" id="labTag2"><option value="">近3年</option><option value="none">仅短窗(待复核)</option></select>
-      <button class="btn btn-primary" onclick="labSubmit()">▶ 开始体检</button>
+      <button class="btn btn-primary" id="btnLabSubmit">▶ 开始体检</button>
     </div>
     <div id="labCustomDates" style="display:none;margin-top:8px;gap:8px;align-items:center">
       短窗 <input class="lab-input" id="labStart1" placeholder="20250719" size="9"> ~ <input class="lab-input" id="labEnd1" placeholder="20260718" size="9">
@@ -674,6 +674,7 @@ input.invalid~.input-error{display:block}
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/web/echarts.min.js"></script>
-<script src="/web/vera-ui.js?v=20260721"></script>
+<script src="/web/js/recover.js"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260723"></script>
 </body>
 </html>

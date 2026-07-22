@@ -50,11 +50,13 @@ function makeContext(responses) {
     getElementById: (id) => ({
       className: '', textContent: '', style: {}, disabled: false, innerHTML: '',
       value: '', checked: false, dataset: {},
+      classList: { remove: () => {}, add: () => {} },
       appendChild: () => {}, removeChild: () => {}, remove: () => {}, parentNode: null,
       addEventListener: () => {}, click: () => {},
     }),
     createElement: () => ({
       className: '', textContent: '', style: {}, innerHTML: '', appendChild: () => {},
+      classList: { remove: () => {}, add: () => {} },
       remove: () => {}, parentNode: null,
     }),
     querySelector: () => null,
@@ -81,28 +83,49 @@ function makeContext(responses) {
     console,
   };
 
-  // 关键: 用 Object.defineProperty writable:false 把 mock 函数钉死,
-  // 否则 vera-ui.js 顶层的 function declaration 会覆盖同名 mock
-  function pin(name, val) {
-    Object.defineProperty(ctx, name, { value: val, writable: false, configurable: false, enumerable: true });
-  }
-  pin('addLog', (msg, type) => logs.push({ msg, type }));
-  pin('showToast', (msg, type) => toasts.push({ msg, type }));
-  pin('lastResult', null);
-  pin('renderAllCharts', (data) => renders.push(data));
-  pin('checkEngineVersion', () => {});
-  pin('RECOVER', { MAX_RETRY: 5, INTERVAL_MS: 10, MAX_WAIT_MS: 50 });
+  // recover.js 使用 deps 依赖注入, 无需 pin 全局函数
+  // RECOVER 常量在 recover.js 内部定义 (vm.runInContext 加载后可通过 module.exports 访问)
 
   return { ctx, logs, toasts, calls, renders };
 }
 
-// ── 加载 vera-ui.js 到 vm context ──
+// ── 加载 recover.js 到 vm context ──
+// recover.js 使用 deps.xxx() 模式, 测试注入 mock 到 deps 即可
 function loadModule(responses) {
   const { ctx, logs, toasts, calls, renders } = makeContext(responses);
   vm.createContext(ctx);
-  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'vera-ui.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'js', 'recover.js'), 'utf8');
   vm.runInContext(src, ctx);
-  return { exports: ctx.module.exports, logs, toasts, calls, renders };
+  // 加速测试: 缩短轮询间隔
+  ctx.module.exports.RECOVER.INTERVAL_MS = 10;
+  ctx.module.exports.RECOVER.MAX_WAIT_MS = 50;
+  // 注入 mock deps
+  const mod = ctx.module.exports;
+  mod.deps.addLog = (msg, type) => logs.push({ msg, type });
+  mod.deps.showToast = (msg, type) => toasts.push({ msg, type });
+  mod.deps.renderAllCharts = (data) => renders.push(data);
+  mod.deps.checkEngineVersion = () => {};
+  mod.deps.fetchStatus = (url) => {
+    const key = '/api/status'; calls[key] = (calls[key] || 0) + 1;
+    const queue = responses[key]; if (!queue) return Promise.resolve(null);
+    const r = Array.isArray(queue) ? (queue.length === 1 ? queue[0] : queue.shift()) : queue;
+    return Promise.resolve(r.body);
+  };
+  mod.deps.fetchLastResult = (url) => {
+    const key = '/api/last_result'; calls[key] = (calls[key] || 0) + 1;
+    const queue = responses[key]; if (!queue) return Promise.resolve(null);
+    const r = Array.isArray(queue) ? (queue.length === 1 ? queue[0] : queue.shift()) : queue;
+    return Promise.resolve(r.body);
+  };
+  mod.deps.fetchResults = (url) => {
+    const key = '/api/results'; calls[key] = (calls[key] || 0) + 1;
+    const queue = responses[key]; if (!queue) return Promise.resolve([]);
+    const r = Array.isArray(queue) ? (queue.length === 1 ? queue[0] : queue.shift()) : queue;
+    return Promise.resolve(r.body);
+  };
+  mod.deps.lastResultRef = { value: null };
+  mod.deps.allTradesRef = { value: [] };
+  return { exports: mod, logs, toasts, calls, renders };
 }
 
 // 等待 tryRecoverAbortedResult 完成（基于 RECOVER.MAX_RETRY × RECOVER.INTERVAL_MS + 余量）
