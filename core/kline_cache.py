@@ -12,6 +12,7 @@ import os
 import sqlite3
 import threading
 from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -375,12 +376,15 @@ class KlineCache:
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
         combined.index.name = "date"
         out = combined.reset_index()
-        tmp = pfile.with_suffix(".parquet.tmp")
+        # tmp 名带 pid+uuid: 并发写同一 stock 时各进程独立 tmp, 互不踩踏/移走
+        # (原固定名 .parquet.tmp 跨进程共享 → 2026-07-23 出现互相 replace 移走抛 FileNotFoundError,
+        # 且会混合两进程数据)。独立 tmp 后 os.replace 目标冲突只剩杀软锁 pfile。
+        tmp = pfile.with_suffix(f".parquet.{os.getpid()}.{uuid4().hex}.tmp")
         pq.write_table(pa.Table.from_pandas(out, preserve_index=False), tmp)
         # 2026-07-21: Windows 下杀软/索引器常在 write→replace 间隙短暂锁定 parquet,
         # os.replace 抛 PermissionError(WinError 5), 已 3 次杀死长批任务(301528/603192 等)。
-        # 2026-07-23: 并发写同一 stock 时 tmp 被另一个进程 replace 移走, 抛 FileNotFoundError;
-        # 此时重写 tmp 再 replace. 两种异常都退避重试 3 次, 仍失败则抛错.
+        # 独立 tmp 后 FileNotFoundError 理论不再发生 (无他进程动本进程 tmp), 仍保留兜底
+        # (杀软偶删 tmp) 重写再 replace. 两种异常都退避重试 3 次, 仍失败则抛错.
         last_err = None
         for _attempt in range(3):
             try:

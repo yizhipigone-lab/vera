@@ -2,7 +2,7 @@
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
 import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport } from './api.js';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
-import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts } from './charts.js';
+import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js';
 
 // ═══════════════════════════════════════════
 // Global State
@@ -140,9 +140,7 @@ function runPipeline() {
     .then(data => {
       clearTimeout(timeout); pollActive = false; clearInterval(poll);
       runState.running = false; runState.controller = null;
-      document.getElementById('progressBar').style.display = 'none'; document.getElementById('progressText').textContent = '';
-      document.getElementById('statusDot').className = 'status-dot on'; document.getElementById('statusText').textContent = '就绪';
-      setBtnRunMode(btn);
+      resetRunUI(btn, '就绪', 'on');
       if (!data.success) {
         if (data.stopped || runState.userStopped) { runState.userStopped = false;
           document.getElementById('statusText').textContent = '已停止'; addLog('回测已手动停止', 'info'); showToast('回测已手动停止', 'info'); return; }
@@ -378,8 +376,6 @@ document.getElementById('statusDot').className = 'status-dot on';
 const themeIcon = document.getElementById('themeIcon');
 // 图标语义：显示"对面"主题（暗色→太阳=可切亮色, 亮色→月亮=可切暗色），与 toggleTheme() 一致
 if (themeIcon) {
-  const sunIcon = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
-  const moonIcon = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
   themeIcon.innerHTML = getTheme() === 'dark' ? sunIcon : moonIcon;
 }
 if (localStorage.getItem('vera_sidebar')==='0') { document.querySelector('.sidebar').classList.add('collapsed');

@@ -63,6 +63,8 @@ def _simulate_core_v3(
 ):
     """测试兼容壳 — 转调 build_backtest_loop + BacktestLoop.run()。
     保留给 7 个测试文件 (test_priority_switch 等) 的 import 兼容。
+    注: first_day_n_bars 为历史半死参数 (legacy 函数体从未引用, FirstDayStrategy 用
+        bpday-1), 此处接收但忽略, 仅为兼容测试调用签名; 勿在此接新逻辑。
     """
     loop = build_backtest_loop(
         initial_capital, commission,
@@ -83,10 +85,10 @@ def _simulate_core_v3(
                     tradable_np, last_tradable_idx, formula_exit_np)
 
 # ═══════════════════════════════════════════════════════════════
-# VeraCore 核心回测循环 — 内置OHLC止盈止损判断
+# VeraCore 设计要点 — 核心循环实现已迁至 backtest/loop/ (候选 A 阶段 2, 2026-07-14)
 # 默认优先级 (priority=stop_first, 历史): 成本止损 > 阶梯止盈 > 移动止损/止盈 > 时间止损
 # priority=ladder_tp_first 模式: 阶梯止盈 > 成本止损 > 移动 > 时间
-#   (详见 _simulate_core_v3 的 ladder_tp_first 参数 + config/default.yaml['stop_loss']['priority'])
+#   优先级配置见 config/default.yaml['stop_loss']['priority']; 策略实现见 backtest/loop/strategies/
 #
 # 浮点阈值比较设计决策: 本项目所有止损/止盈阈值比较（如 lo_pp <= cost_stop_threshold）
 # 有意不使用 epsilon 容差。原因: 用户配置 threshold=-0.12 时，算出来 -0.119999 就该触发
@@ -95,10 +97,10 @@ def _simulate_core_v3(
 # 尾巴 0.00000001 不该算盈利, 与 <= 阈值触发是同一边界逻辑。审计 F-H6 (2026-07-15) 确认
 # 这是有意的设计选择, 不是遗漏。
 #   formula_sell (reason=12) 始终最高优先级, 不受 priority 开关影响
-# 执行价格:
-#   成本止损 → stop_price (ep*(1+threshold)) 简化模式
-#   阶梯止盈 → ladder_price (ep*(1+profit))  简化模式
-#   移动止损 → Close (回撤检测也改用Close)
+# 执行价格 (权威实现见 backtest/loop/strategies/, 此处仅注记):
+#   成本止损 → stop_price (ep*(1+threshold))
+#   阶梯止盈 → ladder_price (ep*(1+profit))
+#   移动止损/止盈 → Low 触及回撤线即触发, 按回撤线价 trail_line 成交 (trailing.py; 非 Close)
 #   其他     → Close
 # ═══════════════════════════════════════════════════════════════
 

@@ -27,8 +27,8 @@ export function hexToRgba(color, alpha) {
 // ── Theme ──
 
 const themeIcon = document.getElementById('themeIcon');
-const sunIcon = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
-const moonIcon = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+export const sunIcon = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
+export const moonIcon = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
 
 export function getTheme() { return document.documentElement.getAttribute('data-theme'); }
 
@@ -250,7 +250,8 @@ const reasonShortMap = {
   '阶梯止盈': '阶梯止盈', '时间止损': '时间止损',
   '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈',
   trailing_stop: '移动止盈', '换股卖出': '换股卖出',
-  '首日未达标': '首日未达标', 'formula_sell': '公式止损'
+  '首日未达标': '首日未达标', 'formula_sell': '公式止损',
+  '退市': '退市'
 };
 
 export function fmtReasonShort(r) {
@@ -325,13 +326,6 @@ export function filterTrades(allTrades, renderFn) {
   const search = (document.getElementById('tradeSearch').value || '').toLowerCase();
   const filter = document.getElementById('tradeFilter').value;
   const reason = document.getElementById('tradeReason').value;
-  const reasonMap = {
-    '成本止损': '成本止损', '移动止盈': '移动止盈',
-    '阶梯止盈': '阶梯止盈', '时间止损': '时间止损',
-    '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈',
-    trailing_stop: '移动止盈', '换股卖出': '换股卖出',
-    '首日未达标': '首日未达标', 'formula_sell': '公式止损'
-  };
   const filtered = allTrades.filter(t => {
     const pnl = (t.profit_pct || t.return || 0) * 100;
     if (search) {
@@ -342,7 +336,7 @@ export function filterTrades(allTrades, renderFn) {
     if (filter === 'win' && pnl <= 0) return false;
     if (filter === 'loss' && pnl >= 0) return false;
     if (reason) {
-      const reasons = (t.exit_reason || '换股卖出').split('+').map(r => reasonMap[r] || r);
+      const reasons = (t.exit_reason || '换股卖出').split('+').map(r => reasonShortMap[r] || r);
       if (!reasons.includes(reason)) return false;
     }
     return true;
@@ -526,12 +520,11 @@ export function renderAllCharts(data) {
 
     // Exit reason pie
     const chart2 = echartsInit('chartExit');
-    const reasonMap = { '成本止损': '成本止损', '移动止盈': '移动止盈', '阶梯止盈': '阶梯止盈', '时间止损': '时间止损', '时间止盈': '时间止盈', cond_time_stop: '条件时间止盈', trailing_stop: '移动止盈', '换股卖出': '换股卖出', '首日未达标': '首日未达标', 'formula_sell': '公式止损', '退市': '退市' };
     const reasonCount = {};
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
       reasons.forEach(r => {
-        const label = reasonMap[r] || r;
+        const label = reasonShortMap[r] || r;
         reasonCount[label] = (reasonCount[label] || 0) + 1;
       });
     });
