@@ -76,7 +76,7 @@ async function loadConfigFromFile() {
   } catch(e) { showToast('加载失败（网络）: ' + e.message, 'error'); }
 }
 
-async function deleteSavedConfig() {
+async function deleteSavedConfigFile() {
   if (!confirm('确定删除已保存的配置文件（config/current.yaml）？\n（当前表单值不会被清空，如需重置请点"恢复默认配置"）')) return;
   try {
     const res = await deleteSavedConfig();
@@ -364,7 +364,7 @@ document.getElementById('btnRun').addEventListener('click', runPipeline);
 document.getElementById('btnResetDefaults').addEventListener('click', resetDefaults);
 document.getElementById('btnSaveToFile').addEventListener('click', saveConfigToFile);
 document.getElementById('btnLoadFile').addEventListener('click', loadConfigFromFile);
-document.getElementById('btnDeleteFile').addEventListener('click', deleteSavedConfig);
+document.getElementById('btnDeleteFile').addEventListener('click', deleteSavedConfigFile);
 document.getElementById('tradeSearch').addEventListener('input', filterTrades);
 document.getElementById('tradeFilter').addEventListener('change', filterTrades);
 document.getElementById('tradeReason').addEventListener('change', filterTrades);

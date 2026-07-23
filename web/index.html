@@ -142,6 +142,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .chart-box-body{padding:4px;height:340px}
 .chart-box-body.tall{height:440px}
 .chart-box-body.short{height:260px}
+.chart-box-body.xtall{height:640px}
 
 /* ====== Trade Table ====== */
 .trade-table-wrap{max-height:360px;overflow-y:auto}
@@ -554,7 +555,7 @@ input.invalid~.input-error{display:block}
     <!-- 权益曲线 — P2-3: header 加 id -->
     <div class="chart-box full">
       <div class="chart-box-header" id="equityChartHeader">权益曲线 &amp; 基准对比</div>
-      <div class="chart-box-body tall" id="chartEquity"></div>
+      <div class="chart-box-body xtall" id="chartEquity"></div>
     </div>
 
     <!-- 图表行 -->
@@ -675,6 +676,6 @@ input.invalid~.input-error{display:block}
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260723"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260723c"></script>
 </body>
 </html>

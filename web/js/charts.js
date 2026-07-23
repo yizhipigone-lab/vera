@@ -448,7 +448,7 @@ export function renderAllCharts(data) {
           borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
           textStyle: { color: c.text2, fontSize: 9 } },
       ],
-      grid: { left: 60, right: 130, top: 35, bottom: 60 },
+      grid: { left: 60, right: 50, top: 35, bottom: 60 },
       xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
       yAxis: [
         { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
@@ -456,7 +456,7 @@ export function renderAllCharts(data) {
         { type: 'value', name: '回撤 %', nameTextStyle: { color: c.text2, fontSize: 10 },
           axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
       ],
-      toolbox: { right: 260, top: 0, feature: {
+      toolbox: { right: 800, top: 0, feature: {
         saveAsImage: { title: '保存图片', pixelRatio: 2 },
         dataZoom: { title: { zoom: '区域缩放', back: '还原' } },
         restore: { title: '刷新' },

@@ -82,45 +82,6 @@ def _simulate_core_v3(
     return loop.run(price_np, entry_np, high_np, low_np, open_np,
                     tradable_np, last_tradable_idx, formula_exit_np)
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Any
-
-from backtest.metrics import MetricsCalculator
-from backtest.result import BacktestResult
-from backtest.degrade_5m import (
-    apply_5m_degradation,
-    recompute_last_tradable_idx,
-    scan_degraded_positions,
-    synthesize_5m_grid,
-)
-from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
-from backtest.loop import build_backtest_loop
-from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
-from backtest.stop_config import (
-    DEFAULT_TRAILING_ACTIVATION,
-    DEFAULT_TRAILING_DRAWDOWN,
-    DEFAULT_PRIORITY,
-    VALID_PRIORITIES,
-)
-from core.data_fetcher import DataFetcher
-from core.stock_filter import get_cached_info
-from utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-# ENGINE VERSION: increment to bust Python .pyc cache
-# 2026-07-21 v3.5: 执行窗口=请求区间 (end_time 截断) + 降级网格起止=请求区间 +
-# 期末未平仓 open_positions 导出 — 准备段语义变化, bump 以作废旧 matrix_cache。
-ENGINE_VERSION = "v3.5-window-clip-degrade-20260721"
-
-# 2026-07-21: 期末未平仓持仓读回接缝。_simulate_core_v3 是冻结 39 参壳
-# (tests/test_engine_run_path.py 签名守卫), 不能加返回值; 壳执行时把 loop
-# 实例挂到这里, run() 路径读 loop.final_positions (loop.py 期末快照) 导出
-# open_positions。server 回测串行提交 (_run_lock), 无线程竞争; run_cached
-# 同样会写但无人读 (该路径不导出未平仓, 与 degrade_5m 同限制)。
-
-
 # ═══════════════════════════════════════════════════════════════
 # VeraCore 核心回测循环 — 内置OHLC止盈止损判断
 # 默认优先级 (priority=stop_first, 历史): 成本止损 > 阶梯止盈 > 移动止损/止盈 > 时间止损

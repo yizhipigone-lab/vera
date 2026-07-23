@@ -379,16 +379,19 @@ class KlineCache:
         pq.write_table(pa.Table.from_pandas(out, preserve_index=False), tmp)
         # 2026-07-21: Windows 下杀软/索引器常在 write→replace 间隙短暂锁定 parquet,
         # os.replace 抛 PermissionError(WinError 5), 已 3 次杀死长批任务(301528/603192 等)。
-        # 短暂退避重试 3 次; 仍失败则保留 tmp 并抛错(不静默丢数据)。
+        # 2026-07-23: 并发写同一 stock 时 tmp 被另一个进程 replace 移走, 抛 FileNotFoundError;
+        # 此时重写 tmp 再 replace. 两种异常都退避重试 3 次, 仍失败则抛错.
         last_err = None
         for _attempt in range(3):
             try:
                 os.replace(tmp, pfile)
                 break
-            except PermissionError as e:
+            except (PermissionError, FileNotFoundError) as e:
                 last_err = e
                 import time as _time
                 _time.sleep(0.5 * (_attempt + 1))
+                if isinstance(e, FileNotFoundError) and not tmp.exists():
+                    pq.write_table(pa.Table.from_pandas(out, preserve_index=False), tmp)
         else:
             raise last_err
 
