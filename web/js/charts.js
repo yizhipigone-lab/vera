@@ -38,7 +38,9 @@ export function getColors() {
     up: s.getPropertyValue('--up').trim(), down: s.getPropertyValue('--down').trim(),
     accent: s.getPropertyValue('--accent').trim(), accent2: s.getPropertyValue('--accent2').trim(),
     text: s.getPropertyValue('--text').trim(), text2: s.getPropertyValue('--text2').trim(),
-    bg: s.getPropertyValue('--bg').trim(), border: s.getPropertyValue('--border').trim()
+    bg: s.getPropertyValue('--bg').trim(), border: s.getPropertyValue('--border').trim(),
+    bm1: s.getPropertyValue('--bm-1').trim(), bm2: s.getPropertyValue('--bm-2').trim(),
+    bm3: s.getPropertyValue('--bm-3').trim(), bm4: s.getPropertyValue('--bm-4').trim(), bm5: s.getPropertyValue('--bm-5').trim()
   };
 }
 
@@ -410,7 +412,7 @@ export function renderAllCharts(data) {
     ];
     if (data.benchmarks) {
       const bmNames = { shanghai: '上证', hs300: '沪深300', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
-      const bmColors = [c.warn, c.accent2, c.accent, c.down];
+      const bmColors = [c.bm1, c.bm2, c.bm3, c.bm4];
       let ci = 0;
       for (const [name, bm] of Object.entries(data.benchmarks)) {
         if (!bm || !bm.length) continue;

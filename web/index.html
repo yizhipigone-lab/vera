@@ -1,43 +1,54 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
 <!-- B-1: viewport 改标准 device-width（原 width=1280 写法错误且放弃小屏适配） -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- P3-3: 在 CSS 解析前设置主题，消除 FOUC 白屏闪烁 -->
-<script>(function(){var t=localStorage.getItem('vera_theme')||'light';document.documentElement.setAttribute('data-theme',t);})();</script>
+<script>(function(){var t=localStorage.getItem('vera_theme')||'dark';document.documentElement.setAttribute('data-theme',t);})();</script>
 <!-- B-2: 移除 Google Fonts 外链（本地部署优先铁律 + 隐私）；字体改用本地系统栈，见 :root --font/--mono -->
 <title>VERA — 量化回测系统</title>
 <style>
 /* ====== CSS Variables — P3-3: :root 默认 light，dark 覆盖 ====== */
+/* 本地自托管字体 — 守本地部署铁律(不外链)。文件缺失自动回退系统栈,不报错不阻塞。
+   字体文件放 web/fonts/(见该目录 README),放前 --font/--mono 回退系统栈,功能不受影响 */
+@font-face { font-family:'Space Grotesk'; src:url('/web/fonts/SpaceGrotesk-Variable.woff2') format('woff2'); font-weight:300 700; font-display:swap; }
+@font-face { font-family:'JetBrains Mono'; src:url('/web/fonts/JetBrainsMono-Variable.woff2') format('woff2'); font-weight:100 800; font-display:swap; }
 :root {
-  /* B-3: 配色品牌化 — 去 GitHub 原色，换靛蓝品牌色 + 柔和中性 */
-  --bg: #fafafa; --surface: #f4f4f7; --card: #ffffff;
-  --border: #e6e6eb; --text: #1a1a2e; --text2: #6b6b7b;
-  --up: #e5484d; --down: #30a46c; --accent: #5b5bd6;
-  --accent2: #8e4ec6; --warn: #f5a623;
-  /* B-4: 圆角分级，比原单一 6px 更现代 */
+  /* 浅色(双主题的浅面):克制纸感 — 暖纸白底 + 深炭字 + 暗金强调 */
+  --bg: #f6f4ee; --surface: #eeeae0; --card: #ffffff;
+  --border: #e1ddd2; --text: #1a1d24; --text2: #6b7280;
+  --up: #d6342f; --down: #1f8a5b; --accent: #b8860b;
+  --accent2: #2a9d8f; --warn: #c47f17;
+  /* 分类语义色(体检页/饼图共用,收编原硬编码 #2a9d8f/#c89030/#5080dc 等 rogue hues) */
+  --ok: #2a9d8f; --pending: #c89030; --fail: #9aa3b2; --info: #5080dc;
+  /* 基准/多系列 categorical palette(非红绿,避免与涨跌红绿混淆) */
+  --bm-1: #c47f17; --bm-2: #2a9d8f; --bm-3: #b8860b; --bm-4: #8e4ec6; --bm-5: #8a6d3b;
+  /* 圆角分级 */
   --radius: 10px; --radius-sm: 6px; --radius-lg: 14px;
-  /* B-5: 多层柔影 — 卡片浮起感 + 品牌光晕（替换原全扁平） */
-  --shadow-sm: 0 1px 2px rgba(16,18,32,.04), 0 1px 3px rgba(16,18,32,.06);
-  --shadow-md: 0 2px 4px rgba(16,18,32,.04), 0 8px 24px rgba(16,18,32,.06);
-  --shadow-lg: 0 4px 8px rgba(16,18,32,.05), 0 24px 48px rgba(16,18,32,.08);
-  --shadow-glow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-  /* B-6: 字体改本地系统栈（去 Inter / JetBrains 外链，本地部署优先） */
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  /* 多层柔影 — 卡片浮起感 + 品牌光晕 */
+  --shadow-sm: 0 1px 2px rgba(16,18,32,.05), 0 1px 3px rgba(16,18,32,.07);
+  --shadow-md: 0 2px 4px rgba(16,18,32,.05), 0 8px 24px rgba(16,18,32,.07);
+  --shadow-lg: 0 4px 8px rgba(16,18,32,.06), 0 24px 48px rgba(16,18,32,.09);
+  --shadow-glow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  /* 字体:本地自托管 Space Grotesk + JetBrains Mono 优先,缺失回退系统栈,中文回退 PingFang/雅黑 */
+  --font: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
 }
 [data-theme="dark"] {
-  /* B-3: 暗色 — 比原 #0d1117 略深略蓝，配靛蓝更和谐；阴影改黑系 */
-  --bg: #0c0e16; --surface: #151823; --card: #1a1e2c;
-  --border: #2a2f42; --text: #e8eaf2; --text2: #8b90a8;
-  --up: #ff6166; --down: #3dd68c; --accent: #7b7bff;
-  --accent2: #b07ee0; --warn: #ffb84d;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px rgba(0,0,0,.4);
-  --shadow-md: 0 2px 4px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.4);
-  --shadow-lg: 0 4px 8px rgba(0,0,0,.35), 0 24px 48px rgba(0,0,0,.5);
-  --shadow-glow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  /* 暗色(默认主题):琥珀金终端 — 深炭底 + 琥珀金强调 + 涨红跌绿(Bloomberg/同花顺专业版质感) */
+  --bg: #0a0e14; --surface: #11161f; --card: #161c28;
+  --border: #232b3a; --text: #e8ecf4; --text2: #7a8499;
+  --up: #ff4d5a; --down: #2ec27e; --accent: #f0b429;
+  --accent2: #4cc9d4; --warn: #e8833a;
+  --ok: #3dd68c; --pending: #e8b339; --fail: #7a8499; --info: #4cc9d4;
+  --bm-1: #e8833a; --bm-2: #4cc9d4; --bm-3: #f0b429; --bm-4: #b07ee0; --bm-5: #b8a88a;
+  /* 暗色阴影:黑系加深 + 顶部 1px 亮边模拟浮起(暗底下纯阴影几乎看不见) */
+  --shadow-sm: 0 1px 0 rgba(255,255,255,.03) inset, 0 1px 3px rgba(0,0,0,.4);
+  --shadow-md: 0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px rgba(0,0,0,.45);
+  --shadow-lg: 0 1px 0 rgba(255,255,255,.04) inset, 0 24px 48px rgba(0,0,0,.55);
+  --shadow-glow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 /* B-7: body 加固定渐变光斑背景（不随滚动移动），破除原纯色扁平 */
@@ -60,16 +71,16 @@ a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
 .sidebar.collapsed{width:0;overflow:hidden;border-right:none}
 .sidebar-toggle{position:sticky;top:50%;z-index:10;width:20px;height:56px;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--accent);border:none;border-radius:0 6px 6px 0;margin-left:-1px;transition:all .2s}
 .sidebar-toggle:hover{filter:brightness(1.15)}
-.sidebar-toggle svg{width:14px;height:14px;color:#fff;transition:transform .2s}
+.sidebar-toggle svg{width:14px;height:14px;color:#1a1d24;transition:transform .2s}
 .collapsed+.sidebar-toggle+.main .sidebar-toggle svg,.sidebar.collapsed~.sidebar-toggle svg{transform:rotate(180deg)}
 .main{flex:1;overflow-y:auto;padding:24px 28px;display:flex;flex-direction:column;gap:16px}
 
 /* ====== Sidebar ====== */
 .sidebar-header{padding:24px 20px 18px;border-bottom:1px solid var(--border)}
 .logo{display:flex;align-items:center;gap:10px}
-.logo-icon{width:34px;height:34px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;color:#fff}
-.logo-text h1{font-size:18px;font-weight:700;letter-spacing:-0.3px}
-.logo-text span{font-size:10px;color:var(--text2);display:block;margin-top:2px}
+.logo-icon{width:34px;height:34px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;color:#1a1d24}
+.logo-text h1{font-size:20px;font-weight:700;letter-spacing:2px;font-family:var(--mono);color:var(--text)}
+.logo-text span{font-size:10px;color:var(--text2);display:block;margin-top:3px;font-family:var(--mono);letter-spacing:.5px}
 /* P3-2: 主题按钮重定位到 logo 右侧 */
 .theme-btn{margin-left:auto;width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:var(--bg);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
 .theme-btn:hover{border-color:var(--accent);background:var(--card)}
@@ -101,7 +112,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 
 /* ====== Buttons ====== */
 .btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:var(--radius-sm);font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);transition:all .2s;font-family:var(--font)}
-.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 35%,transparent)}
+.btn-primary{background:var(--accent);color:#1a1d24;border-color:var(--accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 35%,transparent)}
 .btn-primary:hover{filter:brightness(1.08);transform:translateY(-1px);box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 45%,transparent)}
 .btn-secondary{background:var(--card);color:var(--text)}
 .btn-secondary:hover{background:var(--border)}
@@ -167,7 +178,8 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 
 /* ====== Empty State ====== */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;color:var(--text2);text-align:center;gap:8px}
-.empty-state .icon{font-size:36px;opacity:0.4}
+.empty-state .icon{width:44px;height:44px;border-radius:50%;border:2px dashed color-mix(in srgb,var(--accent) 50%,transparent);position:relative;opacity:.75}
+.empty-state .icon::after{content:'';position:absolute;inset:0;margin:auto;width:8px;height:8px;border-radius:50%;background:var(--accent)}
 
 /* ====== Summary Box ====== */
 .summary-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:120px;overflow-y:auto}
@@ -196,7 +208,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 /* P1-4: Toast 通知 */
 .toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}.toast{padding:12px 20px;border-radius:8px;font-size:12px;color:#fff;max-width:400px;pointer-events:auto;
   animation:toastIn .3s ease,toastOut .3s ease 2.7s forwards;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-.toast-error{background:var(--up)}.toast-ok{background:var(--down)}.toast-info{background:var(--accent)}
+.toast-error{background:var(--up)}.toast-ok{background:var(--down)}.toast-info{background:var(--accent);color:#1a1d24}
 /* U1 (审计): 旧版引擎结果提示条 */
 .legacy-warning{padding:10px 16px;margin-bottom:12px;background:var(--warn);color:#fff;border-radius:var(--radius);font-size:12px;font-weight:500;line-height:1.5}
 [data-theme="dark"] .legacy-warning{background:#7a3600}
@@ -246,9 +258,9 @@ input.invalid~.input-error{display:block}
 .ff-rule-row input[type=checkbox]{width:auto;margin:0;flex:none}
 .ff-rule-row .ff-label{flex:1;line-height:1.4}
 .ff-rule-row .ff-badge{flex:none;font-size:10px;white-space:nowrap}
-.ff-badge-ok{color:#2a9d8f}
-.ff-badge-pending{color:#c89030}
-.ff-badge-fail{color:var(--text2)}
+.ff-badge-ok{color:var(--ok)}
+.ff-badge-pending{color:var(--pending)}
+.ff-badge-fail{color:var(--fail)}
 .tab-bar{display:flex;gap:4px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:60}
 .tab-btn{padding:6px 18px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:13px}
 .tab-btn:hover{color:var(--text)}
@@ -260,9 +272,9 @@ input.invalid~.input-error{display:block}
 .lab-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px dashed var(--border);font-size:12px}
 .lab-row:last-child{border-bottom:none}
 .lab-badge{padding:1px 8px;border-radius:8px;font-size:10px;white-space:nowrap}
-.lab-badge.ok{background:rgba(42,157,143,.15);color:#2a9d8f}
-.lab-badge.fail{background:rgba(220,80,80,.12);color:#d05050}
-.lab-badge.run{background:rgba(80,140,220,.15);color:#5080dc}
+.lab-badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.lab-badge.fail{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
+.lab-badge.run{background:color-mix(in srgb,var(--info) 16%,transparent);color:var(--info)}
 .lab-badge.wait{background:var(--surface);color:var(--text2)}
 .lab-rules{margin:4px 0 4px 24px;font-size:11px;color:var(--text2)}
 .lab-rules div{padding:2px 0}
