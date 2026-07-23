@@ -581,7 +581,7 @@ export function renderAllCharts(data) {
     const existingReasons = new Set();
     data.trades.forEach(t => {
       const reasons = (t.exit_reason || '换股卖出').split('+');
-      reasons.forEach(r => { existingReasons.add(reasonMap[r] || r); });
+      reasons.forEach(r => { existingReasons.add(reasonShortMap[r] || r); });
     });
     reasonSelect.innerHTML = '<option value="">所有退出原因</option>';
     [...existingReasons].sort().forEach(r => {

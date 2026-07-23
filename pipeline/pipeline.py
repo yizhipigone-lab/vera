@@ -70,13 +70,48 @@ class Pipeline:
             logger.warning("未配置选股参数，跳过选股")
             return pd.DataFrame()
 
-        self.selector = StockSelector(sel_cfg)
-        stocks = self.selector.resolve_universe()
-
         start = time_cfg.get("start", "")
         end = time_cfg.get("end", "")
 
-        picks = self.selector.run(start_time=start, end_time=end, stock_list=stocks)
+        # 2026-07-24: 选股结果缓存 (计划书 docs/plan/2026-07-24_选股结果缓存_计划书.md)。
+        # 实测选股占全流程 92% (5m 全A 32.8s/35.5s), 改止盈止损重跑同公式命中即省满。
+        # 按日失效 (key 含 today_str); 任何缓存异常回退直跑, 不中断管线, 不动选股口径。
+        sc_cfg = self.config.get("selection_cache", {})
+        use_sel_cache = sc_cfg.get("enabled", True)
+        force_refresh = sc_cfg.get("force_refresh", False)
+        key = None
+        picks = None
+        if use_sel_cache:
+            try:
+                from selection import selection_cache as sc
+                key = sc.build_key(
+                    formula_name=sel_cfg.get("formula_name", ""),
+                    formula_arg=sel_cfg.get("formula_arg", "") or "",
+                    universe_cfg=sel_cfg.get("universe", {}),
+                    start_time=start, end_time=end,
+                    period=sel_cfg.get("period", "1d"),
+                    dividend_type=sel_cfg.get("dividend_type", 1),
+                    today_str=datetime.now().strftime("%Y%m%d"),
+                )
+                if not force_refresh:
+                    picks = sc.load(sc.default_cache_root(), key)
+                else:
+                    logger.info("选股缓存 force_refresh: 跳过查找, 强制重跑")
+            except Exception as e:
+                logger.warning("选股缓存读取异常 (回退直跑): %s", e)
+                picks = None
+
+        if picks is None:
+            # 旧路径 (直跑, 不动 selector.run)
+            self.selector = StockSelector(sel_cfg)
+            stocks = self.selector.resolve_universe()
+            picks = self.selector.run(start_time=start, end_time=end, stock_list=stocks)
+            if use_sel_cache and key is not None and not picks.empty:
+                try:
+                    from selection import selection_cache as sc
+                    sc.save(sc.default_cache_root(), key, picks)
+                except Exception as e:
+                    logger.warning("选股缓存保存失败 (不中断管线): %s", e)
 
         # 保存原始选股结果
         if not picks.empty:

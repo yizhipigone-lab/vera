@@ -26,6 +26,14 @@ selection:
   period: "1d"
   dividend_type: 1              # 前复权
 
+# === Selection Cache (2026-07-24, selection/selection_cache.py) ===
+# 选股结果整段缓存: key = 公式+参数+universe完整配置+区间+period+复权+当天日期。
+# 按日失效; 改止盈止损重跑同公式时选股 ~32s → 亚秒级 (实测选股占全流程 92%)。
+# 重下盘后数据后想立刻重跑: 置 force_refresh: true 跑一次。
+selection_cache:
+  enabled: true
+  force_refresh: false
+
 # === Time Range (策略文件覆盖) ===
 time_range:
   start: "20240101"
