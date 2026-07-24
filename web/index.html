@@ -25,6 +25,8 @@
   --ok: #2a9d8f; --pending: #c89030; --fail: #9aa3b2; --info: #5080dc;
   /* 基准/多系列 categorical palette(非红绿,避免与涨跌红绿混淆) */
   --bm-1: #c47f17; --bm-2: #2a9d8f; --bm-3: #b8860b; --bm-4: #8e4ec6; --bm-5: #8a6d3b;
+  /* 链接文字专用色(浅色 accent 当文字仅 2.96 不达标,分出 --link 保证 4.5+) */
+  --link: #8a5a00;
   /* 圆角分级 */
   --radius: 10px; --radius-sm: 6px; --radius-lg: 14px;
   /* 多层柔影 — 卡片浮起感 + 品牌光晕 */
@@ -44,6 +46,7 @@
   --accent2: #4cc9d4; --warn: #e8833a;
   --ok: #3dd68c; --pending: #e8b339; --fail: #7a8499; --info: #4cc9d4;
   --bm-1: #e8833a; --bm-2: #4cc9d4; --bm-3: #f0b429; --bm-4: #b07ee0; --bm-5: #b8a88a;
+  --link: #f0b429;
   /* 暗色阴影:黑系加深 + 顶部 1px 亮边模拟浮起(暗底下纯阴影几乎看不见) */
   --shadow-sm: 0 1px 0 rgba(255,255,255,.03) inset, 0 1px 3px rgba(0,0,0,.4);
   --shadow-md: 0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px rgba(0,0,0,.45);
@@ -61,7 +64,7 @@ body{
   color:var(--text);font-family:var(--font);font-size:13px;line-height:1.55;min-width:1280px;
   -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
 }
-a{color:var(--accent)} ::-webkit-scrollbar{width:6px;height:6px}
+a{color:var(--link)} ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 
@@ -280,6 +283,16 @@ input.invalid~.input-error{display:block}
 .lab-rules div{padding:2px 0}
 .lab-input{padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px}
 .lab-pre{background:var(--bg);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:420px;overflow-y:auto}
+
+/* ====== 可访问性补强(ui-ux-pro-max 审查 2026-07-24) ====== */
+/* 键盘焦点统一可见环(鼠标点击不触发 :focus-visible,不打扰鼠标用户;输入框已有自己的 :focus 边框+光晕,排除避免双环) */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+input:focus-visible,select:focus-visible{outline:none}
+/* 尊重 prefers-reduced-motion: 关闭所有动画/过渡(数字滚动由 charts.js tweenNumber 同步判开关) */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+  .reveal{animation:none!important}
+}
 </style>
 </head>
 <body>

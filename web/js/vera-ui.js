@@ -320,13 +320,13 @@ function refreshLabStatus() { fetchLabStatus().then(d => { const box = document.
     box.innerHTML = d.queue.slice().reverse().map(t => { const mins = Math.floor(t.elapsed_s/60);
       let html = '<div class="lab-row">'+_labStatusBadge(t)+' <b>'+esc(t.formulas.join(','))+'</b><span style="color:var(--text2)">'+esc(t.stage)+(t.status!=='queued'&&mins?' · '+mins+'分钟':'')+'</span></div>';
       if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:#d05050">'+esc(t.error.slice(0,200))+'</div></div>';
-      if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <a href="javascript:void(0)" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--accent)">查看报告</a></div></div>'; return html; }).join('');
+      if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <a href="javascript:void(0)" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--link)">查看报告</a></div></div>'; return html; }).join('');
     setTimeout(() => { box.querySelectorAll('.lab-report-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0);
     if (d.running||d.queue.some(t=>t.status==='queued')) startLabPoll(); loadLabHistory(); }).catch(() => {}); }
 
 function loadLabHistory() { fetchLabHistory().then(d => { const box = document.getElementById('labHistory');
     if (!d.items||!d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无体检记录</div>'; return; }
-    box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><a href="javascript:void(0)" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--accent);font-size:11px">查看</a></div>').join('');
+    box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><a href="javascript:void(0)" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--link);font-size:11px">查看</a></div>').join('');
     setTimeout(() => { box.querySelectorAll('.lab-hist-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0); }).catch(() => {}); }
 
 function viewLabReport(formula) { fetchLabReport(formula).then(d => { if (!d.success) { showToast(d.error||'无报告', 'error'); return; }

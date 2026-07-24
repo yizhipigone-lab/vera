@@ -102,7 +102,7 @@ export function checkEngineVersion(data) {
   const banner = document.getElementById('legacyEngineWarning');
   if (!banner) return;
   if (!ev || ev !== CURRENT_ENGINE_VERSION) {
-    banner.textContent = '⚠️ 此回测结果基于 ' + (ev || '旧版') + ' 引擎（买入价 = 次日开盘价）。当前默认采用 ' + CURRENT_ENGINE_VERSION + '（买入价 = 信号日收盘价）。请重跑以反映新口径。';
+    banner.textContent = '【旧引擎】此回测结果基于 ' + (ev || '旧版') + ' 引擎（买入价 = 次日开盘价）。当前默认采用 ' + CURRENT_ENGINE_VERSION + '（买入价 = 信号日收盘价）。请重跑以反映新口径。';
     banner.style.display = 'block';
   } else {
     banner.style.display = 'none';
@@ -131,6 +131,8 @@ export function echartsInit(id) {
 export function tweenNumber(el, target, formatter, duration) {
   duration = duration || 600;
   if (typeof target !== 'number' || isNaN(target)) { el.textContent = '--'; return; }
+  // 尊重 prefers-reduced-motion: 直接设终值,不滚动(CSS @media 关其余动画,这里管 JS 数字动画)
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = formatter(target); return; }
   const t0 = performance.now();
   function step(now) {
     const p = Math.min(1, (now - t0) / duration);
@@ -630,7 +632,7 @@ export function renderAllCharts(data) {
         + ' | 最大回撤区间: [' + fmtPct(dg.max_drawdown_range.pessimistic) + ', ' + fmtPct(dg.max_drawdown_range.optimistic) + ']');
     }
     if (dg.adjust_mismatches) {
-      lines.push('⚠ 复权一致性违例: ' + dg.adjust_mismatches + ' 处 (5m 日聚合 ≠ 1d, 查复权口径)');
+      lines.push('[警告] 复权一致性违例: ' + dg.adjust_mismatches + ' 处 (5m 日聚合 ≠ 1d, 查复权口径)');
     }
     document.getElementById('degradationContent').textContent = lines.join('\n');
     degrBox.style.display = '';
