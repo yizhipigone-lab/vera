@@ -94,9 +94,21 @@ class BacktestLoop:
         # 非二值矩阵不再静默错位 (与 legacy truthy 语义一致)。
         sig_by_bar = precompute_signal_lists(entry_np)
 
+        # 2026-07-23: 卖出冷却 — 每票最近一次全清仓 bar 索引, EntryEngine
+        # 空仓新买时检查; 0=关闭 (None, 零行为变化)。全清仓点: 退市强平 /
+        # _execute_single 全卖 / _execute_dual 清仓 (ladder 部分卖不算)。
+        self._last_exit_bar = (
+            np.full(n_stocks, -10**9, dtype=np.int64)
+            if p.sell_cooldown_bars > 0 else None
+        )
+
         for i in range(n_dates):
             # 停止回测按钮: is_set() 开销 ~几十 ns, 逐 bar 检查可秒级响应
             raise_if_stopped()
+            if i % 100 == 0 or i == n_dates - 1:  # 2026-07-26: 细粒度进度
+                from core import progress as _progress
+                _progress.report("loop", i / max(n_dates, 1),
+                                 f"{i}/{n_dates} bar", i, n_dates)
             # ── 1. 卖出 ──
             cash = self._sell_bar(i, cash, book, trade_buf, price_np, high_np,
                                   low_np, open_np, tradable_np, last_tradable_idx)
@@ -104,7 +116,8 @@ class BacktestLoop:
             prev_eq = equity.equity_arr[i - 1] if i > 0 else float(p.initial_capital)
             cash = self.entry_engine.run_bar(i, cash, book, trade_buf, price_np,
                                              entry_np, tradable_np, prev_eq,
-                                             sig_cis=sig_by_bar[i])
+                                             sig_cis=sig_by_bar[i],
+                                             last_exit_bar=self._last_exit_bar)
             # ── 3. 权益 ──
             equity.update(i, cash, price_np, book)
 
@@ -125,7 +138,16 @@ class BacktestLoop:
             logger.warning(
                 "entry_signal_skip: 共 %d 个入场信号因停牌/数据缺失被跳过 (无成交, 见 _build_entry_signals 告警)",
                 skipped)
+        cd_skipped = getattr(self.entry_engine, "cooldown_skip_count", 0)
+        if cd_skipped:
+            logger.info("sell_cooldown: %d 个买入信号因卖出冷却期被跳过", cd_skipped)
         return equity.equity_arr, trade_buf.to_array()
+
+    def _mark_full_exit(self, ci: int, i: int) -> None:
+        """2026-07-23 卖出冷却: 记录全清仓 bar (部分卖/换股不调此函数)。"""
+        leb = getattr(self, "_last_exit_bar", None)
+        if leb is not None and 0 <= ci < leb.shape[0]:
+            leb[ci] = i
 
     # ─────────────────────────────────────────────────────────
     def _sell_bar(self, i, cash, book, trade_buf, price_np, high_np,
@@ -169,6 +191,7 @@ class BacktestLoop:
                                      sell_price, total_sh, gross - total_sh * ep_d,
                                      ret, 11)
                     book.remove_swap_pop(pp)
+                    self._mark_full_exit(ci, i)
                     continue  # 不 pp+=1
                 # 临时停牌: 跳过卖出检查
                 pp += 1
@@ -303,6 +326,7 @@ class BacktestLoop:
                          tr.execution_price, total_sh,
                          gross - total_sh * ep, ret, tr.reason)
         book.remove_swap_pop(pp)
+        self._mark_full_exit(ci, i)
         return cash, "clear"
 
     @staticmethod
@@ -348,4 +372,5 @@ class BacktestLoop:
                              gross - remaining * ep, ret1, tr1.reason)
         # 3. 清仓
         book.remove_swap_pop(pp)
+        self._mark_full_exit(ci, i)
         return cash

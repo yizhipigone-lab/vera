@@ -42,11 +42,15 @@ def get_stock_info_batch(codes: List[str], max_workers: int = 10) -> Dict[str, d
           单次调用几百到 5k 只股票大约 30-60s.
     """
     TdxConnector.ensure_connected()
+    from core import progress as _progress
     result = {}
+    n = len(codes)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for code, info in zip(codes, ex.map(_get_info_safe, codes)):
+        for i, (code, info) in enumerate(zip(codes, ex.map(_get_info_safe, codes)), 1):
             if info:
                 result[code] = info
+            if i % 200 == 0 or i == n:  # 2026-07-26: 细粒度进度 (无人读时 ~1µs)
+                _progress.report("st_filter", i / n, f"{i}/{n} 只", i, n)
     return result
 
 

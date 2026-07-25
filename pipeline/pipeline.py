@@ -194,6 +194,8 @@ class Pipeline:
 
     def step3_benchmark(self, backtest_result: dict) -> dict:
         """基准对比。"""
+        from core import progress as _progress
+        _progress.report("benchmark", 0.0, "基准对比...")  # 2026-07-26
         bench_cfg = self.config.get("benchmark", {})
         # 传入回测周期，让基准对齐
         bt_cfg = self.config.get("backtest", {})
@@ -337,12 +339,16 @@ class Pipeline:
         _cb(65, "拉取基准数据")
         benchmark_results = self.step3_benchmark(backtest_result)
         _cb(75, "基准对比完成")
+        from core import progress as _progress
+        _progress.report("benchmark", 1.0, "基准对比完成")  # 2026-07-26
+        _progress.report("report", 0.0, "生成报告...")      # 2026-07-26
 
         # Step 5: 生成报告
         logger.info("[Step 4/5] 生成报告...")
         _cb(85, "生成图表")
         report_outputs = self.step4_report(backtest_result, benchmark_results)
         _cb(90, "生成报告")
+        _progress.report("report", 1.0, "报告完成")          # 2026-07-26
 
         # Step 6: 导出到 TDX（可选）
         if export_tdx:

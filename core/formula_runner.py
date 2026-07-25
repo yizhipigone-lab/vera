@@ -139,6 +139,11 @@ class FormulaRunner:
             batch = str_codes[batch_start:batch_start + BATCH_SIZE]
             batch_num = batch_start // BATCH_SIZE + 1
             logger.info(f"  批次 {batch_num}/{total_batches} ({len(batch)} stocks)")
+            # 2026-07-26: 细粒度进度 (tools 直调时无人读, ~1µs)
+            from core import progress as _progress
+            _progress.report("formula", batch_num / total_batches,
+                             f"批次 {batch_num}/{total_batches}",
+                             batch_num, total_batches)
 
             try:
                 result = tq.formula_process_mul_xg(

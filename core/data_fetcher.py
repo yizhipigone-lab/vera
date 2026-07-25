@@ -348,9 +348,13 @@ class DataFetcher:
         mask_frames = []
 
         total_buckets = len(buckets)
+        from core import progress as _progress
         for bi, (mkey, codes) in enumerate(sorted(buckets.items()), 1):
             # 2026-07-18: 停止回测按钮 — 5m 窗口分批拉取是长耗时点, 逐批检查
             raise_if_stopped()
+            # 2026-07-26: 细粒度进度
+            _progress.report("fetch", (bi - 1) / total_buckets,
+                             f"窗口批 {bi}/{total_buckets}", bi - 1, total_buckets)
             b_start = min(win_start[c] for c in codes)
             b_end = max(win_end[c] for c in codes)
             logger.info(
@@ -389,6 +393,7 @@ class DataFetcher:
         if not mask_frames:
             logger.warning("稀疏窗口拉取结果为空")
             return {}, pd.DataFrame()
+        _progress.report("fetch", 1.0, "取数完成", total_buckets, total_buckets)
 
         # 合并各批: 时间轴取并集, 列按股票代码。不同批可能共享时间戳
         # (如 1月信号股窗口与 2月信号股窗口在 2-3月重叠), 必须按 (行,列) 取首个非空,

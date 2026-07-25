@@ -197,6 +197,9 @@ class BacktestEngine:
         # 命中时改参数重跑只剩核心循环。degrade_5m=on 时自动跳过。
         self.matrix_cache = bool(config.get("matrix_cache", False))
         self.matrix_cache_dir = config.get("matrix_cache_dir")  # None → data/matrix_cache
+        # 2026-07-23: 卖出冷却 (交易日), 全清仓后 N 个交易日内禁止同票重新买入。
+        # 默认 0=关闭 (零行为变化); run 时 × bpday 转 bar 数传给 loop。
+        self.sell_cooldown_days = int(config.get("sell_cooldown_days", 0))
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -377,6 +380,8 @@ class BacktestEngine:
         win_td = self._resolve_window_td(stop)
         use_mc = (self.matrix_cache
                   and not (self.degrade_5m and self.bars_per_day > 1))
+        from core import progress as _progress
+        _progress.report("fetch", 0.0, "准备取数...")  # 2026-07-26
         prep = None
         if use_mc:
             from backtest import matrix_cache as _mc
@@ -390,6 +395,9 @@ class BacktestEngine:
                 return self._empty_result()
             if use_mc:
                 _mc.save(mc_root, mc_key, ENGINE_VERSION, prep)
+        else:
+            _progress.report("fetch", 1.0, "矩阵缓存命中")  # 2026-07-26
+        _progress.report("matrix", 1.0, "矩阵就绪")  # 2026-07-26
         close = prep["close"]
         entries = prep["entries"]
         high_np = prep["high"]
@@ -523,13 +531,16 @@ class BacktestEngine:
             formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio, formula_exit_lag_bars=1,
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
+            sell_cooldown_bars=self.sell_cooldown_days * bpday,
         )
         self._last_loop = loop
+        _progress.report("loop", 0.0, "核心回测...")  # 2026-07-26
         equity_arr, raw_trades = loop.run(
             close.values.astype(np.float64), entries.values,
             high_np, low_np, open_np,
             tradable_np, last_tradable_idx, formula_exit_np,
         )
+        _progress.report("loop", 1.0, "回测完成")  # 2026-07-26
         # 2026-07-21: 期末未平仓持仓快照
         final_positions = list(getattr(self._last_loop, "final_positions", None) or [])
         elapsed = (pd.Timestamp.now() - t0).total_seconds()
@@ -751,6 +762,7 @@ class BacktestEngine:
             formula_exit_lag_bars=formula_exit_lag_bars,
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
+            sell_cooldown_bars=self.sell_cooldown_days * bpday,
         )
         self._last_loop = loop
         equity_arr, raw_trades = loop.run(

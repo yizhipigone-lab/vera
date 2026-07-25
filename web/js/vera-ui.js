@@ -125,12 +125,24 @@ function runPipeline() {
   const config = collectConfigFromForm();
   addLog('配置: '+config.formula_name+' '+config.start_time+'~'+config.end_time, 'info');
 
+  // 2026-07-26: 细粒度进度渲染 — 真实刻度 + 缓动逼近 (不虚构前进),
+  // detail (批次/取数计数) + 速率法 ETA 文字; 日志按内容去重防刷屏。
+  let dispPct = 0, lastLogLine = '';
   let pollActive = true;
   let poll = setInterval(async () => { if (!pollActive) return;
     try { const s = await fetchStatus(); if (!pollActive) return;
-      document.getElementById('progressFill').style.width = s.progress+'%';
-      document.getElementById('progressText').textContent = s.step; document.getElementById('statusText').textContent = s.step;
-      if (s.step) addLog(s.step+' ('+s.progress+'%)', 'info');
+      const target = s.progress || 0;
+      if (target < dispPct) dispPct = target;                       // 新轮重置
+      dispPct += (target - dispPct) * 0.4;                          // 缓动逼近
+      if (Math.abs(target - dispPct) < 0.4) dispPct = target;
+      document.getElementById('progressFill').style.width = dispPct.toFixed(1)+'%';
+      let txt = s.step || '';
+      if (s.detail) txt += ' · ' + s.detail;
+      if (s.eta_s >= 2) { const e = Math.round(s.eta_s);
+        txt += ' · 预计剩余 ~' + (e >= 90 ? Math.floor(e/60)+'分'+String(e%60).padStart(2,'0')+'秒' : e+'s'); }
+      document.getElementById('progressText').textContent = txt;
+      document.getElementById('statusText').textContent = s.step;
+      if (txt && txt !== lastLogLine) { addLog(txt + ' (' + target.toFixed(0) + '%)', 'info'); lastLogLine = txt; }
       if (!s.running && s.progress > 0 && s.has_result) { pollActive = false; clearInterval(poll); }
     } catch(e) {} }, 800);
 

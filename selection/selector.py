@@ -44,8 +44,10 @@ class StockSelector:
 
     def resolve_universe(self) -> List[str]:
         """根据 universe 配置解析股票池。"""
+        from core import progress as _progress
         u = self.universe_config
         utype = u.get("type", "")
+        _progress.report("universe_list", 0.0, "解析股票池...")  # 2026-07-26
 
         # 自定义列表
         if utype == "custom":
@@ -68,6 +70,8 @@ class StockSelector:
             logger.info(f"已选 {len(sectors)} 个行业板块, 股票池下拉框 (type={utype}) 被忽略, 仅用板块并集")
             stocks = []
             for i, code in enumerate(sectors):
+                _progress.report("universe_list", (i + 1) / len(sectors),
+                                 f"板块 {i + 1}/{len(sectors)}", i + 1, len(sectors))
                 sector_stocks = DataFetcher.get_sector_stocks(code)
                 logger.info(f"拉取板块成份股 [{i+1}/{len(sectors)}]: {code} ({len(sector_stocks)} 只)")
                 stocks.extend(sector_stocks)
@@ -103,9 +107,13 @@ class StockSelector:
 
         # 过滤 ST / 退市 / 港股（P0-3: 改用 TDX IsSTGP 真实判定，原字符串过滤对纯代码恒 True）
         # 注: ETF 的 IsSTGP=0, 不会被误删; ST 过滤保持现状
+        # 2026-07-25: exclude_quit 可配置 (默认 True 维持原行为) — 样本外回测
+        # 置 False 保留已退市股, 缓解幸存者偏差 (股票池快照为今日, 不含退市股
+        # 会系统性高估历史收益; 引擎有退市强平 reason=11 兜底)
         if u.get("exclude_st", False):
             before = len(stocks)
-            stocks, excluded = filter_stocks(stocks)
+            stocks, excluded = filter_stocks(
+                stocks, exclude_quit=bool(u.get("exclude_quit", True)))
             if excluded:
                 logger.info(f"ST/退市/港股过滤: {before} → {len(stocks)}（剔除 {len(excluded)} 只）")
 
@@ -117,6 +125,7 @@ class StockSelector:
 
         mode = "仅ETF" if etf_only else ("板块" + ("+ETF" if include_etf and sectors else "") if sectors else ("A股+ETF" if include_etf else "A股"))
         logger.info(f"解析股票池: {len(stocks)} 只股票 (type={utype}, mode={mode})")
+        _progress.report("universe_list", 1.0, f"股票池 {len(stocks)} 只")  # 2026-07-26
         return normalize_list(stocks)
 
     def run(

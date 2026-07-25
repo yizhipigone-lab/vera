@@ -129,6 +129,7 @@ pipeline_status = PipelineStatus()
 # 2026-07-20 审计 H1: /api/run 检查+置位原子锁
 import threading as _threading
 _run_lock = _threading.Lock()
+_last_served_pct = 0.0  # 2026-07-26: /api/status 进度单调不回退 guard
 
 # ====== 公式体检队列(2026-07-20, 计划书 docs/plan/2026-07-20_公式体检页面_计划书.md) ======
 # 严格串行; 与 /api/run 不对称互斥: 体检永远排队, 回测提交在体检运行中 → 409
@@ -416,11 +417,34 @@ async def lab_report(formula: str):
 
 @app.get("/api/status")
 async def get_status():
-    """获取管线运行状态。"""
+    """获取管线运行状态。
+
+    2026-07-26: 融合 core.progress 细粒度进度 (选股批次/ST过滤/取数/loop)。
+    粗点位 (_cb) 与细粒度取 max, 单调不回退 (formula_sell 嵌套调用可能乱序上报);
+    detail/eta_s 为 additive 字段, 旧前端不读不受影响。
+    """
+    global _last_served_pct
+    prog = pipeline_status.progress
+    step = pipeline_status.step
+    detail = ""
+    eta = -1.0
+    if pipeline_status.running:
+        from core import progress as _progress
+        snap = _progress.snapshot()
+        if snap["ts"] > 0:
+            prog = max(prog, snap["pct"])
+            detail = snap["detail"]
+            eta = snap["eta_s"]
+            # 细粒度阶段名替换粗粒度 step (如 "准备选股参数" → "公式选股")
+            step = _progress.STAGE_NAMES.get(snap["stage"], step)
+    prog = max(prog, _last_served_pct)
+    _last_served_pct = prog
     return {
         "running": pipeline_status.running,
-        "progress": pipeline_status.progress,
-        "step": pipeline_status.step,
+        "progress": prog,
+        "step": step,
+        "detail": detail,
+        "eta_s": round(eta, 1),
         "error": pipeline_status.error,
         "has_result": pipeline_status.result is not None,
     }
@@ -444,6 +468,11 @@ def run_pipeline(cfg: StrategyConfig):
         if lab_status.running:
             return JSONResponse(status_code=409, content={"success": False, "error": "公式体检运行中,请稍后"})
         clear_stop()  # 2026-07-17: 清掉上一次停止残留的标志, 防新回测被秒杀
+        # 2026-07-26: 细粒度进度状态一并重置 (防上次回测的阶段/ETA 残留)
+        from core import progress as _progress
+        _progress.reset()
+        global _last_served_pct
+        _last_served_pct = 0.0
         pipeline_status.running = True
         pipeline_status.progress = 0
         pipeline_status.step = "初始化"

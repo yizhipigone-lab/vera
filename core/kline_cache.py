@@ -148,10 +148,14 @@ class KlineCache:
         stock_list = normalize_list(stock_list)
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
-        for code in stock_list:
+        from core import progress as _progress
+        _n = len(stock_list)
+        for _i, code in enumerate(stock_list, 1):
             # 2026-07-18: 停止回测按钮 — 缓存 miss 逐只拉网是长耗时点, 逐只检查
             raise_if_stopped()
             self._ensure(code, period, start_ts, end_ts, dividend_type)
+            if _i % 200 == 0 or _i == _n:  # 2026-07-26: 细粒度进度
+                _progress.report("fetch", _i / _n, f"{_i}/{_n} 只", _i, _n)
         # 读盘 + 拼宽表
         per_stock = {code: self._read_parquet(code, period, start_ts, end_ts)
                      for code in stock_list}
