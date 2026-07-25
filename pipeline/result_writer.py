@@ -233,6 +233,10 @@ class ResultWriter:
         degradation = backtest.get("degradation")
         if degradation is not None:
             resp["degradation"] = safe_serialize(degradation)
+        # 2026-07-26: K线数据指纹 (可复现性戳, run() 路径有才加 key)
+        data_fp = backtest.get("data_fingerprint")
+        if data_fp is not None:
+            resp["data_fingerprint"] = safe_serialize(data_fp)
         # 2026-07-21: 期末未平仓持仓明细 (区间终点仍持仓按市值统计, 不强平)。
         # 有才加 key 无则响应形状不变 (同 degradation 先例); stock_name 复用 trades 的 name_map。
         open_positions = backtest.get("open_positions")

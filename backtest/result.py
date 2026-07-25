@@ -50,6 +50,9 @@ class BacktestResult:
     # 2026-07-21: 期末未平仓持仓明细 (用户决策: 区间终点仍持仓按市值统计,
     # 不强平; 仅 run() 路径设置, run_cached 不导出)
     open_positions: Any = _UNSET
+    # 2026-07-26: K线数据指纹 (可复现性戳 — 结果对比时识别是否同一份数据;
+    # 仅 run() 路径设置, run_cached 数据来自调用方不打戳)
+    data_fingerprint: Any = _UNSET
 
     # ── dict-like 兼容（精确复刻 dict 语义: 只有 set 的字段才算 in）──
     def _all_field_names(self) -> List[str]:

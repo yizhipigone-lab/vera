@@ -633,6 +633,9 @@ class BacktestEngine:
             stop_config_summary=get_stop_config_summary(stop),
             selections=selections, stock_count=len(cols),
         )
+        # 2026-07-26: K线数据指纹 (可复现性戳, ~0.07s)
+        from backtest.matrix_cache import data_fingerprint as _data_fp
+        bt_kwargs["data_fingerprint"] = _data_fp()
         if degradation is not None:
             bt_kwargs["degradation"] = degradation
         if open_positions:

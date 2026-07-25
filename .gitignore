@@ -28,8 +28,13 @@ data/factors/
 data/baseline/
 data/matrix_cache/
 data/selection_cache/
+data/universe_cache/
+data/signal_day_cache/
 
 # 运行时产物（含资金/策略机密，不入 git）— 2026-07-24 code-review 发现
 .gstack/
 .playwright-mcp/
 *.log
+
+# 研究报告(含策略止盈止损参数 = 高级机密,本地不入库)— 2026-07-25 vera-formula-research skill
+docs/research/

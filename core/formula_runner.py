@@ -55,6 +55,9 @@ class FormulaRunner:
     """TDX 公式执行封装。支持条件选股 (XG) 和指标计算 (ZB)。"""
 
     _connector_override = None
+    # 2026-07-26: 上次 run_stock_selection_with_dates 的批次失败数 (L2 按日缓存
+    # 区分"真空无信号" vs "失败空" — 失败区段不缓存; 每次 run 重置, 不改签名)
+    last_batch_errors = 0
 
     @classmethod
     def set_connector(cls, connector):
@@ -218,6 +221,7 @@ class FormulaRunner:
                         })
                     break
 
+        cls.last_batch_errors = batch_errors  # 2026-07-26 (L2 用)
         if not all_records:
             if batch_errors >= total_batches:
                 logger.error(f"所有 {total_batches} 批次均失败，请检查公式名称 [{formula_name}] 是否存在")

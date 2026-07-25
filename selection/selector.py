@@ -45,14 +45,29 @@ class StockSelector:
     def resolve_universe(self) -> List[str]:
         """根据 universe 配置解析股票池。"""
         from core import progress as _progress
+        from selection import universe_cache as _ucache
         u = self.universe_config
         utype = u.get("type", "")
         _progress.report("universe_list", 0.0, "解析股票池...")  # 2026-07-26
 
-        # 自定义列表
+        # 自定义列表 (配置即数据, 无计算成本, 不进 L1 缓存)
         if utype == "custom":
             stocks = u.get("stocks", [])
             return normalize_list(stocks)
+
+        # 2026-07-26: L1 池缓存 (计划书 §3.1)。命中省 ~17s 拉池+ST过滤;
+        # 异常回退实算, 不中断选股。
+        _l1_key = None
+        if _ucache.ENABLED:
+            try:
+                _l1_key = _ucache.build_key(u, datetime.now().strftime("%Y%m%d"))
+                if not _ucache.FORCE_REFRESH:
+                    _cached = _ucache.load(_ucache.default_cache_root(), _l1_key)
+                    if _cached is not None:
+                        _progress.report("universe_list", 1.0, f"股票池 {len(_cached)} 只 (缓存)")
+                        return _cached
+            except Exception as e:
+                logger.warning("池缓存读取异常 (回退实算): %s", e)
 
         # P-v3.4: ETF 开关 — 仅ETF 优先于 包含ETF
         #   list_type='31' = ETF 基金 (TDX 原生分类, 天然含 51/56/58/511, 排除 501/508 LOF)
@@ -126,7 +141,14 @@ class StockSelector:
         mode = "仅ETF" if etf_only else ("板块" + ("+ETF" if include_etf and sectors else "") if sectors else ("A股+ETF" if include_etf else "A股"))
         logger.info(f"解析股票池: {len(stocks)} 只股票 (type={utype}, mode={mode})")
         _progress.report("universe_list", 1.0, f"股票池 {len(stocks)} 只")  # 2026-07-26
-        return normalize_list(stocks)
+        result = normalize_list(stocks)
+        # 2026-07-26: L1 落盘 (空池不缓存 — 多半是 TDX 数据问题, 值得每次重试)
+        if _l1_key is not None and result:
+            try:
+                _ucache.save(_ucache.default_cache_root(), _l1_key, result)
+            except Exception as e:
+                logger.warning("池缓存保存失败 (不中断选股): %s", e)
+        return result
 
     def run(
         self,
@@ -154,6 +176,25 @@ class StockSelector:
 
         if not end_time:
             end_time = datetime.now().strftime("%Y%m%d")
+
+        # 2026-07-26: L2 按日信号缓存 (计划书 §3.2) — 接缝在 selector 内部,
+        # pipeline/tools/MultiFormulaSelector 全部自动受益; 仅 period=1d。
+        # 异常回退直跑, 不中断选股。
+        from selection import signal_day_cache as _sdc
+        if _sdc.ENABLED and self.period == "1d" and start_time:
+            try:
+                return _sdc.get_or_compute(
+                    formula_name=self.formula_name,
+                    formula_arg=self.formula_arg,
+                    period=self.period,
+                    dividend_type=self.dividend_type,
+                    stock_list=stock_list,
+                    start_time=start_time,
+                    end_time=end_time,
+                    force=_sdc.FORCE_REFRESH,
+                )
+            except Exception as e:
+                logger.warning("L2 按日缓存异常 (回退直跑): %s", e)
 
         df = FormulaRunner.run_stock_selection_with_dates(
             formula_name=self.formula_name,

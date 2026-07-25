@@ -71,3 +71,14 @@ class TestBacktestResultDictCompat:
         assert r.get("trade_count") is None
         with pytest.raises(KeyError):
             _ = r["trade_count"]
+
+
+def test_data_fingerprint_field():
+    """2026-07-26: K线数据指纹字段 — 传入才出现 (_UNSET 哨兵语义)。"""
+    from backtest.result import BacktestResult
+    r = BacktestResult(metrics={}, data_fingerprint=123.0)
+    assert "data_fingerprint" in r.keys()
+    assert r["data_fingerprint"] == 123.0
+    r2 = BacktestResult(metrics={})
+    assert "data_fingerprint" not in r2.keys()
+    assert r2.get("data_fingerprint") is None

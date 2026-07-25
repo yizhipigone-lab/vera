@@ -30,9 +30,15 @@ selection:
 # 选股结果整段缓存: key = 公式+参数+universe完整配置+区间+period+复权+当天日期。
 # 按日失效; 改止盈止损重跑同公式时选股 ~32s → 亚秒级 (实测选股占全流程 92%)。
 # 重下盘后数据后想立刻重跑: 置 force_refresh: true 跑一次。
+# 2026-07-26 二期 (selection/universe_cache.py + signal_day_cache.py):
+# L1 池缓存 (省拉池+ST过滤 ~17s) + L2 按日信号缓存 (换区间只补缺失区段)。
 selection_cache:
   enabled: true
   force_refresh: false
+  l1_enabled: true        # L1 池缓存
+  l2_enabled: true        # L2 按日信号缓存
+  l2_max_age_days: 60     # 超过 60 天的旧信号重算 (前复权除权漂移)
+  l2_fresh_days: 2        # 最近 2 个交易日永远现算 (盘后数据未到位风险)
 
 # === Time Range (策略文件覆盖) ===
 time_range:

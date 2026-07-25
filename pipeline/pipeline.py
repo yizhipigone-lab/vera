@@ -61,6 +61,20 @@ class Pipeline:
         self.backtest_engine = None
         self.stop_config = None
 
+        # 2026-07-26: L1 池缓存 / L2 按日信号缓存开关 (selection_cache yaml,
+        # 缺省全开; tools 走模块默认值)。enabled=false 时 L0/L1/L2 全关。
+        sc_cfg = self.config.get("selection_cache", {})
+        from selection import universe_cache as _uc
+        from selection import signal_day_cache as _sdc
+        _uc.configure(
+            enabled=sc_cfg.get("enabled", True) and sc_cfg.get("l1_enabled", True),
+            force_refresh=sc_cfg.get("force_refresh", False))
+        _sdc.configure(
+            enabled=sc_cfg.get("enabled", True) and sc_cfg.get("l2_enabled", True),
+            force_refresh=sc_cfg.get("force_refresh", False),
+            max_age_days=sc_cfg.get("l2_max_age_days", 60),
+            fresh_days=sc_cfg.get("l2_fresh_days", 2))
+
     def step1_select(self) -> pd.DataFrame:
         """执行选股。"""
         sel_cfg = self.config.get("selection", {})
