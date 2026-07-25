@@ -109,6 +109,20 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .checkbox-group{display:flex;align-items:center;gap:6px;margin-bottom:3px}
 .checkbox-group input[type=checkbox]{width:auto;accent-color:var(--accent)}
 .checkbox-group label{color:var(--text);font-size:11px;margin:0}
+/* 2026-07-24: 内置边界口径页首声明横幅 */
+.boundary-banner{background:color-mix(in srgb, var(--accent) 10%, var(--surface));border-bottom:2px solid var(--accent);padding:7px 16px}
+.boundary-banner-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--text)}
+.boundary-banner-head>b{color:var(--accent);white-space:nowrap}
+.boundary-banner-keys b{color:var(--text)}
+.boundary-banner-keys{color:var(--text2)}
+.boundary-banner-more{display:inline;position:relative}
+.boundary-banner-more summary{display:inline;color:var(--accent);cursor:pointer;font-size:11px;user-select:none;list-style:none;white-space:nowrap}
+.boundary-banner-more summary::before{content:'▸ '}
+.boundary-banner-more[open] summary::before{content:'▾ '}
+.boundary-banner-body{position:absolute;right:0;top:calc(100% + 6px);z-index:70;width:min(560px, 90vw);max-height:60vh;overflow:auto;padding:8px 12px;border:1px solid var(--accent);border-radius:var(--radius-sm);background:var(--bg);box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:11px;color:var(--text2);line-height:1.6}
+.boundary-banner-body b{color:var(--text);display:block;margin:5px 0 1px}
+.boundary-banner-body ul{margin:0;padding-left:16px}
+.boundary-banner-body li{margin:1px 0}
 .radio-group{display:flex;flex-direction:column;gap:5px}
 .radio-group label{display:flex;align-items:center;gap:5px;color:var(--text);font-size:11px;cursor:pointer}
 .radio-group input[type=radio]{width:auto;accent-color:var(--accent);margin:0;flex-shrink:0}
@@ -143,6 +157,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .kpi-spark:empty{display:none}
 .kpi-spark svg{width:100%;height:32px;display:block}
 .kpi-sub{font-size:11px;color:var(--text2);margin-top:8px;font-family:var(--mono);display:flex;align-items:center;gap:4px}
+.kpi-hint{font-size:10px;color:var(--text2);margin-top:6px;line-height:1.35;letter-spacing:.2px;opacity:.85}
 .kpi-sub .delta-up{color:var(--up)} .kpi-sub .delta-down{color:var(--down)}
 /* 交易统计缩小 */
 .kpi-row-tertiary .kpi-card{padding:12px 14px}
@@ -301,6 +316,43 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn active" id="tabBtnBacktest">回测</button>
   <button class="tab-btn" id="tabBtnLab">公式体检</button>
 </div>
+<!-- 2026-07-24: 内置边界口径页首声明 — 改代码口径时必须同步此块
+     (selection/selector.py, core/stock_filter.py, backtest/engine.py
+      _filter_limit_up, backtest/stop_config.py capabilities) -->
+<div class="boundary-banner">
+  <div class="boundary-banner-head">
+    <b>内置边界口径（自动生效）</b>
+    <span class="boundary-banner-keys">
+      <b>涨停股会被公式选中，但回测入场自动取消</b>（A股涨停无法成交）·
+      <b>成本止损跳空低开保护</b>（按 min(止损价, 开盘价) 成交）·
+      <b>退市强制平仓</b> ·
+      <b>T 日尾盘信号 → T 日收盘价买入</b>
+    </span>
+    <details class="boundary-banner-more">
+      <summary>全部口径</summary>
+      <div class="boundary-banner-body">
+        <b>选股阶段</b>
+        <ul>
+          <li>排除 ST/*ST、退市、港股（勾选"排除ST/退市/港股"时，TDX 真实标记判定）</li>
+          <li>北交所股票：仅"全部A股"池保留，其他股票池自动剔除</li>
+          <li><b>涨停不排除</b>：涨停股会被公式选中，在回测入场时被拒（见下）</li>
+        </ul>
+        <b>回测入场（引擎内置，不可关闭）</b>
+        <ul>
+          <li>涨停日买入信号自动取消（A股涨停无法成交，0.3% 容差）</li>
+          <li>停牌/缺价信号的入场丢弃，不顺延</li>
+          <li>T 日尾盘信号 → T 日收盘价买入（铁律）</li>
+        </ul>
+        <b>回测出场（默认开，config capabilities 可关）</b>
+        <ul>
+          <li>成本止损跳空低开保护：按 min(止损价, 开盘价) 成交</li>
+          <li>退市强制平仓</li>
+          <li>公式卖出（若启用）最高优先级</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+</div>
 <div class="app">
   <!-- ===== 左侧配置面板 ===== -->
   <aside class="sidebar">
@@ -349,7 +401,7 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="form-group"><label>起始日期</label><input id="cfgStart" value="20240101" placeholder="YYYYMMDD"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
           <div class="form-group"><label>结束日期</label><input id="cfgEnd" value="20250630" placeholder="YYYYMMDD"><div class="input-error">日期格式：8位数字 YYYYMMDD</div></div>
         </div>
-        <div class="checkbox-group"><input type="checkbox" id="cfgExcludeST" checked><label>排除ST股票</label></div>
+        <div class="checkbox-group"><input type="checkbox" id="cfgExcludeST" checked><label>排除ST/退市/港股</label></div>
         <!-- P-v3.4: ETF 开关 — list_type=31 (含 51/56/58/511, 排除 501/508 LOF) -->
         <div class="checkbox-group"><input type="checkbox" id="cfgIncludeEtf"><label>包含ETF（A股 + ETF 混合）</label></div>
         <div class="checkbox-group"><input type="checkbox" id="cfgEtfOnly"><label>仅ETF（只 ETF，不要 A股）</label></div>
@@ -554,14 +606,14 @@ input:focus-visible,select:focus-visible{outline:none}
       <div class="kpi-row kpi-row-primary">
         <div class="kpi-card" title="从初始资金到最终的涨跌比例"><div class="kpi-label">累计收益</div><div class="kpi-value" id="kpiCumRet">--</div><div class="kpi-spark" id="kpiCumRetSpark"></div><div class="kpi-sub" id="kpiCumRetSub"></div></div>
         <div class="kpi-card" title="从最高点到最低点的最大跌幅"><div class="kpi-label">最大回撤</div><div class="kpi-value" id="kpiMaxDD">--</div><div class="kpi-spark" id="kpiMaxDDSpark"></div><div class="kpi-sub" id="kpiMaxDDSub"></div></div>
-        <div class="kpi-card" title="每承担1份风险获得的超额收益，>1 为优"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div><div class="kpi-sub" id="kpiSharpeSub"></div></div>
+        <div class="kpi-card" title="每承担1份风险获得的超额收益，>1 为优"><div class="kpi-label">夏普比率</div><div class="kpi-value" id="kpiSharpe">--</div><div class="kpi-hint">超额收益 ÷ 波动,>1 为优</div><div class="kpi-sub" id="kpiSharpeSub"></div></div>
       </div>
       <div class="kpi-row kpi-row-secondary">
-        <div class="kpi-card" title="按复利折算的年化收益率"><div class="kpi-label">年化收益</div><div class="kpi-value" id="kpiAnnRet">--</div></div>
-        <div class="kpi-card" title="盈利交易笔数 / 总交易笔数"><div class="kpi-label">胜率</div><div class="kpi-value" id="kpiWinRate">--</div></div>
-        <div class="kpi-card" title="平均每笔盈利 / 平均每笔亏损"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="kpiPLR">--</div></div>
-        <div class="kpi-card" title="总盈利金额 / 总亏损金额，>1 为盈利"><div class="kpi-label">盈利因子</div><div class="kpi-value" id="kpiProfitF">--</div></div>
-        <div class="kpi-card" title="年化收益 / 最大回撤，衡量风险调整后收益"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div></div>
+        <div class="kpi-card" title="按复利折算的年化收益率"><div class="kpi-label">年化收益</div><div class="kpi-value" id="kpiAnnRet">--</div><div class="kpi-hint">资金每年的复利增速</div></div>
+        <div class="kpi-card" title="盈利交易笔数 / 总交易笔数"><div class="kpi-label">胜率</div><div class="kpi-value" id="kpiWinRate">--</div><div class="kpi-hint">赚钱交易占几成</div></div>
+        <div class="kpi-card" title="平均每笔盈利 / 平均每笔亏损"><div class="kpi-label">盈亏比</div><div class="kpi-value" id="kpiPLR">--</div><div class="kpi-hint">笔均赚 ÷ 笔均亏</div></div>
+        <div class="kpi-card" title="总盈利金额 / 总亏损金额，>1 为盈利"><div class="kpi-label">盈利因子</div><div class="kpi-value" id="kpiProfitF">--</div><div class="kpi-hint">总赚 ÷ 总亏,>1 为盈</div></div>
+        <div class="kpi-card" title="年化收益 / 最大回撤，衡量风险调整后收益"><div class="kpi-label">卡玛比率</div><div class="kpi-value" id="kpiCalmar">--</div><div class="kpi-hint">年化 ÷ 最大回撤</div></div>
       </div>
       <!-- 2026-07-18: 超额收益卡 (对比组: 沪深300 + 创业板指; 子行: 年化超额 · IR · 月度胜率) -->
       <div class="kpi-row kpi-row-secondary">
