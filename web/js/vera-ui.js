@@ -126,7 +126,9 @@ function runPipeline() {
   addLog('配置: '+config.formula_name+' '+config.start_time+'~'+config.end_time, 'info');
 
   // 2026-07-26: 细粒度进度渲染 — 真实刻度 + 缓动逼近 (不虚构前进),
-  // detail (批次/取数计数) + 速率法 ETA 文字; 日志按内容去重防刷屏。
+  // detail (批次/取数计数) + 已用时间 + 速率法 ETA 文字; 日志按内容去重防刷屏。
+  const runT0 = Date.now();
+  const _fmtDur = e => e >= 90 ? Math.floor(e/60)+'分'+String(Math.round(e%60)).padStart(2,'0')+'秒' : Math.round(e)+'s';
   let dispPct = 0, lastLogLine = '';
   let pollActive = true;
   let poll = setInterval(async () => { if (!pollActive) return;
@@ -136,8 +138,10 @@ function runPipeline() {
       dispPct += (target - dispPct) * 0.4;                          // 缓动逼近
       if (Math.abs(target - dispPct) < 0.4) dispPct = target;
       document.getElementById('progressFill').style.width = dispPct.toFixed(1)+'%';
+      const elapsed = (Date.now() - runT0) / 1000;
       let txt = s.step || '';
       if (s.detail) txt += ' · ' + s.detail;
+      txt += ' · 已用 ' + _fmtDur(elapsed);
       if (s.eta_s >= 2) { const e = Math.round(s.eta_s);
         txt += ' · 预计剩余 ~' + (e >= 90 ? Math.floor(e/60)+'分'+String(e%60).padStart(2,'0')+'秒' : e+'s'); }
       document.getElementById('progressText').textContent = txt;
@@ -159,7 +163,7 @@ function runPipeline() {
         addLog('失败: '+(data.error||'未知错误'), 'error'); showToast('回测失败: '+(data.error||'未知错误'), 'error');
         lastResult = null; document.querySelectorAll('.kpi-value').forEach(el => el.textContent = '--'); return;
       }
-      addLog('回测完成: '+data.trade_count+'笔交易', 'ok'); lastResult = data; allTrades = data.trades || [];
+      addLog('回测完成: '+data.trade_count+'笔交易 (耗时 '+_fmtDur((Date.now()-runT0)/1000)+')', 'ok'); lastResult = data; allTrades = data.trades || [];
       renderAllCharts(data); checkEngineVersion(data);
     }).catch(e => {
       clearTimeout(timeout); pollActive = false; clearInterval(poll); runState.running = false; runState.controller = null;
