@@ -264,6 +264,14 @@ export function fmtReasonShort(r) {
 
 // ── Trade Table ──
 
+// 2026-07-26: 交易明细分页 — 9 万笔级回测一次性渲染 ~110 万 DOM 单元格,
+// 巨型 HTML 串 + DOM 直接把 Chrome 渲染进程撑爆 (Out of Memory 崩页)。
+// 改为每页 200 行 + 页码条; 数组操作 (筛选/统计) 全量进行不受影响。
+let _tradePage = 0;
+const TRADE_PAGE_SIZE = 200;
+
+export function resetTradePage() { _tradePage = 0; }
+
 export function renderTradeTable(trades, allTradesCount) {
   document.getElementById('tradeTableBox').style.display = '';
   const minBuy = document.getElementById('cfgMinBuy').value || 2000;
@@ -273,7 +281,12 @@ export function renderTradeTable(trades, allTradesCount) {
     '(本次回测: ' + trades.length + ' 笔 | 每笔' + minBuy + '~' + maxBuy + '元, ' + lot + '股/手)';
   const tbody = document.getElementById('tradeTableBody');
   const totalTrades = trades.length;
-  tbody.innerHTML = trades.slice().reverse().map((t, i) => {
+  const nPages = Math.max(1, Math.ceil(totalTrades / TRADE_PAGE_SIZE));
+  if (_tradePage >= nPages) _tradePage = nPages - 1;
+  if (_tradePage < 0) _tradePage = 0;
+  const start = _tradePage * TRADE_PAGE_SIZE;
+  const pageRows = trades.slice().reverse().slice(start, start + TRADE_PAGE_SIZE);
+  tbody.innerHTML = pageRows.map((t, i) => {
     const pnl = (t.profit_pct || t.return || 0) * 100;
     const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
     const eDate = esc(String(t.entry_date || '').slice(0, 10));
@@ -287,7 +300,7 @@ export function renderTradeTable(trades, allTradesCount) {
     const reasonShort = esc(fmtReasonShort(t.exit_reason));
     const reasonFull = esc((t.exit_reason || '').split('+').map(s => reasonDetail[s] || s).join('；'));
     return '<tr>' +
-      '<td style="color:var(--text2);font-size:10px">' + (totalTrades - i) + '</td>' +
+      '<td style="color:var(--text2);font-size:10px">' + (totalTrades - (start + i)) + '</td>' +
       '<td style="font-family:var(--mono);font-size:10px">' + code + '</td>' +
       '<td title="' + code + '">' + name + '</td>' +
       '<td>' + eDate + '</td>' +
@@ -301,6 +314,22 @@ export function renderTradeTable(trades, allTradesCount) {
       '<td style="font-size:10px;max-width:120px" title="' + reasonFull + '">' + reasonShort + '</td></tr>';
   }).join('');
   document.getElementById('tradeFiltered').textContent = '显示 ' + trades.length + ' / ' + (allTradesCount || trades.length) + ' 笔';
+  // 页码条 (2026-07-26)
+  const pager = document.getElementById('tradePager');
+  if (pager) {
+    if (nPages <= 1) {
+      pager.innerHTML = '';
+    } else {
+      pager.innerHTML =
+        '<button class="btn btn-secondary btn-sm" id="tradePagePrev"' + (_tradePage === 0 ? ' disabled' : '') + '>‹ 上一页</button>' +
+        '<span style="font-size:11px;color:var(--text2)">第 ' + (_tradePage + 1) + ' / ' + nPages + ' 页 (每页 ' + TRADE_PAGE_SIZE + ' 笔)</span>' +
+        '<button class="btn btn-secondary btn-sm" id="tradePageNext"' + (_tradePage >= nPages - 1 ? ' disabled' : '') + '>下一页 ›</button>';
+      pager.querySelector('#tradePagePrev').addEventListener('click', () => {
+        _tradePage--; renderTradeTable(trades, allTradesCount); });
+      pager.querySelector('#tradePageNext').addEventListener('click', () => {
+        _tradePage++; renderTradeTable(trades, allTradesCount); });
+    }
+  }
   // dynamic reason dropdown population
   const reasonSelect = document.getElementById('tradeReason');
   if (reasonSelect) {
@@ -325,6 +354,7 @@ export function renderTradeTable(trades, allTradesCount) {
 
 export function filterTrades(allTrades, renderFn) {
   if (!allTrades || !allTrades.length) return;
+  resetTradePage();   // 2026-07-26: 筛选条件变化回到第一页
   const search = (document.getElementById('tradeSearch').value || '').toLowerCase();
   const filter = document.getElementById('tradeFilter').value;
   const reason = document.getElementById('tradeReason').value;
@@ -576,6 +606,7 @@ export function renderAllCharts(data) {
     }, true);
 
     // Trade table
+    resetTradePage();   // 2026-07-26: 新结果回到第一页
     renderTradeTable(data.trades, data.trades.length);
 
     // Populate reason dropdown
