@@ -363,6 +363,13 @@ async def lab_status_api():
     return lab_status.snapshot()
 
 
+@app.post("/api/lab/stop")
+async def lab_stop():
+    """停止当前运行中的体检任务 (2026-07-25): 杀子进程 + 标 cancelled。"""
+    ok, msg = lab_status.stop_current()
+    return {"success": ok, "message": msg}
+
+
 @app.get("/api/lab/history")
 async def lab_history():
     """历史体检: 按公式聚合 规则JSON + 体检报告 md。"""

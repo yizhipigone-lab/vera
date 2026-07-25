@@ -46,6 +46,9 @@ def main() -> None:
     ap.add_argument("--formula", default="UPN", help="公式名(无 --strategy-yaml 时用)")
     ap.add_argument("--strategy-yaml", default=None,
                     help="strategy yaml 路径(读 selection+stop_loss,跑真实策略)")
+    ap.add_argument("--universe-type", default=None,
+                    help="覆盖股票池 type (如 50=沪深A股全市场); 仅 --formula 模式生效, "
+                         "缺省用 default.yaml 的 universe.type")
     args = ap.parse_args()
 
     if args.strategy_yaml:
@@ -68,10 +71,13 @@ def main() -> None:
         defaults = ConfigLoader.load_defaults()
         bt_cfg = defaults.get("backtest", {})
         sel_tmpl = defaults.get("selection", {})
+        universe = dict(sel_tmpl.get("universe", {"type": "50", "exclude_st": True}))
+        if args.universe_type:
+            universe["type"] = args.universe_type
         sel_cfg = {
             "formula_name": args.formula,
             "formula_arg": str(sel_tmpl.get("formula_arg", "")),
-            "universe": sel_tmpl.get("universe", {"type": "50", "exclude_st": True}),
+            "universe": universe,
             "period": sel_tmpl.get("period", "1d"),
             "dividend_type": sel_tmpl.get("dividend_type", 1),
         }

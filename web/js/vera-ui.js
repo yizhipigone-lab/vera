@@ -1,6 +1,6 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
-import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport } from './api.js';
+import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport } from './api.js';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
 import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js';
 
@@ -299,7 +299,26 @@ function switchTab(name) { const isLab = name==='lab';
 function startLabPoll() { stopLabPoll(); _labPollTimer = setInterval(refreshLabStatus, 2000); }
 function stopLabPoll() { if (_labPollTimer) { clearInterval(_labPollTimer); _labPollTimer = null; } }
 
-function labSubmit() { const raw = document.getElementById('labFormulas').value;
+function _setLabBtn(mode) {
+  // 2026-07-25: 体检运行中 → 按钮变"停止体检"; 空闲 → "开始体检"
+  const btn = document.getElementById('btnLabSubmit');
+  if (mode === 'stop') {
+    btn.dataset.mode = 'stop';
+    btn.classList.remove('btn-primary'); btn.classList.add('btn-danger');
+    btn.innerHTML = '■ 停止体检';
+  } else {
+    btn.dataset.mode = 'run';
+    btn.classList.remove('btn-danger'); btn.classList.add('btn-primary');
+    btn.innerHTML = '▶ 开始体检';
+  }
+}
+
+function labSubmit() { const btn = document.getElementById('btnLabSubmit');
+  if (btn.dataset.mode === 'stop') {
+    stopLabJob().then(d => { showToast(d.message || (d.success ? '已停止' : '停止失败'), d.success ? 'ok' : 'error');
+      refreshLabStatus(); }).catch(e => showToast('停止异常: '+e, 'error'));
+    return; }
+  const raw = document.getElementById('labFormulas').value;
   const formulas = raw.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
   if (!formulas.length) { showToast('请先填公式名', 'error'); return; } const body = { formulas };
   if (document.getElementById('labTag').value==='custom') { const s1=document.getElementById('labStart1').value.trim(), e1=document.getElementById('labEnd1').value.trim();
@@ -311,10 +330,12 @@ function labSubmit() { const raw = document.getElementById('labFormulas').value;
     showToast('已入队'+(d.queued_behind_pipeline?'(回测运行中,排队等待)':''), 'ok'); refreshLabStatus(); }).catch(e => showToast('提交异常: '+e, 'error')); }
 
 function _labStatusBadge(t) { if (t.status==='done') return '<span class="lab-badge ok">完成</span>';
+  if (t.status==='cancelled') return '<span class="lab-badge wait">已停止</span>';
   if (t.status==='failed') return '<span class="lab-badge fail">失败</span>'; if (t.status==='queued') return '<span class="lab-badge wait">排队中</span>';
   return '<span class="lab-badge run">运行中</span>'; }
 
 function refreshLabStatus() { fetchLabStatus().then(d => { const box = document.getElementById('labQueue'), hint = document.getElementById('labHint');
+    _setLabBtn(d.current ? 'stop' : 'run');
     hint.textContent = d.current ? '当前: '+d.current.formulas.join(',')+' — '+d.current.stage+'(已 '+Math.floor(d.current.elapsed_s/60)+' 分钟) · 基线股票池 '+(d.current.universe_note||'') : (d.running?'':'空闲(回测运行中提交的体检会自动排队)');
     if (!d.queue||!d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无任务</div>'; return; }
     box.innerHTML = d.queue.slice().reverse().map(t => { const mins = Math.floor(t.elapsed_s/60);

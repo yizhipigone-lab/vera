@@ -35,6 +35,7 @@ export const fetchFactorRules = formula => get('/api/factor-rules?formula=' + en
 // ── 公式体检 ──
 
 export const submitLabJob = body => post('/api/lab/run', body);
+export const stopLabJob = () => post('/api/lab/stop');
 export const fetchLabStatus = () => get('/api/lab/status');
 export const fetchLabHistory = () => get('/api/lab/history');
 export const fetchLabReport = formula => get('/api/lab/report?formula=' + encodeURIComponent(formula));
