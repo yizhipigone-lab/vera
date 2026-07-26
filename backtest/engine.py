@@ -214,7 +214,7 @@ class BacktestEngine:
             self.eff_stamp_tax = self.stamp_tax
 
     def _resolve_window_td(self, stop) -> Optional[int]:
-        """5m 稀疏窗口长度 (交易日); 1d 路径返回 None。
+        """分钟级稀疏窗口长度 (交易日); 1d/1w 路径返回 None。
 
         窗口尾部安全校验: 窗口必须 > max_hold_days, 否则时间止损来不及触发,
         持仓被窗口边界当退市强平(reason=11)。见 loop.py:107。
@@ -226,12 +226,12 @@ class BacktestEngine:
         if win_td <= _mhd + 5:
             win_td = _mhd + 15
             logger.warning(
-                "5m稀疏窗口: max_hold_days=%d 接近窗口, 自动加长窗口到 %d 交易日防退市误杀",
+                "分钟级稀疏窗口: max_hold_days=%d 接近窗口, 自动加长窗口到 %d 交易日防退市误杀",
                 _mhd, win_td,
             )
         if not stop.get("time_stop", {}).get("enabled", True):
             logger.warning(
-                "5m稀疏窗口模式建议开启时间止损(time_stop.enabled); "
+                "分钟级稀疏窗口模式建议开启时间止损(time_stop.enabled); "
                 "否则窗口尾部未平持仓会被当退市强平(reason=11)"
             )
         return win_td
