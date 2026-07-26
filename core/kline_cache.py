@@ -52,6 +52,7 @@ class KlineCache:
         (self.cache_dir / "calendar").mkdir(exist_ok=True)
         (self.cache_dir / "1d").mkdir(exist_ok=True)
         (self.cache_dir / "5m").mkdir(exist_ok=True)
+        (self.cache_dir / "1m").mkdir(exist_ok=True)  # 2026-07-26
         self.db_path = self.cache_dir / "manifest.db"
         self.tdx_fetcher = tdx_fetcher
         self.calendar_fetcher = calendar_fetcher
@@ -233,7 +234,7 @@ class KlineCache:
             # (含 intact=false 冷却期内) 的因子漂移靠探针自愈 — 600000.SH 事件
             # 里浦发 1d 缓存 intact=false, 探针挂在 intact 分支后永远到不了。
             self._probe_shift(code, period, dividend_type)
-        if period in ("1d", "5m") and not skip_gap_detection:
+        if period in ("1d", "5m", "1m") and not skip_gap_detection:
             self._detect_and_fill_gaps(code, period, start_ts, end_ts, dividend_type)
 
     # ── F5 冷却 / F6 重叠 bar ──
@@ -345,6 +346,22 @@ class KlineCache:
 
     def _fetch_and_store(self, code: str, period: str, fstart: pd.Timestamp,
                          fend: pd.Timestamp, dividend_type: str):
+        # 2026-07-26: TDX 单次 ~24000 根上限守卫 (1m 长窗口防前段静默截断)。
+        # 分钟级且跨度 >80 交易日时按 ≤80 交易日分段递归拉取; _write_merge 去重合并。
+        _bpday = self._INTRADAY_BARS_PER_DAY.get(period)
+        if _bpday:
+            # _get_calendar() 返回 set (成员运算设计), 必须先排序再分段 —
+            # 乱序 chunk 的 (chunk[0], chunk[-1]) 会拼出倒置/错误范围 (实测:
+            # 全市场回填出现 [06-12~05-12] 倒置拉取失败)
+            _seg = sorted(d for d in self._get_calendar()
+                          if fstart.strftime("%Y%m%d") <= d <= fend.strftime("%Y%m%d"))
+            if len(_seg) > 80:
+                for _s in range(0, len(_seg), 80):
+                    _chunk = _seg[_s:_s + 80]
+                    self._fetch_and_store(code, period,
+                                          pd.Timestamp(_chunk[0]),
+                                          pd.Timestamp(_chunk[-1]), dividend_type)
+                return
         raw = self.tdx_fetcher([code], fstart.strftime("%Y%m%d"),
                                fend.strftime("%Y%m%d"), period=period,
                                dividend_type=dividend_type)
@@ -446,9 +463,9 @@ class KlineCache:
         lo = max(df.index.min().strftime("%Y%m%d"), start_ts.strftime("%Y%m%d"))
         hi = min(df.index.max().strftime("%Y%m%d"), end_ts.strftime("%Y%m%d"))
         expected = {d for d in cal if lo <= d <= hi}
-        # 5m 部分 bar 检测 (整天有 bar 但 < 48, 如半日或盘中缺段)
-        if period == "5m":
-            self._warn_partial_bars_5m(code, df)
+        # 分钟级部分 bar 检测 (整天有 bar 但 < 预期根数, 如半日或盘中缺段)
+        if period in ("5m", "1m"):
+            self._warn_partial_bars_intraday(code, period, df)
         gaps = sorted(expected - cached_str)
         if not gaps:
             return
@@ -470,18 +487,27 @@ class KlineCache:
         else:
             self._manifest_set_intact(code, period, True)
 
-    _BARS_PER_DAY_5M = 48  # A股 9:35-15:00 每 5min 一根
+    # 分钟级每日 bar 数 (局部表; 不 import backtest._constants 防包循环:
+    # backtest/__init__ → engine → core.data_fetcher → core.kline_cache → backtest)
+    _INTRADAY_BARS_PER_DAY = {"5m": 48, "1m": 240}
 
-    def _warn_partial_bars_5m(self, code: str, df: pd.DataFrame):
-        """5m 按日 bar 数检测部分缺口 (整天有 bar 但 < 48)。只告警不置 intact (半日/盘后可能正常)。"""
+    def _warn_partial_bars_intraday(self, code: str, period: str, df: pd.DataFrame):
+        """分钟级按日 bar 数检测部分缺口 (整天有 bar 但 < 预期根数)。只告警不置 intact。"""
         if df.empty:
+            return
+        expected = self._INTRADAY_BARS_PER_DAY.get(period)
+        if not expected:
             return
         per_day = df.groupby(df.index.normalize()).size()
         partial = {d.strftime("%Y-%m-%d"): int(n)
-                   for d, n in per_day.items() if 0 < n < self._BARS_PER_DAY_5M}
+                   for d, n in per_day.items() if 0 < n < expected}
         if partial:
-            logger.warning("kline_gap_5m: %s 5m 部分缺 bar (预期 %d 根/日): %s",
-                           code, self._BARS_PER_DAY_5M, partial)
+            logger.warning("kline_gap_%s: %s %s 部分缺 bar (预期 %d 根/日): %s",
+                           period, code, period, expected, partial)
+
+    def _warn_partial_bars_5m(self, code: str, df: pd.DataFrame):
+        """向后兼容 alias (2026-07-26 泛化为 _warn_partial_bars_intraday)。"""
+        self._warn_partial_bars_intraday(code, "5m", df)
 
     @staticmethod
     def _contiguous_segments(dates: List[str]) -> List[tuple]:

@@ -157,7 +157,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     cfgFormula: cfg.selection?.formula_name,
     cfgFormulaArg: cfg.selection?.formula_arg,
     cfgUniverse: cfg.selection?.universe?.type,
-    cfgPeriod: cfg.backtest?.period === '5m' ? '5m' : cfg.backtest?.period === '1w' ? '1w' : '1d',
+    cfgPeriod: cfg.backtest?.period === '1m' ? '1m' : cfg.backtest?.period === '5m' ? '5m' : cfg.backtest?.period === '1w' ? '1w' : '1d',
     cfgStart: cfg.time_range?.start,
     cfgEnd: cfg.time_range?.end,
     cfgCapital: cfg.backtest?.initial_capital,

@@ -154,9 +154,11 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
                     "sell_ratio": float(parts[1]),
                 })
 
-    # 选股始终用日线，回测层可用5m
+    # 选股始终用日线，回测层可用5m/1m
     if cfg.period == "5m":
         sel_period, bt_period = "1d", "5m"
+    elif cfg.period == "1m":
+        sel_period, bt_period = "1d", "1m"
     else:
         sel_period = bt_period = cfg.period
 

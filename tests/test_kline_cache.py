@@ -520,3 +520,73 @@ def test_force_invalidate_bypasses_cooldown(tmp_path):
     cache.get(["600000.SH"], "2024-01-01", "2024-01-31", period="1d")
     assert calls["n"] == 2, "force_invalidate 后冷却不再挡"
     assert cache._close_at("600000.SH", "1d", pd.Timestamp("2024-01-31")) == pytest.approx(95.4)
+
+
+# ───────────────────────── 1m 支持 (2026-07-26) ─────────────────────────
+
+
+def _make_fake_kline_1m(stock_list, start, end, period="1m", dividend_type="front", **kwargs):
+    """合成 1m OHLC (freq=1min), 结构同 _make_fake_kline。"""
+    bars = pd.date_range(start, pd.Timestamp(end) + pd.Timedelta(days=1), freq="1min")
+    bars = bars[bars.indexer_between_time("9:31", "15:00")]
+    out = {}
+    for code in stock_list:
+        base = 10.0 + sum(ord(c) for c in code) % 50
+        close = pd.Series([base + i * 0.01 for i in range(len(bars))], index=bars)
+        out.setdefault("Close", {})[code] = close
+        out.setdefault("Open", {})[code] = close * 0.99
+        out.setdefault("High", {})[code] = close * 1.01
+        out.setdefault("Low", {})[code] = close * 0.99
+        out.setdefault("Volume", {})[code] = pd.Series(1e5, index=bars)
+        out.setdefault("Amount", {})[code] = close * 1e5
+    result = {"ErrorId": "0"}
+    for field in ["Open", "High", "Low", "Close", "Volume", "Amount"]:
+        result[field] = pd.DataFrame({c: out[field][c] for c in stock_list})
+    return result
+
+
+def test_1m_roundtrip(tmp_path):
+    cache = _make_cache(tmp_path, fetcher=_make_fake_kline_1m)
+    out = cache.get(["600001"], "20240301", "20240305", period="1m")
+    assert "Close" in out and "600001.SH" in out["Close"].columns
+    close = out["Close"]["600001.SH"].dropna()
+    assert len(close) > 0
+    per_day = close.groupby(close.index.normalize()).size()
+    assert per_day.min() > 300          # 1m 日内 bar 数远大于 5m (48)
+
+
+def test_partial_bars_warn_1m(tmp_path, caplog):
+    cache = _make_cache(tmp_path)
+    import logging
+    idx240 = pd.date_range("2024-03-04 09:31", periods=240, freq="1min")
+    df_full = pd.DataFrame({"close": 1.0}, index=idx240)
+    with caplog.at_level(logging.WARNING):
+        cache._warn_partial_bars_intraday("600001", "1m", df_full)
+    assert "部分缺 bar" not in caplog.text
+    with caplog.at_level(logging.WARNING):
+        cache._warn_partial_bars_intraday("600001", "1m", df_full.iloc[:239])
+    assert "部分缺 bar" in caplog.text and "240" in caplog.text
+
+
+def test_fetch_span_guard_1m(tmp_path):
+    """24000 根上限守卫: 1m 跨度 >80 交易日 → 分段拉取; <=80 → 单次。"""
+    calls = []
+
+    def spy_fetcher(sl, s, e, period="1m", dividend_type="front", **kw):
+        calls.append((s, e))
+        return _make_fake_kline_1m(sl, s, e, period=period)
+
+    cache = _make_cache(tmp_path, fetcher=spy_fetcher)
+    # 2024-01-01 ~ 2024-06-30 ≈ 125 工作日 > 80 → 应分 2 段
+    cache.get(["600001"], "20240101", "20240630", period="1m")
+    assert len(calls) >= 2
+    for s, e in calls:
+        assert s <= e, f"分段范围倒置: {s}~{e} (cal 经 set 转换, 必须排序)"
+        seg = [d for d in _fake_calendar() if s <= d <= e]
+        assert len(seg) <= 80
+
+    calls.clear()
+    cache2 = _make_cache(tmp_path / "c2", fetcher=spy_fetcher)
+    # 2024-03-01 ~ 2024-04-30 ≈ 44 工作日 ≤ 80 → 单次
+    cache2.get(["600001"], "20240301", "20240430", period="1m")
+    assert len(calls) == 1

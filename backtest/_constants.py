@@ -19,6 +19,7 @@ _BARS_PER_DAY = {
     "1d": 1,
     "1w": 1,
     "5m": 48,   # A股 5m = 4 小时 / 5分钟 = 48 根/日
+    "1m": 240,  # A股 1m = 4 小时 / 1分钟 = 240 根/日 (2026-07-26 探针实测)
 }
 
 # PERIODS_PER_YEAR: 不同周期的年化基数 (用于 annualized_return / 几何年化)
@@ -29,6 +30,7 @@ _PERIODS_PER_YEAR = {
     "1d": 252,
     "1w": 52,
     "5m": 48 * 252,
+    "1m": 240 * 252,   # 60480
 }
 
 BARS_PER_DAY = MappingProxyType(_BARS_PER_DAY)
@@ -56,3 +58,32 @@ def _std_5m_bar_times() -> tuple:
 
 
 STD_5M_BAR_TIMES = frozenset(_std_5m_bar_times())
+
+
+def _std_1m_bar_times() -> tuple:
+    """A股 1m 标准 240 根 bar 时刻 (HH:MM, bar 收盘时刻): 09:31..11:30 (120)
+    + 13:01..15:00 (120)。
+
+    2026-07-26 探针实测 (tools/probe_1m.py): 首 bar 09:31, 末 bar 15:00,
+    每日恰好 240 根, 无集合竞价杂 bar。用途同 STD_5M_BAR_TIMES (非标准 bar 过滤)。
+    """
+    import pandas as pd
+    times = []
+    t = pd.Timestamp("2000-01-01 09:31")
+    for _ in range(120):
+        times.append(t.strftime("%H:%M"))
+        t += pd.Timedelta(minutes=1)
+    t = pd.Timestamp("2000-01-01 13:01")
+    for _ in range(120):
+        times.append(t.strftime("%H:%M"))
+        t += pd.Timedelta(minutes=1)
+    return tuple(times)
+
+
+STD_1M_BAR_TIMES = frozenset(_std_1m_bar_times())
+
+# period → 标准 bar 时刻表 (engine 非标准 bar 过滤按 period 选表, 2026-07-26)
+STD_BAR_TIMES = MappingProxyType({
+    "5m": STD_5M_BAR_TIMES,
+    "1m": STD_1M_BAR_TIMES,
+})

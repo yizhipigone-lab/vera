@@ -190,7 +190,8 @@ class BacktestEngine:
         # 2026-07-17: 本地 K 线 parquet 缓存开关 (Phase 1, 默认 True 启用; 配置 use_kline_cache:false 回退 TDX 直拉)
         self.use_kline_cache = bool(config.get("use_kline_cache", True))
         # 2026-07-18: 5m 数据层降级 (计划书 2026-07-18, 默认关 G4)。缺 5m 的股-天
-        # 用 1d OHLC 填充保住信号; 仅 period="5m" 等分钟级 + run() 路径生效。
+        # 用 1d OHLC 填充保住信号; 仅 period="5m" + run() 路径生效
+        # (2026-07-26 守卫改 ==48: 1m 强制不降级, 见 _prepare_run_matrices)。
         self.degrade_5m = bool(config.get("degrade_5m", False))
         # 2026-07-18: 矩阵级缓存 (backtest/matrix_cache.py, 默认关 — 测试隔离;
         # pipeline server 路径 setdefault 开)。止盈止损参数不影响准备段产物,
@@ -265,23 +266,30 @@ class BacktestEngine:
         low_df = self._ensure_index(low_df_raw) if low_df_raw is not None else None
         open_df = self._ensure_index(open_df_raw) if open_df_raw is not None else None
 
-        # 2026-07-18: 5m 非标准时刻 bar 过滤 (48 根/天不变量, 001399/300227 实盘事件)。
-        # 盘中临停股 13:00 复牌竞价 bar 会给并集网格注入 +1 行, loop 的 T+1
-        # i//bpday 日界随之错位, 次日早盘卖出被锁到 14:55 (止损延迟 +5%)。
-        if self.bars_per_day == 48:
-            close, high_df, low_df, open_df = self._drop_nonstandard_5m_bars(
-                close, high_df, low_df, open_df)
+        # 2026-07-18: 分钟级非标准时刻 bar 过滤 (48/240 根/天不变量, 001399/300227
+        # 实盘事件)。盘中临停股 13:00 复牌竞价 bar 会给并集网格注入 +1 行,
+        # loop 的 T+1 i//bpday 日界随之错位, 次日早盘卖出被锁到 14:55 (止损延迟 +5%)。
+        if self.bars_per_day in (48, 240):
+            from backtest._constants import STD_BAR_TIMES
+            close, high_df, low_df, open_df = self._drop_nonstandard_intraday_bars(
+                close, high_df, low_df, open_df, STD_BAR_TIMES[self.period])
 
         # 2026-07-18: 5m 数据层降级 (opt-in, 计划书 2026-07-18)。必须在
         # _build_entry_signals 之前 (信号日插行才有行可放信号) 且在 high/low
         # ffill 之前 (否则前一日数据先 ffill 进缺口, 审计 MEDIUM-2)。
+        # 2026-07-26: 守卫改为 ==48 (审计 HIGH-1) — 原 >1 会被 1m (bpday=240) 踩中:
+        # 48 槽位 reindex 每天丢 192 根 + reshape %48, loop 按 240 解释, 静默全错。
         degraded_df = None
         degrade_res = None
-        if self.degrade_5m and self.bars_per_day > 1:
+        if self.degrade_5m and self.bars_per_day == 48:
             close, high_df, low_df, open_df, degraded_df, degrade_res = \
                 self._apply_5m_degradation(
                     close, high_df, low_df, open_df, selections, win_td,
                     start_time, end_time)
+        elif self.degrade_5m and self.bars_per_day == 240:
+            logger.warning(
+                "degrade_5m 对 1m 不适用 (数据深度仅 2026-01-26 起, 降级无意义), "
+                "本次回测不做数据层降级")
 
         entries = self._build_entry_signals(selections, close)
         # 统一列对齐：close ∩ entries ∩ high ∩ low（open 不参与交集，缺失则回退 close）
@@ -342,6 +350,16 @@ class BacktestEngine:
         """
         if selections.empty: return self._empty_result()
 
+        # 2026-07-26: 1m 数据深度硬限制 (探针实测 TDX 1m 仅 2026-01-26 起,
+        # 更早区间无数据 → 截断不静默); win_td 过大时告警 (取数跨度守卫在
+        # kline_cache._fetch_and_store 按 ≤80 交易日分段兜底)。
+        if self.period == "1m":
+            if start_time and start_time < "20260126":
+                logger.warning(
+                    "1m 数据深度仅 2026-01-26 起, 回测起点 %s 自动截断为 20260126",
+                    start_time)
+                start_time = "20260126"
+
         stop = stop_config or {}
         # 2026-07-05: 优先级 (ladder_tp_first / trailing_first)
         # 2026-07-18 审计 F5: 补 run_cached 同款合法性校验 + 常量收口 stop_config
@@ -379,7 +397,7 @@ class BacktestEngine:
         #   (degrade_res 含非序列化对象, 见 backtest/matrix_cache.py docstring)。
         win_td = self._resolve_window_td(stop)
         use_mc = (self.matrix_cache
-                  and not (self.degrade_5m and self.bars_per_day > 1))
+                  and not (self.degrade_5m and self.bars_per_day == 48))
         from core import progress as _progress
         _progress.report("fetch", 0.0, "准备取数...")  # 2026-07-26
         prep = None
@@ -394,7 +412,9 @@ class BacktestEngine:
             if prep is None:
                 return self._empty_result()
             if use_mc:
-                _mc.save(mc_root, mc_key, ENGINE_VERSION, prep)
+                # 2026-07-26: 1m 矩阵 GB 级, LRU 收紧到 2 份 (5m/1d 默认 3)
+                _mc.save(mc_root, mc_key, ENGINE_VERSION, prep,
+                         keep=2 if self.period == "1m" else 3)
         else:
             _progress.report("fetch", 1.0, "矩阵缓存命中")  # 2026-07-26
         _progress.report("matrix", 1.0, "矩阵就绪")  # 2026-07-26
@@ -868,28 +888,41 @@ class BacktestEngine:
         return df.sort_index()
 
     @staticmethod
-    def _drop_nonstandard_5m_bars(close, high_df, low_df, open_df):
-        """丢弃时刻不在标准 48 槽位 (STD_5M_BAR_TIMES) 的 bar (2026-07-18)。
+    def _drop_nonstandard_intraday_bars(close, high_df, low_df, open_df, bar_times):
+        """丢弃时刻不在标准槽位 (bar_times) 的 bar (2026-07-26 由 5m 版泛化)。
 
-        盘中临停股 13:00 复牌竞价 bar 等非标准时刻会让并集网格某天 ≠48 根,
+        盘中临停股复牌竞价 bar 等非标准时刻会让并集网格某天 bar 数 ≠ 预期,
         破坏 loop 的 T+1 i//bpday 日界。被丢 bar 多为临停复牌竞价打印,
         该股的当日数据会缺一根 (NaN, 按停牌语义处理), 日志明示。
         """
         times = close.index.strftime("%H:%M")
-        keep = pd.Index(times).isin(STD_5M_BAR_TIMES)
+        keep = pd.Index(times).isin(bar_times)
         n_drop = int((~keep).sum())
         if not n_drop:
             return close, high_df, low_df, open_df
         odd_days = sorted({d.strftime("%Y-%m-%d") for d in close.index[~keep]})
         logger.warning(
-            "5m 非标准时刻 bar 过滤: 丢弃 %d 根 (时刻 %s, 涉及 %d 天 %s), "
-            "保持 48 根/天不变量 (临停复牌竞价 bar 所致)",
-            n_drop, sorted(set(times[~keep])), len(odd_days), odd_days[:5])
+            "分钟级非标准时刻 bar 过滤: 丢弃 %d 根 (时刻 %s, 涉及 %d 天 %s), "
+            "保持 %d 根/天不变量 (临停复牌竞价 bar 所致)",
+            n_drop, sorted(set(times[~keep])), len(odd_days), odd_days[:5],
+            len(bar_times))
         close = close.loc[keep]
         high_df = high_df.loc[keep] if high_df is not None else None
         low_df = low_df.loc[keep] if low_df is not None else None
         open_df = open_df.loc[keep] if open_df is not None else None
         return close, high_df, low_df, open_df
+
+    @staticmethod
+    def _drop_nonstandard_5m_bars(close, high_df, low_df, open_df):
+        """5m 版 (STD_5M_BAR_TIMES, 2026-07-18)。
+
+        盘中临停股 13:00 复牌竞价 bar 等非标准时刻会让并集网格某天 ≠48 根,
+        破坏 loop 的 T+1 i//bpday 日界。2026-07-26 起为
+        _drop_nonstandard_intraday_bars 的 5m 委托 alias
+        (外部调用方: tools/gs_5m_sweep.py, tools/quantqq_5m_sweep.py)。
+        """
+        return BacktestEngine._drop_nonstandard_intraday_bars(
+            close, high_df, low_df, open_df, STD_5M_BAR_TIMES)
 
     def _apply_5m_degradation(self, close, high_df, low_df, open_df, selections, win_td,
                               start_time="", end_time=""):

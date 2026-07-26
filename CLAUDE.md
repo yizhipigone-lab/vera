@@ -23,7 +23,7 @@
 |---|---|---|
 | 公式因子体检 | `tools/formula_lab.py` | 任意公式一条命令做因子体检(S0-S5):IC 筛选 → 族归纳 → A/B 终审 → 报告。方法论见 `docs/公式因子体检方法论.md`(五条纪律:IC 非终审/双窗口/数族不数因子/因果测试/必带警告) |
 | 公式体检页面 | `tools/lab_runner.py` + `/api/lab/*` | web 独立页签版体检(2026-07-20):严格串行队列 + baseline 自动串联 + 与回测不对称互斥(体检永远排队,回测提交在体检中 → 409)。规则 JSON 供回测页因子过滤区按公式动态渲染 |
-| 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`_simulate_core_v3` 现为兼容壳(2026-07-14 候选 A 阶段2),转调 `backtest/loop/BacktestLoop.run()`;旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):9 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径。**5m 数据层降级(2026-07-18)**:`degrade_5m: true` 时缺 5m 的股-天用 1d OHLC 填满 48 根 bar 保信号(`backtest/degrade_5m.py`),降级影响报告在 `result.degradation`(`backtest/degrade_report.py`);仅 run() 路径。**2026-07-21 区间精确化(ENGINE_VERSION v3.5)**:执行窗口=请求区间(窗口 end_time 截断,不再 +win_td 尾巴);降级网格起止=请求区间(5m 深度前也 1d 填充);degrade_5m 配置默认开;期末未平仓按市值计价不强平并导出 `open_positions`;基准对比在指数 5m 深度不足时回退日粒度 |
+| 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`_simulate_core_v3` 现为兼容壳(2026-07-14 候选 A 阶段2),转调 `backtest/loop/BacktestLoop.run()`;旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):9 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径。**5m 数据层降级(2026-07-18)**:`degrade_5m: true` 时缺 5m 的股-天用 1d OHLC 填满 48 根 bar 保信号(`backtest/degrade_5m.py`),降级影响报告在 `result.degradation`(`backtest/degrade_report.py`);仅 period=5m + run() 路径(2026-07-26 守卫改 `bars_per_day == 48`:原 >1 会被 1m 踩中静默全错)。**2026-07-21 区间精确化(ENGINE_VERSION v3.5)**:执行窗口=请求区间(窗口 end_time 截断,不再 +win_td 尾巴);降级网格起止=请求区间(5m 深度前也 1d 填充);degrade_5m 配置默认开;期末未平仓按市值计价不强平并导出 `open_positions`;基准对比在指数 5m 深度不足时回退日粒度。**1m 支持(2026-07-26, 计划书 `docs/plan/2026-07-26_1分钟线回测支持_计划书.md`)**:bpday=240 + `STD_1M_BAR_TIMES` + `_drop_nonstandard_intraday_bars` 泛化(旧 5m 名保留 alias,外部 2 调用方);区间硬限 ≥20260126 截断+告警;kline_cache 分钟级泛化 + `_fetch_and_store` ≤80 交易日分段(TDX 单次 ~24000 根上限;`_get_calendar()` 返回 set 必须先排序);matrix_cache 1m keep=2;degrade 对 1m 强制关+warning |
 | 选股 | `selection/selector.py` | 股票池筛选(ST/退市/港股按 TDX 真实标记, 北交所口径剔除; **涨停不在选股排除**——涨停过滤在 engine 入场 `_filter_limit_up`, 默认开) |
 | 选股结果缓存 | `selection/selection_cache.py` | 2026-07-24(计划书 `docs/plan/2026-07-24_选股结果缓存_计划书.md`):整段缓存 `step1_select` 输出(parquet,LRU 10)。key=公式+universe 完整配置(假值默认键归一化,web/yaml 路径收敛)+区间+period+复权+today_str(按日失效)+SCHEMA_VERSION;不纳入 universe 实际输出列表哈希(算它要先花 17s,R8 权衡),日内 ST 漂移由按日失效掩蔽+`selection_cache.force_refresh` 兜底。实测 5m 全A:选股 32.7s→0.01s,总 35.3s→2.2s。空结果不缓存;命中也写 raw CSV(R9);tools/* 直调 StockSelector 不经接缝不受益 |
 | 池缓存+按日信号缓存 (二期) | `selection/universe_cache.py` + `selection/signal_day_cache.py` | 2026-07-26(计划书 `docs/plan/2026-07-26_选股缓存二期_L1池缓存_L2按日信号缓存_计划书.md`,接缝在 selector 内部,tools 自动受益)。L1: resolve_universe 输出按日缓存(json,LRU 10),省拉池+ST过滤 ~17s。L2: 信号按(公式+池内容哈希+1d+复权)×交易日 parquet 存储;全命中(子区间/历史并集覆盖)零公式调用,任一缺失→整段重算按天入库(e2e 实测推翻"按缺失区段补算":TDX 51 批固定地板 ~16s 与扫描量几乎无关,区段补算不省钱)。安全线:当日永不缓存;最近2交易日条目仅当日命中(mtime 判);>60 天重算(除权漂移);批次失败区段不落盘(`FormulaRunner.last_batch_errors` 区分真空/失败空)。实测:子区间 0.03s,同区间重跑 0.15s,与直跑 parity 一致 |
@@ -37,11 +37,14 @@
 
 **历史背景**:`_simulate_core_v3`(39 参数私有函数)曾是事实公共入口,被 4 脚本 + 4 测试直调。候选 A 阶段 1 + 阶段 1.5 收编 5 脚本 + `optimize_strategies` 收编 + 清理 `optimize_full` 死 import,**生产直调完全清零**(锁私有完整达成,2026-07-13 e62e0ab)。候选 D C4 清理 34 个孤儿脚本(2026-07-14 aa54d19),根目录仅余 main.py / server.py / preprocessor.py 三入口。候选 D C2 删 `stop_manager.py`(死代码,无调用方)。**批量注意**:`Pipeline.run()` 每次执行 `initialize+close`,不适合 in-process 高频复用;批量场景用 subprocess 并行调度 `tools/gs_run_one.py`。
 
-## 战略方向(2026-07-26 讨论中, 未拍板)
+## 战略方向(2026-07-26 轴间实验已判定)
 
-**两层架构(先选塘再下竿) = 第一层择塘 → 第二层池内选股**, 方向用户认可, 但**"塘按什么划分"未定**: 候选 = 行业(128个881板块) / 板(主板/创业板/科创板/北交所) / 宽基指数(300/500/1000/A500) / 组合(板∩行业)。须先做轴间对照实验再定, 勿直接按行业实施。手动池子实验已验证"塘"的价值(GP1014: 全A +22% vs 科创板 +96%, 详见 `docs/2026-07-25_公式批量回测研究全记录.md`)。
+**两层架构(先选塘再下竿) = 第一层择塘 → 第二层池内选股**。轴间对照实验结论(`tools/pond_axis_experiment.py`, 数据 `output/pond_axis/report.json`, 方法: 20日动量/周调仓/单票10万/2024-01~2026-07, GP1014+超赢王牛股双公式交叉验证):
 
-初步共识(待验证): 第一层每日收盘给塘打分(先 20 日动量)取 Top N 成池, 跌出 Top N+缓冲 才换塘; 第二层现有公式/止盈止损不动; 随机塘对照(模型选塘 ≤ 随机均值+2σ 则砍掉) + Brinson 分账(配置/选股/交互)。
+1. **行业轴(128个881板块)对头部10公式 0 胜出**: 扩样验证 (2026-07-26, `output/pond_axis/report.json`) — 10 个头部公式无一以行业轴为最优轴, 9/10 动量选行业不赢随机行业 (z: -6.2~+1.4, 仅两涨一缩 z=+2.1 边缘但仍被板轴压制)。**结论: 行业轴不作为默认轴, 但保留在定轴流程里逐公式检验** (题材型未测公式可能例外)
+2. **板轴(主板/创业/科创/北交)是默认最优轴**: 10 公式中 6 个以板轴为最优, 全部 10 个板轴 > 随机选板。指数轴同向但恒弱于板轴 (0 最优)
+3. **第一层必须按公式配轴(可插拔), 不能一刀切**: 全A最优 4/10 (超赢王牛股/财富金生！/绝底/GUPIAO_018 — 厚边际高换手), 板轴最优 6/10 (薄边际)。**每个公式上线前必跑 `tools/pond_axis_experiment.py` 定轴 (全A/板/指数/行业), 数据说话, 不凭公式类型猜**
+4. **动态择板跑赢随机板, 但不保证跑赢事后最优静态板** (超赢王: 动态 +1240% < 静态主板 +2283%) — 择塘赚的是"不站错队"的钱, 不是"永远站最优队"的钱
 
 **多重检验校正(Deflated Sharpe 等) 用户拍板不做, 勿再提。**
 

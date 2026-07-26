@@ -52,7 +52,7 @@ def _build_cache() -> KlineCache:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="K线缓存回填 (补前段, 跳过已有)")
-    ap.add_argument("--period", required=True, choices=["1d", "5m"])
+    ap.add_argument("--period", required=True, choices=["1d", "5m", "1m"])
     ap.add_argument("--start", required=True, help="回填目标起点 YYYYMMDD")
     ap.add_argument("--end", default="", help="结束 YYYYMMDD (默认今天)")
     ap.add_argument("--universe", default="5", help="股票池 list_type (默认 5=全部A股)")

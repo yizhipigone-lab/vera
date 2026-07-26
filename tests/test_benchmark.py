@@ -197,7 +197,8 @@ def test_periods_per_year_still_readable():
     """MappingProxyType 读操作与 dict 完全一致."""
     assert PERIODS_PER_YEAR["1w"] == 52
     assert PERIODS_PER_YEAR.get("1d") == 252
-    assert len(PERIODS_PER_YEAR) == 3
+    assert PERIODS_PER_YEAR["5m"] == 48 * 252
+    assert PERIODS_PER_YEAR["1m"] == 240 * 252  # 2026-07-26 1m 支持
 
 
 # ---------- 2026-07-21: step3_benchmark 基准拉取区间回归 ----------

@@ -24,8 +24,8 @@ from core.data_fetcher import DataFetcher
 
 def main():
     parser = argparse.ArgumentParser(description="全 A K线缓存预热 (可恢复)")
-    parser.add_argument("--period", default="1d", choices=["1d", "5m"],
-                        help="K线周期 (默认 1d; 5m 耗时数小时)")
+    parser.add_argument("--period", default="1d", choices=["1d", "5m", "1m"],
+                        help="K线周期 (默认 1d; 5m/1m 耗时数小时)")
     parser.add_argument("--start", default="20200101", help="起始 YYYYMMDD (默认 20200101)")
     parser.add_argument("--end", default="", help="结束 YYYYMMDD (默认今天)")
     parser.add_argument("--universe", default="5",
