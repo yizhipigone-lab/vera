@@ -342,6 +342,17 @@ class Pipeline:
                 error="filtered_empty",
             )
 
+        # 2026-07-26 政策匹配A层: 给候选池打十五五行业优先级标签 (计划书 §5)
+        # 因子过滤后(最终候选池)、回测前调;标签 dict 局部持有, 末尾 PipelineResult 构造时塞入。
+        # 松耦合: tagger 失败 → None, serialize 不加 key, 选股/回测不受影响。
+        policy_priority = None
+        try:
+            from policy_kb.policy_tagger import tag_selections
+            policy_priority = tag_selections(selections)
+        except Exception as e:
+            logger.warning(f"政策匹配标签失败(松耦合, 不影响管线): {e}", exc_info=True)
+            policy_priority = None
+
         # Step 3: 回测
         logger.info("[Step 2/5] 执行回测...")
         _cb(30, "构造回测引擎")
@@ -394,4 +405,5 @@ class Pipeline:
             backtest=backtest_result,
             benchmark=benchmark_results,
             reports=report_outputs,
+            policy_priority=policy_priority,
         )

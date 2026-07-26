@@ -45,10 +45,11 @@ class PipelineResult:
     benchmark: dict
     reports: dict           # {"html","json"}
     error: Optional[str] = None   # P0-1 (2026-07-15): 失败路径也返 PipelineResult, error 字段携带错误信息
+    policy_priority: Optional[dict] = None  # 2026-07-26 政策匹配A层: {票: 优先级}, 建议字段不执行 (计划书 §3)
 
     # C1-2 dict-like 访问: result["backtest"] / result.get(...)
     # P0-1 修订: "error" 进 _FIELDS — 失败路径需要 main.py:52 的 "error" in result 命中
-    _FIELDS = ("selections", "backtest", "benchmark", "reports", "error")
+    _FIELDS = ("selections", "backtest", "benchmark", "reports", "error", "policy_priority")
 
     def __getitem__(self, key):
         if key in self._FIELDS:
@@ -251,6 +252,9 @@ class ResultWriter:
                  "stock_name": name_map.get(p.get("stock_code", ""), "")}
                 for p in open_positions
             ]
+        # 2026-07-26 政策匹配A层: 票→十五五优先级 (有才加 key, 无则响应形状不变, 同 degradation 先例; 计划书 §3/plan-audit F-3)
+        if result.policy_priority:
+            resp["policy_priority"] = safe_serialize(result.policy_priority)
         return resp
 
     def persist(self, response: dict, *, results_dir: Path, last_result_path: Path,
