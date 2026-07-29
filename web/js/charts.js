@@ -82,7 +82,8 @@ export function showToast(msg, type) {
 const logLines = [];
 
 export function addLog(msg, type) {
-  const now = new Date().toLocaleTimeString();
+  // 2026-07-26: 日志时间戳加日期 (原仅时分秒, 跨天/回看历史分不清)
+  const now = new Date().toLocaleString('sv-SE');   // "YYYY-MM-DD HH:MM:SS"
   logLines.push('<span class="log-' + (type || 'info') + '">[' + now + '] ' + esc(msg) + '</span>');
   if (logLines.length > 100) logLines.shift();
   const el = document.getElementById('logContent');
@@ -264,6 +265,33 @@ export function fmtReasonShort(r) {
 
 // ── Trade Table ──
 
+// 2026-07-26: 十五五行业优先级徽章 (政策匹配 A 层, 计划书 §6 步骤6)
+// _policyPriority 由 renderAllCharts(data) 从 data.policy_priority 注入 ({票: P1/P2/P3/AVOID/UNTAGGED})。
+// 后端 tagger 失败/超时 → serialize 不加 key → 此处为 {} → 所有票显示"未标"淡灰 (松耦合优雅降级)。
+let _policyPriority = {};
+const POLICY_META = {
+  P1: { cls: 'p1', label: '第一' },
+  P2: { cls: 'p2', label: '第二' },
+  P3: { cls: 'p3', label: '第三' },
+  AVOID: { cls: 'avoid', label: '规避' },
+  UNTAGGED: { cls: 'untagged', label: '未标' },
+};
+function policyBadge(stockCode) {
+  const m = POLICY_META[_policyPriority[stockCode]] || POLICY_META.UNTAGGED;
+  return '<span class="policy-badge ' + m.cls + '">' + m.label + '</span>';
+}
+
+// 2026-07-28 P1.5 B层: 概念标签 (list 渲染, 一票多概念; 与 A 层单值徽章不同, 计划书 L-1)
+// _policyEnriched = {票: {concept_tags:[...]}} 由 renderAllCharts 注入。
+let _policyEnriched = {};
+function conceptTags(stockCode) {
+  const tags = ((_policyEnriched[stockCode] || {}).concept_tags) || [];
+  if (!tags.length) return '<span style="color:var(--text2);font-size:10px;opacity:.5">—</span>';
+  const shown = tags.slice(0, 3).map(function(t) { return '<span class="concept-tag">' + esc(t) + '</span>'; }).join('');
+  const more = tags.length > 3 ? '<span class="concept-more">+' + (tags.length - 3) + '</span>' : '';
+  return '<div class="concept-list">' + shown + more + '</div>';
+}
+
 // 2026-07-26: 交易明细分页 — 9 万笔级回测一次性渲染 ~110 万 DOM 单元格,
 // 巨型 HTML 串 + DOM 直接把 Chrome 渲染进程撑爆 (Out of Memory 崩页)。
 // 改为每页 200 行 + 页码条; 数组操作 (筛选/统计) 全量进行不受影响。
@@ -303,6 +331,8 @@ export function renderTradeTable(trades, allTradesCount) {
       '<td style="color:var(--text2);font-size:10px">' + (totalTrades - (start + i)) + '</td>' +
       '<td style="font-family:var(--mono);font-size:10px">' + code + '</td>' +
       '<td title="' + code + '">' + name + '</td>' +
+      '<td>' + conceptTags(t.stock_code) + '</td>' +
+      '<td>' + policyBadge(t.stock_code) + '</td>' +
       '<td>' + eDate + '</td>' +
       '<td>' + ep + '</td>' +
       '<td>' + shares + ' 股</td>' +
@@ -607,6 +637,8 @@ export function renderAllCharts(data) {
 
     // Trade table
     resetTradePage();   // 2026-07-26: 新结果回到第一页
+    _policyPriority = data.policy_priority || {};   // 2026-07-26: 十五五优先级注入 (A层)
+    _policyEnriched = data.policy_enriched || {};   // 2026-07-28: 概念标签注入 (P1.5)
     renderTradeTable(data.trades, data.trades.length);
 
     // Populate reason dropdown
@@ -684,6 +716,8 @@ export function renderAllCharts(data) {
       return '<tr><td>' + (i + 1) + '</td>'
         + '<td>' + esc(p.stock_code || '') + '</td>'
         + '<td>' + esc(p.stock_name || '') + '</td>'
+        + '<td>' + conceptTags(p.stock_code) + '</td>'
+        + '<td>' + policyBadge(p.stock_code) + '</td>'
         + '<td>' + esc(String(p.entry_date || '').slice(0, 10)) + '</td>'
         + '<td>' + (p.entry_price != null ? p.entry_price : '—') + '</td>'
         + '<td>' + (p.shares != null ? p.shares : '—') + '</td>'
