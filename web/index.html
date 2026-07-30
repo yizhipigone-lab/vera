@@ -925,6 +925,8 @@ input:focus-visible,select:focus-visible{outline:none}
       <input class="lab-input" id="tdBuyQty" placeholder="数量 (100整数倍)" style="width:130px" type="number" step="100" min="100">
       <input class="lab-input" id="tdBuyPrice" placeholder="限价 (留空=最新价)" style="width:140px" type="number" step="0.01">
       <button class="btn btn-primary" id="tdBuyBtn">买入</button>
+      <!-- 2026-07-30: 配套手工卖出 (用户要求) — 走 /api/trade/sell 卖全部可用 -->
+      <button class="btn btn-danger" id="tdSellBtn">卖出</button>
       <button class="btn" id="tdLadderBtn">手动触发当日预埋</button>
     </div>
     <div class="trade-hint" id="tdBuyHint"></div>
@@ -956,7 +958,7 @@ input:focus-visible,select:focus-visible{outline:none}
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script src="/web/js/trade.js?v=20260730a"></script>
+<script src="/web/js/trade.js?v=20260730b"></script>
 <script src="/web/js/research.js?v=20260728a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>

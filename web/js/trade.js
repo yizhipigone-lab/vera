@@ -275,9 +275,17 @@ document.getElementById('tdBuyBtn').addEventListener('click', function () {
   cmd(this, '/api/trade/buy', body, '买入命令已受理 (过闸结果见审计日志)');
 });
 
-document.getElementById('tdLadderBtn').addEventListener('click', function () {
-  cmd(this, '/api/trade/ladder', {}, '预埋命令已受理');
+// 2026-07-30: 配套手工卖出 — 复用 tdBuyCode 输入, 走 /api/trade/sell 卖全部可用
+document.getElementById('tdSellBtn').addEventListener('click', function () {
+  var code = document.getElementById('tdBuyCode').value.trim();
+  var hint = document.getElementById('tdBuyHint');
+  if (!code) { hint.textContent = '请填代码'; return; }
+  if (!confirm('确认卖出 ' + code + ' 全部可用持仓?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级对手最优)')) return;
+  cmd(this, '/api/trade/sell', { code: code }, '卖出命令已受理, 结果见审计日志');
 });
+
+document.getElementById('tdLadderBtn').addEventListener('click', function () {
+  cmd(this, '/api/trade/ladder', {}, '预埋命令已受理');});
 
 // ── 尾盘自动选股卡片 (2026-07-27 MVP) ────────────────
 
