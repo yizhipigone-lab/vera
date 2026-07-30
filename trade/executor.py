@@ -1,0 +1,454 @@
+"""trade/executor.py — 预埋单 + 撤单流水线 + 两级价格阶梯 (计划书 §5.1)。
+
+设计意图:
+    静态价位规则 (阶梯止盈) → 预埋限价单: 排队时间优先、零监控延迟、
+    程序崩溃照常在券商端成交。动态规则触发后走撤单流水线:
+    锁 → 撤 → 等 ack → 刷 → 买一价限价卖 → 5s 未成交/≥14:57 对手最优。
+    买一锚定天然避开 2% 价格笼子;多级追价移 P3 (无滑点数据不猜)。
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Callable
+
+from trade.book import (
+    DIRECTION_SELL,
+    OS_REPORTED,
+    PRICE_TYPE_LIMIT,
+    PRICE_TYPE_MARKET_PEER_FIRST,
+    TERMINAL_STATUSES,
+    is_etf,
+)
+from trade.risk import OrderIntent
+from utils.logger import get_logger
+
+_logger = get_logger("trade.executor")
+
+# 撤单 ack 轮询: 正常 <1s, 2s 仍无终态 → 告警继续 (不无限等, 逃生要紧)
+_CANCEL_ACK_TIMEOUT_SEC = 2.0
+_CANCEL_ACK_POLL_SEC = 0.1
+# 卖出单挂出后超过该秒数未成交 → 升级对手最优
+_PENDING_FILL_TIMEOUT_SEC = 5.0
+
+
+def limit_ratio(code: str, st: bool = False) -> float:
+    """单票涨停幅度: 主板 10% / 创业 300·301 与科创 688 20% /
+    北交所 (4/8/920 开头) 30% / ST 5%。
+
+    为什么不复用 backtest/engine.py 的 _limit_ratio_vector:
+    那是 numpy 列向量 + TDX get_cached_info 的批量实现, 与回测数据层
+    耦合太紧, 逐票调用会拖进整个 TDX 依赖。此处按同一映射规则重写
+    (规则全项目只有这一份语义, 两处实现)。
+    TODO P2: ST 判定接 TDX IsSTGP 真实标记, 与回测口径合并为一处。
+    """
+    if st:
+        return 0.05
+    num = code.split(".")[0]
+    if num.startswith(("688", "300", "301")):
+        return 0.20
+    if num.startswith(("4", "8", "920")):
+        return 0.30
+    return 0.10
+
+
+def round_price(x: float) -> float:
+    """价格 0.01 对齐, 四舍五入 (审计L10: round() 银行家舍入在
+    x.xx5 边界与交易所价格档位差 1 分)。涨停/跌停价与档位价共用。"""
+    return int(x * 100 + 0.5) / 100
+
+
+def _is_sz(code: str) -> bool:
+    """深市判定 (2026-07-27 实测驱动): 深市 14:57-15:00 收盘集合竞价
+    **不接受市价单** (五张深市"对手最优"全废单), 沪市连续竞价到
+    15:00 可市价单 —— 尾盘价格类型必须市场感知。"""
+    return code.split(".")[-1].upper() == "SZ"
+
+
+class ClearLock:
+    """清仓锁 (MQ/QP 验证过的设计): key=(env, account, code),
+    TTL 兜底 + order_id 双索引反查。
+
+    这是业务防重入锁, 不是并发锁 —— 防的是"监控腿触发中,
+    对账/人工命令又来卖同一只票"的双卖, 单写者线程内也有
+    跨事件的重入风险。TTL 300s 兜底: 持锁方崩溃不锁死该股。
+    rebind 解决"先锁后拿 order_id"时序 (QP H1 教训:
+    下单返回 order_id 前锁上没有可反查的键)。
+    """
+
+    def __init__(self, env: str, account: str, ttl_sec: float = 300.0,
+                 clock: Callable[[], float] = time.time):
+        self._env = env
+        self._account = account
+        self._ttl = ttl_sec
+        self._clock = clock
+        self._locks: dict[tuple, dict] = {}   # (env, account, code) -> {ts, order_id}
+        self._by_order: dict[str, tuple] = {}  # order_id -> key
+
+    def _key(self, code: str) -> tuple:
+        return (self._env, self._account, code)
+
+    def acquire(self, code: str) -> bool:
+        key = self._key(code)
+        cur = self._locks.get(key)
+        if cur is not None:
+            if self._clock() - cur["ts"] < self._ttl:
+                return False
+            # TTL 过期: 持锁方疑似死亡, 夺锁并留痕
+            _logger.warning("清仓锁 TTL 过期被夺: %s (原 order_id=%s)",
+                            key, cur.get("order_id"))
+            self._drop(key)
+        self._locks[key] = {"ts": self._clock(), "order_id": None}
+        return True
+
+    def release(self, code: str) -> None:
+        self._drop(self._key(code))
+
+    def release_by_order_id(self, order_id: str) -> None:
+        key = self._by_order.get(order_id)
+        if key is not None:
+            self._drop(key)
+
+    def rebind_order_id(self, code: str, order_id: str) -> None:
+        """下单拿到 order_id 后补挂反查索引。
+        审计L9修复: rebind 前清掉旧 order_id 映射 —— 同一 (env,account,code)
+        换单重挂时, 旧映射不清会条目泄漏, 旧单终态误放新锁。"""
+        key = self._key(code)
+        if key in self._locks:
+            old_oid = self._locks[key].get("order_id")
+            if old_oid:
+                self._by_order.pop(old_oid, None)
+            self._locks[key]["order_id"] = order_id
+            self._by_order[order_id] = key
+
+    def is_held(self, code: str) -> bool:
+        key = self._key(code)
+        cur = self._locks.get(key)
+        return cur is not None and self._clock() - cur["ts"] < self._ttl
+
+    def _drop(self, key: tuple) -> None:
+        cur = self._locks.pop(key, None)
+        if cur and cur.get("order_id"):
+            self._by_order.pop(cur["order_id"], None)
+
+
+class Executor:
+    """卖出执行。只有消费者线程调用, 无并发设计。"""
+
+    def __init__(
+        self,
+        gateway,
+        book,
+        store,
+        risk_gate,
+        config,
+        build_risk_ctx: Callable[[], "object"],
+        get_quote: Callable[[str], dict | None] | None = None,
+        get_prev_close: Callable[[str], float | None] | None = None,
+        st_checker: Callable[[str], bool] | None = None,
+        env: str = "live",
+        clock: Callable[[], float] = time.time,
+        cancel_ack_timeout_sec: float = _CANCEL_ACK_TIMEOUT_SEC,
+    ):
+        self._gw = gateway
+        self._book = book
+        self._store = store
+        self._risk = risk_gate
+        self._cfg = config
+        # 风控上下文由 root 组装 (总资产/基准权益等实时值 executor 不该知道来源)
+        self._build_ctx = build_risk_ctx
+        self._get_quote = get_quote or (lambda code: None)
+        # 昨收: 启动时由 root 注入 xtdata 日线或网关快照; Fake 场景测试注入
+        self._prev_close = get_prev_close or (lambda code: None)
+        self._st = st_checker or (lambda code: False)
+        self._clock = clock
+        self._ack_timeout = cancel_ack_timeout_sec
+        self.lock = ClearLock(env, config.account_id, clock=clock)
+        self._pending: dict[str, dict] = {}  # code -> {order_id, ts, qty, reason}
+        # 审计M1修复: remark 序号进程生命周期单调递增, 不再按日/调用方
+        # 重置 —— 重置会让预埋/卖出/人工买入同日出重号, "盘后按 remark
+        # 对账"的唯一性前提就破了。mmdd 前缀仍保留 (人读友好)。
+        self._seq = 0
+
+    # ── 预埋单 ──────────────────────────────────────────────────
+
+    def place_ladder(self, date_str: str) -> list[str]:
+        """全档位一次性挂限价卖单 (档位间无依赖, 消灭"成交推进"逻辑)。
+        返回挂出的 order_id 列表。date_str 格式 YYYYMMDD (tier 日期维度用)。
+
+        T+1 衔接确认 (2026-07-27 尾盘自动买入): 昨日尾盘买入的票,
+        can_use 由今早 QMT 对账回填 (book 买入当日为 0), 成本口径 =
+        book.avg_cost (自成交加权自算) —— 本函数按 book 持仓全量扫描,
+        新票明日 09:15 自动纳入预埋, 无需任何特判。"""
+        placed: list[str] = []
+        for code, pos in sorted(self._book.snapshot()["positions"].items()):
+            if pos.volume <= 0:
+                continue
+            # 2026-07-27 ETF 误卖事件裁决③: ETF 不纳入自动管理。
+            # 每票一条 audit 留痕即可, 不按档刷屏
+            if self._cfg.exclude_etf and is_etf(code):
+                self._store.write_audit(
+                    "ladder_skip_etf", f"{code} 为 ETF, 不纳入自动管理",
+                    {"code": code})
+                continue
+            prev_close = self._prev_close(code)
+            if not prev_close:
+                # 无昨收无法判涨停, fail-closed: 该票本轮不挂, 宁可漏不可错
+                self._store.write_audit(
+                    "ladder_skip", f"{code} 无昨收, 本轮不挂预埋单", {"code": code})
+                continue
+            limit_up = prev_close * (1 + limit_ratio(code, self._st(code)))
+            # 审计C1修复: 预埋跳过只认"当日"标记 (date_str 即当日),
+            # 昨日标记留痕不阻碍今日重挂 (计划书 §5.1 日终过期次日重挂)
+            done = self._book.tier_done(code, date_str)
+            remaining = pos.volume
+            for tier, (profit, ratio) in enumerate(self._cfg.stop.ladder_tp.levels):
+                if tier in done:
+                    continue  # 已预埋档不重复挂 (乐观标记在, 防废单重复卖)
+                # 审计L10修复: 0.01 对齐用四舍五入 (round_price,
+                # 不用 round() 银行家舍入)
+                price = round_price(pos.avg_cost * (1 + profit))
+                if price > limit_up:
+                    # 超涨停价挂了只会废单, 今日跳过该档
+                    self._store.write_audit(
+                        "ladder_skip", f"{code} 档位{tier} 价 {price} 超涨停 "
+                        f"{limit_up:.2f}, 跳过",
+                        {"code": code, "tier": tier, "price": price})
+                    continue
+                # 数量口径: 比例相对原始持仓; ratio≥1.0 = 清仓档, 卖剩余全部。
+                # 审计M2修复: 比例档手数四舍五入 int(x+0.5) (0.5 边界向上),
+                # 不用 int() 截断 —— 1000×0.29 截断成 2 手静默少卖 90 股。
+                # 清仓档仍向下取整: 余 50~99 股时四舍五入会卖出超过持仓的
+                # 100 股, 宁留尾数 (<100) 不超卖
+                remaining_lots = int(remaining / 100)
+                if ratio < 1.0:
+                    lots = min(int(pos.volume * ratio / 100 + 0.5), remaining_lots)
+                else:
+                    lots = remaining_lots
+                qty = lots * 100
+                if qty <= 0:
+                    continue
+                remark = self.next_remark(f"L{tier}")
+                intent = OrderIntent(code=code, direction=DIRECTION_SELL,
+                                     price=price, qty=qty)
+                ok, reason = self._risk.check(intent, self._build_ctx())
+                if not ok:
+                    # 风控拒绝已写 audit (risk 层), 该档今日不挂;
+                    # 不占 remaining —— 没挂出去的量不算花掉
+                    _logger.warning("预埋单被风控拒绝: %s 档%d %s", code, tier, reason)
+                    continue
+                remaining -= qty
+                order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
+                                          PRICE_TYPE_LIMIT, remark)
+                # 乐观标记: 提交成功即标记 (QP 做法) —— 废单也不重复卖,
+                # 误标漏卖的损失 < 重复卖的损失。审计C1修复: 带当日日期
+                self._book.mark_tier(code, tier, date_str)
+                self._store.save_tier_state(
+                    code, sorted(self._book.tier_done(code, date_str)), date_str)
+                self._book.apply_order_update(
+                    order_id, OS_REPORTED, code=code, direction=DIRECTION_SELL,
+                    price=price, qty=qty, remark=remark)
+                self._store.save_order({
+                    "order_id": order_id, "remark": remark, "code": code,
+                    "direction": DIRECTION_SELL, "price": price, "qty": qty,
+                    "status": OS_REPORTED})
+                self._store.write_audit(
+                    "ladder_place", f"{code} 档{tier} 预埋 {qty}@{price}",
+                    {"code": code, "tier": tier, "order_id": order_id,
+                     "price": price, "qty": qty})
+                placed.append(order_id)
+        return placed
+
+    # ── 触发卖出 (撤单流水线) ───────────────────────────────────
+
+    def execute_exit(self, code: str, reason: str, manual: bool = False) -> bool:
+        """监控腿触发后的卖出流水线: 锁→撤→等ack→刷→买一价限价卖。
+        任何一步拿不到数据都 fail-closed (宁可不卖, 不可瞎卖)。
+
+        manual=True (人工命令, 2026-07-27 裁决①): 任何时段放行,
+        且买一价 ts 缺失/陈旧不拦 —— 人工单本来就是用户当下意图,
+        与自动规则"陈旧价宁可不卖"的口径刻意不同 (注释即契约)。"""
+        if not self.lock.acquire(code):
+            self._store.write_audit(
+                "exit_lock_fail", f"{code} 清仓锁被占用, 跳过本次触发 ({reason})",
+                {"code": code, "reason": reason})
+            return False
+        try:
+            self._cancel_open_orders(code)
+            can_use = self._refresh_can_use(code)
+            if can_use <= 0:
+                self._store.write_audit(
+                    "exit_skip", f"{code} 可用为 0, 无可卖 ({reason})",
+                    {"code": code, "reason": reason})
+                return False
+            quote = self._get_quote(code)
+            if not quote or not quote.get("bid1"):
+                self._store.write_audit(
+                    "exit_fail_closed", f"{code} 无买一价, 本轮不卖 ({reason})",
+                    {"code": code, "reason": reason})
+                return False
+            if not manual:
+                # 审计M6修复 + 2026-07-27 裁决③: 陈旧/无戳买一价与无价
+                # 同等 fail-closed (只约束自动规则; 人工单见 manual 分支)
+                quote_ts = quote.get("ts")
+                ts_missing = ("ts" in quote) and (quote["ts"] is None)
+                if ts_missing or (quote_ts and self._clock() - quote_ts
+                                  > self._cfg.quote_stale_sec):
+                    self._store.write_audit(
+                        "exit_fail_closed",
+                        f"{code} 买一价无时间戳或陈旧, 本轮不卖 ({reason})",
+                        {"code": code, "reason": reason, "quote_ts": quote_ts})
+                    return False
+            return self._sell(code, can_use, float(quote["bid1"]),
+                              PRICE_TYPE_LIMIT, reason, "exit_sell")
+        finally:
+            # 锁不在 finally 里放: 挂出卖单后锁要留到成交 (防重复触发),
+            # 由 pending_check 确认成交后 release_by_order_id
+            if code not in self._pending:
+                self.lock.release(code)
+
+    def pending_check(self, now_ts: float | None = None,
+                      now_hhmm: str | None = None) -> None:
+        """未成交检查 (由 monitor 定时扫描驱动): 成交则清锁销登记;
+        超 5s 或已过 force_market_after → 撤单升级对手最优。"""
+        now = now_ts if now_ts is not None else self._clock()
+        for code, p in list(self._pending.items()):
+            status = self._order_status(p["order_id"])
+            if status is None:
+                continue  # 查不到状态, 本轮不动 (行情/连接故障 fail-closed)
+            if status in TERMINAL_STATUSES:
+                # 终态: 无论成交/废单/已撤, 本轮卖出责任已了 ——
+                # 部成剩余由下一轮监控腿重新触发 (不在这里补枪)
+                self.lock.release_by_order_id(p["order_id"])
+                del self._pending[code]
+                continue
+            timeout = now - p["ts"] > _PENDING_FILL_TIMEOUT_SEC
+            force = (now_hhmm is not None
+                     and now_hhmm >= self._cfg.force_market_after)
+            if not (timeout or force):
+                continue
+            self._gw.cancel(p["order_id"])
+            self._wait_terminal(p["order_id"])
+            can_use = self._refresh_can_use(code)
+            if can_use <= 0:
+                self.lock.release_by_order_id(p["order_id"])
+                del self._pending[code]
+                continue
+            why = "超时5s" if timeout else f"已过{self._cfg.force_market_after}"
+            self._store.write_audit(
+                "exit_escalate", f"{code} 卖单未成交 ({why}), 升级逃生通道",
+                {"code": code, "old_order_id": p["order_id"], "qty": can_use})
+            del self._pending[code]  # 旧登记先销, _sell 成功会重建 + rebind 锁
+            # 市场感知逃生通道 (2026-07-27 实测: 深市 14:57-15:00 收盘
+            # 集合竞价只收限价单, 市价"对手最优"必废单):
+            #   .SZ → 限价@跌停价 (单一价格撮合, 挂跌停=最大成交优先权,
+            #         成交价仍是收盘价, 不吃亏); .SH → 对手最优 (连续竞价
+            #         到 15:00)。深市无昨收仍发对手最优 —— 逃生通道,
+            #         试一下 (沪市能成/深市废单也是明确答案) 比不发强
+            if _is_sz(code):
+                prev_close = self._prev_close(code)
+                if prev_close:
+                    limit_down = round_price(
+                        prev_close * (1 - limit_ratio(code, self._st(code))))
+                    ok = self._sell(code, can_use, limit_down, PRICE_TYPE_LIMIT,
+                                    p["reason"], "exit_sell_market")
+                else:
+                    self._store.write_audit(
+                        "exit_escalate", f"{code} 深市无昨收, 跌停价算不出,"
+                        " 仍发对手最优", {"code": code})
+                    ok = self._sell(code, can_use, 0.0,
+                                    PRICE_TYPE_MARKET_PEER_FIRST,
+                                    p["reason"], "exit_sell_market")
+            else:
+                # 对手最优是市价类申报, 价格字段无意义传 0
+                ok = self._sell(code, can_use, 0.0, PRICE_TYPE_MARKET_PEER_FIRST,
+                                p["reason"], "exit_sell_market")
+            if not ok:
+                # 升级卖出失败 (如风控拒绝): 放锁, 由下一轮监控重新触发
+                self.lock.release(code)
+
+    def in_flight_sells(self) -> dict[str, int]:
+        """在途卖单数量 {code: qty} —— 对账差异降级用 (注入 reconciler)。"""
+        return {code: p["qty"] for code, p in self._pending.items()}
+
+    # ── 内部 ────────────────────────────────────────────────────
+
+    def _sell(self, code: str, qty: int, price: float, price_type,
+              reason: str, audit_kind: str) -> bool:
+        """过风控 → 下单 → 登记待查 → 锁 rebind。各级卖出共用。"""
+        intent = OrderIntent(code=code, direction=DIRECTION_SELL,
+                             price=price, qty=qty)
+        ok, why = self._risk.check(intent, self._build_ctx())
+        if not ok:
+            self._store.write_audit(
+                "exit_risk_reject", f"{code} 卖出被风控拒绝: {why}",
+                {"code": code, "qty": qty, "reason": reason})
+            return False
+        remark = self.next_remark("X")
+        order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
+                                  price_type, remark)
+        self._book.apply_order_update(
+            order_id, OS_REPORTED, code=code, direction=DIRECTION_SELL,
+            price=price, qty=qty, remark=remark)
+        self._store.save_order({
+            "order_id": order_id, "remark": remark, "code": code,
+            "direction": DIRECTION_SELL, "price": price, "qty": qty,
+            "status": OS_REPORTED})
+        self._pending[code] = {"order_id": order_id, "ts": self._clock(),
+                               "qty": qty, "reason": reason}
+        self.lock.rebind_order_id(code, order_id)
+        self._store.write_audit(
+            audit_kind, f"{code} 卖出 {qty}@{price or '对手最优'} ({reason})",
+            {"code": code, "order_id": order_id, "price": price,
+             "qty": qty, "price_type": str(price_type), "reason": reason})
+        return True
+
+    def _cancel_open_orders(self, code: str) -> None:
+        """撤该股全部在途单, 并等 ack (2s 超时不阻塞, 告警继续)。"""
+        for oid, rec in self._book.snapshot()["orders"].items():
+            if rec.code == code and rec.status not in TERMINAL_STATUSES:
+                self._gw.cancel(oid)
+                self._store.write_audit(
+                    "exit_cancel", f"{code} 撤在途单 {oid}",
+                    {"code": code, "order_id": oid})
+                if not self._wait_terminal(oid):
+                    self._store.write_audit(
+                        "exit_cancel_timeout", f"{code} 撤单 {oid} 2s 无 ack",
+                        {"code": code, "order_id": oid})
+
+    def _wait_terminal(self, order_id: str) -> bool:
+        """轮询订单终态 (查网关 = 真相源, 不赌本地事件流快慢)。
+        deadline 用墙钟 (time.monotonic) 不用注入的业务时钟 —— 等 ack
+        是真实世界等待; 用业务时钟在假时钟测试里会死循环 (审计M8
+        修复过程中实测踩中)。超时阈值构造注入, 测试可缩短。"""
+        deadline = time.monotonic() + self._ack_timeout
+        while time.monotonic() < deadline:
+            status = self._order_status(order_id)
+            if status is not None and status in TERMINAL_STATUSES:
+                return True
+            time.sleep(_CANCEL_ACK_POLL_SEC)
+        return False
+
+    def _order_status(self, order_id: str) -> int | None:
+        for o in self._gw.query_orders():
+            if o["order_id"] == order_id:
+                return o["status"]
+        return None
+
+    def _refresh_can_use(self, code: str) -> int:
+        """查 QMT 持仓回填可用数量 (撤单解冻后的真相)。"""
+        for p in self._gw.query_positions():
+            if p["code"] == code:
+                self._book.set_can_use(code, p["can_use"])
+                return p["can_use"]
+        return 0
+
+    def next_remark(self, rule_code: str) -> str:
+        """策略侧单号发号器 (审计M1修复): V{mmdd}-{seq}{规则码} ≤24 字符。
+        seq 进程生命周期单调递增、不重置 —— 预埋/卖出/人工买入共用此
+        发号器 (人工买入在 trade_main 也调这里), "盘后按 remark 对账"
+        的唯一性才成立。跨日 mmdd 变了 seq 也不回零 (对账按全串匹配,
+        不依赖 seq 日内语义)。"""
+        self._seq += 1
+        mmdd = time.strftime("%m%d", time.localtime(self._clock()))
+        return f"V{mmdd}-{self._seq:03d}{rule_code}"[:24]

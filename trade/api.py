@@ -1,0 +1,254 @@
+"""trade/api.py — 交易 HTTP API (FastAPI 路由, 刻意的薄层)。
+
+设计意图:
+    读快照 + 发命令, 零业务逻辑。所有命令端点只做入参校验 →
+    put EVENT_COMMAND → 立即返回"已受理"; 结果经快照/audit 体现。
+    HTTP 线程绝不直接碰交易状态 (唯一写者 = 消费者线程)。
+    独立 app 由 trade_main 启动 (默认 8081) —— 不挂进 server.py:
+    交易系统是独立单进程, 寄生在回测服务器里会让 EventEngine 的
+    归属变成悬案 (计划书 §二: 单进程)。
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime
+
+from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from trade.book import is_etf
+from trade.config import (
+    trade_config_from_dict,
+    trade_config_to_dict,
+)
+
+
+# 审计L12修复: code 入参格式校验 —— 畸形代码在 HTTP 边界就拒掉,
+# 不进事件队列 (消费者线程不该为格式垃圾浪费一轮风控检查)
+_CODE_PATTERN = r"^\d{6}\.(SH|SZ|BJ)$"
+
+
+class BuyRequest(BaseModel):
+    """人工确认买入。qty 必须整手 (A 股买入 100 股整数倍)。"""
+    code: str = Field(pattern=_CODE_PATTERN)
+    qty: int = Field(gt=0, multiple_of=100)
+    price: float | None = Field(default=None, gt=0)
+
+
+class SellRequest(BaseModel):
+    code: str = Field(pattern=_CODE_PATTERN)
+
+
+class CancelRequest(BaseModel):
+    order_id: str = Field(min_length=1)
+
+
+def _rows_to_dicts(cursor) -> list[dict]:
+    cols = [d[0] for d in cursor.description]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def _diff_dicts(old: dict, new: dict, prefix: str = "") -> list[str]:
+    """递归 diff 两个配置 dict, 返回变更字段的 dotted 路径列表
+    (audit 记录用 —— "改了什么"必须可追溯)。"""
+    changed = []
+    for key in sorted(set(old) | set(new)):
+        path = f"{prefix}{key}"
+        if key not in old or key not in new:
+            changed.append(path)
+        elif isinstance(old[key], dict) and isinstance(new[key], dict):
+            changed.extend(_diff_dicts(old[key], new[key], path + "."))
+        elif old[key] != new[key]:
+            changed.append(path)
+    return changed
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """dict 递归合并, 非 dict 值 (含 levels 列表) 整体替换 —
+    与 utils/config_loader._deep_merge 同语义, 但这边界内聚在 api
+    薄层自己的合并点 (config_loader 是回测侧配置链, 不跨侧复用)。"""
+    result = dict(base)
+    for key, value in override.items():
+        if (key in result and isinstance(result[key], dict)
+                and isinstance(value, dict)):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def create_api_app(trade_app) -> FastAPI:
+    """装配路由。trade_app 是 composition root, 路由只读它的
+    只读快照 / 调它的 submit_command, 不知道任何内部细节。"""
+    app = FastAPI(title="VERA 实盘交易系统", version="1.0.0")
+    # 交易页由回测服务器 (8080) serve, 跨域打这里 —— 只放本机源
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"],
+        allow_methods=["*"], allow_headers=["*"],
+    )
+
+    # ── 读快照 ──────────────────────────────────────────────────
+
+    @app.get("/api/trade/status")
+    def status():
+        return {
+            "connected": trade_app.connected,
+            "kill_active": trade_app.kill.is_active(),
+            "reconciled": trade_app.reconciled,
+            "monitor_healthy": trade_app.monitor.is_healthy(),
+            # 2026-07-27 裁决②: 时段 + 人话原因, 前端不再笼统红色"降级"
+            "session": trade_app.session,
+            "monitor_reason": trade_app.monitor_reason,
+            "ts": time.time(),
+        }
+
+    @app.get("/api/trade/positions")
+    def positions():
+        snap = trade_app.book.snapshot()
+        result = []
+        for code, p in sorted(snap["positions"].items()):
+            quote = trade_app.monitor.quote_of(code)
+            last = quote["last"] if quote else None
+            etf = is_etf(code)
+            result.append({
+                "code": code, "volume": p.volume, "can_use": p.can_use,
+                "avg_cost": p.avg_cost, "strategy": p.strategy,
+                "last": last,
+                # 浮盈在后端算 (业务判断不出后端铁律); 无价给 None 不猜
+                "pnl": round((last - p.avg_cost) * p.volume, 2)
+                if last else None,
+                "tiers_done": sorted(snap["tiers"].get(code, {}).get(
+                    time.strftime("%Y%m%d"), ())),
+                # 2026-07-27 裁决③: ETF 明示不纳入自动管理
+                "etf": etf,
+                "managed": not (etf and trade_app.config.exclude_etf),
+            })
+        return {"positions": result, "ts": time.time()}
+
+    @app.get("/api/trade/orders")
+    def orders():
+        """当日委托 (只读连接, WAL 下不堵写者)。"""
+        day_start = datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp()
+        ro = trade_app.store.open_readonly()
+        try:
+            cur = ro.execute(
+                "SELECT * FROM orders WHERE created_ts >= ? "
+                "ORDER BY created_ts DESC", (day_start,))
+            return {"orders": _rows_to_dicts(cur)}
+        finally:
+            ro.close()
+
+    @app.get("/api/trade/reconciles")
+    def reconciles(limit: int = Query(default=50, le=200)):
+        ro = trade_app.store.open_readonly()
+        try:
+            cur = ro.execute(
+                "SELECT * FROM reconcile_log ORDER BY id DESC LIMIT ?", (limit,))
+            return {"reconciles": _rows_to_dicts(cur)}
+        finally:
+            ro.close()
+
+    @app.get("/api/trade/audits")
+    def audits(limit: int = Query(default=50, le=200),
+               offset: int = Query(default=0, ge=0)):
+        ro = trade_app.store.open_readonly()
+        try:
+            cur = ro.execute(
+                "SELECT * FROM audit ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset))
+            return {"audits": _rows_to_dicts(cur)}
+        finally:
+            ro.close()
+
+    # ── 设置面板 (读配置 + 热更新) ──────────────────────────────
+
+    @app.get("/api/trade/config")
+    def get_config():
+        """当前生效配置的结构化 JSON (设置面板打开时填充表单用)。"""
+        return trade_config_to_dict(trade_app.config)
+
+    @app.put("/api/trade/config")
+    def put_config(body: dict = Body(...)):
+        """保存配置。语义 = **以当前配置为底深合并 body 再全量校验** —
+        设置面板只需发它覆盖的字段 (stop/sizing/监控参数), 账号与
+        路径类字段永远不被面板误清 (关键安全语义: 若按"缺省走默认"
+        全量替换, 面板没包含 account_id 就会把真账号清成空串)。
+        校验复用 load_trade_config 同一份逻辑 (判断不出路由层);
+        校验过 → put 命令 → accepted; 失败 → 422 + 字段错误。"""
+        base = trade_config_to_dict(trade_app.config)
+        merged = _deep_merge(base, body)
+        try:
+            new_cfg = trade_config_from_dict(merged)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        changed = _diff_dicts(trade_config_to_dict(trade_app.config),
+                              trade_config_to_dict(new_cfg))
+        trade_app.submit_command({
+            "action": "update_config", "config_obj": new_cfg,
+            "changed": changed,
+        })
+        return {"accepted": True, "changed": changed}
+
+    # ── 发命令 (校验 → put → 已受理; 不在这里做任何交易动作) ────
+
+    @app.post("/api/trade/kill")
+    def kill_on():
+        trade_app.submit_command({"action": "kill_on", "source": "manual_api"})
+        return {"accepted": True}
+
+    @app.post("/api/trade/unkill")
+    def kill_off():
+        trade_app.submit_command({"action": "kill_off"})
+        return {"accepted": True}
+
+    @app.post("/api/trade/buy")
+    def buy(req: BuyRequest):
+        trade_app.submit_command({
+            "action": "manual_buy", "code": req.code,
+            "qty": req.qty, "price": req.price,
+        })
+        return {"accepted": True}
+
+    @app.post("/api/trade/sell")
+    def sell(req: SellRequest):
+        trade_app.submit_command({"action": "manual_sell", "code": req.code})
+        return {"accepted": True}
+
+    @app.post("/api/trade/cancel")
+    def cancel(req: CancelRequest):
+        trade_app.submit_command(
+            {"action": "cancel", "order_id": req.order_id})
+        return {"accepted": True}
+
+    @app.post("/api/trade/ladder")
+    def ladder():
+        trade_app.submit_command({"action": "place_ladder"})
+        return {"accepted": True}
+
+    # ── 尾盘自动买入 (2026-07-27 MVP) ───────────────────────────
+
+    @app.post("/api/trade/auto_buy")
+    def auto_buy_now():
+        """立即执行一次尾盘选股买入 (人工触发, 任何时段放行 —
+        裁决①人工命令不受时段约束; 选股在工作线程跑)。"""
+        trade_app.submit_command({"action": "auto_buy",
+                                  "source": "manual_api"})
+        return {"accepted": True}
+
+    @app.get("/api/trade/auto_buy/last")
+    def auto_buy_last():
+        """最近一次运行: 时间/来源/选中数/买入数/每票处置。"""
+        last = trade_app.auto_buy_last
+        return {"last": last, "config": {
+            "enabled": trade_app.config.auto_buy.enabled,
+            "time": trade_app.config.auto_buy.time,
+            "formula_name": trade_app.config.auto_buy.formula_name,
+            "amount_per_stock": trade_app.config.auto_buy.amount_per_stock,
+            "max_buys_per_day": trade_app.config.auto_buy.max_buys_per_day,
+        }}
+
+    return app
