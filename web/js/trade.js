@@ -84,6 +84,8 @@ function markOffline() {
 function renderPositions(d) {
   var box = document.getElementById('tdPositions');
   clearStale('tdPositions');
+  // 2026-07-30: 缓存最近持仓供卖出可用校验 (tdSellBtn 复用数量框)
+  window._lastPositions = d.positions || [];
   if (!d.positions || !d.positions.length) {
     box.innerHTML = '<div style="color:var(--text2);font-size:12px">无持仓</div>'; return;
   }
@@ -275,13 +277,29 @@ document.getElementById('tdBuyBtn').addEventListener('click', function () {
   cmd(this, '/api/trade/buy', body, '买入命令已受理 (过闸结果见审计日志)');
 });
 
-// 2026-07-30: 配套手工卖出 — 复用 tdBuyCode 输入, 走 /api/trade/sell 卖全部可用
+// 2026-07-30: 配套手工卖出 — 复用代码+数量输入框, 校验可用后走 /api/trade/sell
 document.getElementById('tdSellBtn').addEventListener('click', function () {
   var code = document.getElementById('tdBuyCode').value.trim();
+  var qtyRaw = document.getElementById('tdBuyQty').value.trim();
   var hint = document.getElementById('tdBuyHint');
   if (!code) { hint.textContent = '请填代码'; return; }
-  if (!confirm('确认卖出 ' + code + ' 全部可用持仓?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级对手最优)')) return;
-  cmd(this, '/api/trade/sell', { code: code }, '卖出命令已受理, 结果见审计日志');
+  var pos = (window._lastPositions || []).find(function (p) { return p.code === code; });
+  var canUse = pos ? pos.can_use : 0;
+  var body = { code: code };
+  var qtyText = '全部可用 (' + canUse + ' 股)';
+  if (qtyRaw) {
+    var qty = parseInt(qtyRaw, 10);
+    if (!qty || qty <= 0) { hint.textContent = '数量必须为正整数'; return; }
+    if (!pos) { hint.textContent = code + ' 无持仓可查, 无法校验可用, 请留空数量按全部可用卖'; return; }
+    if (qty > canUse) { hint.textContent = '数量 ' + qty + ' 超过可用 ' + canUse + ', 无法卖出'; return; }
+    if (qty % 100 !== 0 && qty !== canUse) {
+      hint.textContent = '部分卖出须为 100 整数倍 (全部卖出 ' + canUse + ' 股除外)'; return;
+    }
+    body.qty = qty;
+    qtyText = qty + ' 股 (可用 ' + canUse + ' 股)';
+  }
+  if (!confirm('确认卖出 ' + code + ' ' + qtyText + '?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级对手最优)')) return;
+  cmd(this, '/api/trade/sell', body, '卖出命令已受理, 结果见审计日志');
 });
 
 document.getElementById('tdLadderBtn').addEventListener('click', function () {

@@ -269,9 +269,13 @@ class Executor:
 
     # ── 触发卖出 (撤单流水线) ───────────────────────────────────
 
-    def execute_exit(self, code: str, reason: str, manual: bool = False) -> bool:
+    def execute_exit(self, code: str, reason: str, manual: bool = False,
+                     qty: int | None = None) -> bool:
         """监控腿触发后的卖出流水线: 锁→撤→等ack→刷→买一价限价卖。
         任何一步拿不到数据都 fail-closed (宁可不卖, 不可瞎卖)。
+
+        qty (2026-07-30, 用户要求): 指定卖出数量 (≤可用), None=卖全部可用。
+        指定时校验: >0 且 ≤ 可用, 超可用拒卖 (audit 留痕, 不静默截断)。
 
         manual=True (人工命令, 2026-07-27 裁决①): 任何时段放行,
         且买一价 ts 缺失/陈旧不拦 —— 人工单本来就是用户当下意图,
@@ -289,6 +293,12 @@ class Executor:
                     "exit_skip", f"{code} 可用为 0, 无可卖 ({reason})",
                     {"code": code, "reason": reason})
                 return False
+            if qty is not None and qty > can_use:
+                self._store.write_audit(
+                    "exit_skip", f"{code} 请求卖 {qty} > 可用 {can_use}, 拒卖 ({reason})",
+                    {"code": code, "qty": qty, "can_use": can_use, "reason": reason})
+                return False
+            sell_qty = qty if qty is not None else can_use
             quote = self._get_quote(code)
             if not quote or not quote.get("bid1"):
                 self._store.write_audit(
@@ -307,7 +317,7 @@ class Executor:
                         f"{code} 买一价无时间戳或陈旧, 本轮不卖 ({reason})",
                         {"code": code, "reason": reason, "quote_ts": quote_ts})
                     return False
-            return self._sell(code, can_use, float(quote["bid1"]),
+            return self._sell(code, sell_qty, float(quote["bid1"]),
                               PRICE_TYPE_LIMIT, reason, "exit_sell")
         finally:
             # 锁不在 finally 里放: 挂出卖单后锁要留到成交 (防重复触发),

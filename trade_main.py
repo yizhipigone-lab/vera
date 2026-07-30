@@ -346,8 +346,9 @@ class TradeApp:
             # 与监控腿触发同一路径 (撤单流水线), 不另起炉灶。
             # manual=True: 2026-07-27 裁决① 人工命令任何时段放行,
             # 买一价无戳/陈旧不拦 (用户当下意图)
+            # 2026-07-30: 可选 qty — 指定卖部分量 (≤可用), 缺省卖全部可用
             self.executor.execute_exit(cmd["code"], "manual_sell: 人工卖出",
-                                       manual=True)
+                                       manual=True, qty=cmd.get("qty"))
         elif action == "cancel":
             self.gateway.cancel(cmd["order_id"])
             self.store.write_audit("manual_cancel", f"人工撤单 {cmd['order_id']}", cmd)

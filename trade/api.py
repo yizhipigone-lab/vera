@@ -39,6 +39,9 @@ class BuyRequest(BaseModel):
 
 class SellRequest(BaseModel):
     code: str = Field(pattern=_CODE_PATTERN)
+    # 2026-07-30 (用户要求): 可选数量 — 指定则卖 qty (后端校验 ≤ 可用),
+    # 留空 = 卖全部可用 (旧行为)
+    qty: int | None = Field(default=None, gt=0)
 
 
 class CancelRequest(BaseModel):
@@ -212,6 +215,14 @@ def create_api_app(trade_app) -> FastAPI:
             "ts": time.time(),
         }
 
+    @app.get("/api/trade/asset")
+    def asset():
+        """QMT 资产实时查询 (铁律1: QMT 是资产唯一真相源). 失败返 503."""
+        try:
+            return trade_app.gateway.query_asset()
+        except Exception as e:
+            raise HTTPException(503, f"QMT 资产查询失败: {e}")
+
     @app.get("/api/trade/positions")
     def positions():
         snap = trade_app.book.snapshot()
@@ -330,7 +341,10 @@ def create_api_app(trade_app) -> FastAPI:
 
     @app.post("/api/trade/sell")
     def sell(req: SellRequest):
-        trade_app.submit_command({"action": "manual_sell", "code": req.code})
+        cmd = {"action": "manual_sell", "code": req.code}
+        if req.qty is not None:
+            cmd["qty"] = req.qty
+        trade_app.submit_command(cmd)
         return {"accepted": True}
 
     @app.post("/api/trade/cancel")
