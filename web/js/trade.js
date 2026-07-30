@@ -25,7 +25,9 @@ function fmtTs(ts) {
   if (!ts) return '';
   var d = new Date(ts * 1000);
   function p(n) { return (n < 10 ? '0' : '') + n; }
-  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  // 2026-07-30: 带日期 (原仅时分秒, 跨日持仓分不清哪天)
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' '
+    + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
 function badge(el, ok, text) {
   el.className = 'trade-badge ' + (ok === null ? 'wait' : ok ? 'ok' : 'bad');
@@ -88,7 +90,7 @@ function renderPositions(d) {
   // 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例 + 已平仓
   var html = '<table class="td-table"><tr><th>代码</th><th>简称</th><th>数量</th><th>可用</th>'
     + '<th>成本</th><th>现价</th><th>市值</th><th>浮盈</th><th>盈亏%</th>'
-    + '<th>入场时间</th><th>已触发档</th><th></th></tr>';
+    + '<th>入场时间</th><th>持仓天数</th><th>已触发档</th><th></th></tr>';
   d.positions.forEach(function (p) {
     var pnl = p.pnl === null ? '—' : p.pnl.toFixed(2);
     var pnlColor = p.pnl === null ? '' : p.pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
@@ -104,6 +106,7 @@ function renderPositions(d) {
       + '</td><td style="' + pnlColor + '">' + pnl
       + '</td><td style="' + pnlColor + '">' + (p.pnl_pct === null ? '—' : (p.pnl_pct > 0 ? '+' : '') + p.pnl_pct.toFixed(2) + '%')
       + '</td><td style="font-size:10px">' + (p.entry_ts ? fmtTs(p.entry_ts) : '—')
+      + '</td><td>' + (p.hold_days === null ? '—' : p.hold_days + ' 天')
       + '</td><td>'
       + (p.tiers_done.length ? p.tiers_done.join(',') : '—')
       + '</td><td>' + (p.managed === false ? ''

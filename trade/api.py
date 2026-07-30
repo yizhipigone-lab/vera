@@ -136,6 +136,56 @@ def _entry_and_closed(trade_app) -> tuple[dict, list]:
         ro.close()
 
 
+_TRADING_DAYS: list | None = None
+
+
+def _trading_days() -> list:
+    """交易日历 (data/kline_cache/calendar, 惰性加载一次; 缺失回退空列表)。"""
+    global _TRADING_DAYS
+    if _TRADING_DAYS is None:
+        try:
+            from pathlib import Path
+            import pandas as pd
+            p = (Path(__file__).resolve().parent.parent
+                 / "data" / "kline_cache" / "calendar" / "trading_days.parquet")
+            _TRADING_DAYS = sorted(
+                pd.read_parquet(p)["date"].astype(str).tolist())
+        except Exception:
+            _TRADING_DAYS = []
+    return _TRADING_DAYS
+
+
+def _hold_days(entry_ts: float | None):
+    """持仓天数: T+1 起算 (买入日不计, 之后第一个交易日为第 1 天)。
+    日历滞后 (trading_days.parquet 未覆盖到今天) 时尾部按工作日近似;
+    日历整体缺失时全段工作日近似。无 entry_ts (QMT 恢复的老仓) 给 None。"""
+    if not entry_ts:
+        return None
+    ed = time.strftime("%Y%m%d", time.localtime(entry_ts))
+    today = time.strftime("%Y%m%d")
+    days = _trading_days()
+    n = sum(1 for d in days if ed < d <= today)
+
+    import datetime as _dt
+
+    def _weekdays_between(start: str, end: str) -> int:
+        cur = _dt.datetime.strptime(start, "%Y%m%d").date()
+        end_d = _dt.datetime.strptime(end, "%Y%m%d").date()
+        cnt = 0
+        while cur < end_d:
+            cur += _dt.timedelta(days=1)
+            if cur.weekday() < 5:
+                cnt += 1
+        return cnt
+
+    if days and days[-1] < today:
+        # 尾部从 max(日历尾, 买入日) 起算, 防日历滞后段与买入日前段重复计数
+        n += _weekdays_between(max(days[-1], ed), today)   # 尾部工作日近似
+    elif not days:
+        n = _weekdays_between(ed, today)
+    return n
+
+
 def create_api_app(trade_app) -> FastAPI:
     """装配路由。trade_app 是 composition root, 路由只读它的
     只读快照 / 调它的 submit_command, 不知道任何内部细节。"""
@@ -184,6 +234,7 @@ def create_api_app(trade_app) -> FastAPI:
                 "pnl_pct": round((last / p.avg_cost - 1) * 100, 2)
                 if last and p.avg_cost > 0 else None,
                 "entry_ts": entry_map.get(code),
+                "hold_days": _hold_days(entry_map.get(code)),
                 "tiers_done": sorted(snap["tiers"].get(code, {}).get(
                     time.strftime("%Y%m%d"), ())),
                 # 2026-07-27 裁决③: ETF 明示不纳入自动管理
