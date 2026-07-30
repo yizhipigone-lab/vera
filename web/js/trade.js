@@ -145,17 +145,31 @@ function renderOrders(d) {
   if (!d.orders || !d.orders.length) {
     box.innerHTML = '<div style="color:var(--text2);font-size:12px">当日无委托</div>'; return;
   }
+  // 2026-07-30: 委托表加撤单按钮 (用户要求) — 终态 (部撤53/已撤/已成/废单) 不可撤
   var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
-    + '<th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th></tr>';
+    + '<th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th></th></tr>';
   d.orders.forEach(function (o) {
     // 审计L12修复: qty/filled_qty/status 统一 Number() 强转 ——
     // 其他字段走 esc, 这三个直插 innerHTML 是纵深防御缺口
+    var st = Number(o.status);
+    var canCancel = (st === 50 || st === 51 || st === 55);   // 已报/待撤/部成 可撤
     html += '<tr><td>' + fmtTs(o.created_ts) + '</td><td>' + esc(o.remark) + '</td><td>'
       + esc(o.code) + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
-      + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td></tr>';
+      + Number(o.filled_qty) + '</td><td>' + st + '</td><td>'
+      + (canCancel
+        ? '<button class="trade-sell-btn trade-cancel-btn" data-oid="' + esc(o.order_id) + '">撤单</button>'
+        : '')
+      + '</td></tr>';
   });
   box.innerHTML = html + '</table>';
+  box.querySelectorAll('.trade-cancel-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var oid = b.getAttribute('data-oid');
+      if (!confirm('确认撤销委托 ' + oid + ' ?\n(预埋单撤掉后, 该档今日不会自动重挂)')) return;
+      cmd(b, '/api/trade/cancel', { order_id: oid }, '撤单命令已受理, 结果见审计日志');
+    });
+  });
 }
 
 function renderReconciles(d) {

@@ -181,6 +181,17 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .trade-table td:first-child,.trade-table th:first-child{text-align:left}
 .trade-table tr:hover td{background:var(--surface)}
 .td-up{color:var(--up)} .td-down{color:var(--down)}
+/* 2026-07-26: 十五五行业优先级徽章 (政策匹配 A 层) — 复用 .trade-badge 的 color-mix 模式, 不引 rogue hue */
+.policy-badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;white-space:nowrap;font-family:var(--base-font,inherit)}
+.policy-badge.p1{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.policy-badge.p2{background:color-mix(in srgb,var(--link) 16%,transparent);color:var(--link)}
+.policy-badge.p3{background:color-mix(in srgb,var(--text2) 12%,transparent);color:var(--text2)}
+.policy-badge.avoid{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
+.policy-badge.untagged{background:transparent;color:var(--text2);opacity:.55}
+/* 2026-07-28 P1.5: 概念标签 list 渲染 (一票多概念) */
+.concept-list{display:flex;flex-wrap:wrap;gap:2px;max-width:150px}
+.concept-tag{display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--text);white-space:nowrap}
+.concept-more{font-size:9px;color:var(--text2);align-self:center}
 
 /* P4-1: 交易筛选工具栏 */
 .trade-toolbar{display:flex;gap:8px;padding:8px 16px;align-items:center;border-bottom:1px solid var(--border)}
@@ -283,8 +294,8 @@ input.invalid~.input-error{display:block}
 .tab-btn{padding:6px 18px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:13px}
 .tab-btn:hover{color:var(--text)}
 .tab-btn.active{background:var(--card);color:var(--text);border-color:var(--border);font-weight:600}
-#pageLab{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
-#pageLab.active{display:block}
+#pageLab,#pageTrade,#pageResearch{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
+#pageLab.active,#pageTrade.active,#pageResearch.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
 .lab-card h3{margin:0 0 12px;font-size:13px;color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px dashed var(--border);font-size:12px}
@@ -298,6 +309,34 @@ input.invalid~.input-error{display:block}
 .lab-rules div{padding:2px 0}
 .lab-input{padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px}
 .lab-pre{background:var(--bg);border-radius:var(--radius);padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--text2);white-space:pre-wrap;max-height:420px;overflow-y:auto}
+
+/* ===== 交易页 (P1 第三阶段, 2026-07-26) ===== */
+.trade-status-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.trade-badge{padding:3px 12px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.trade-badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.trade-badge.bad{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
+.trade-badge.wait{background:var(--surface);color:var(--text2)}
+.trade-kill-btn{padding:10px 28px;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;background:var(--up);color:#fff;letter-spacing:2px}
+.trade-kill-btn.armed{background:var(--ok)}
+.td-table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
+.td-table th{text-align:right;padding:6px 10px;color:var(--text2);font-weight:500;font-size:10px;text-transform:uppercase;border-bottom:2px solid var(--border)}
+.td-table td{text-align:right;padding:5px 10px;border-bottom:1px solid var(--border)}
+.td-table td:first-child,.td-table th:first-child{text-align:left}
+.td-table tr:hover td{background:var(--surface)}
+.trade-sell-btn{padding:2px 10px;border:1px solid var(--up);border-radius:5px;background:transparent;color:var(--up);cursor:pointer;font-size:11px}
+.trade-hint{font-size:11px;color:var(--text2);min-height:14px}
+/* ===== 交易页设置面板 (2026-07-26) ===== */
+.tds-sec{border-top:1px dashed var(--border);padding:10px 0 4px;margin-top:8px}
+.tds-sec-title{font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px}
+.tds-row{display:flex;align-items:center;gap:8px;font-size:12px;margin:4px 0;flex-wrap:wrap}
+.tds-row label{color:var(--text2);min-width:96px}
+.tds-row input[type=number]{width:90px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:12px;font-family:var(--mono)}
+.tds-row input[type=checkbox]{width:auto;margin:0}
+.tds-row select{padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:12px}
+.tds-lv-row{display:flex;gap:6px;align-items:center;margin:3px 0 3px 20px;font-size:12px;color:var(--text2)}
+.tds-lv-row input{width:80px;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:12px;font-family:var(--mono)}
+.tds-del{border:none;background:transparent;color:var(--up);cursor:pointer;font-size:12px}
+.tds-summary{cursor:pointer;font-size:13px;color:var(--text2);font-weight:600;user-select:none}
 
 /* ====== 可访问性补强(ui-ux-pro-max 审查 2026-07-24) ====== */
 /* 键盘焦点统一可见环(鼠标点击不触发 :focus-visible,不打扰鼠标用户;输入框已有自己的 :focus 边框+光晕,排除避免双环) */
@@ -315,6 +354,8 @@ input:focus-visible,select:focus-visible{outline:none}
 <div class="tab-bar">
   <button class="tab-btn active" id="tabBtnBacktest">回测</button>
   <button class="tab-btn" id="tabBtnLab">公式体检</button>
+  <button class="tab-btn" id="tabBtnTrade">交易</button>
+  <button class="tab-btn" id="tabBtnResearch">研究</button>
 </div>
 <!-- 2026-07-24: 内置边界口径页首声明 — 改代码口径时必须同步此块
      (selection/selector.py, core/stock_filter.py, backtest/engine.py
@@ -675,7 +716,7 @@ input:focus-visible,select:focus-visible{outline:none}
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
-            <th>#</th><th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>持仓量</th><th>最新价</th><th>市值</th><th>浮动盈亏%</th>
+            <th>#</th><th>代码</th><th>简称</th><th>概念</th><th>十五五</th><th>入场日</th><th>入场价</th><th>持仓量</th><th>最新价</th><th>市值</th><th>浮动盈亏%</th>
           </tr></thead>
           <tbody id="openPosTableBody"></tbody>
         </table>
@@ -706,7 +747,7 @@ input:focus-visible,select:focus-visible{outline:none}
       <div class="trade-table-wrap">
         <table class="trade-table">
           <thead><tr>
-            <th>#</th><th>代码</th><th>简称</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓(交易日)</th><th>盈亏%</th><th>退出原因</th>
+            <th>#</th><th>代码</th><th>简称</th><th>概念</th><th>十五五</th><th>入场日</th><th>入场价</th><th>入场量</th><th>出场日</th><th>出场价</th><th>出场量</th><th>持仓(交易日)</th><th>盈亏%</th><th>退出原因</th>
           </tr></thead>
           <tbody id="tradeTableBody"></tbody>
         </table>
@@ -750,11 +791,176 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
+<!-- ===== 交易页 (P1 第三阶段, 2026-07-26): 读快照 + 发命令, 业务判断全在后端 ===== -->
+<div id="pageResearch">
+    <!-- 政策影响查询卡片 (可折叠, 默认折叠; 展开状态存 localStorage) -->
+    <details id="foldPolicy" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
+      <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">政策影响查询
+        <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">输入股票代码,看它的行业受哪些政策影响(方向/力度/原文证据)</span>
+      </summary>
+      <div style="padding:0 18px 16px">
+      <p style="margin:0 0 12px;font-size:11px;color:var(--text2)">数据来自政策流水线 P1 (DeepSeek 抽取 + 入 AFFECTS 边)</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="researchStockInput" placeholder="代码 如 300750.SZ" style="width:180px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px">
+        <button id="researchStockBtn" class="btn btn-primary" style="padding:7px 16px">查询</button>
+        <span style="font-size:11px;color:var(--text2)">例: 300750 宁德 / 688981 中芯 / 600519 茅台</span>
+      </div>
+      <div id="researchPolicyResult" style="margin-top:14px;font-size:12px;color:var(--text2)">输入代码点查询 (政策库现有: 新能源汽车/AI/集成电路 三条种子政策)</div>
+      </div>
+    </details>
+
+    <!-- ===== 对话大脑 (P3, 2026-07-28): 多会话, 松耦合独立卡片(可折叠,默认折叠), 卸载删此卡片+brain_chat.js ===== -->
+    <details id="foldBrain" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
+      <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">对话大脑
+        <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">自然语言问政策/持仓/图谱(每次 20-150 秒),多会话可并行,纯研究不调仓</span>
+      </summary>
+      <div style="padding:0 18px 16px">
+      <div id="brainConvBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+      <div id="brainMessages" style="max-height:480px;overflow-y:auto;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);margin-bottom:10px;font-size:12px"></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="brainInput" placeholder="问点什么, 如: 当前持仓哪些在 AVOID 档?" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px">
+        <button id="brainSendBtn" class="btn btn-primary" style="padding:8px 16px">发送</button>
+        <button id="brainResetBtn" class="btn" style="padding:8px 12px;font-size:11px" title="清空本会话记忆,重开">重开</button>
+      </div>
+      <div id="brainStatus" style="margin-top:8px;font-size:11px;color:var(--text2)"></div>
+      </div>
+    </details>
+  </div>
+
+<div id="pageTrade">
+  <div class="lab-card">
+    <h3>系统状态</h3>
+    <div class="trade-status-bar">
+      <span class="trade-badge wait" id="tdConn">连接 …</span>
+      <span class="trade-badge wait" id="tdReconciled">对账 …</span>
+      <span class="trade-badge wait" id="tdQuote">行情 …</span>
+      <span style="flex:1"></span>
+      <button class="trade-kill-btn" id="tdKillBtn">急停</button>
+    </div>
+    <div class="trade-hint" id="tdHint"></div>
+  </div>
+
+  <div class="lab-card">
+    <details id="tdSettings">
+      <summary class="tds-summary">设置 (止盈止损 / 风控 / 仓位 / 监控) — 保存即热生效</summary>
+      <div style="margin-top:10px">
+        <div class="tds-sec" style="border-top:none;margin-top:0">
+          <div class="tds-sec-title">止盈止损 (结构与回测 stop_loss 同形)</div>
+          <div class="tds-row"><label>优先级</label>
+            <select id="tdsPriority">
+              <option value="trailing_first">trailing_first (移动止盈优先)</option>
+              <option value="ladder_tp_first">ladder_tp_first (阶梯止盈优先)</option>
+              <option value="stop_first">stop_first (止损优先)</option>
+            </select>
+          </div>
+          <div class="tds-row"><input type="checkbox" id="tdsCostEn"><label for="tdsCostEn">成本止损</label>
+            阈值 <input type="number" id="tdsCostThreshold" step="0.01" max="0" min="-1"> (负值, 如 -0.12)</div>
+          <div class="tds-row"><input type="checkbox" id="tdsTrailEn"><label for="tdsTrailEn">移动止盈</label>
+            激活线 <input type="number" id="tdsTrailAct" step="0.005" min="0" max="1">
+            回撤 <input type="number" id="tdsTrailDd" step="0.005" min="0" max="1"></div>
+          <div class="tds-row"><input type="checkbox" id="tdsLadderEn"><label for="tdsLadderEn">阶梯止盈档位</label>
+            <button class="btn" id="tdsLvAdd" style="padding:2px 10px;font-size:11px">+ 加档</button></div>
+          <div id="tdsLvList"></div>
+          <div class="tds-row"><input type="checkbox" id="tdsTimeEn"><label for="tdsTimeEn">时间止损</label>
+            持有 <input type="number" id="tdsTimeDays" step="1" min="1"> 天即卖</div>
+          <div class="tds-row"><input type="checkbox" id="tdsCondEn"><label for="tdsCondEn">条件时间止盈</label>
+            持有 <input type="number" id="tdsCondDays" step="1" min="1"> 天且涨幅 ≥
+            <input type="number" id="tdsCondProfit" step="0.01" min="0" max="1"></div>
+          <div class="tds-row"><input type="checkbox" id="tdsFirstEn"><label for="tdsFirstEn">首日规则</label>
+            首日最高涨幅未达 <input type="number" id="tdsFirstTarget" step="0.01" min="0" max="1"> 即卖</div>
+        </div>
+        <div class="tds-sec">
+          <div class="tds-sec-title">风控 / 仓位</div>
+          <div class="tds-row"><label>日亏软熔断</label>
+            <input type="number" id="tdsLossLimit" step="0.01" min="0" max="1"> (相对盘前基准, 如 0.05)</div>
+          <div class="tds-row"><label>买入金额</label>
+            下限 <input type="number" id="tdsMinAmt" step="100" min="0">
+            上限 <input type="number" id="tdsMaxAmt" step="100" min="0">
+            整手 <input type="number" id="tdsLot" step="100" min="1">
+            最大持仓 <input type="number" id="tdsMaxPos" step="1" min="1"> 只</div>
+        </div>
+        <div class="tds-sec">
+          <div class="tds-sec-title">监控</div>
+          <div class="tds-row"><label>扫描间隔</label>
+            <input type="number" id="tdsScanSec" step="1" min="1"> 秒
+            <label style="min-width:0">心跳</label>
+            <input type="number" id="tdsHbSec" step="1" min="1"> 秒
+            <label style="min-width:0">陈旧阈值</label>
+            <input type="number" id="tdsStaleSec" step="1" min="1"> 秒</div>
+        </div>
+        <div class="tds-sec">
+          <div class="tds-sec-title">尾盘自动买入</div>
+          <div class="tds-row"><input type="checkbox" id="tdsAbEn"><label for="tdsAbEn">启用</label>
+            时间 <input type="text" id="tdsAbTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="14:52">
+            <span style="color:var(--text2);font-size:11px">(HH:MM)</span></div>
+          <div class="tds-row"><label>公式</label>
+            <input type="text" id="tdsAbFormula" class="lab-input" style="width:140px">
+            参数 <input type="text" id="tdsAbArg" class="lab-input" style="width:80px"></div>
+          <div class="tds-row"><label>单票金额</label>
+            <input type="number" id="tdsAbAmt" step="1000" min="1000">
+            <label style="min-width:0">每日上限</label>
+            <input type="number" id="tdsAbMax" step="1" min="1" max="20"> 笔</div>
+        </div>
+        <div class="tds-sec" style="display:flex;gap:10px;align-items:center">
+          <button class="btn btn-primary" id="tdsSaveBtn">保存设置</button>
+          <span class="trade-hint" id="tdsHint">保存后立即热生效 (账号/路径类字段不在面板内, 改它们请编辑 yaml 重启)</span>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div class="lab-card">
+    <h3>尾盘自动选股 <span style="font-weight:400;font-size:11px;color:var(--text2)" id="tdAbCfg">—</span></h3>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" id="tdAbRunBtn">立即执行一次</button>
+      <span class="trade-hint" id="tdAbHint">选股在工作线程跑 (约 1 分钟), 不阻塞交易; 今日买入 T+1, 明日 9:15 自动纳入预埋与监控</span>
+    </div>
+    <div id="tdAbLast" style="margin-top:8px"><div style="color:var(--text2);font-size:12px">今日尚未运行</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>人工买入 (过风控闸门, 卖出走监控/预埋自动链路)</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input class="lab-input" id="tdBuyCode" placeholder="代码 如 600519.SH" style="width:160px">
+      <input class="lab-input" id="tdBuyQty" placeholder="数量 (100整数倍)" style="width:130px" type="number" step="100" min="100">
+      <input class="lab-input" id="tdBuyPrice" placeholder="限价 (留空=最新价)" style="width:140px" type="number" step="0.01">
+      <button class="btn btn-primary" id="tdBuyBtn">买入</button>
+      <button class="btn" id="tdLadderBtn">手动触发当日预埋</button>
+    </div>
+    <div class="trade-hint" id="tdBuyHint"></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>持仓</h3>
+    <div id="tdPositions"><div style="color:var(--text2);font-size:12px">加载中…</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>当日委托</h3>
+    <div id="tdOrders"><div style="color:var(--text2);font-size:12px">加载中…</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>对账记录</h3>
+    <div id="tdReconciles"><div style="color:var(--text2);font-size:12px">加载中…</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>审计日志 (5s 轮询)</h3>
+    <div class="lab-pre" id="tdAudits">加载中…</div>
+  </div>
+</div>
+
 <!-- P1-4: Toast 容器 -->
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260723c"></script>
+<script src="/web/js/trade.js?v=20260730a"></script>
+<script src="/web/js/research.js?v=20260728a"></script>
+<script src="/web/marked.min.js"></script>
+<script src="/web/purify.min.js"></script>
+<script src="/web/js/brain_chat.js?v=20260728c"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260728b"></script>
 </body>
 </html>
