@@ -79,6 +79,63 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+# ── 2026-07-30: 持仓明细增强辅助 ─────────────────────────────
+
+_NAME_MAP: dict | None = None
+
+
+def _name_of(code: str) -> str:
+    """股票简称 (DataFetcher.get_name_map 惰性加载一次; 失败回退空串 → 前端显示代码)。"""
+    global _NAME_MAP
+    if _NAME_MAP is None:
+        try:
+            from core.data_fetcher import DataFetcher
+            _NAME_MAP = DataFetcher.get_name_map()
+        except Exception:
+            _NAME_MAP = {}
+    return _NAME_MAP.get(code, "")
+
+
+def _entry_and_closed(trade_app) -> tuple[dict, list]:
+    """从 trades 表算: 各代码首笔买入时间 (entry) + 已平仓列表 (entry/exit/已实现盈亏)。
+
+    已平仓 = 该代码累计买入量 == 累计卖出量 且卖出量 > 0;
+    已实现盈亏 = Σ卖出金额 - Σ买入金额 (整周期闭环, 税费未计入 — 与 book 口径一致)。
+    """
+    entry_map: dict = {}
+    closed: list = []
+    try:
+        ro = trade_app.store.open_readonly()
+    except Exception:
+        return entry_map, closed
+    try:
+        cur = ro.execute(
+            "SELECT code, direction, MIN(ts), MAX(ts), SUM(qty), SUM(amount) "
+            "FROM trades GROUP BY code, direction")
+        per_code: dict = {}
+        for code, direction, min_ts, max_ts, qty, amount in cur.fetchall():
+            d = per_code.setdefault(code, {})
+            d[direction] = {"min_ts": min_ts, "max_ts": max_ts,
+                            "qty": qty or 0, "amount": amount or 0.0}
+        from trade.book import DIRECTION_BUY, DIRECTION_SELL
+        for code, d in per_code.items():
+            buy = d.get(DIRECTION_BUY)
+            sell = d.get(DIRECTION_SELL)
+            if buy:
+                entry_map[code] = buy["min_ts"]
+            if buy and sell and sell["qty"] > 0 and sell["qty"] >= buy["qty"]:
+                closed.append({
+                    "code": code, "name": _name_of(code),
+                    "entry_ts": buy["min_ts"], "exit_ts": sell["max_ts"],
+                    "qty": buy["qty"],
+                    "realized_pnl": round(sell["amount"] - buy["amount"], 2),
+                })
+        closed.sort(key=lambda x: x["exit_ts"] or 0, reverse=True)
+        return entry_map, closed[:20]
+    finally:
+        ro.close()
+
+
 def create_api_app(trade_app) -> FastAPI:
     """装配路由。trade_app 是 composition root, 路由只读它的
     只读快照 / 调它的 submit_command, 不知道任何内部细节。"""
@@ -108,25 +165,32 @@ def create_api_app(trade_app) -> FastAPI:
     @app.get("/api/trade/positions")
     def positions():
         snap = trade_app.book.snapshot()
+        # 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例/已平仓。
+        # 名称表惰性加载一次 (DataFetcher.get_name_map, 失败回退空 → 前端显示代码)。
+        entry_map, closed = _entry_and_closed(trade_app)
         result = []
         for code, p in sorted(snap["positions"].items()):
             quote = trade_app.monitor.quote_of(code)
             last = quote["last"] if quote else None
             etf = is_etf(code)
             result.append({
-                "code": code, "volume": p.volume, "can_use": p.can_use,
+                "code": code, "name": _name_of(code),
+                "volume": p.volume, "can_use": p.can_use,
                 "avg_cost": p.avg_cost, "strategy": p.strategy,
                 "last": last,
-                # 浮盈在后端算 (业务判断不出后端铁律); 无价给 None 不猜
+                "market_value": round(last * p.volume, 2) if last else None,
                 "pnl": round((last - p.avg_cost) * p.volume, 2)
                 if last else None,
+                "pnl_pct": round((last / p.avg_cost - 1) * 100, 2)
+                if last and p.avg_cost > 0 else None,
+                "entry_ts": entry_map.get(code),
                 "tiers_done": sorted(snap["tiers"].get(code, {}).get(
                     time.strftime("%Y%m%d"), ())),
                 # 2026-07-27 裁决③: ETF 明示不纳入自动管理
                 "etf": etf,
                 "managed": not (etf and trade_app.config.exclude_etf),
             })
-        return {"positions": result, "ts": time.time()}
+        return {"positions": result, "closed": closed, "ts": time.time()}
 
     @app.get("/api/trade/orders")
     def orders():
