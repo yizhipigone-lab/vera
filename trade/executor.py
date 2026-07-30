@@ -256,6 +256,14 @@ class Executor:
                     "ladder_place", f"{code} 档{tier} 预埋 {qty}@{price}",
                     {"code": code, "tier": tier, "order_id": order_id,
                      "price": price, "qty": qty})
+                # 2026-07-30: 预埋成功后立即从 QMT 回填可用 — 券商挂单即冻结,
+                # 页面"可用"应与冻结同步 (原只在成交/撤单后刷新, 显示滞后)。
+                # 刷新失败不阻断预埋 (可用由下次对账兜底)。
+                try:
+                    self._refresh_can_use(code)
+                except Exception as e:
+                    _logger.warning("预埋后回填可用失败 (下次对账兜底): %s: %s",
+                                    code, e)
                 placed.append(order_id)
         return placed
 
@@ -397,6 +405,12 @@ class Executor:
         self._pending[code] = {"order_id": order_id, "ts": self._clock(),
                                "qty": qty, "reason": reason}
         self.lock.rebind_order_id(code, order_id)
+        # 2026-07-30: 卖单挂出后立即回填可用 — 券商挂单即冻结,
+        # 页面"可用"应与冻结同步 (原只在成交/撤单后刷新, 显示滞后)。
+        try:
+            self._refresh_can_use(code)
+        except Exception as e:
+            _logger.warning("卖单后回填可用失败 (下次对账兜底): %s: %s", code, e)
         self._store.write_audit(
             audit_kind, f"{code} 卖出 {qty}@{price or '对手最优'} ({reason})",
             {"code": code, "order_id": order_id, "price": price,
