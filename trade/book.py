@@ -248,7 +248,8 @@ class Book:
 
     def restore(self, positions: list[dict] | None = None,
                 tiers: dict | None = None,
-                seen_trades: set[str] | None = None) -> None:
+                seen_trades: set[str] | None = None,
+                orders: dict | None = None) -> None:
         """冷启动恢复三合一 (公开接口 ≤8 的约束下合并, 启动流程只调一次):
         - positions: 采纳 QMT 实时持仓为开盘账本。这不是对账回写
           (铁律 1 禁止的是对账后的自动改账) —— 冷启动本地为空,
@@ -270,3 +271,12 @@ class Book:
                 self._tiers.setdefault(code, {}).setdefault(trade_date, set()).update(tiers_)
             if seen_trades:
                 self._seen_trades |= set(seen_trades)
+            # 2026-07-30 (600808 事件): 恢复非终态在途订单簿 — 原实现重启后
+            # _orders 为空, 撤单流水线找不到券商仍在挂的预埋单, 冻结持仓
+            # 无法释放 (13:00 trailing 触发只卖出未冻结的 600/3800)。
+            for oid, o in (orders or {}).items():
+                self._orders[oid] = OrderRecord(
+                    order_id=oid, code=o["code"], direction=o["direction"],
+                    price=o["price"], qty=o["qty"],
+                    filled_qty=int(o.get("filled_qty", 0)), status=o["status"],
+                    remark=o.get("remark", ""))

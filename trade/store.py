@@ -133,6 +133,37 @@ class TradeStore:
                 ),
             )
 
+    def update_order_filled(self, order_id: str, qty: int) -> None:
+        """成交回报回写订单进度 (2026-07-30, 600808 事件): filled_qty 累加,
+        满量置已成(56), 未满置部成(55)。
+
+        原实现订单状态只靠 QMT 订单状态回调刷新 — 回调缺失时 orders 表
+        永远停在"已报/成交0" (成交已落 trades 表), 页面显示陈旧。此处以
+        成交回报为硬事实直接回写, 与回调路径互补 (QMT 状态回调来后会
+        以同样终态覆盖, 幂等无冲突)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """UPDATE orders SET
+                       filled_qty = MIN(qty, filled_qty + ?),
+                       status = CASE WHEN MIN(qty, filled_qty + ?) >= qty
+                                     THEN 56 ELSE 55 END,
+                       updated_ts = ?
+                   WHERE order_id = ?""",
+                (qty, qty, time.time(), order_id),
+            )
+
+    def load_open_orders(self) -> dict:
+        """加载全部非终态委托 (2026-07-30: 重启恢复在途订单簿 —
+        book.restore 用它重建 _orders, 撤单流水线重启后仍能找到要撤的单;
+        不带终态 (部撤53/已撤54/已成56/废单57)。"""
+        cur = self._conn.execute(
+            "SELECT order_id, remark, code, direction, price, qty, filled_qty, "
+            "status, created_ts FROM orders WHERE status NOT IN (53, 54, 56, 57)")
+        return {r[0]: {"order_id": r[0], "remark": r[1], "code": r[2],
+                       "direction": r[3], "price": r[4], "qty": r[5],
+                       "filled_qty": r[6], "status": r[7], "created_ts": r[8]}
+                for r in cur.fetchall()}
+
     def save_trade(self, record: dict) -> None:
         """落成交记录。traded_id 重复 → sqlite3.IntegrityError 上抛,
         调用方 (book 层) 负责先判幂等, 这里是最后一道物理约束。"""

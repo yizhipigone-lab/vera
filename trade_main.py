@@ -266,6 +266,7 @@ class TradeApp:
             positions=self.gateway.query_positions(),
             tiers=tiers_today,
             seen_trades=self.store.load_today_trade_ids(today),
+            orders=self.store.load_open_orders(),   # 2026-07-30: 恢复在途订单簿
         )
         # 盘前基准权益 (日亏软熔断的尺子)
         try:
@@ -433,6 +434,12 @@ class TradeApp:
             self.store.save_trade(rec)
         except Exception as e:
             _logger.error("成交落库异常 (账本已更新): %s", e)
+        # 2026-07-30 (600808 事件): 成交进度回写订单表 — 原实现只靠
+        # QMT 订单状态回调, 回调缺失时页面永远"已报/成交0"。
+        try:
+            self.store.update_order_filled(rec["order_id"], rec["qty"])
+        except Exception as e:
+            _logger.error("订单进度回写异常: %s", e)
 
     def _on_quote_event(self, data: dict, event_ts: float | None = None) -> None:
         # 审计M4修复: 事件自带 ts 透传给 monitor (心跳用生产时刻,
