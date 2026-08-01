@@ -22,7 +22,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from typing import Callable
 
 from utils.logger import get_logger
 

@@ -89,7 +89,7 @@ class Reconciler:
         self._quote_price = quote_price or (lambda code: None)
         # 在途卖单数量 (executor 提供), 用于差异降级:
         # 卖出已报未成的部分, A 已冻结但 B 未扣 —— 这种差异是流水不是错账
-        self._in_flight = in_flight_sells or (lambda: {})
+        self._in_flight = in_flight_sells or (dict)
         # 成交原因 (2026-07-31): 回调丢失走补记时 ctx 还在 executor,
         # peek 读取 (不删) 既落 reason 又给飞书通知; 部成多笔共享同一
         # 份原因, 订单终态时经 on_order_terminal 回收

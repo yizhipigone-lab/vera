@@ -15,7 +15,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from core.lab_runner import FORMULA_RE
+from core.lab_runner import formula_name_ok
 
 _ROOT = Path(__file__).resolve().parent
 
@@ -28,7 +28,8 @@ class LabRunRequest(BaseModel):
 
 def _default_tags() -> tuple:
     """缺省窗口: 近1年 / 近3年(按当日滚动), tag 格式 YYYYMMDD_YYYYMMDD。"""
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
     end = _dt.now()
     def _t(d): return d.strftime("%Y%m%d")
     return (_t(end - _td(days=365)) + "_" + _t(end),
@@ -95,7 +96,7 @@ def create_lab_router(lab_status, pipeline_status) -> APIRouter:
     @router.get("/api/lab/report")
     async def lab_report(formula: str):
         """返回该公式最近一次体检报告 markdown。"""
-        if not FORMULA_RE.match(formula or ""):
+        if not formula_name_ok(formula or ""):
             return JSONResponse(status_code=400, content={"success": False, "error": "公式名含非法字符"})
         audit_dir = _ROOT / "docs" / "audit"
         cands = sorted(audit_dir.glob(f"*_{formula}_*因子体检报告.md"))

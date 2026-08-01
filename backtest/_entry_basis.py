@@ -15,8 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
-
 
 # 业务铁律 2 + 3 — 单一真相源,严禁字面量散落
 ENTRY_BASIS_BACKTEST = "close_on_signal_day"   # 回测: 信号日 T 收盘价 (业务铁律 2)

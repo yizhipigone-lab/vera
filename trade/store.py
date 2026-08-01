@@ -14,7 +14,6 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 from trade.book import DIRECTION_BUY
 from utils.logger import get_logger

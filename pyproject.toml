@@ -15,6 +15,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "matplotlib>=3.7",
     "plotly>=5.15",
+    "fastembed>=0.4",            # brain 语义搜索嵌入（bge-small-zh-v1.5 ONNX，免 torch）
+    "ddgs>=9.5",                   # brain 联网搜索（原 duckduckgo-search 官方继任）
 ]
 
 # 平台依赖 (非 pip 安装, 故不列入 dependencies):

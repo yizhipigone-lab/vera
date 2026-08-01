@@ -1,7 +1,7 @@
 """TDX 输出 — 将回测结果发送到通达信客户端展示。"""
 
+
 import pandas as pd
-from typing import Dict, Optional
 
 from core.signal_exporter import SignalExporter
 from utils.logger import get_logger
@@ -27,7 +27,6 @@ class TdxExporter:
         metrics = backtest_result.get("metrics", {})
         trades = backtest_result.get("trades", pd.DataFrame())
         equity_curve = backtest_result.get("equity_curve", pd.DataFrame())
-        stop_summary = backtest_result.get("stop_config_summary", "")
 
         # 准备多个 DataFrame
         df_list = []
@@ -48,7 +47,7 @@ class TdxExporter:
             df_list.append(metrics_df)
 
         # Table 2: 交易明细 (最近50笔)
-        if not trades.empty and len(trades) > 0:
+        if not trades.empty:
             trade_preview = trades.tail(50).copy()
             cols = ["stock_code", "entry_date", "exit_date", "exit_reason", "profit_pct"]
             available = [c for c in cols if c in trade_preview.columns]
@@ -59,8 +58,10 @@ class TdxExporter:
         # Table 3: 权益曲线（最近数据）
         if not equity_curve.empty:
             eq_preview = equity_curve.tail(100).copy()
-            if "date" in eq_preview.columns and "equity" in eq_preview.columns:
-                df_list.append(eq_preview[["date", "equity", "drawdown"]])
+            # 列存在性安全选择: drawdown 列可能缺失, 只取实际存在的列
+            cols = [c for c in ("date", "equity", "drawdown") if c in eq_preview.columns]
+            if "date" in cols and "equity" in cols:
+                df_list.append(eq_preview[cols])
 
         if not df_list:
             logger.warning("无数据可导出到通达信")

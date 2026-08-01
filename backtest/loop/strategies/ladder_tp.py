@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from typing import List
 
-from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
+from backtest.ladder_tp import compute_ladder_sell_ratio, compute_ladder_trigger
 
-from .base import ExitStrategy, TriggerResult
 from ..state import Bar, Context, Position
+from .base import TriggerResult
 
 
 class LadderTpStrategy:

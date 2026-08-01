@@ -22,7 +22,6 @@ TDX 两套 API 的 dividend_type 语义:
     0          → 不复权
     2          → 后复权 (TDX 不同接口枚举可能不同, 需查 TDX 文档)
 """
-from typing import Union
 
 # 复权枚举 (人类语义)
 ADJ_NONE = "none"
@@ -38,6 +37,9 @@ ADJ_TO_TDX_STR = {
     ADJ_FRONT_RAW: "front_raw",
 }
 
+# TDX 整数枚举 → 字符串口径 (to_tdx_str 的 int/数字字符串 入参分支共用)
+_INT_TO_TDX_STR = {0: "none", 1: "front", 2: "back"}
+
 # formula_process_mul_xg 整数口径 (选股)
 # 按 TDX 客户端导出观测: 1=前复权, 0=不复权; 保守写常见映射
 ADJ_TO_FORMULA_INT = {
@@ -48,7 +50,7 @@ ADJ_TO_FORMULA_INT = {
 }
 
 
-def to_tdx_str(adj: Union[str, int]) -> str:
+def to_tdx_str(adj: str | int) -> str:
     """
     统一参数 → get_market_data 用字符串
 
@@ -59,18 +61,18 @@ def to_tdx_str(adj: Union[str, int]) -> str:
     """
     if isinstance(adj, str):
         if adj in ADJ_TO_TDX_STR:
-            return ADJ_TO_TDX_STR[adj]
+            return adj  # ADJ_TO_TDX_STR 为恒等映射 (键值全等)
         if adj in ("0", "1", "2"):
             # 兜底: 字符串数字
-            return {0: "none", 1: "front", 2: "back"}.get(int(adj), "front")
+            return _INT_TO_TDX_STR.get(int(adj), "front")
         # 未知字符串 → 默认前复权
         return "front"
     if isinstance(adj, int):
-        return {0: "none", 1: "front", 2: "back"}.get(adj, "front")
+        return _INT_TO_TDX_STR.get(adj, "front")
     return "front"
 
 
-def to_formula_int(adj: Union[str, int]) -> int:
+def to_formula_int(adj: str | int) -> int:
     """
     统一参数 → formula_process_mul_xg 用整数 (选股)
 
@@ -89,7 +91,7 @@ def to_formula_int(adj: Union[str, int]) -> int:
     return 1  # 默认前复权
 
 
-def assert_consistent(adj_selection: Union[str, int], adj_backtest: Union[str, int]):
+def assert_consistent(adj_selection: str | int, adj_backtest: str | int):
     """
     断言两端复权口径一致. 不一致时 raise ValueError.
 

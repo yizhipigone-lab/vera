@@ -3,6 +3,10 @@
 import re
 from typing import List, Optional
 
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 # 后缀映射：常见简写 → 标准后缀
 SUFFIX_ALIAS = {
     "SH": "SH", "SZ": "SZ", "BJ": "BJ",
@@ -68,6 +72,22 @@ def normalize_list(codes: List[str]) -> List[str]:
     return result
 
 
+def extract_codes(raw) -> List[str]:
+    """从 dict-or-str 混合原始列表提取纯代码字符串列表 (丢弃空值)。
+
+    dict 取 "Code" 字段, 其余一律 str() 化; TDX get_stock_list* 返回的
+    [dict|str] 混合列表经此统一为纯代码列表 (2026-08-01 收编, 原散见于
+    data_fetcher.get_stock_universe / get_sector_stocks / formula_runner)。
+    """
+    codes = []
+    for s in raw:
+        if isinstance(s, dict):
+            codes.append(s.get("Code", ""))
+        else:
+            codes.append(str(s))
+    return [c for c in codes if c]
+
+
 def to_market_format(codes: List[str]) -> str:
     """
     将标准代码列表转换为通达信 TQ API 的市场#代码格式。
@@ -82,8 +102,7 @@ def to_market_format(codes: List[str]) -> str:
             if num:
                 parts.append(f"{num}#{code}")
             else:
-                import logging
-                logging.getLogger("VERA").warning(f"to_market_format: 无法识别的后缀 {suffix} (code={c})")
+                logger.warning(f"to_market_format: 无法识别的后缀 {suffix} (code={c})")
     return "|".join(parts)
 
 

@@ -8,11 +8,9 @@
 """
 from __future__ import annotations
 
-import os
 import sqlite3
 import threading
 from datetime import datetime
-from uuid import uuid4
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -21,12 +19,14 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from utils.logger import get_logger
-from utils.code_normalizer import normalize_list
-from utils import parquet_cache as pcu
+from core import progress as _progress
 from core.dividend_type import to_tdx_str
+
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)。批量脚本从不置位, 行为不变。
 from core.stop_flag import raise_if_stopped
+from utils import parquet_cache as pcu
+from utils.code_normalizer import normalize_list
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -154,7 +154,6 @@ class KlineCache:
         stock_list = normalize_list(stock_list)
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
-        from core import progress as _progress
         _n = len(stock_list)
         for _i, code in enumerate(stock_list, 1):
             # 2026-07-18: 停止回测按钮 — 缓存 miss 逐只拉网是长耗时点, 逐只检查
@@ -246,16 +245,25 @@ class KlineCache:
 
     _REFETCH_COOLDOWN = pd.Timedelta(hours=24)
 
-    def _refetch_cooled_down(self, code: str, period: str) -> bool:
-        """距上次全量拉取 > 24h 才允许再全量拉 (F5 停牌 thrash 冷却)。"""
+    def _cooldown_elapsed(self, code: str, period: str, column: str,
+                          interval: pd.Timedelta) -> bool:
+        """manifest.column 记录时间距现在超过 interval → True; 从未记录 → True。
+
+        F5 全量重拉冷却与复权因子探针共用的"冷却是否已过"判定 (2026-08-01 提取)。
+        column 只传本类内部常量, 非外部输入。
+        """
         with self._conn() as c:
             r = c.execute(
-                "SELECT last_full_refetch_at FROM manifest WHERE stock_code=? AND period=?",
+                f"SELECT {column} FROM manifest WHERE stock_code=? AND period=?",
                 (code, period)).fetchone()
         if not r or not r[0]:
-            return True  # 从未全量拉过 → 允许
-        last = pd.Timestamp(r[0])
-        return (pd.Timestamp.now() - last) > self._REFETCH_COOLDOWN
+            return True  # 从未记录 → 冷却已过
+        return (pd.Timestamp.now() - pd.Timestamp(r[0])) > interval
+
+    def _refetch_cooled_down(self, code: str, period: str) -> bool:
+        """距上次全量拉取 > 24h 才允许再全量拉 (F5 停牌 thrash 冷却)。"""
+        return self._cooldown_elapsed(code, period, "last_full_refetch_at",
+                                      self._REFETCH_COOLDOWN)
 
     def _mark_refetch(self, code: str, period: str):
         with self._conn() as c:
@@ -273,13 +281,8 @@ class KlineCache:
         """距上次探测超过间隔 → 该探。从未探过 (存量缓存) → 首次接触自愈。"""
         if self._probe_interval <= pd.Timedelta(0):
             return False
-        with self._conn() as c:
-            r = c.execute(
-                "SELECT last_probe_at FROM manifest WHERE stock_code=? AND period=?",
-                (code, period)).fetchone()
-        if not r or not r[0]:
-            return True
-        return (pd.Timestamp.now() - pd.Timestamp(r[0])) > self._probe_interval
+        return self._cooldown_elapsed(code, period, "last_probe_at",
+                                      self._probe_interval)
 
     def _probe_shift(self, code: str, period: str, dividend_type: str):
         """复权因子漂移探针: 比对缓存末日 close 与 TDX 现值, 漂移 → 全量重拉。
@@ -402,28 +405,15 @@ class KlineCache:
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
         combined.index.name = "date"
         out = combined.reset_index()
-        # tmp 名带 pid+uuid: 并发写同一 stock 时各进程独立 tmp, 互不踩踏/移走
-        # (原固定名 .parquet.tmp 跨进程共享 → 2026-07-23 出现互相 replace 移走抛 FileNotFoundError,
-        # 且会混合两进程数据)。独立 tmp 后 os.replace 目标冲突只剩杀软锁 pfile。
-        tmp = pfile.with_suffix(f".parquet.{os.getpid()}.{uuid4().hex}.tmp")
-        pq.write_table(pa.Table.from_pandas(out, preserve_index=False), tmp)
-        # 2026-07-21: Windows 下杀软/索引器常在 write→replace 间隙短暂锁定 parquet,
-        # os.replace 抛 PermissionError(WinError 5), 已 3 次杀死长批任务(301528/603192 等)。
-        # 独立 tmp 后 FileNotFoundError 理论不再发生 (无他进程动本进程 tmp), 仍保留兜底
-        # (杀软偶删 tmp) 重写再 replace. 两种异常都退避重试 3 次, 仍失败则抛错.
-        last_err = None
-        for _attempt in range(3):
-            try:
-                os.replace(tmp, pfile)
-                break
-            except (PermissionError, FileNotFoundError) as e:
-                last_err = e
-                import time as _time
-                _time.sleep(0.5 * (_attempt + 1))
-                if isinstance(e, FileNotFoundError) and not tmp.exists():
-                    pq.write_table(pa.Table.from_pandas(out, preserve_index=False), tmp)
-        else:
-            raise last_err
+        # 2026-08-01: 收编 pcu 原语 (同 _get_calendar) — pid+uuid 独立 tmp
+        # (并发写同 stock 互不踩踏/移走) + Windows 退避 atomic replace
+        # (杀软/索引器短暂锁 pfile → PermissionError(WinError 5) 重试; tmp 偶删
+        # → rewrite 重写再试)。行为与 2026-07-21/23 手写版一致。
+        tmp = pcu.tmp_path_for(pfile)
+        table = pa.Table.from_pandas(out, preserve_index=False)
+        pq.write_table(table, tmp)
+        pcu.atomic_replace(tmp, pfile,
+                           rewrite=lambda t: pq.write_table(table, t))
 
     def _refresh_manifest(self, code: str, period: str):
         """读 parquet 实际内容回填 manifest (first/last/rows/last_close/intact)。"""
@@ -509,10 +499,6 @@ class KlineCache:
         if partial:
             logger.warning("kline_gap_%s: %s %s 部分缺 bar (预期 %d 根/日): %s",
                            period, code, period, expected, partial)
-
-    def _warn_partial_bars_5m(self, code: str, df: pd.DataFrame):
-        """向后兼容 alias (2026-07-26 泛化为 _warn_partial_bars_intraday)。"""
-        self._warn_partial_bars_intraday(code, "5m", df)
 
     @staticmethod
     def _contiguous_segments(dates: List[str]) -> List[tuple]:

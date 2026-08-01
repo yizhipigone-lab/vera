@@ -86,6 +86,12 @@ def _empty_df(formula_name: str) -> pd.DataFrame:
     })
 
 
+def _finalize(df: pd.DataFrame) -> pd.DataFrame:
+    """尾部统一处理: 去重 → 按日/代码排序 → 重置索引。"""
+    df = df.drop_duplicates(subset=["stock_code", "select_date"])
+    return df.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
+
+
 def _load_day(root: Path, combo: str, ds: str,
               fresh_only_today: str | None = None):
     """命中返回 DataFrame (可能 0 行 = 已算过无信号), 未命中 None。
@@ -227,13 +233,11 @@ def get_or_compute(formula_name: str, formula_arg: str, period: str,
                 _save_day(root, combo, ds, day_df)
             _prune(root, KEEP_FILES)
         merged = df if not df.empty else _empty_df(formula_name)
-        merged = merged.drop_duplicates(subset=["stock_code", "select_date"])
-        return merged.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
+        return _finalize(merged)
 
     merged = pd.concat(cached_frames, ignore_index=True)
     if merged.empty:
         return _empty_df(formula_name)
-    merged = merged.drop_duplicates(subset=["stock_code", "select_date"])
-    merged = merged.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
+    merged = _finalize(merged)
     merged["formula_name"] = formula_name
     return merged

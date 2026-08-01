@@ -1,18 +1,19 @@
 """管线编排器 — 串联选股 → 数据 → 回测 → 报告全流程。"""
 
 import os
-import pandas as pd
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from core.connector import TdxConnector
-from selection.selector import StockSelector
-from pipeline.result_writer import PipelineResult
-from backtest.engine import BacktestEngine
+import pandas as pd
+
 from backtest.benchmark import BenchmarkComparator
+from backtest.engine import BacktestEngine
+from core.connector import TdxConnector
+from pipeline.result_writer import PipelineResult
 from report.report_generator import ReportGenerator
 from report.tdx_export import TdxExporter
+from selection.selector import StockSelector
 from utils.config_loader import ConfigLoader
 from utils.logger import get_logger, setup_logger
 
@@ -63,8 +64,8 @@ class Pipeline:
         # 2026-07-26: L1 池缓存 / L2 按日信号缓存开关 (selection_cache yaml,
         # 缺省全开; tools 走模块默认值)。enabled=false 时 L0/L1/L2 全关。
         sc_cfg = self.config.get("selection_cache", {})
-        from selection import universe_cache as _uc
         from selection import signal_day_cache as _sdc
+        from selection import universe_cache as _uc
         _uc.configure(
             enabled=sc_cfg.get("enabled", True) and sc_cfg.get("l1_enabled", True),
             force_refresh=sc_cfg.get("force_refresh", False))
@@ -105,10 +106,10 @@ class Pipeline:
                 from selection import selection_cache as sc
                 key = sc.build_key(
                     formula_name=sel_cfg.get("formula_name", ""),
-                    formula_arg=sel_cfg.get("formula_arg", "") or "",
+                    formula_arg=sel_cfg.get("formula_arg", ""),
                     universe_cfg=sel_cfg.get("universe", {}),
                     start_time=start, end_time=end,
-                    period=sel_cfg.get("period", "1d"),
+                    period=period,
                     dividend_type=sel_cfg.get("dividend_type", 1),
                     today_str=datetime.now().strftime("%Y%m%d"),
                 )
@@ -272,7 +273,7 @@ class Pipeline:
         exporter.export_full_report(backtest_result, self.strategy_name)
 
     def run(self, export_tdx: bool = False, progress_callback=None,
-            close_on_finish: bool = True) -> 'PipelineResult | dict':
+            close_on_finish: bool = True) -> 'PipelineResult':
         """
         执行完整管线。
 
@@ -288,7 +289,9 @@ class Pipeline:
                               长存, 下次请求直接复用, 无需重新握手。
 
         Returns:
-            dict with keys: selections, backtest, benchmark, reports
+            PipelineResult (dict-like): 字段 selections, backtest, benchmark, reports
+            (+ error/policy_priority/policy_enriched), 兼容 result["backtest"] /
+            result.get(...) 老调用方
         """
         def _cb(pct: int, name: str):
             """内部 callback 包装: 失败被吞, 防止 callback 异常中断管线."""

@@ -1,12 +1,12 @@
 """基准指数对比器 — 将策略收益与大盘指数进行对比。"""
 
-import numpy as np
-import pandas as pd
 from typing import Dict, List, Optional
 
-# P2-6 (2026-07-15): 直接 import 纯数据常量, 无需拖入整个 BacktestEngine 模块
-from backtest._constants import PERIODS_PER_YEAR, BARS_PER_DAY
+import numpy as np
+import pandas as pd
 
+# P2-6 (2026-07-15): 直接 import 纯数据常量, 无需拖入整个 BacktestEngine 模块
+from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR
 from core.data_fetcher import DataFetcher
 from utils.logger import get_logger
 
@@ -243,21 +243,15 @@ class BenchmarkComparator:
         comparison.set_index("date", inplace=True)
 
         # 计算超额收益统计（P1-5: 几何口径 + 复合年化，替换原算术和+线性年化）
-        total_strategy = comparison["strategy_equity"].iloc[-1]
-        total_index = comparison["index_close"].iloc[-1]
-        total_excess = (total_strategy / total_index) - 1 if total_index > 0 else 0.0
-        n_years = len(comparison) / periods_per_year if periods_per_year > 0 else 0
-        annual_excess = (1 + total_excess) ** (1 / n_years) - 1 if n_years > 0 else 0.0
+        # 2026-07-18: 汇总指标挂 attrs (不动函数签名, 下游 report/可视化零影响;
+        # result_writer 读取后输出到前端超额卡片)
+        stats = compute_comparison_stats(comparison, periods_per_year)
+        comparison.attrs["stats"] = stats
 
         logger.info(
             f"[{index_name}] 对比: 策略累计={comparison['strategy_equity'].iloc[-1]:.3f}, "
             f"指数累计={comparison['index_close'].iloc[-1]:.3f}, "
-            f"超额收益={total_excess:.2%}"
+            f"超额收益={stats['total_excess']:.2%}"
         )
-
-        # 2026-07-18: 汇总指标挂 attrs (不动函数签名, 下游 report/可视化零影响;
-        # result_writer 读取后输出到前端超额卡片)
-        comparison.attrs["stats"] = compute_comparison_stats(
-            comparison, periods_per_year)
 
         return comparison

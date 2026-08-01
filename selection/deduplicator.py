@@ -1,9 +1,9 @@
 """去重引擎 — 基于 (stock_code, select_date) 主键去重，支持增量追加。"""
 
-import pandas as pd
 import os
 from pathlib import Path
-from typing import Optional
+
+import pandas as pd
 
 from utils.logger import get_logger
 

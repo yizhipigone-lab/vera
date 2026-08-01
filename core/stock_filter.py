@@ -11,14 +11,11 @@
 
 TDX 接口依赖: tq.get_stock_info(code) → dict 含 IsSTGP, IsQuitGP, IsHKGP, Name 等
 """
-import sys
 import time
-import warnings
-from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
 
-warnings.filterwarnings('ignore')
-
+from core import progress as _progress
 from core.connector import TdxConnector
 
 
@@ -42,7 +39,6 @@ def get_stock_info_batch(codes: List[str], max_workers: int = 10) -> Dict[str, d
           单次调用几百到 5k 只股票大约 30-60s.
     """
     TdxConnector.ensure_connected()
-    from core import progress as _progress
     result = {}
     n = len(codes)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -118,11 +114,6 @@ def get_cached_info(code: str) -> dict:
     if info:
         _INFO_CACHE[code] = info
     return info
-
-
-def clear_cache():
-    """清空缓存 (切换股票池时调用)"""
-    _INFO_CACHE.clear()
 
 
 # === 自检 ===

@@ -1,15 +1,20 @@
 """数据获取层 — 通过 TDX TQ API 获取 K 线、财务、除权等数据。"""
 
-import pandas as pd
+import bisect
 from typing import List, Optional
 
-from .connector import TdxConnector
+import pandas as pd
+
+from utils.code_normalizer import extract_codes, normalize_list
+from utils.logger import get_logger
+
+from . import progress as _progress
+from .connector import ConnectorSeam
 from .data_cache import DataCache
 from .dividend_type import to_tdx_str
+
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)
 from .stop_flag import raise_if_stopped
-from utils.logger import get_logger
-from utils.code_normalizer import normalize_list
 
 logger = get_logger(__name__)
 
@@ -46,15 +51,14 @@ def _merge_window_masks(mask_frames: List[pd.DataFrame]) -> pd.DataFrame:
     return window_mask.groupby(level=0).max().sort_index().fillna(False)
 
 
-class DataFetcher:
+class DataFetcher(ConnectorSeam):
     """TDX 数据获取统一门面。所有调用前自动确保连接就绪。
 
     C5 轻量解耦: 通过 _connector() 缝隙注入 connector, 默认仍用 TdxConnector 单例。
     测试可 set_connector(mock) 替换, 不改 27 个外部 TdxConnector 调用点。
+    (2026-08-01: 缝隙五成员收编为 core.connector.ConnectorSeam mixin)
     """
 
-    # C5: connector 注入缝隙（默认 None → 用 TdxConnector 单例）
-    _connector_override = None
     _KLINE_CACHE_DIR = None  # 测试可覆盖; None → 项目根 data/kline_cache
 
     # 基准指数代码（P1-6: 补沪深300/中证500）
@@ -66,25 +70,6 @@ class DataFetcher:
         "kechuang50": "000688.SH",     # 科创50
         "zhongzhengA500": "000510.SH", # 中证A500（代码待 TDX 核实）
     }
-
-    @classmethod
-    def _connector(cls):
-        """返回当前生效的 connector（默认 TdxConnector 单例, 可被 set_connector 覆盖）。"""
-        return cls._connector_override if cls._connector_override is not None else TdxConnector
-
-    @classmethod
-    def set_connector(cls, connector) -> None:
-        """注入 connector（测试用, 传 mock 替换 TDX 连接）。"""
-        cls._connector_override = connector
-
-    @classmethod
-    def reset_connector(cls) -> None:
-        """恢复默认 TdxConnector 单例。"""
-        cls._connector_override = None
-
-    @classmethod
-    def _ensure_ready(cls):
-        cls._connector().ensure_connected()
 
     @classmethod
     def get_kline(
@@ -176,8 +161,9 @@ class DataFetcher:
         force_refresh: bool = False,
     ) -> dict:
         """走本地 KlineCache (Phase 1)。miss-fetch 回退 _get_kline_from_tdx(fill_data=False)。"""
-        from core.kline_cache import KlineCache
         from pathlib import Path
+
+        from core.kline_cache import KlineCache
 
         cache_dir = (cls._KLINE_CACHE_DIR if cls._KLINE_CACHE_DIR
                      else str(Path(__file__).resolve().parent.parent / "data" / "kline_cache"))
@@ -249,7 +235,7 @@ class DataFetcher:
         sel = selections.copy()
         sel["select_date"] = pd.to_datetime(sel["select_date"])
         sel["stock_code"] = sel["stock_code"].apply(
-            lambda c: normalize_list([c])[0] if normalize_list([c]) else c
+            lambda c: nl[0] if (nl := normalize_list([c])) else c
         )
 
         # 每只股的窗口起点 = 最早信号日; 窗口需覆盖到 最晚信号日 + N 交易日
@@ -271,15 +257,7 @@ class DataFetcher:
         def _window_end(sig_date: pd.Timestamp) -> pd.Timestamp:
             """信号日往后 window_trading_days 个交易日的日期。"""
             if trading_days:
-                idx = 0
-                lo, hi = 0, len(trading_days) - 1
-                while lo <= hi:
-                    mid = (lo + hi) // 2
-                    if trading_days[mid] < sig_date:
-                        lo = mid + 1
-                    else:
-                        hi = mid - 1
-                idx = lo  # 第一个 >= sig_date 的交易日
+                idx = bisect.bisect_left(trading_days, sig_date)  # 第一个 >= sig_date 的交易日
                 target = min(idx + window_trading_days, len(trading_days) - 1)
                 return trading_days[target]
             # 无交易日历兜底: 自然日估算 (交易日≈自然日×5/7, 反推)
@@ -348,7 +326,6 @@ class DataFetcher:
         mask_frames = []
 
         total_buckets = len(buckets)
-        from core import progress as _progress
         for bi, (mkey, codes) in enumerate(sorted(buckets.items()), 1):
             # 2026-07-18: 停止回测按钮 — 5m 窗口分批拉取是长耗时点, 逐批检查
             raise_if_stopped()
@@ -462,28 +439,6 @@ class DataFetcher:
         return df
 
     @classmethod
-    def get_close_price(
-        cls,
-        stock_list: List[str],
-        start_time: str = "",
-        end_time: str = "",
-        dividend_type: str = "front",
-        period: str = "1d",
-        *,
-        use_cache: bool = False,
-    ) -> pd.DataFrame:
-        """获取收盘价 DataFrame（回测核心输入）。period 可指定 1d/1w/5m 等。
-        use_cache=True: 走本地 KlineCache (miss-fetch 增量补 TDX)。"""
-        data = cls.get_kline(
-            stock_list, start_time, end_time,
-            dividend_type=dividend_type, period=period,
-            use_cache=use_cache,
-        )
-        if "Close" not in data:
-            return pd.DataFrame()
-        return data["Close"]
-
-    @classmethod
     def get_index_data(
         cls,
         index_name: str,
@@ -510,13 +465,7 @@ class DataFetcher:
         cls._ensure_ready()
         tq = cls._connector().tq()
         raw = tq.get_stock_list(str(list_type), list_type=1)
-        codes = []
-        for s in raw:
-            if isinstance(s, dict):
-                codes.append(s.get("Code", ""))
-            elif isinstance(s, str):
-                codes.append(s)
-        return [c for c in codes if c]
+        return extract_codes(raw)
 
     # P-v3.4: 行业板块支持 — 板块列表 + 成份股, 均带进程级缓存
     # C6: 三类缓存抽到 DataCache, DataFetcher 委托
@@ -554,18 +503,11 @@ class DataFetcher:
         tq = cls._connector().tq()
         try:
             raw = tq.get_stock_list_in_sector(sector_code, list_type=0)
-            stocks = []
-            for s in raw:
-                if isinstance(s, str):
-                    stocks.append(s)
-                elif isinstance(s, dict):
-                    stocks.append(s.get("Code", ""))
-            stocks = [s for s in stocks if s]
+            stocks = extract_codes(raw)
             cls._cache.set_sector_stocks(sector_code, stocks)
             return stocks
         except Exception as e:
-            from utils.logger import get_logger
-            get_logger(__name__).warning(f"拉板块成份股失败 [{sector_code}]: {e}")
+            logger.warning(f"拉板块成份股失败 [{sector_code}]: {e}")
             return []
 
     @classmethod
@@ -620,12 +562,6 @@ class DataFetcher:
         return result
 
     @classmethod
-    def get_stock_name(cls, code: str, fallback: str = "") -> str:
-        """查单只股票简称; 命中返回真实名, 未命中返回 fallback (默认空字符串)."""
-        m = cls.get_name_map()
-        return m.get(code, fallback)
-
-    @classmethod
     def clear_name_cache(cls):
         """清空简称缓存"""
         cls._cache.clear_name()
@@ -644,37 +580,3 @@ class DataFetcher:
             market=market, start_time=start_time, end_time=end_time, count=-1,
         )
         return list(dates) if dates else []
-
-    @classmethod
-    def get_financial(
-        cls,
-        stock_list: List[str],
-        field_list: List[str] = None,
-        start_time: str = "",
-        end_time: str = "",
-        report_type: str = "announce_time",
-    ) -> dict:
-        """获取专业财务数据。"""
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        codes = normalize_list(stock_list)
-        return tq.get_financial_data(
-            stock_list=codes,
-            field_list=field_list or [],
-            start_time=start_time,
-            end_time=end_time,
-            report_type=report_type,
-        )
-
-    @classmethod
-    def get_divid_factors(
-        cls,
-        stock_code: str,
-        start_time: str = "",
-        end_time: str = "",
-    ) -> pd.DataFrame:
-        """获取除权除息数据。"""
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        code = normalize_list([stock_code])[0]
-        return tq.get_divid_factors(stock_code=code, start_time=start_time, end_time=end_time)

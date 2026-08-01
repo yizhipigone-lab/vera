@@ -24,6 +24,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from core.stock_filter import get_cached_info  # noqa: E402
 from trade.auto_buy import AutoBuyFeature  # noqa: E402
 from trade.book import (  # noqa: E402
     DIRECTION_BUY,
@@ -49,19 +50,27 @@ from trade.events import (  # noqa: E402
 )
 from trade.executor import Executor  # noqa: E402
 from trade.gateway import FakeGateway, RealGateway  # noqa: E402
+from trade.monitor import SESSION_NAMES, Monitor, is_trading_day_cached, trading_session  # noqa: E402
 from trade.notifier import FeishuNotifier  # noqa: E402
-from trade.monitor import (  # noqa: E402
-    Monitor, SESSION_NAMES, is_trading_day_cached, trading_session)
 from trade.reconciler import Reconciler  # noqa: E402
 from trade.risk import KillSwitch, OrderIntent, RiskContext, RiskGate  # noqa: E402
 from trade.store import TradeStore  # noqa: E402
-from core.stock_filter import get_cached_info  # noqa: E402
 from utils.logger import get_logger  # noqa: E402
 
 _logger = get_logger("trade.main")
 
 # 断线重连退避序列上限 (计划书 §5.5: 1s→2s→…→60s)
 _RECONNECT_BACKOFF_MAX_SEC = 60.0
+
+
+def _day_str(ts: float) -> str:
+    """时间戳 → YYYYMMDD (本地时区)。"""
+    return time.strftime("%Y%m%d", time.localtime(ts))
+
+
+def _hhmm(ts: float) -> str:
+    """时间戳 → HH:MM (本地时区)。"""
+    return time.strftime("%H:%M", time.localtime(ts))
 
 
 def _reason_from_ctx(ctx: dict) -> str:
@@ -108,7 +117,7 @@ class _DailyTimer:
             self._thread = None
 
     def _fire_once(self, label: str, event: Event) -> None:
-        day = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        day = _day_str(self._clock())
         if (label, day) in self._fired:
             return
         self._fired.add((label, day))
@@ -118,10 +127,10 @@ class _DailyTimer:
         cur_day = ""
         while not self._stop.is_set():
             now = self._clock()
-            hhmm = time.strftime("%H:%M", time.localtime(now))
+            hhmm = _hhmm(now)
             # 审计M5修复: _fired 跨日清理 —— 条目带日期不会误拦次日,
             # 但不清理会按日无界累积
-            day = time.strftime("%Y%m%d", time.localtime(now))
+            day = _day_str(now)
             if day != cur_day:
                 self._fired.clear()
                 cur_day = day
@@ -142,7 +151,7 @@ class _DailyTimer:
             if hhmm == "09:15":
                 self._fire_once("ladder", Event(type=EVENT_COMMAND, data={
                     "action": "place_ladder",
-                    "date_str": time.strftime("%Y%m%d", time.localtime(now))}))
+                    "date_str": _day_str(now)}))
             # 尾盘自动选股买入 (2026-07-27 MVP): 到点发命令,
             # 选股本身在工作线程跑 (TDX 阻塞, 消费者线程禁入)
             if hhmm == self._cfg.auto_buy.time:
@@ -244,11 +253,12 @@ class TradeApp:
                     "请在 --config 指定的 yaml 中配置; 或用 --fake 跑测试模式")
             gw_kwargs = {"account_id": config.account_id,
                          "mini_qmt_path": config.qmt_path}
+        # tick 闭包先建一次复用 —— on_quote 每 tick 都调, 不再每次重建 _wire
+        tick_wire = _wire(self._engine, EVENT_TICK)
         self.gateway = gw_cls(
             on_order=_wire(self._engine, EVENT_ORDER_UPDATE),
             on_trade=_wire(self._engine, EVENT_TRADE_FILL),
-            on_quote=lambda code, q: _wire(self._engine, EVENT_TICK)(
-                {"code": code, **q}),
+            on_quote=lambda code, q: tick_wire({"code": code, **q}),
             on_disconnected=_wire(self._engine, EVENT_CONNECTION_LOST),
             **gw_kwargs,
         )
@@ -331,7 +341,7 @@ class TradeApp:
         返回启动对账是否通过 (不通过 = 已急停, 调用方应告警人工介入)。"""
         self.gateway.connect()
         self._connected = True
-        today = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        today = _day_str(self._clock())
         # 冷启动三合一 (审计H4修复: 当日已成交 traded_id 回填幂等集合,
         # 防重启后 QMT 重推当日成交回报双扣持仓):
         # ① QMT 是持仓唯一真相源, 本地空账本只能从这里灌;
@@ -383,7 +393,7 @@ class TradeApp:
         - 已过 09:25 且在交易时段、当日未预埋 → 补偿预埋 (audit 留痕);
         - 15:05 后启动且当日无 EOD 快照 → 补 EOD (对账 C 方次日基准)。
         """
-        hhmm = time.strftime("%H:%M", time.localtime(self._clock()))
+        hhmm = _hhmm(self._clock())
         tiers_today = self.store.load_tier_states(today)
         if "09:25" <= hhmm <= "15:00" and not tiers_today:
             self.store.write_audit(
@@ -444,7 +454,7 @@ class TradeApp:
             self._on_reconcile()
         elif action == "place_ladder":
             self.executor.place_ladder(
-                cmd.get("date_str") or time.strftime("%Y%m%d", time.localtime(self._clock())))
+                cmd.get("date_str") or _day_str(self._clock()))
         elif action == "auto_buy":
             # 批次4 接线②: 命令直接转发特性
             self._auto_buy.start(cmd.get("source", "manual"))
@@ -529,8 +539,7 @@ class TradeApp:
             # M3 (2026-08-01): 落库失败不静默 —— WAL 写偶尔被 SQLite busy
             # 挡住, 重试一次 (0.1s 间隔, 消费者线程可接受)。仍失败则靠
             # sync_reports 补记路径自愈 (QMT 是真相源, 下次 sync 会兜底)。
-            import time as _time
-            _time.sleep(0.1)
+            time.sleep(0.1)
             try:
                 self.store.save_trade(rec)
             except Exception:
@@ -856,8 +865,9 @@ def main() -> None:
     _logger.info("交易系统已启动 (fake=%s, 启动对账=%s)",
                  args.fake or config.fake_sdk, "通过" if ok else "未通过")
 
-    from trade.api import create_api_app
     import uvicorn
+
+    from trade.api import create_api_app
     try:
         # CORS 放行页面服务器 (回测服务器) 的 origin, 随 --page-port 推导
         origins = [f"http://127.0.0.1:{args.page_port}",

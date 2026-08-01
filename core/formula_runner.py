@@ -5,10 +5,13 @@ T-H-2 (2026-07-15): 加 connector seam (set_connector/reset_connector/_connector
 """
 
 from typing import List, Optional
+
 import pandas as pd
 
-from core.connector import TdxConnector
+from core import progress as _progress
+from core.connector import ConnectorSeam
 from core.dividend_type import to_formula_int
+from utils.code_normalizer import extract_codes
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,38 +37,21 @@ def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> i
     """
     return _MAX_SCAN_COUNT
 
-# T-H-2 connector seam
-_connector_override = None
+
+def _empty_selection_df() -> pd.DataFrame:
+    """空选股结果 DataFrame (统一列结构)。"""
+    return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
 
 
-class FormulaRunner:
-    """TDX 公式执行封装。支持条件选股 (XG) 和指标计算 (ZB)。"""
+class FormulaRunner(ConnectorSeam):
+    """TDX 公式执行封装。支持条件选股 (XG) 和指标计算 (ZB)。
 
-    _connector_override = None
+    T-H-2 connector 缝隙五成员 2026-08-01 收编为 core.connector.ConnectorSeam。
+    """
+
     # 2026-07-26: 上次 run_stock_selection_with_dates 的批次失败数 (L2 按日缓存
     # 区分"真空无信号" vs "失败空" — 失败区段不缓存; 每次 run 重置, 不改签名)
     last_batch_errors = 0
-
-    @classmethod
-    def set_connector(cls, connector):
-        """注入 mock connector (测试用)."""
-        cls._connector_override = connector
-
-    @classmethod
-    def reset_connector(cls):
-        """恢复默认 TdxConnector."""
-        cls._connector_override = None
-
-    @classmethod
-    def _connector(cls):
-        if cls._connector_override is not None:
-            return cls._connector_override
-        return TdxConnector
-
-    @staticmethod
-    def _ensure_ready():
-        conn = FormulaRunner._connector()
-        conn.ensure_connected()
 
     @classmethod
     def run_stock_selection_with_dates(
@@ -97,16 +83,10 @@ class FormulaRunner:
             stock_list = [s["Code"] if isinstance(s, dict) else str(s) for s in raw]
 
         # 确保所有代码都是纯字符串
-        str_codes = []
-        for s in stock_list:
-            if isinstance(s, dict):
-                str_codes.append(s.get("Code", ""))
-            else:
-                str_codes.append(str(s))
-        str_codes = [c for c in str_codes if c]
+        str_codes = extract_codes(stock_list)
 
         if not str_codes:
-            return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
+            return _empty_selection_df()
 
         logger.info(
             f"选股 [{formula_name}] arg={formula_arg} "
@@ -130,7 +110,6 @@ class FormulaRunner:
             batch_num = batch_start // BATCH_SIZE + 1
             logger.info(f"  批次 {batch_num}/{total_batches} ({len(batch)} stocks)")
             # 2026-07-26: 细粒度进度 (tools 直调时无人读, ~1µs)
-            from core import progress as _progress
             _progress.report("formula", batch_num / total_batches,
                              f"批次 {batch_num}/{total_batches}",
                              batch_num, total_batches)
@@ -162,7 +141,7 @@ class FormulaRunner:
                         break  # 公式不存在，无需继续
                     continue
 
-            except Exception as e:
+            except Exception:
                 batch_errors += 1
                 continue
 
@@ -214,7 +193,7 @@ class FormulaRunner:
                 logger.error(f"所有 {total_batches} 批次均失败，请检查公式名称 [{formula_name}] 是否存在")
             else:
                 logger.warning("选股结果解析后为空")
-            return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
+            return _empty_selection_df()
 
         df = pd.DataFrame(all_records)
         df["select_date"] = pd.to_datetime(df["select_date"])

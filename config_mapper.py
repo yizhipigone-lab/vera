@@ -4,7 +4,7 @@
 - StrategyConfig: /api/run 与 /api/config/* 共用的请求模型 (extra="allow" 透传前端扩展字段)
 - _config_to_yaml_dict: 前端配置 → 策略 YAML dict (Pipeline 临时 yaml 的输入)
 """
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -12,6 +12,17 @@ from backtest.stop_config import (
     DEFAULT_TRAILING_ACTIVATION,
     DEFAULT_TRAILING_DRAWDOWN,
 )
+
+# StrategyConfig.get 的兜底默认值 (None 时回退), 模块级常量避免每次调用重建
+_GET_DEFAULTS = {
+    "initial_capital": 1000000.0, "commission": 0.0003, "slippage": 0.001,
+    "min_buy_amount": 2000.0, "max_buy_amount": 20000.0,
+    "lot_size": 100, "min_lots": 1,
+    "cost_stop_threshold": -0.12, "trailing_activation": DEFAULT_TRAILING_ACTIVATION,
+    "trailing_drawdown": DEFAULT_TRAILING_DRAWDOWN, "max_hold_days": 20,
+    "cond_time_days": 7, "cond_time_profit": 0.02,
+    "first_day_target": 0.03,
+}
 
 
 class StrategyConfig(BaseModel):
@@ -59,18 +70,9 @@ class StrategyConfig(BaseModel):
 
     def get(self, key: str, default=None):
         """安全获取字段值，None 时返回默认值。"""
-        DEFAULTS = {
-            "initial_capital": 1000000.0, "commission": 0.0003, "slippage": 0.001,
-            "min_buy_amount": 2000.0, "max_buy_amount": 20000.0,
-            "lot_size": 100, "min_lots": 1,
-            "cost_stop_threshold": -0.12, "trailing_activation": DEFAULT_TRAILING_ACTIVATION,
-            "trailing_drawdown": DEFAULT_TRAILING_DRAWDOWN, "max_hold_days": 20,
-            "cond_time_days": 7, "cond_time_profit": 0.02,
-            "first_day_target": 0.03,
-        }
         val = getattr(self, key, None)
         if val is None:
-            return DEFAULTS.get(key, default)
+            return _GET_DEFAULTS.get(key, default)
         return val
 
 
@@ -104,10 +106,10 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
                 "type": cfg.universe_type,
                 "exclude_st": cfg.exclude_st,
                 # P-v3.4: ETF 开关
-                "include_etf": bool(getattr(cfg, "include_etf", False)),
-                "etf_only": bool(getattr(cfg, "etf_only", False)),
+                "include_etf": bool(cfg.include_etf),
+                "etf_only": bool(cfg.etf_only),
                 # P-v3.4: 行业板块代码列表 (逗号分隔字符串 → list)
-                "sectors": [s.strip() for s in str(getattr(cfg, "sectors", "") or "").split(",") if s.strip()],
+                "sectors": [s.strip() for s in cfg.sectors.split(",") if s.strip()],
             },
             "period": sel_period,
             "dividend_type": cfg.dividend_type,
@@ -144,7 +146,7 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             },
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},
-            "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.get("cond_time_days", 7), "profit": cfg.get("cond_time_profit", 0.01)},
+            "cond_time_stop": {"enabled": cfg.cond_time_enabled, "days": cfg.get("cond_time_days", 7), "profit": cfg.get("cond_time_profit")},
             "first_day": {"enabled": cfg.first_day_enabled, "target": cfg.get("first_day_target", 0.03)},
             # P-v3.4: 公式卖出 (formula_sell) — 前端配置透传到 engine.run(stop_config=...)
             "formula_sell": {

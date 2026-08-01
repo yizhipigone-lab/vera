@@ -15,8 +15,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Dict, List
 
-from .strategies.base import ExitStrategy, TriggerResult
 from .state import Bar, Context, Position
+from .strategies.base import ExitStrategy, TriggerResult
 
 
 class Priority(Enum):

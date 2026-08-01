@@ -9,8 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -245,6 +244,11 @@ class PositionBook:
         return self._count
 
     @property
+    def max_pos(self) -> int:
+        """容量上限 (entry 侧持仓上限判断的唯一真相源)。"""
+        return self._max
+
+    @property
     def dtype_code(self) -> np.dtype:
         return self._code.dtype
 
@@ -256,7 +260,7 @@ class PositionBook:
             entry_idx: int, high_px: float, high_hi: float) -> int:
         """新增持仓, 返回槽位 index。"""
         if self._count >= self._max:
-            raise RuntimeError("PositionBook 满 (MAX_POS=5000)")
+            raise RuntimeError(f"PositionBook 满 (max_pos={self._max})")
         p = self._count
         self._code[p] = code
         self._shares[p] = shares
@@ -281,20 +285,6 @@ class PositionBook:
             high_px=self._high_px[p], high_hi=self._high_hi[p],
             ladder_done=int(self._ladder_done[p]),
         )
-
-    def set(self, p: int, pos: Position) -> None:
-        """把 Position 写回槽位 p。"""
-        old_code = int(self._code[p])
-        if int(pos.code) != old_code:
-            self._slot_of.pop(old_code, None)
-            self._slot_of[int(pos.code)] = p
-        self._code[p] = pos.code
-        self._shares[p] = pos.shares
-        self._entry_px[p] = pos.entry_px
-        self._entry_idx[p] = pos.entry_idx
-        self._high_px[p] = pos.high_px
-        self._high_hi[p] = pos.high_hi
-        self._ladder_done[p] = pos.ladder_done
 
     def update_high(self, p: int, high_px: float, high_hi: float) -> None:
         """更新持仓期最高价（loop 每 bar 调）。"""

@@ -1,9 +1,9 @@
 """scheduler/__main__.py — `python -m scheduler` 独立进程入口。
 
 独立进程 = 不碰 VERA 主程序: 只读 trade.db, 产出月度笔记到 notes/。
-注册两个示例 job:
+注册两个 job:
     - 每月 1 日 (顺延到下一交易日) 08:30 生成上月月度笔记 (notes_gen)
-    - 每交易日 09:00 占位 job, 仅打印日志 (证明调度器活着)
+    - 每交易日 18:00 检查, 只在周日真正执行周度自进化 (evolution: 复盘+教训入 playbook)
 
 优雅停机: SIGTERM/SIGINT → graceful_shutdown 的 Event → stop()。
 """

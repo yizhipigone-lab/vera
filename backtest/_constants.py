@@ -13,7 +13,6 @@ H-2 (2026-07-15): 用 MappingProxyType 包裹, 只读暴露。防止未来某个
 """
 from types import MappingProxyType
 
-
 # BARS_PER_DAY: 一个交易日内的 bar 数 (用于 max_hold_days / days 的 bar 缩放)
 _BARS_PER_DAY = {
     "1d": 1,
@@ -57,7 +56,9 @@ def _std_5m_bar_times() -> tuple:
     return tuple(times)
 
 
-STD_5M_BAR_TIMES = frozenset(_std_5m_bar_times())
+# 有序 tuple: degrade_5m 网格合成必须保序 (frozenset 无序, 仅用于成员判定)
+STD_5M_BAR_TIMES_ORDERED = _std_5m_bar_times()
+STD_5M_BAR_TIMES = frozenset(STD_5M_BAR_TIMES_ORDERED)
 
 
 def _std_1m_bar_times() -> tuple:

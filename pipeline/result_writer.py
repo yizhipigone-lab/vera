@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import json as _json
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
+from backtest._entry_basis import ENTRY_BASIS_BACKTEST as ENTRY_PRICE_BASIS
 from backtest.result import BacktestResult
 
 # P1-3 (2026-07-15): 模块级 logger, 替代 4 处内联 `import logging` + `logging.getLogger(__name__)`
@@ -30,8 +32,8 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # F2 回归保护: 标记买入语义 (signal-day-close = 信号日收盘价买入, 业务铁律2)
+# ENTRY_PRICE_BASIS 单一真相源在 backtest/_entry_basis.py (上方 import 别名, 值相同已验证)
 ENGINE_VERSION = "signal-day-close"
-ENTRY_PRICE_BASIS = "close_on_signal_day"
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,7 @@ class PipelineResult:
 
     # C1-2 dict-like 访问: result["backtest"] / result.get(...)
     # P0-1 修订: "error" 进 _FIELDS — 失败路径需要 main.py:52 的 "error" in result 命中
-    _FIELDS = ("selections", "backtest", "benchmark", "reports", "error", "policy_priority", "policy_enriched")
+    # _FIELDS 在类定义后由 dataclasses.fields 自动同步 (防手工漏同步的幽灵 bug, plan-audit F-2/H-3)
 
     def __getitem__(self, key):
         if key in self._FIELDS:
@@ -66,6 +68,10 @@ class PipelineResult:
             return self[key]
         except KeyError:
             return default
+
+
+# dict-like 访问的字段清单: 自动同步 dataclass 字段, 加字段无需手工改两处
+PipelineResult._FIELDS = tuple(f.name for f in dataclasses.fields(PipelineResult))
 
 
 def safe_serialize(obj):
@@ -148,7 +154,7 @@ class ResultWriter:
         trades = backtest.get("trades", pd.DataFrame())
         equity_curve = backtest.get("equity_curve", pd.DataFrame())
 
-        metrics_clean = {k: safe_serialize(v) for k, v in metrics.items()}
+        metrics_clean = safe_serialize(metrics)
 
         # equity 序列化 (server.py:441-448)
         equity_data = []
@@ -163,10 +169,8 @@ class ResultWriter:
         # trades 序列化 + stock_name 回填 (server.py:450-466)
         trades_data = []
         if not trades.empty:
-            trades_data = trades.to_dict(orient="records")
-            for d in trades_data:
-                for k, v in list(d.items()):
-                    d[k] = safe_serialize(v)
+            # safe_serialize 已递归处理 list/dict, 无需逐元素手动调用
+            trades_data = safe_serialize(trades.to_dict(orient="records"))
             try:
                 from core.data_fetcher import DataFetcher
                 name_map = DataFetcher.get_name_map()
@@ -199,7 +203,7 @@ class ResultWriter:
         for name, bm_df in (result.benchmark or {}).items():
             st = getattr(bm_df, "attrs", {}).get("stats") if hasattr(bm_df, "attrs") else None
             if st:
-                benchmark_stats[name] = {k: safe_serialize(v) for k, v in st.items()}
+                benchmark_stats[name] = safe_serialize(st)
 
         resp = {
             "success": True,

@@ -21,17 +21,22 @@ class EquityTracker:
         """按实际 bar 数重建 equity_arr（BacktestLoop.run 调用）。"""
         self.equity_arr = np.empty(n_dates, dtype=np.float64)
 
-    def update(self, i: int, cash: float, price_np: np.ndarray,
-               book: PositionBook) -> None:
-        """engine.py:540-547: equity_arr[i] = cash + sum(shares*close)。"""
+    @staticmethod
+    def _mark_to_market(idx: int, price_np: np.ndarray, book: PositionBook) -> float:
+        """持仓市值累加 (update/finalize 共用, 仅 bar 索引不同)。"""
         pv = 0.0
         for p in range(book.count):
             ci = book.code_arr[p]
             if ci >= 0:
-                px = price_np[i, ci]
+                px = price_np[idx, ci]
                 if not np.isnan(px):
                     pv += book.shares_arr[p] * px
-        self.equity_arr[i] = cash + pv
+        return pv
+
+    def update(self, i: int, cash: float, price_np: np.ndarray,
+               book: PositionBook) -> None:
+        """engine.py:540-547: equity_arr[i] = cash + sum(shares*close)。"""
+        self.equity_arr[i] = cash + self._mark_to_market(i, price_np, book)
 
     def finalize(self, last: int, cash: float, price_np: np.ndarray,
                  book: PositionBook) -> None:
@@ -41,11 +46,4 @@ class EquityTracker:
         此处重写为期末持仓市值（如果当日有卖出，现金已更新），语义上是对最末 bar 的"结算修正"。
         对于末 bar 无交易的情况，update 写的值和 finalize 写的值相同（冗余但无害）。
         """
-        pv = 0.0
-        for p in range(book.count):
-            ci = book.code_arr[p]
-            if ci >= 0:
-                px = price_np[last, ci]
-                if not np.isnan(px):
-                    pv += book.shares_arr[p] * px
-        self.equity_arr[last] = cash + pv
+        self.equity_arr[last] = cash + self._mark_to_market(last, price_np, book)

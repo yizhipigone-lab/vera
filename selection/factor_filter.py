@@ -15,15 +15,15 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
+from tools.factor_ic_screen import DAILY_BASIC_FACTORS
 
 ROOT = Path(__file__).resolve().parent.parent
 KEEP_COLS = ["stock_code", "select_date", "formula_name"]
 
-# daily_basic 来源的因子(其余视为 kline 面板因子)
-DB_FACTORS = {"turnover_rate", "volume_ratio", "pe_ttm", "pb", "ps_ttm",
-              "dv_ratio", "total_mv", "circ_mv"}
+# daily_basic 来源的因子(其余视为 kline 面板因子) — 单一数据源在 tools/factor_ic_screen
+DB_FACTORS = set(DAILY_BASIC_FACTORS)
 
 
 def apply_rules(df: pd.DataFrame, rules: list[str]) -> pd.DataFrame:

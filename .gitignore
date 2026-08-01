@@ -30,6 +30,16 @@ data/matrix_cache/
 data/selection_cache/
 data/universe_cache/
 data/signal_day_cache/
+data/brain_vectors/
+data/brain_model_cache/
+
+# 第二大脑 vault（4586+ 生成文件，知识库数据，不入 git）— 2026-08-01
+vera_obs_vault/
+# 知识图谱原始数据与构建产物（可由 chainkg_loader 重建，不入 git）
+kg/data/
+kg/graph.db
+# 概念标签 TTL 缓存（按日失效，可再生成）
+concept_kb/concept_cache.json
 
 # 实盘交易配置与运行时数据 (含账户号/QMT路径/账本, 不入 git) — 2026-07-30
 config/trade.yaml

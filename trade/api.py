@@ -25,7 +25,6 @@ from trade.config import (
     trade_config_to_dict,
 )
 
-
 # 审计L12修复: code 入参格式校验 —— 畸形代码在 HTTP 边界就拒掉,
 # 不进事件队列 (消费者线程不该为格式垃圾浪费一轮风控检查)
 _CODE_PATTERN = r"^\d{6}\.(SH|SZ|BJ)$"
@@ -167,6 +166,7 @@ def _trading_days() -> list:
     if _TRADING_DAYS is None:
         try:
             from pathlib import Path
+
             import pandas as pd
             p = (Path(__file__).resolve().parent.parent
                  / "data" / "kline_cache" / "calendar" / "trading_days.parquet")

@@ -1,14 +1,16 @@
 """报告生成器 — 聚合回测结果，生成标准化报告。"""
 
 import json
-import pandas as pd
 import os
-from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from pathlib import Path
+from typing import Dict, Optional
+
+import pandas as pd
+
+from utils.logger import get_logger
 
 from .visualizer import Visualizer
-from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -35,10 +37,6 @@ class ReportGenerator:
 
         self.dark_theme = dark_theme
         self.visualizer = Visualizer(dark=dark_theme)
-
-    def set_theme(self, dark: bool):
-        self.dark_theme = dark
-        self.visualizer.set_theme(dark)
 
     def generate(
         self,

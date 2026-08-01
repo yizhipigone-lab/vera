@@ -1,3 +1,3 @@
 """pipeline 模块。"""
 
-from .pipeline import Pipeline
+from .pipeline import Pipeline as Pipeline

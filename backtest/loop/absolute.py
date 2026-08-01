@@ -16,8 +16,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from .strategies.base import AbsoluteStrategy, TriggerResult
 from .state import Bar, Context, Position
+from .strategies.base import TriggerResult
 
 
 class FormulaSellStrategy:

@@ -2,14 +2,15 @@
 import os
 import shutil
 import tempfile
+from pathlib import Path
+from typing import Optional
 
 import yaml
-from pathlib import Path
-from typing import Any, Dict, Optional
-
 
 # 前端保存的用户配置文件（运行时生成，与 default.yaml 合并加载）
 _CURRENT_PATH = Path(__file__).resolve().parents[1] / "config" / "current.yaml"
+# 兜底默认配置（与 _CURRENT_PATH 对称，三处引用统一走这里）
+_DEFAULT_PATH = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
 _CURRENT_HEADER = (
     "# VERA 前端保存的用户配置（自动生成，手动改会被下次保存覆盖）\n"
     "# 加载时与 config/default.yaml 深度合并；此处未列字段走默认值。\n"
@@ -37,8 +38,7 @@ def resolve_strategy_yaml(arg: Optional[str] = None,
     if arg:
         return arg
     cur = Path(current) if current else _CURRENT_PATH
-    fb = Path(fallback) if fallback else (
-        Path(__file__).resolve().parents[1] / "config" / "default.yaml")
+    fb = Path(fallback) if fallback else _DEFAULT_PATH
     return str(cur) if cur.exists() else str(fb)
 
 
@@ -65,7 +65,7 @@ class ConfigLoader:
             合并后的完整配置字典
         """
         if default_path is None:
-            default_path = str(Path(__file__).resolve().parents[1] / "config" / "default.yaml")
+            default_path = str(_DEFAULT_PATH)
 
         defaults = cls.load_yaml(default_path)
         strategy = cls.load_yaml(strategy_path)
@@ -73,8 +73,7 @@ class ConfigLoader:
 
     @classmethod
     def load_defaults(cls) -> dict:
-        default_path = str(Path(__file__).resolve().parents[1] / "config" / "default.yaml")
-        return cls.load_yaml(default_path)
+        return cls.load_yaml(str(_DEFAULT_PATH))
 
     @staticmethod
     def validate_stop_config(config: dict) -> list[str]:

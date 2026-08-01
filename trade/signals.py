@@ -34,7 +34,7 @@ def run_tail_selection(formula_name: str, formula_arg: str,
     """
     if _TDX_PATH not in sys.path:
         sys.path.insert(0, _TDX_PATH)
-    from core.connector import TdxConnector          # 阻塞初始化
+    from core.connector import TdxConnector  # 阻塞初始化
     from selection.selector import StockSelector
 
     today = time.strftime("%Y%m%d")

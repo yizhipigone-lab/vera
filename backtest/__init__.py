@@ -1,5 +1,5 @@
 """backtest 模块。"""
 
-from .engine import BacktestEngine
-from .metrics import MetricsCalculator
-from .benchmark import BenchmarkComparator
+from .benchmark import BenchmarkComparator as BenchmarkComparator
+from .engine import BacktestEngine as BacktestEngine
+from .metrics import MetricsCalculator as MetricsCalculator

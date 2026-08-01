@@ -3,13 +3,13 @@
 风格：量化专业风，深色/浅色双主题，A股红涨绿跌惯例。
 """
 
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+from pathlib import Path
+from typing import Dict, Optional
+
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from utils.logger import get_logger
 
@@ -38,22 +38,21 @@ class ThemeColor:
                 "card_bg": "#21262d",
                 "accent": "#58a6ff",
             }
-        else:
-            return {
-                "bg": "#ffffff",
-                "plot_bg": "#f6f8fa",
-                "paper": "#ffffff",
-                "grid": "rgba(0,0,0,0.06)",
-                "text": "#24292f",
-                "text_secondary": "#656d76",
-                "up": "#d1242f",        # 红涨（浅色下更深一点）
-                "down": "#1a7f37",      # 绿跌
-                "equity": "#0550ae",
-                "benchmark": "#8250df",
-                "drawdown": "rgba(209,36,47,0.15)",
-                "card_bg": "#f6f8fa",
-                "accent": "#0969da",
-            }
+        return {
+            "bg": "#ffffff",
+            "plot_bg": "#f6f8fa",
+            "paper": "#ffffff",
+            "grid": "rgba(0,0,0,0.06)",
+            "text": "#24292f",
+            "text_secondary": "#656d76",
+            "up": "#d1242f",        # 红涨（浅色下更深一点）
+            "down": "#1a7f37",      # 绿跌
+            "equity": "#0550ae",
+            "benchmark": "#8250df",
+            "drawdown": "rgba(209,36,47,0.15)",
+            "card_bg": "#f6f8fa",
+            "accent": "#0969da",
+        }
 
     @staticmethod
     def get_template(dark: bool = True) -> str:
@@ -64,11 +63,6 @@ class Visualizer:
     """双引擎可视化：Plotly（交互HTML）+ Matplotlib（静态PNG）。"""
 
     def __init__(self, dark: bool = True):
-        self.dark = dark
-        self.colors = ThemeColor.get_colors(dark)
-        self.template = ThemeColor.get_template(dark)
-
-    def set_theme(self, dark: bool) -> None:
         self.dark = dark
         self.colors = ThemeColor.get_colors(dark)
         self.template = ThemeColor.get_template(dark)
@@ -193,26 +187,26 @@ class Visualizer:
 
     def plot_kpi_cards(self, metrics: dict) -> str:
         """生成 KPI 指标卡片的 HTML。"""
+        # (标签, 格式化文本, 原始数值); 原始数值用于正负着色, 无意义指标给 None 不加色
         items = [
-            ("累计收益", f"{metrics.get('cumulative_return', 0):+.2%}"),
-            ("年化收益", f"{metrics.get('annualized_return', 0):+.2%}"),
-            ("最大回撤", f"{metrics.get('max_drawdown', 0):+.2%}"),
-            ("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}"),
-            ("胜率", f"{metrics.get('win_rate', 0):.1%}"),
-            ("盈亏比", f"{metrics.get('profit_loss_ratio', 0):.2f}"),
-            ("交易笔数", f"{metrics.get('total_trades', 0)}"),
-            ("卡玛比率", f"{metrics.get('calmar_ratio', 0):.2f}"),
+            ("累计收益", f"{metrics.get('cumulative_return', 0):+.2%}", metrics.get('cumulative_return', 0)),
+            ("年化收益", f"{metrics.get('annualized_return', 0):+.2%}", metrics.get('annualized_return', 0)),
+            ("最大回撤", f"{metrics.get('max_drawdown', 0):+.2%}", metrics.get('max_drawdown', 0)),
+            ("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}", metrics.get('sharpe_ratio', 0)),
+            ("胜率", f"{metrics.get('win_rate', 0):.1%}", None),
+            ("盈亏比", f"{metrics.get('profit_loss_ratio', 0):.2f}", metrics.get('profit_loss_ratio', 0)),
+            ("交易笔数", f"{metrics.get('total_trades', 0)}", None),
+            ("卡玛比率", f"{metrics.get('calmar_ratio', 0):.2f}", metrics.get('calmar_ratio', 0)),
         ]
 
         cards = ""
-        for label, value in items:
+        for label, value, num in items:
             # 数值正负着色 (红涨绿跌)
-            val_str = str(value)
             color_class = ""
-            if value and isinstance(value, (int, float)):
-                if value > 0:
+            if isinstance(num, (int, float)):
+                if num > 0:
                     color_class = "kpi-positive"
-                elif value < 0:
+                elif num < 0:
                     color_class = "kpi-negative"
 
             cards += f"""
@@ -256,7 +250,8 @@ class Visualizer:
 
         month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        pivot.columns = month_labels[:pivot.shape[1]]
+        # pivot 列是实际月份数字 (如 [6,7,...]), 按数字取标签, 避免非 1 月起始时错位
+        pivot.columns = [month_labels[m - 1] for m in pivot.columns]
 
         # 自定义色阶: 绿→白→红 (A股惯例)
         colorscale = [

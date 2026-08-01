@@ -17,13 +17,12 @@ from typing import Optional
 
 import numpy as np
 
-from backtest._entry_basis import EntryPath, assert_single_path, ENTRY_BASIS_BACKTEST
+from backtest._entry_basis import EntryPath
+
 from .state import BacktestParams, PositionBook, TradeBuffer
 
 # 业务铁律 2 — 本模块入场价口径单一真相源
 ENTRY_PATH: EntryPath = EntryPath.BACKTEST_T_CLOSE
-
-MAX_POS = 5000
 
 
 class EntryEngine:
@@ -36,7 +35,7 @@ class EntryEngine:
         # 2026-07-23: 卖出冷却跳过的买入信号计数 (loop 结束汇总)
         self.cooldown_skip_count = 0
 
-    def _record_skip(self, i: int, ci: int):
+    def _record_skip(self):
         self.skipped_signal_count += 1
 
     def run_bar(self, i: int, cash: float, book: PositionBook,
@@ -62,11 +61,11 @@ class EntryEngine:
             ci = int(ci)
             # 信号日停牌 → skip (F7: 计数, 补圆不静默吞信号)
             if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
-                self._record_skip(i, ci)
+                self._record_skip()
                 continue
             bp = price_np[i, ci]
             if np.isnan(bp) or bp <= 0.0:
-                self._record_skip(i, ci)
+                self._record_skip()
                 continue
             entry_i = i
             # ── 换股: 已持有同股票 → 卖旧仓（reason=1, 无滑点无印花税）──
@@ -102,7 +101,7 @@ class EntryEngine:
                 continue
             bp_eff = bp * (1.0 + p.slippage)
             cost = sh * bp_eff * (1.0 + p.commission)
-            if cost <= cash and book.count < MAX_POS:
+            if cost <= cash and book.count < book.max_pos:
                 cash -= cost
                 book.add(code=ci, shares=float(sh), entry_px=bp, entry_idx=entry_i,
                          high_px=bp, high_hi=bp)

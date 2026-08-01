@@ -16,7 +16,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..state import Bar, Context, Position
 
 
 @dataclass(frozen=True, slots=True)

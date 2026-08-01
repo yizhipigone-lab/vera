@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from backtest._constants import STD_5M_BAR_TIMES_ORDERED
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,21 +29,9 @@ BARS_5M_PER_DAY = 48  # 9:35..11:30 (24) + 13:05..15:00 (24)
 _ADJUST_RTOL = 1e-4
 
 
-def _bar_times_one_day() -> List[str]:
-    """一天的 48 根 bar 时间 (HH:MM): 9:35..11:30 + 13:05..15:00。"""
-    times = []
-    t = pd.Timestamp("2000-01-01 09:35")
-    for _ in range(24):
-        times.append(t.strftime("%H:%M"))
-        t += pd.Timedelta(minutes=5)
-    t = pd.Timestamp("2000-01-01 13:05")
-    for _ in range(24):
-        times.append(t.strftime("%H:%M"))
-        t += pd.Timedelta(minutes=5)
-    return times
-
-
-_BAR_TIMES = _bar_times_one_day()
+# 一天的 48 根 bar 时间 (HH:MM): 9:35..11:30 + 13:05..15:00。
+# 与 engine 非标准 bar 过滤同一真相源 (backtest/_constants.py), 有序 tuple 保序。
+_BAR_TIMES = STD_5M_BAR_TIMES_ORDERED
 
 
 def synthesize_5m_grid(trading_days: List[pd.Timestamp]) -> pd.DatetimeIndex:

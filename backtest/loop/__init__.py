@@ -4,22 +4,34 @@ BacktestLoop 子包: 把 _simulate_core_v3 (527 行/39 参数) 拆成可单独�
 阶段 1 只导出数据结构与策略 adapter; BacktestLoop/ExitDispatcher 在阶段 2-3 补。
 """
 
-from .state import (
-    BacktestParams, Context, Position, PositionBook, TradeBuffer, Bar,
-    TradeColumns, assert_state_dtype,
-)
-from .strategies import (
-    ExitStrategy, AbsoluteStrategy, TriggerResult,
-    CostStopStrategy, LadderTpStrategy, TrailingStrategy,
-    TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
-    AtrStopStrategy,
-)
-from .exit_engine import Priority, ExitDispatcher, PRE_DISPATCH_STRATEGIES
 from .absolute import FormulaSellStrategy
+from .builder import build_backtest_loop
 from .entry import EntryEngine
 from .equity import EquityTracker
+from .exit_engine import PRE_DISPATCH_STRATEGIES, ExitDispatcher, Priority
 from .loop import BacktestLoop
-from .builder import build_backtest_loop
+from .state import (
+    BacktestParams,
+    Bar,
+    Context,
+    Position,
+    PositionBook,
+    TradeBuffer,
+    TradeColumns,
+    assert_state_dtype,
+)
+from .strategies import (
+    AbsoluteStrategy,
+    AtrStopStrategy,
+    CondTimeStrategy,
+    CostStopStrategy,
+    ExitStrategy,
+    FirstDayStrategy,
+    LadderTpStrategy,
+    TimeStopStrategy,
+    TrailingStrategy,
+    TriggerResult,
+)
 
 __all__ = [
     "BacktestParams", "Context", "Position", "PositionBook", "TradeBuffer", "Bar",

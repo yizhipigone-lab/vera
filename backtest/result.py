@@ -14,10 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Any, Iterator, List, Optional, Tuple
-
-import numpy as np
-import pandas as pd
+from typing import Any, ClassVar, Iterator, List, Tuple
 
 _UNSET = object()  # 哨兵: 字段未设置（等价于老 dict 没有这个 key）
 
@@ -54,12 +51,16 @@ class BacktestResult:
     # 仅 run() 路径设置, run_cached 数据来自调用方不打戳)
     data_fingerprint: Any = _UNSET
 
+    # 字段名集合类级缓存 (_is_set 每次访问都 fields() 反射太贵; 类定义后填充,
+    # 见模块尾部)。ClassVar 不会被 dataclasses.fields 计入。
+    _FIELD_NAMES: ClassVar[frozenset] = frozenset()
+
     # ── dict-like 兼容（精确复刻 dict 语义: 只有 set 的字段才算 in）──
     def _all_field_names(self) -> List[str]:
         return [f.name for f in fields(self)]
 
     def _is_set(self, key: str) -> bool:
-        return key in self._all_field_names() and getattr(self, key) is not _UNSET
+        return key in self._FIELD_NAMES and getattr(self, key) is not _UNSET
 
     def __getitem__(self, key: str) -> Any:
         if self._is_set(key):
@@ -86,3 +87,7 @@ class BacktestResult:
     def to_dict(self) -> dict:
         """显式转 dict（需要真 dict 的场景, 如 JSON 序列化）。"""
         return {name: getattr(self, name) for name in self.keys()}
+
+
+# 填充 _is_set 用的字段名缓存 (类定义之后才能调 fields)
+BacktestResult._FIELD_NAMES = frozenset(f.name for f in fields(BacktestResult))

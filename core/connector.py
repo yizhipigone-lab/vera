@@ -1,16 +1,16 @@
 """TDX 连接管理器 — 封装 TQ API 的初始化、健康检查和关闭。"""
-import sys
 import os
+import sys
 import threading
 from pathlib import Path
 
-from core.tdx_path import tdx_home
+from core.tdx_path import tdx_home, tdx_plugins_user
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # TDX 安装路径 — 优先环境变量 TDX_HOME，否则用默认值 (单一真相: core/tdx_path.py)
-TQCENTER_PATH = os.path.join(tdx_home(), "PYPlugins", "user", "tqcenter.py")
+TQCENTER_PATH = os.path.join(tdx_plugins_user(), "tqcenter.py")
 
 
 class TdxConnector:
@@ -115,18 +115,10 @@ class TdxConnector:
             raise RuntimeError(
                 "无法连接到 TDX。请确认：\n"
                 "1. 通达信客户端已启动并登录\n"
-                f"2. 通达信安装路径正确（当前: {_TDX_PATH}）\n"
+                f"2. 通达信安装路径正确（当前: {tdx_home()}）\n"
                 "3. TQ 策略框架版本兼容\n"
                 "4. 可通过环境变量 TDX_HOME 修改安装路径"
             )
-
-    @classmethod
-    def get_data_dir(cls) -> str:
-        return os.path.join(_TDX_PATH, "T0001")
-
-    @classmethod
-    def get_plugin_dir(cls) -> str:
-        return os.path.join(_TDX_PATH, "PYPlugins")
 
     @classmethod
     def tq(cls):
@@ -146,3 +138,33 @@ class TdxConnector:
         if cls._tq is None:
             raise RuntimeError("TDX 连接异常: _tq 为 None, 请重启 server")
         return cls._tq
+
+
+class ConnectorSeam:
+    """connector 注入缝隙 mixin (2026-08-01 收编): DataFetcher (C5) 与
+    FormulaRunner (T-H-2) 原先各自逐字复制这五个成员, 提取于此。
+
+    set_connector(mock) 注入测试 connector, reset_connector() 恢复默认
+    TdxConnector 单例; _connector_override 赋值发生在子类上, 各子类状态独立。
+    """
+
+    _connector_override = None
+
+    @classmethod
+    def _connector(cls):
+        """返回当前生效的 connector（默认 TdxConnector 单例, 可被 set_connector 覆盖）。"""
+        return cls._connector_override if cls._connector_override is not None else TdxConnector
+
+    @classmethod
+    def set_connector(cls, connector) -> None:
+        """注入 connector（测试用, 传 mock 替换 TDX 连接）。"""
+        cls._connector_override = connector
+
+    @classmethod
+    def reset_connector(cls) -> None:
+        """恢复默认 TdxConnector 单例。"""
+        cls._connector_override = None
+
+    @classmethod
+    def _ensure_ready(cls):
+        cls._connector().ensure_connected()

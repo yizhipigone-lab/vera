@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import time
-from typing import Callable, Mapping
+from typing import Callable
 
 from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.book import is_etf

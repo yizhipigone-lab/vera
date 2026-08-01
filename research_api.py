@@ -37,6 +37,24 @@ def _brain_channel(conv: str) -> str:
     return "research_tab_default"
 
 
+def _channel_of(body: dict) -> str:
+    """body.conv → brain channel (缺省/非法会话号归 default)。"""
+    return _brain_channel(body.get("conv") or "")
+
+
+def _extract_question(body: dict):
+    """question 提取+校验: 合法返回 (question, None); 为空返回 (None, 错误响应 dict)。"""
+    question = (body.get("question") or "").strip()
+    if not question:
+        return None, {"answer": "请输入问题", "success": False}
+    return question, None
+
+
+def _brain_fail(e: Exception) -> dict:
+    """大脑调用失败的统一错误响应 (松耦合兜底, 不炸 server)。"""
+    return {"answer": f"大脑调用失败: {e}", "success": False}
+
+
 @router.post("/api/research/chat")
 async def research_chat(body: dict):
     """对话大脑: {question, conv} → brain.claude_cli.ask_brain。
@@ -45,29 +63,31 @@ async def research_chat(body: dict):
     (单用户, timeout 180s), 大脑崩了返 success=False 不影响其他页。
     """
     from brain.claude_cli import ask_brain
-    question = (body.get("question") or "").strip()
-    if not question:
-        return {"answer": "请输入问题", "success": False}
+    question, err = _extract_question(body)
+    if err:
+        return err
     try:
         return await ask_brain(question, timeout=300, max_turns=20,
-                               channel=_brain_channel(body.get("conv") or ""))
+                               channel=_channel_of(body))
     except Exception as e:  # 松耦合兜底: 大脑任何异常不炸 server
         logger.warning(f"对话大脑异常 (松耦合): {e}", exc_info=True)
-        return {"answer": f"大脑调用失败: {e}", "success": False}
+        return _brain_fail(e)
 
 
 @router.post("/api/research/chat/stream")
 async def research_chat_stream(body: dict):
     """对话大脑 SSE — asyncio.Queue 桥接 on_line 与 yield (v2 H-1)。
     0.5s 轮询 + task.done() 检测；客户端断开 cancel task (H-3)。"""
-    import json as _json
     import asyncio as _aio
+    import json as _json
+
     from fastapi.responses import StreamingResponse
+
     from brain.claude_cli import ask_brain
 
-    question = (body.get("question") or "").strip()
-    if not question:
-        return {"answer": "请输入问题", "success": False}
+    question, err = _extract_question(body)
+    if err:
+        return err
 
     async def generate():
         queue: _aio.Queue = _aio.Queue()
@@ -75,7 +95,7 @@ async def research_chat_stream(body: dict):
             await queue.put(line)
         task = _aio.create_task(ask_brain(
             question, timeout=480, max_turns=40,
-            channel=_brain_channel(body.get("conv") or ""),
+            channel=_channel_of(body),
             on_line=on_line, archive=False))
         try:
             while True:
@@ -100,7 +120,7 @@ async def research_chat_stream(body: dict):
             result = await task
         except Exception as e:
             logger.warning(f"SSE ask_brain 异常: {e}", exc_info=True)
-            result = {"answer": f"大脑调用失败: {e}", "success": False}
+            result = _brain_fail(e)
         yield f"data: {_json.dumps({**result, 'type':'done'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -110,5 +130,5 @@ async def research_chat_stream(body: dict):
 async def research_chat_reset(body: dict):
     """重开某条会话 (清它的 claude session 记忆, 其他会话不动)。"""
     from brain import memory
-    memory.reset_session(_brain_channel(body.get("conv") or ""))
+    memory.reset_session(_channel_of(body))
     return {"success": True}

@@ -14,24 +14,27 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-from .state import (
-    BacktestParams, Context, PositionBook, TradeBuffer, Bar,
-)
-from .strategies.base import AbsoluteStrategy, TriggerResult
-from .exit_engine import ExitDispatcher
-from .absolute import FormulaSellStrategy
-from .entry import EntryEngine
-from .equity import EquityTracker
-from .signals import precompute_signal_lists
-from .prefilter import TriggerPreFilter
-
-from utils.logger import get_logger
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)。CLI/批量脚本从不置位, 行为不变。
 from core.stop_flag import raise_if_stopped
+from utils.logger import get_logger
+
+from .entry import EntryEngine
+from .equity import EquityTracker
+from .exit_engine import ExitDispatcher
+from .prefilter import TriggerPreFilter
+from .signals import precompute_signal_lists
+from .state import (
+    BacktestParams,
+    Bar,
+    Context,
+    PositionBook,
+    TradeBuffer,
+)
+from .strategies.base import AbsoluteStrategy, TriggerResult
 
 logger = get_logger(__name__)
 
@@ -133,19 +136,19 @@ class BacktestLoop:
                 final_positions.append(pos)
         self.final_positions = final_positions
         # F7 [H4]: 汇总 entry 被停牌/数据缺失 skip 的告警 (补圆"不静默吞信号")
-        skipped = getattr(self.entry_engine, "skipped_signal_count", 0)
+        skipped = self.entry_engine.skipped_signal_count
         if skipped:
             logger.warning(
                 "entry_signal_skip: 共 %d 个入场信号因停牌/数据缺失被跳过 (无成交, 见 _build_entry_signals 告警)",
                 skipped)
-        cd_skipped = getattr(self.entry_engine, "cooldown_skip_count", 0)
+        cd_skipped = self.entry_engine.cooldown_skip_count
         if cd_skipped:
             logger.info("sell_cooldown: %d 个买入信号因卖出冷却期被跳过", cd_skipped)
         return equity.equity_arr, trade_buf.to_array()
 
     def _mark_full_exit(self, ci: int, i: int) -> None:
         """2026-07-23 卖出冷却: 记录全清仓 bar (部分卖/换股不调此函数)。"""
-        leb = getattr(self, "_last_exit_bar", None)
+        leb = self._last_exit_bar
         if leb is not None and 0 <= ci < leb.shape[0]:
             leb[ci] = i
 
@@ -283,14 +286,13 @@ class BacktestLoop:
                 if action == "keep":
                     pp += 1
                 continue
-            else:
-                # 双触发: [ladder 部分卖, trailing/cost 全卖剩余] (engine.py:346-384)
-                # M6 不变量: results[0] 必为 ladder 部分卖(is_partial=True), dispatcher
-                # 仅在 ladder_partial 存在时才追加第二结果, 故此处 tr0.is_partial 恒真。
-                cash = self._execute_dual(
-                    results, pp, ci, i, ep, book, trade_buf, cash, slippage, comm_factor)
-                # 清仓 (swap-and-pop), 不 pp+=1
-                continue
+            # 双触发: [ladder 部分卖, trailing/cost 全卖剩余] (engine.py:346-384)
+            # M6 不变量: results[0] 必为 ladder 部分卖(is_partial=True), dispatcher
+            # 仅在 ladder_partial 存在时才追加第二结果, 故此处 tr0.is_partial 恒真。
+            cash = self._execute_dual(
+                results, pp, ci, i, ep, book, trade_buf, cash, slippage, comm_factor)
+            # 清仓 (swap-and-pop), 不 pp+=1
+            continue
         return cash
 
     # ─────────────────────────────────────────────────────────

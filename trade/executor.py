@@ -440,10 +440,6 @@ class Executor:
             self._fill_context.pop(next(iter(self._fill_context)))
         self._fill_context[order_id] = ctx
 
-    def pop_fill_context(self, order_id: str) -> dict | None:
-        """成交回报取回 (取即删)。仅兼容保留 —— 新代码用 peek/discard。"""
-        return self._fill_context.pop(order_id, None)
-
     def peek_fill_context(self, order_id: str) -> dict | None:
         """成交回报读取 (不删)。2026-07-31: 同一订单的部成多笔共享同一份
         原因 (金逸影视 1300 股拆 6 笔成交, 只有首笔有原因、看起来像

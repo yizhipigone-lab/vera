@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""体检任务队列(LabQueue) — 公式体检页面的后端执行器。
+r"""体检任务队列(LabQueue) — 公式体检页面的后端执行器。
 
 计划书: docs/plan/2026-07-20_公式体检页面_计划书.md(v2, 审计修订版)
 
@@ -30,6 +30,11 @@ FORMULA_RE = re.compile(r"^[\w一-龥\-]+$")
 STAGE_RE = re.compile(r"\[(S[0-9][^\]]*)\]")
 # 阶段 → 进度权重(S2 30%, S4 60%, 其余 10%, 计划书 §2.1)
 STAGE_PROGRESS = {"S0": 5, "S2": 30, "S3": 40, "S4": 95, "S5": 100}
+
+
+def formula_name_ok(name: str) -> bool:
+    """公式名白名单校验 (防路径穿越), 供 lab/server 端点复用。"""
+    return bool(FORMULA_RE.match(name))
 
 
 @dataclass

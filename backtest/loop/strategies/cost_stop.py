@@ -8,8 +8,8 @@ from __future__ import annotations
 import math
 from typing import List
 
-from .base import ExitStrategy, TriggerResult
 from ..state import Bar, Context, Position
+from .base import TriggerResult
 
 
 class CostStopStrategy:

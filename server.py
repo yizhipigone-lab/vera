@@ -9,33 +9,41 @@
 - research_api.py: /api/research/* 路由 (政策影响 + 对话大脑)
 """
 
+import json
+import re
 import sys
 from pathlib import Path
+
+# 2026-07-17: 协作式停止标志 (停止回测按钮)
+from core.stop_flag import BacktestStoppedError, clear_stop, request_stop
 
 # C1-3: Pipeline 统一入口 + ResultWriter 序列化/落盘
 from pipeline.pipeline import Pipeline
 from pipeline.result_writer import ResultWriter
-# 2026-07-17: 协作式停止标志 (停止回测按钮)
-from core.stop_flag import BacktestStoppedError, clear_stop, request_stop
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 import yaml
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from utils.config_loader import ConfigLoader
-from utils.logger import setup_logger
 # C4c: 配置模型/映射与两个路由模块 (re-export 保持 from server import StrategyConfig 可用)
 from config_mapper import StrategyConfig, _config_to_yaml_dict  # noqa: F401
 from lab_api import create_lab_router
 from research_api import router as research_router
+from utils.config_loader import ConfigLoader
+from utils.logger import setup_logger
 
 logger = setup_logger("VERA-Server", level="INFO")
+
+
+def _read_json(path: Path):
+    """读取 JSON 文件 (UTF-8) 并解析, 供结果类端点复用。"""
+    return json.loads(path.read_text(encoding="utf-8"))
 
 app = FastAPI(title="VERA 量化回测系统", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"], allow_methods=["*"], allow_headers=["*"])
@@ -66,6 +74,7 @@ pipeline_status = PipelineStatus()
 
 # 2026-07-20 审计 H1: /api/run 检查+置位原子锁
 import threading as _threading
+
 _run_lock = _threading.Lock()
 _last_served_pct = 0.0  # 2026-07-26: /api/status 进度单调不回退 guard
 
@@ -162,16 +171,15 @@ async def delete_saved_config():
 async def get_factor_rules(formula: str):
     """读 formula_lab 产出的过滤规则 JSON(output/reports/{formula}_filter_rules.json),
     供前端因子过滤区按公式动态渲染。未体检过返回 exists:false。"""
-    import json as _json
-    from core.lab_runner import FORMULA_RE
-    if not FORMULA_RE.match(formula or ""):
+    from core.lab_runner import formula_name_ok
+    if not formula_name_ok(formula or ""):
         return JSONResponse(status_code=400, content={"success": False, "error": "公式名含非法字符"})
-    path = Path(__file__).resolve().parent / "output" / "reports" / f"{formula}_filter_rules.json"
+    path = _PROJECT_ROOT / "output" / "reports" / f"{formula}_filter_rules.json"
     if not path.exists():
         return {"success": True, "exists": False, "rules": [],
                 "hint": f"{formula} 未体检, 先跑: python tools/formula_lab.py --formula {formula} --tag <短窗> --tag2 <长窗>"}
     try:
-        data = _json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return {"success": True, "exists": True, **data}
     except Exception as e:
         return {"success": False, "exists": False, "error": f"规则文件解析失败: {e}"}
@@ -243,7 +251,6 @@ def run_pipeline(cfg: StrategyConfig):
         pipeline_status.error = ""
 
     # 输入校验（保留）
-    import re
     if not re.match(r'^\d{8}$', cfg.start_time) or not re.match(r'^\d{8}$', cfg.end_time):
         pipeline_status.running = False
         return {"success": False, "error": "日期格式错误，应为 YYYYMMDD（8位数字），如 20240101"}
@@ -255,7 +262,8 @@ def run_pipeline(cfg: StrategyConfig):
         return {"success": False, "error": "选股公式名称不能为空"}
 
     # C1-3: 构建 YAML 配置临时文件，Pipeline(run) 接收路径字符串
-    import tempfile, os as _os
+    import os as _os
+    import tempfile
     config_dict = _config_to_yaml_dict(cfg)
     tmp_yaml = None
     try:
@@ -365,9 +373,7 @@ async def get_last_result():
     """获取上次回测的持久化结果。"""
     persist_path = _PROJECT_ROOT / "output" / "last_result.json"
     if persist_path.exists():
-        import json as _json
-        with open(persist_path, "r", encoding="utf-8") as f:
-            return _json.load(f)
+        return _read_json(persist_path)
     return {"success": False, "error": "暂无历史回测结果"}
 
 
@@ -376,23 +382,18 @@ async def list_results():
     """获取历史回测列表。"""
     index_path = _PROJECT_ROOT / "output" / "results" / "index.json"
     if index_path.exists():
-        import json as _json
-        with open(index_path, "r", encoding="utf-8") as f:
-            return _json.load(f)
+        return _read_json(index_path)
     return []
 
 
 @app.get("/api/results/{result_id}")
 async def get_result(result_id: str):
     """加载指定历史回测结果。P2-2: result_id 正则校验防路径遍历。"""
-    import re
     if not re.match(r'^\d{8}_\d{6}$', result_id):
         return JSONResponse(status_code=400, content={"success": False, "error": "result_id 格式错误"})
     result_path = _PROJECT_ROOT / "output" / "results" / f"{result_id}.json"
     if result_path.exists():
-        import json as _json
-        with open(result_path, "r", encoding="utf-8") as f:
-            return _json.load(f)
+        return _read_json(result_path)
     return {"success": False, "error": "结果不存在"}
 
 
@@ -403,25 +404,27 @@ async def index():
     html_path = _PROJECT_ROOT / "web" / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
+    # index.html 缺失时返回兜底提示，避免隐式返回 None 触发 ResponseValidationError
+    return "<h1>VERA Web 前端未找到，请创建 web/index.html</h1>"
 
 @app.get("/favicon.ico")
 async def favicon():
     """重定向到 SVG 图标，消除 404 日志噪音。"""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/web/favicon.svg")
-    return "<h1>VERA Web 前端未找到，请创建 web/index.html</h1>"
 
 
 # ====== 启动 ======
 
 if __name__ == "__main__":
-    import uvicorn
     import argparse
+
+    import uvicorn
     parser = argparse.ArgumentParser(description="VERA Web 服务器")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     args = parser.parse_args()
 
-    logger.info(f"VERA 量化回测系统 Web 服务器启动")
+    logger.info("VERA 量化回测系统 Web 服务器启动")
     logger.info(f"访问: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, access_log=False)

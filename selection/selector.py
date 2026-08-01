@@ -1,14 +1,15 @@
 """选股引擎 — 调度 TDX 条件选股公式执行，输出标准化选股结果。"""
 
-import pandas as pd
-from typing import List, Optional
 from datetime import datetime
+from typing import List, Optional
+
+import pandas as pd
 
 from core.data_fetcher import DataFetcher
 from core.formula_runner import FormulaRunner
 from core.stock_filter import filter_stocks
-from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -25,6 +26,15 @@ UNIVERSE_TYPE_MAP = {
     "hs_a": "50",
     "etf": "31",
 }
+
+# ETF 基金的 TDX list_type (原生分类, 天然含 51/56/58/511, 排除 501/508 LOF)
+ETF_LIST_TYPE = "31"
+
+
+def _merge_etf(stocks: List[str]) -> List[str]:
+    """拉 ETF 池 (list_type='31') 并与现有股票池合并去重。"""
+    etf_stocks = DataFetcher.get_stock_universe(ETF_LIST_TYPE)
+    return list(set(stocks) | set(etf_stocks))
 
 
 class StockSelector:
@@ -85,7 +95,7 @@ class StockSelector:
 
         if etf_only:
             # 仅 ETF 池 (优先级最高, 忽略 sectors)
-            stocks = DataFetcher.get_stock_universe("31")
+            stocks = DataFetcher.get_stock_universe(ETF_LIST_TYPE)
             logger.info(f"仅ETF模式: list_type=31, 拉到 {len(stocks)} 只 ETF")
         elif sectors:
             # 选了行业板块 — 拉每个板块成份股并集
@@ -101,16 +111,14 @@ class StockSelector:
             logger.info(f"板块并集: {len(stocks)} 只 (来自 {len(sectors)} 个板块)")
             # ETF 叠加
             if include_etf:
-                etf_stocks = DataFetcher.get_stock_universe("31")
-                stocks = list(set(stocks) | set(etf_stocks))
+                stocks = _merge_etf(stocks)
                 logger.info(f"叠加 ETF: {len(stocks)} 只")
         else:
             # A股池 (下拉框)
             list_type = UNIVERSE_TYPE_MAP.get(str(utype), utype)
             stocks = DataFetcher.get_stock_universe(list_type)
             if include_etf:
-                etf_stocks = DataFetcher.get_stock_universe("31")
-                stocks = list(set(stocks) | set(etf_stocks))
+                stocks = _merge_etf(stocks)
                 logger.info(f"包含ETF模式: A股 + ETF → 合并 {len(stocks)}")
 
         # 2026-07-23: 北交所口径过滤 — 板块成份股可能含 .BJ (实测 881008 含 920088.BJ),
@@ -145,7 +153,12 @@ class StockSelector:
             logger.warning(f"exclude_new_listings_days={exclude_new} "
                            "— TDX get_stock_list 暂不支持按上市天数过滤，此选项被忽略")
 
-        mode = "仅ETF" if etf_only else ("板块" + ("+ETF" if include_etf and sectors else "") if sectors else ("A股+ETF" if include_etf else "A股"))
+        if etf_only:
+            mode = "仅ETF"
+        elif sectors:
+            mode = "板块" + ("+ETF" if include_etf else "")
+        else:
+            mode = "A股+ETF" if include_etf else "A股"
         logger.info(f"解析股票池: {len(stocks)} 只股票 (type={utype}, mode={mode})")
         _progress.report("universe_list", 1.0, f"股票池 {len(stocks)} 只")  # 2026-07-26
         result = normalize_list(stocks)
@@ -185,7 +198,7 @@ class StockSelector:
             end_time = datetime.now().strftime("%Y%m%d")
 
         # 2026-07-26: L2 按日信号缓存 (计划书 §3.2) — 接缝在 selector 内部,
-        # pipeline/tools/MultiFormulaSelector 全部自动受益; 仅 period=1d。
+        # pipeline/tools 全部自动受益; 仅 period=1d。
         # 异常回退直跑, 不中断选股。
         from selection import signal_day_cache as _sdc
         if _sdc.ENABLED and self.period == "1d" and start_time:
@@ -213,37 +226,3 @@ class StockSelector:
             dividend_type=self.dividend_type,
         )
         return df
-
-
-class MultiFormulaSelector:
-    """多公式并行选股。"""
-
-    def __init__(self, formulas_config: List[dict]):
-        """
-        Args:
-            formulas_config: 多个公式配置列表
-                [{formula_name, formula_arg, universe, period}, ...]
-        """
-        self.selectors = [StockSelector(cfg) for cfg in formulas_config]
-
-    def run_all(
-        self,
-        start_time: str = "",
-        end_time: str = "",
-    ) -> pd.DataFrame:
-        """依次执行所有公式选股，合并去重。"""
-        results = []
-        for i, sel in enumerate(self.selectors):
-            logger.info(f"执行第 {i+1}/{len(self.selectors)} 个选股公式: {sel.formula_name}")
-            df = sel.run(start_time=start_time, end_time=end_time)
-            if not df.empty:
-                results.append(df)
-
-        if not results:
-            return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
-
-        merged = pd.concat(results, ignore_index=True)
-        merged = merged.drop_duplicates(subset=["stock_code", "select_date", "formula_name"])
-        merged = merged.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
-        logger.info(f"多公式选股合并: {len(merged)} 条记录")
-        return merged

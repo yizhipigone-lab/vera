@@ -388,7 +388,6 @@ class FakeGateway(BaseGateway):
         self._seq = 0
         self._trade_seq = 0
         self._connected = False
-        self._subscribed: set[str] = set()
         self._quotes: dict[str, dict] = {}
         self._lock = threading.Lock()
 
@@ -470,11 +469,10 @@ class FakeGateway(BaseGateway):
             return [dict(t) for t in self._trades.values()]
 
     def subscribe_quotes(self, codes: list[str]) -> bool:
-        self._subscribed.update(codes)
         return True
 
     def unsubscribe_all(self) -> None:
-        self._subscribed.clear()
+        pass
 
     def query_quotes(self, codes: list[str]) -> dict[str, dict]:
         """轮询兜底: 返回 push_quote 注入的最新快照 (未推过的票缺席)。"""

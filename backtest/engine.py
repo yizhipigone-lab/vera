@@ -8,25 +8,25 @@ run()/run_cached() 经共享段 `_resolve_stop_and_build_loop` 调用
 设计说明: `docs/architecture/loop.md`。
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Any
+from typing import Optional
 
-from backtest.metrics import MetricsCalculator
-from backtest.result import BacktestResult
+import numpy as np
+import pandas as pd
+
+from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
 from backtest.degrade_5m import (
     apply_5m_degradation,
     recompute_last_tradable_idx,
     scan_degraded_positions,
     synthesize_5m_grid,
 )
-from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
 from backtest.loop import build_backtest_loop
-from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
+from backtest.metrics import MetricsCalculator
+from backtest.result import BacktestResult
 from backtest.stop_config import (
+    DEFAULT_PRIORITY,
     DEFAULT_TRAILING_ACTIVATION,
     DEFAULT_TRAILING_DRAWDOWN,
-    DEFAULT_PRIORITY,
     VALID_PRIORITIES,
 )
 from core.data_fetcher import DataFetcher
@@ -78,11 +78,7 @@ def _build_tradable_from_raw(close_raw, close):
         raw_df = pd.DataFrame(close_raw, index=close.index, columns=close.columns)
     raw_aligned = raw_df.reindex(index=close.index, columns=close.columns)
     tradable_np = raw_aligned.notna().values.astype(np.bool_)
-    last_tradable_idx = np.full(close.shape[1], -1, dtype=np.int64)
-    for _ci in range(close.shape[1]):
-        _idxs = np.where(tradable_np[:, _ci])[0]
-        if _idxs.size:
-            last_tradable_idx[_ci] = int(_idxs[-1])
+    last_tradable_idx = recompute_last_tradable_idx(tradable_np)
     if tradable_np.sum() == 0:
         logger.warning(
             "_build_tradable_from_raw: tradable_np 全 False — close_raw 标签/形状可能与 close 不匹配, "
@@ -387,6 +383,8 @@ class BacktestEngine:
         resolved = {
             "trailing_activation": float(trailing_activation),
             "trailing_drawdown": float(trailing_drawdown),
+            # run() 的 ENGINE_DEBUG 日志从 resolved 读缩放值, 与本处同一计算源
+            "mhd_scaled": mhd_scaled,
         }
         return equity_arr, raw_trades, resolved
 
@@ -544,12 +542,6 @@ class BacktestEngine:
                      len(codes))
 
         bpday = self.bars_per_day
-        # ENGINE_DEBUG 日志的缩放值仅作展示 (2026-08-01 批次 3b C2);
-        # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化。
-        logger.info("ENGINE_DEBUG max_hold_days=%d(scaled=%d) time_enabled=%s period=%s bpday=%d",
-                     int(time_s.get("max_hold_days", 20)),
-                     int(time_s.get("max_hold_days", 20)) * bpday,
-                     time_s.get("enabled", True), self.period, bpday)
         t0 = pd.Timestamp.now()
         entries = self._filter_limit_up(entries, close)
         _progress.report("loop", 0.0, "核心回测...")  # 2026-07-26
@@ -561,6 +553,12 @@ class BacktestEngine:
             ladder_profits, ladder_ratios, len(lv),
             formula_exit_np, formula_exit_ratio,
         )
+        # ENGINE_DEBUG 日志的缩放值仅作展示, 从 resolved 读 (2026-08-01 批次 3b C2;
+        # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化)。
+        logger.info("ENGINE_DEBUG max_hold_days=%d(scaled=%d) time_enabled=%s period=%s bpday=%d",
+                     int(time_s.get("max_hold_days", 20)),
+                     resolved["mhd_scaled"],
+                     time_s.get("enabled", True), self.period, bpday)
         _progress.report("loop", 1.0, "回测完成")  # 2026-07-26
         # 2026-07-21: 期末未平仓持仓快照
         final_positions = list(getattr(self._last_loop, "final_positions", None) or [])

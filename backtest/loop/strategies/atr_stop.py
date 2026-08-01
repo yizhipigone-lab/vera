@@ -17,8 +17,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from .base import ExitStrategy, TriggerResult
 from ..state import Bar, Context, Position
+from .base import TriggerResult
 
 
 class AtrStopStrategy:

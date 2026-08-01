@@ -67,19 +67,27 @@ def tag_stocks(stock_codes: List[str]) -> Optional[Dict[str, str]]:
         return None
 
 
+def tag_selections_of(selections: pd.DataFrame, code_col: str,
+                      tag_fn, tag_name: str) -> Optional[Dict]:
+    """tag_selections 公共骨架 (B 层 concept_kb 镜像复用, 计划书 §5 接缝同款):
+    空 / 无 code 列 → None(serialize 不加 key); 否则取 code 列调 tag_fn 打标。
+    """
+    if selections is None or selections.empty:
+        return None
+    if code_col not in selections.columns:
+        logger.warning(f"selections 无 {code_col} 列,{tag_name} 返 None")
+        return None
+    codes = selections[code_col].astype(str).tolist()
+    return tag_fn(codes)
+
+
 def tag_selections(selections: pd.DataFrame, code_col: str = "stock_code") -> Optional[Dict[str, str]]:
     """给选股结果 DataFrame 打标签 → {票: 优先级}。
 
     Pipeline 接缝用这个(pipeline.py 因子过滤后、回测前调用)。
     失败 / 空 / 无 code 列 → None(serialize 不加 key,选股/回测不受影响)。
     """
-    if selections is None or selections.empty:
-        return None
-    if code_col not in selections.columns:
-        logger.warning(f"selections 无 {code_col} 列,policy_priority 返 None")
-        return None
-    codes = selections[code_col].astype(str).tolist()
-    return tag_stocks(codes)
+    return tag_selections_of(selections, code_col, tag_stocks, "policy_priority")
 
 
 def clear_cache() -> None:
