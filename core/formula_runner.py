@@ -4,13 +4,12 @@ T-H-2 (2026-07-15): 加 connector seam (set_connector/reset_connector/_connector
 与 DataFetcher 的 C5 seam 模式一致, 支持 mock 集成测试.
 """
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 import pandas as pd
 
 from core.connector import TdxConnector
 from core.dividend_type import to_formula_int
 from utils.logger import get_logger
-from utils.code_normalizer import normalize_list
 
 logger = get_logger(__name__)
 
@@ -223,95 +222,3 @@ class FormulaRunner:
         df = df.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
         logger.info(f"选股完成: {len(df)} 条记录, {df['stock_code'].nunique()} 只股票")
         return df
-
-    @classmethod
-    def run_indicator(
-        cls,
-        formula_name: str,
-        formula_arg: str = "",
-        stock_list: Optional[List[str]] = None,
-        start_time: str = "",
-        end_time: str = "",
-        stock_period: str = "1d",
-        dividend_type: int = 1,
-        return_count: int = 1,
-        return_date: bool = False,
-        xsflag: int = -1,
-    ) -> Dict[str, List]:
-        """
-        批量执行 TDX 指标公式。
-
-        Returns:
-            dict: {stock_code: [[indicator_values]]}
-        """
-        cls._ensure_ready()
-        # 候选 D: 边界归一化, 允许 str 输入
-        dividend_type = to_formula_int(dividend_type)
-        tq = cls._connector().tq()
-
-        if stock_list is None:
-            stock_list = tq.get_stock_list("50", list_type=1)
-        else:
-            stock_list = normalize_list(stock_list)
-
-        logger.info(f"执行指标公式 [{formula_name}] 参数={formula_arg}")
-
-        try:
-            result = tq.formula_process_mul_zb(
-                formula_name=formula_name,
-                formula_arg=formula_arg,
-                return_count=return_count,
-                return_date=return_date,
-                xsflag=xsflag,
-                stock_list=stock_list,
-                stock_period=stock_period,
-                start_time=start_time,
-                end_time=end_time,
-                dividend_type=dividend_type,
-            )
-
-            if not result or result.get("ErrorId", "") not in ["0", "19"]:
-                logger.error(f"指标公式执行失败: {result.get('Error', '未知') if result else '返回为空'}")
-                return {}
-
-            return result.get("Value", {})
-        except Exception as e:
-            logger.error(f"指标公式执行异常: {e}")
-            return {}
-
-    @classmethod
-    def selection_to_dataframe(
-        cls,
-        selection_result: Dict[str, List[str]],
-        formula_name: str = "",
-    ) -> pd.DataFrame:
-        """
-        将选股结果转换为标准化 DataFrame。
-
-        Returns:
-            DataFrame with columns: stock_code, select_date, formula_name
-        """
-        records = []
-        for stock_code, dates in selection_result.items():
-            for date_str in dates:
-                try:
-                    dt = pd.to_datetime(date_str, format="%Y%m%d")
-                except (ValueError, TypeError):
-                    try:
-                        dt = pd.to_datetime(date_str, format="%Y%m%d%H%M%S")
-                    except (ValueError, TypeError):
-                        dt = pd.to_datetime(date_str)
-
-                records.append({
-                    "stock_code": stock_code,
-                    "select_date": dt,
-                    "formula_name": formula_name,
-                })
-
-        if not records:
-            return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
-
-        df = pd.DataFrame(records)
-        df["select_date"] = pd.to_datetime(df["select_date"])
-        df = df.drop_duplicates(subset=["stock_code", "select_date"])
-        return df.sort_values(["select_date", "stock_code"]).reset_index(drop=True)

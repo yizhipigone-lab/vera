@@ -8,7 +8,6 @@ from typing import Optional
 
 from core.connector import TdxConnector
 from selection.selector import StockSelector
-from selection.deduplicator import Deduplicator
 from pipeline.result_writer import PipelineResult
 from backtest.engine import BacktestEngine
 from backtest.benchmark import BenchmarkComparator
@@ -90,8 +89,14 @@ class Pipeline:
         # 2026-07-24: 选股结果缓存 (计划书 docs/plan/2026-07-24_选股结果缓存_计划书.md)。
         # 实测选股占全流程 92% (5m 全A 32.8s/35.5s), 改止盈止损重跑同公式命中即省满。
         # 按日失效 (key 含 today_str); 任何缓存异常回退直跑, 不中断管线, 不动选股口径。
+        # 2026-08-01 (批次6 D4): L0 收缩为 period≠1d — 1d 由 L2 按日信号缓存
+        # (selector.run 内接缝, 键更精确含 pool_hash、支持子区间命中) 接管,
+        # 此前 1d 场景 L0/L2 双写同一份 selections (磁盘 472K+11M 并存)。
+        # 例外: L2 被配置关闭时 1d 仍走 L0, 不留无缓存空档。
         sc_cfg = self.config.get("selection_cache", {})
-        use_sel_cache = sc_cfg.get("enabled", True)
+        period = sel_cfg.get("period", "1d")
+        l2_on = sc_cfg.get("enabled", True) and sc_cfg.get("l2_enabled", True)
+        use_sel_cache = sc_cfg.get("enabled", True) and (period != "1d" or not l2_on)
         force_refresh = sc_cfg.get("force_refresh", False)
         key = None
         picks = None

@@ -60,8 +60,9 @@ def _make_app(cfg, clock, runner=None, positions=None, cash=1_000_000.0):
                    selection_runner=runner or (lambda f, a, u: []))
     # disposition 终态轮询: 测试不等生产 2s×10s (Fake 已报非终态,
     # 会跑满 timeout), 注小值; 终态用例里 fill/reject 后提前结束
-    app._await_interval = 0.01
-    app._await_timeout = 0.05
+    # (2026-08-01: TradeApp 委托缝已删, 直注 feature 实例属性)
+    app._auto_buy._await_interval = 0.01
+    app._auto_buy._await_timeout = 0.05
     return app
 
 
@@ -79,7 +80,7 @@ def _push(app, code, last, ask1, prev_close=10.0):
 
 def _run_signals(app, signals):
     """直接驱动结果处理 (跳过工作线程, 执行路径确定性测试)。"""
-    app._on_signals({"signals": signals, "source": "test"})
+    app._auto_buy.on_signals({"signals": signals, "source": "test"})
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -128,7 +129,7 @@ def test_buy_happy_path_ask1_limit(cfg):
     kinds = {r[0] for r in app.store._conn.execute(
         "SELECT kind FROM audit").fetchall()}
     assert {"auto_buy", "auto_buy_summary"} <= kinds
-    last = app.auto_buy_last
+    last = app._auto_buy.last
     assert last["selected"] == 1 and last["bought"] == 1
     assert last["dispositions"][0]["action"] == "buy"
 
@@ -149,7 +150,7 @@ def test_skip_matrix(cfg):
     _run_signals(app, [{"code": c, "select_date": "x"} for c in
                        [held, ETF, "000002.SZ", "000003.SZ",
                         "000004.SZ", CODE]])
-    last = app.auto_buy_last
+    last = app._auto_buy.last
     reasons = {d["code"]: d.get("reason") for d in last["dispositions"]}
     assert reasons[held] == "已持仓"
     assert reasons[ETF] == "ETF不管理"
@@ -167,7 +168,7 @@ def test_max_buys_per_day_cap(cfg):
     for c in codes:
         _push(app, c, 10.0, 10.01)
     _run_signals(app, [{"code": c, "select_date": "x"} for c in codes])
-    last = app.auto_buy_last
+    last = app._auto_buy.last
     assert last["bought"] == 5                     # 默认上限 5
     skips = [d for d in last["dispositions"] if d["action"] == "skip"]
     assert all(d["reason"] == "达每日上限" for d in skips)
@@ -191,7 +192,7 @@ def test_sz_force_market_uses_limit_up_price(cfg):
     assert cyb["price_type"] == PRICE_TYPE_LIMIT  # LIMIT, 不是对手最优
     # 创业板 20% 涨停=12.0, 但 > 卖一×1.02=10.5×1.02=10.71→round_price=10.72
     assert cyb["price"] == 10.72                 # 贴笼子上限
-    reasons = {d["code"]: d["reason"] for d in app.auto_buy_last["dispositions"]}
+    reasons = {d["code"]: d["reason"] for d in app._auto_buy.last["dispositions"]}
     assert "收盘竞价" in reasons[CODE]
 
 
@@ -237,8 +238,8 @@ def test_disposition_final_status(cfg):
     app.gateway.simulate_fill(by_code[CODE]["order_id"])
     app.gateway.simulate_reject(by_code["000004.SZ"]["order_id"])
     # 重新跑一次终态补记 (直接调内部, 避免再下一批单)
-    last = app.auto_buy_last
-    app._await_and_fill_dispositions(last["dispositions"])
+    last = app._auto_buy.last
+    app._auto_buy._await_and_fill_dispositions(last["dispositions"])
     status = {d["code"]: d.get("status") for d in last["dispositions"]}
     assert status[CODE].startswith("已成@")
     assert status["000004.SZ"] == "废单(状态57)"
@@ -254,7 +255,7 @@ def test_second_run_same_day_skips_bought(cfg):
     assert len(app.gateway.query_orders()) == 1
     _run_signals(app, [{"code": CODE, "select_date": "x"}])   # 再来一次
     assert len(app.gateway.query_orders()) == 1               # 不重买
-    assert app.auto_buy_last["dispositions"][0]["reason"] == "今日已买过"
+    assert app._auto_buy.last["dispositions"][0]["reason"] == "今日已买过"
 
 
 def test_risk_reject_blocks_buy(cfg, tmp_path):
@@ -266,15 +267,15 @@ def test_risk_reject_blocks_buy(cfg, tmp_path):
     _push(app, CODE, 25.5, 25.51, prev_close=25.0)
     _run_signals(app, [{"code": CODE, "select_date": "x"}])
     assert app.gateway.query_orders() == []
-    assert "风控拒" in app.auto_buy_last["dispositions"][0]["reason"]
+    assert "风控拒" in app._auto_buy.last["dispositions"][0]["reason"]
 
 
 def test_selection_error_path(cfg):
     """选股失败: error 事件 → audit + last.error, 不误买入。"""
     clock = [_ts("14:52")]
     app = _start(_make_app(cfg, clock))
-    app._on_signals({"signals": None, "error": "TDX 连接失败", "source": "test"})
-    assert app.auto_buy_last["error"] == "TDX 连接失败"
+    app._auto_buy.on_signals({"signals": None, "error": "TDX 连接失败", "source": "test"})
+    assert app._auto_buy.last["error"] == "TDX 连接失败"
     rows = app.store._conn.execute(
         "SELECT kind FROM audit WHERE kind='auto_buy_error'").fetchall()
     assert rows
@@ -300,13 +301,13 @@ def test_worker_thread_does_not_block_consumer(cfg):
     # 锚定假时钟偏差 >30s 会被 M4 当过旧丢弃 (测试自己踩的坑)
     app._engine.put(Event(type=EVENT_TICK, ts=clock[0],
                           data={"code": CODE, "last": 25.5, "ask1": 25.51}))
-    app._start_auto_buy("manual")
+    app._auto_buy.start("manual")
     t0 = time.time()
     got = _wait(lambda: app.monitor.quote_of(CODE) is not None, timeout=0.8)
     assert got, "慢选股期间消费者线程被堵"
     assert time.time() - t0 < 1.0
     # 选股完成后买入照常
-    assert _wait(lambda: app.auto_buy_last is not None, timeout=4.0)
+    assert _wait(lambda: app._auto_buy.last is not None, timeout=4.0)
     app.stop()
 
 
@@ -320,9 +321,9 @@ def test_auto_buy_reentry_guard(cfg):
         return []
 
     app = _start(_make_app(cfg, clock, runner=blocking_runner))
-    app._start_auto_buy("manual")
-    assert _wait(lambda: app._auto_buy_running)
-    app._start_auto_buy("manual")   # 重入
+    app._auto_buy.start("manual")
+    assert _wait(lambda: app._auto_buy.running)
+    app._auto_buy.start("manual")   # 重入
     rows = app.store._conn.execute(
         "SELECT kind FROM audit WHERE kind='auto_buy_skip'").fetchall()
     gate.set()
@@ -341,7 +342,7 @@ def test_api_auto_buy_endpoints(cfg):
     try:
         r = c.post("/api/trade/auto_buy")
         assert r.status_code == 200 and r.json()["accepted"] is True
-        assert _wait(lambda: app.auto_buy_last is not None)
+        assert _wait(lambda: app._auto_buy.last is not None)
         d = c.get("/api/trade/auto_buy/last").json()
         assert d["config"]["formula_name"] == "QUANTQQ"
         assert d["last"]["selected"] == 0 and d["last"]["bought"] == 0

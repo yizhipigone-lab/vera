@@ -462,44 +462,6 @@ class DataFetcher:
         return df
 
     @classmethod
-    def get_kline_as_wide(
-        cls,
-        stock_list: List[str],
-        start_time: str = "",
-        end_time: str = "",
-        period: str = "1d",
-        dividend_type: str = "front",
-    ) -> pd.DataFrame:
-        """
-        获取 K 线数据并重整为 VectorBT 兼容的 wide 格式。
-
-        Returns:
-            DataFrame，列为 MultiIndex: (price_field, stock_code)，行为 DatetimeIndex
-        """
-        data = cls.get_kline(
-            stock_list, start_time, end_time, period=period,
-            dividend_type=dividend_type,
-        )
-        if not data:
-            return pd.DataFrame()
-
-        codes = normalize_list(stock_list)
-        fields = ["Open", "High", "Low", "Close", "Volume"]
-        frames = {}
-        for f in fields:
-            if f in data:
-                df = data[f].copy()
-                df.columns = [(f.lower(), c) for c in df.columns]
-                frames[f] = df
-
-        if not frames:
-            return pd.DataFrame()
-
-        result = pd.concat(frames.values(), axis=1)
-        result.columns = pd.MultiIndex.from_tuples(result.columns)
-        return result.sort_index()
-
-    @classmethod
     def get_close_price(
         cls,
         stock_list: List[str],

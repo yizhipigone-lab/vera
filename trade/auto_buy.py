@@ -1,0 +1,319 @@
+"""trade/auto_buy.py — 尾盘自动选股买入特性 (2026-08-01 批次4: 组合根瘦身)。
+
+来源:
+    从 trade_main.py 整段抽离 (原 _start_auto_buy / _auto_buy_worker /
+    _on_signals / _execute_auto_buys / _await_and_fill_dispositions,
+    2026-07-27 MVP 起), **纯结构搬迁, 行为零变更** —— 验收网是
+    tests/trade/test_auto_buy.py 的 20 个端到端测试, 零改动通过即兼容。
+
+线程纪律 (与原实现完全一致):
+    - start() / on_signals() 只在消费者线程被调用 (EventEngine 唯一写者,
+      组合根经 EVENT_COMMAND "auto_buy" / EVENT_SIGNALS 两行接线进来);
+    - TDX 选股阻塞可达 60s, 在自带工作线程跑, 跑完只 put EVENT_SIGNALS,
+      不碰任何交易状态 —— 本类不引入新锁 (消费者线程串行即是锁)。
+
+依赖全注入 (计划书批次4 拍板):
+    cfg 传 **getter 而非值** (cfg_getter=lambda: app._cfg) —— 配置热更新
+    (_apply_config 换 self._cfg 引用) 才能穿透到本特性, 这是评审 ⚠ 点;
+    build_risk_ctx / get_prev_close 留在组合根 (它们读 _reconciled /
+    _day_baseline 等组合根状态), 以 callable 注入。
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+
+from trade.book import (
+    DIRECTION_BUY,
+    OS_REPORTED,
+    OS_SUCCEEDED,
+    PRICE_TYPE_LIMIT,
+    PRICE_TYPE_MARKET_PEER_FIRST,
+    TERMINAL_STATUSES,
+    is_etf,
+)
+from trade.events import EVENT_SIGNALS, Event
+from trade.executor import limit_ratio, round_price
+from trade.risk import OrderIntent
+from utils.logger import get_logger
+
+_logger = get_logger("trade.auto_buy")
+
+
+class AutoBuyFeature:
+    """尾盘自动选股买入。公开接口 4 个 (批次4 拍板):
+    start(source) / on_signals(data) / last / running。"""
+
+    def __init__(self, engine, cfg_getter, store, gateway, book, monitor,
+                 risk, executor, *, selection_runner, build_risk_ctx,
+                 get_prev_close, clock=time.time):
+        self._engine = engine
+        self._cfg_getter = cfg_getter      # callable → TradeConfig (热更穿透)
+        self._store = store
+        self._gateway = gateway
+        self._book = book
+        self._monitor = monitor
+        self._risk = risk
+        self._executor = executor
+        self._clock = clock
+        self._selection_runner = selection_runner
+        self._build_risk_ctx = build_risk_ctx
+        self._get_prev_close = get_prev_close
+        self._running = False                   # 选股工作线程在跑 (防重入)
+        self._last: dict | None = None          # 最近一次运行 (页面展示)
+        self._placed: tuple = ("", set())       # (日期, 当日已下单代码)
+        # disposition 终态轮询参数 (实例属性, 测试直注小值;
+        # 生产 2s×~10s, 尾盘窗口可接受 —— 会短暂阻塞消费者线程, 注释即契约)
+        self._await_interval = 2.0
+        self._await_timeout = 10.0
+
+    # ── 公开接口 ────────────────────────────────────────────────
+
+    @property
+    def last(self) -> dict | None:
+        """最近一次尾盘自动买入运行结果 (页面展示, 只读)。"""
+        return self._last
+
+    @property
+    def running(self) -> bool:
+        """选股工作线程是否在跑 (防重入状态, 只读)。"""
+        return self._running
+
+    def start(self, source: str) -> None:
+        """发起一次尾盘选股 (消费者线程内只开线程, 绝不自己跑 TDX)。
+        scheduled 要求 enabled; manual (api 立即执行) 任何时段放行 —
+        2026-07-27 裁决①同款语义: 人工命令不受时段/开关约束。"""
+        if source == "scheduled" and not self._cfg_getter().auto_buy.enabled:
+            return  # 未启用: 定时事件静默丢弃 (面板里有关闭语义)
+        if self._running:
+            self._store.write_audit(
+                "auto_buy_skip", "上一次选股仍在运行, 本次忽略",
+                {"source": source})
+            return
+        self._running = True
+        threading.Thread(target=self._worker, args=(source,),
+                         name="auto-buy-selection", daemon=True).start()
+        self._store.write_audit(
+            "auto_buy_start", f"尾盘选股已发起 ({source})", {"source": source})
+
+    def on_signals(self, data: dict) -> None:
+        """选股结果处理 (消费者线程): 错误记 audit 页面可见;
+        正常结果逐票过滤执行。"""
+        self._running = False
+        if data.get("signals") is None:
+            self._last = {
+                "ts": self._clock(), "source": data.get("source"),
+                "error": data.get("error", "未知错误"), "dispositions": [],
+            }
+            self._store.write_audit(
+                "auto_buy_error", f"尾盘选股失败: {data.get('error')}",
+                {"source": data.get("source")})
+            return
+        self._execute(data["signals"], data.get("source", "?"))
+
+    # ── 内部 ────────────────────────────────────────────────────
+
+    def _worker(self, source: str) -> None:
+        """工作线程: TDX 选股阻塞可达 60s, 绝不能跑在消费者线程
+        (唯一写者卡死 = 全系统停摆)。跑完只 put 事件, 不碰任何状态。"""
+        cfg = self._cfg_getter().auto_buy
+        try:
+            signals = self._selection_runner(
+                cfg.formula_name, cfg.formula_arg, dict(cfg.universe))
+            self._engine.put(Event(type=EVENT_SIGNALS, ts=self._clock(),
+                                   data={"signals": signals, "source": source}))
+        except Exception as e:
+            _logger.exception("尾盘选股工作线程异常")
+            self._engine.put(Event(type=EVENT_SIGNALS, ts=self._clock(),
+                                   data={"signals": None, "error": str(e),
+                                         "source": source}))
+
+    def _execute(self, signals: list[dict], source: str) -> None:
+        """逐票过滤执行 (消费者线程)。过滤顺序 = 便宜到贵:
+        上限 → 已持仓 → ETF → 今日已买过 → 涨停 → 现金/数量 → 风控。"""
+        cfg = self._cfg_getter().auto_buy
+        today = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        hhmm = time.strftime("%H:%M", time.localtime(self._clock()))
+        # 当日已下单代码 (跨批次防重; 批次内也靠它) — 按日重置
+        if self._placed[0] != today:
+            self._placed = (today, set())
+        placed_codes = self._placed[1]
+        day_start = time.mktime(time.strptime(today, "%Y%m%d"))
+        bought_codes = self._store.bought_codes_since(day_start)
+        try:
+            cash = self._gateway.query_asset()["cash"]
+        except Exception:
+            self._store.write_audit(
+                "auto_buy_error", "查询资金失败, 本轮自动买入中止", {})
+            return
+
+        positions = self._book.snapshot()["positions"]
+        # 2026-07-27 首次实跑修复: 候选票批量取行情。
+        # monitor 缓存只覆盖持仓/订阅票, 信号票从未查过 → 61/61 全"无行情"。
+        # 批量查一次注入, 缓存兜底(持仓票)。
+        quotes: dict = {}
+        codes = [s["code"] for s in signals]
+        try:
+            quotes = self._gateway.query_quotes(codes) or {}
+        except Exception:
+            self._store.write_audit(
+                "auto_buy_error", f"批量查询行情失败({len(codes)}只), 本轮自动买入中止", {})
+            return
+        dispositions: list[dict] = []
+        bought = 0
+        for sig in signals:
+            code = sig["code"]
+            if bought >= cfg.max_buys_per_day:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "达每日上限"})
+                continue
+            pos = positions.get(code)
+            if pos is not None and pos.volume > 0:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "已持仓"})
+                continue
+            if self._cfg_getter().exclude_etf and is_etf(code):
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "ETF不管理"})
+                continue
+            if code in placed_codes or code in bought_codes:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "今日已买过"})
+                continue
+            # 涨停拒买 + 定价: 都需要行情。无价/无昨收 fail-closed —
+            # 尾盘买入不是救火, 宁可不买不可瞎买
+            quote = quotes.get(code) or self._monitor.quote_of(code)
+            if not quote or not quote.get("last"):
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "无行情"})
+                continue
+            prev_close = quote.get("prev_close") or self._get_prev_close(code)
+            if not prev_close:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "无昨收无法判涨停"})
+                continue
+            limit_up = prev_close * (1 + limit_ratio(code))
+            if quote["last"] >= limit_up:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "涨停拒买"})
+                continue
+            price = quote.get("ask1") or quote["last"]
+            amount = min(cfg.amount_per_stock, cash * 0.95)
+            qty = int(amount / price / 100) * 100
+            if qty < 100:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": "现金不足一手"})
+                continue
+            intent = OrderIntent(code=code, direction=DIRECTION_BUY,
+                                 price=price, qty=qty)
+            ok, why = self._risk.check(intent, self._build_risk_ctx())
+            if not ok:
+                dispositions.append({"code": code, "action": "skip",
+                                     "reason": f"风控拒: {why}"})
+                continue
+            # 定价 (2026-07-27 实测驱动, 市场感知; 2026-08-01 P0-2 修复):
+            # - ≥force_market_after: **全板块禁市价单** —— 深市 14:57-15:00
+            #   收盘集合竞价只收限价单 (07-31 实测 5 张"对手最优"全废单),
+            #   沪市 2018 年起收盘也是集合竞价、同样拒市价单 (6/6 废单)。
+            # - .SZ 创业/科创 (300/301/688): 20% 涨停价超 2% 价格笼子,
+            #   被交易主机暂存不废不成交 (07-31 实测 0/12 零成交),
+            #   改为 min(涨停价, 卖一×1.02) 贴笼子上限。
+            #   **注意**: 科创板 688.SH 同样是 20% 涨停 + 2% 笼子,
+            #   不能靠 is_sz 判定 —— 688 是沪市, is_sz 恒 False,
+            #   条件只用代码前缀 (08-01 实测 688099 同死法)。
+            # - 深主板 / 沪主板: 10% 涨停价在笼子内, 直接挂涨停
+            #   (单一价格撮合, 成交价=收盘价, 与限价@涨停同效)。
+            force = hhmm >= self._cfg_getter().force_market_after
+            if force:
+                order_type = PRICE_TYPE_LIMIT
+                code_num = code.split(".")[0]
+                # 20% 涨跌幅品种 (创业 300/301 + 科创 688): 涨停价超 2% 笼子
+                if code_num.startswith(("300", "301", "688")):
+                    ask1 = quote.get("ask1") or quote["last"]
+                    order_price = round_price(min(limit_up, ask1 * 1.02))
+                    price_kind = "笼子上限限价(收盘竞价)"
+                else:
+                    order_price = round_price(limit_up)
+                    price_kind = "涨停价限价(收盘竞价)"
+            elif not quote.get("ask1"):
+                order_price = 0.0
+                order_type = PRICE_TYPE_MARKET_PEER_FIRST
+                price_kind = "对手最优"
+            else:
+                order_price = price
+                order_type = PRICE_TYPE_LIMIT
+                price_kind = "卖一价"
+            remark = self._executor.next_remark("B")
+            order_id = self._gateway.order(
+                code, DIRECTION_BUY, order_price, qty, order_type, remark)
+            self._executor.register_fill_context(order_id, {"label": "TDX买入"})
+            # P0-6: apply_order_update 和 save_order 用实际委托价 order_price,
+            # 非参考价 price —— 收盘竞价挂涨停/笼子上限时两者不同,
+            # 原用 price 导致页面"成交价>委托价"矛盾记录
+            self._book.apply_order_update(
+                order_id, OS_REPORTED, code=code, direction=DIRECTION_BUY,
+                price=order_price, qty=qty, remark=remark)
+            self._store.save_order({
+                "order_id": order_id, "remark": remark, "code": code,
+                "direction": DIRECTION_BUY, "price": order_price, "qty": qty,
+                "status": OS_REPORTED})
+            placed_codes.add(code)
+            cash -= qty * price
+            bought += 1
+            dispositions.append({"code": code, "action": "buy",
+                                 "price": order_price or price, "qty": qty,
+                                 "order_id": order_id, "reason": price_kind})
+            self._store.write_audit(
+                "auto_buy",
+                f"尾盘买入 {code} {qty}@{order_price or price} ({price_kind})",
+                {"code": code, "qty": qty, "price": order_price or price,
+                 "order_id": order_id, "source": source,
+                 "price_kind": price_kind})
+
+        self._await_and_fill_dispositions(dispositions)
+        summary = {
+            "ts": self._clock(), "source": source,
+            "selected": len(signals), "bought": bought,
+            "dispositions": dispositions,
+        }
+        self._last = summary
+        # 汇总落 audit (结构化 detail_json 即持久化, 页面可读)
+        self._store.write_audit(
+            "auto_buy_summary",
+            f"尾盘自动买入: 选中 {len(signals)} / 买入 {bought} ({source})",
+            {"selected": len(signals), "bought": bought,
+             "dispositions": dispositions})
+
+    def _await_and_fill_dispositions(self, dispositions: list[dict]) -> None:
+        """下单后轮询一次, 把每张单的最终状态补进 disposition
+        (2026-07-27 实测驱动: 五张废单就是这么发现的 —— "下单即记 buy"
+        会掩盖废单)。终态语义: 已成@均价 / 废单(状态码) / 在途。
+        注意这会阻塞消费者线程最多 ~10s —— 14:52 尾盘窗口可接受
+        (监控腿下一轮扫描照常), 白天其他时段只有人工触发才走到。"""
+        buys = [d for d in dispositions if d["action"] == "buy"]
+        if not buys:
+            return
+        deadline = time.time() + self._await_timeout
+        pending_ids = {d["order_id"] for d in buys}
+        while pending_ids and time.time() < deadline:
+            orders = {o["order_id"]: o for o in self._gateway.query_orders()}
+            pending_ids = {oid for oid in pending_ids
+                           if orders.get(oid, {}).get("status")
+                           not in TERMINAL_STATUSES}
+            if not pending_ids:
+                break
+            time.sleep(self._await_interval)
+        trades = {t["order_id"]: t for t in self._gateway.query_trades()}
+        orders = {o["order_id"]: o for o in self._gateway.query_orders()}
+        for d in buys:
+            o = orders.get(d["order_id"], {})
+            status = o.get("status")
+            if status == OS_SUCCEEDED:
+                fill_px = trades.get(d["order_id"], {}).get("price",
+                                                            d["price"])
+                d["status"] = f"已成@{fill_px}"
+            elif status in TERMINAL_STATUSES:
+                d["status"] = f"废单(状态{status})"
+            else:
+                d["status"] = "在途"

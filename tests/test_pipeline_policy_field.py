@@ -45,14 +45,14 @@ def test_default_none():
 
 def test_serialize_omits_when_none():
     """serialize: policy_priority=None → resp 不含该 key(响应形状不变,backward compat)。"""
-    resp = ResultWriter().serialize(_make_result(policy_priority=None))
+    resp = ResultWriter(status_sink=lambda step, pct: None).serialize(_make_result(policy_priority=None))
     assert "policy_priority" not in resp
 
 
 def test_serialize_includes_when_present():
     """serialize: 有值 → resp['policy_priority'] 含。"""
     pp = {"600519.SH": "P1", "000001.SZ": "AVOID"}
-    resp = ResultWriter().serialize(_make_result(policy_priority=pp))
+    resp = ResultWriter(status_sink=lambda step, pct: None).serialize(_make_result(policy_priority=pp))
     assert resp["policy_priority"] == pp
 
 

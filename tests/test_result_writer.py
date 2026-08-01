@@ -91,7 +91,7 @@ def _make_result():
 
 def test_serialize_emits_full_field_set():
     """serialize 输出必须含前端依赖的全部字段 (backward compat 硬约束)."""
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     resp = writer.serialize(_make_result())
     required = {"success", "metrics", "equity", "trades", "benchmarks",
                 "stop_config_summary", "report_url", "trade_count",
@@ -105,7 +105,7 @@ def test_serialize_emits_full_field_set():
 
 def test_serialize_nan_becomes_none():
     """metrics 的 NaN/Inf 必须转 None (JSON 安全, 复刻 server safe_serialize)."""
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     backtest = {"metrics": {"bad": float("nan"), "inf": float("inf"), "ok": 0.5},
                 "trades": pd.DataFrame(), "equity_curve": pd.DataFrame(),
                 "stop_config_summary": ""}
@@ -120,7 +120,7 @@ def test_serialize_trades_get_stock_name(monkeypatch):
     """trades 每行必须有 stock_name (查简称表回填, 查不到回退空串)."""
     import core.data_fetcher as dfm
     monkeypatch.setattr(dfm.DataFetcher, "get_name_map", lambda: {"000001": "平安银行"})
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     resp = writer.serialize(_make_result())
     assert len(resp["trades"]) == 1
     assert resp["trades"][0]["stock_name"] == "平安银行"
@@ -130,7 +130,7 @@ def test_serialize_trades_get_stock_name(monkeypatch):
 
 def test_persist_writes_three_files(tmp_path):
     """persist 必须落 results/{ts}.json + index.json + last_result.json."""
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     resp = {"success": True, "trade_count": 1, "metrics": {"cumulative_return": 0.1}}
     results_dir = tmp_path / "results"
     last_path = tmp_path / "last_result.json"
@@ -167,7 +167,7 @@ def test_persist_swallows_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(builtins, "open", fake_open)
 
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     # 不应抛任何异常
     writer.persist(
         {"success": True, "trade_count": 0, "metrics": {}},
@@ -202,7 +202,7 @@ def test_on_progress_swallows_sink_exception():
 def test_persist_empty_pipeline_result(tmp_path):
     """空 PipelineResult (error 路径) persist 不崩溃."""
     from pipeline.result_writer import PipelineResult
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     empty = PipelineResult(
         selections=None, backtest=None, benchmark={}, reports={},
         error="no_selections",
@@ -217,7 +217,7 @@ def test_persist_empty_pipeline_result(tmp_path):
 
 def test_serialize_includes_degradation_only_when_present():
     """degradation (2026-07-18 计划书 §4.7 LOW-2): 有才加 key, 无则不加 (向后兼容)."""
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
     pr = _make_result()
     pr.backtest["degradation"] = {
         "enabled": True, "degraded_trades": 2, "total_trades": 10,
@@ -235,7 +235,7 @@ def test_serialize_includes_open_positions_only_when_present(monkeypatch):
     """2026-07-21: open_positions 有才加 key (同 degradation 先例) + stock_name 回填."""
     import core.data_fetcher as dfm
     monkeypatch.setattr(dfm.DataFetcher, "get_name_map", lambda: {"600001.SH": "测试股"})
-    writer = ResultWriter()
+    writer = ResultWriter(status_sink=lambda step, pct: None)
 
     # 无 open_positions → 响应形状不变
     resp = writer.serialize(_make_result())

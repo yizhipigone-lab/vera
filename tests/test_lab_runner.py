@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""tools/lab_runner — 提交校验 / 去重 / 进度解析 / baseline 串联 / 互斥等待 测试"""
+"""core/lab_runner — 提交校验 / 去重 / 进度解析 / baseline 串联 / 互斥等待 测试"""
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))
 
-from lab_runner import LabQueue, FORMULA_RE  # noqa: E402
+from core.lab_runner import LabQueue, FORMULA_RE  # noqa: E402
 
 
 def _wait(task_id, q, timeout=5):
@@ -106,7 +105,7 @@ def test_progress_parsing_updates_stage():
     q = LabQueue(runner=_fake_runner_ok([]))
     task_seen = {}
     # 直接调 _on_line 验证解析
-    from lab_runner import LabTask
+    from core.lab_runner import LabTask
     t = LabTask(formulas=["X"], tag="t", tag2=None)
     q._on_line(t, "[S4 A/B 20250719] xxx")
     assert t.stage == "S4"

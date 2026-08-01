@@ -59,34 +59,6 @@ class SignalExporter:
             return False
 
     @classmethod
-    def send_backtest_data(
-        cls,
-        stock_code: str,
-        time_list: List[str],
-        data_list: List[List[str]],
-        count: int = 1,
-    ) -> bool:
-        """
-        发送回测数据到通达信 K 线图展示。
-        data_list 每个子列表最多 16 个纯数字字符串。
-        """
-        cls._ensure_ready()
-        tq = TdxConnector.tq()
-
-        try:
-            tq.send_bt_data(
-                stock_code=stock_code,
-                time_list=time_list,
-                data_list=data_list,
-                count=count,
-            )
-            logger.info(f"已发送回测数据到通达信: {stock_code}")
-            return True
-        except Exception as e:
-            logger.error(f"发送回测数据失败: {e}")
-            return False
-
-    @classmethod
     def print_to_tdx(
         cls,
         df_list: List[pd.DataFrame],

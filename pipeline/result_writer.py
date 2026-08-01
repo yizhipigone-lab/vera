@@ -8,7 +8,7 @@
 - serialize 输出字段集 = server.py 现状 (backward compat 硬约束, web/vera-ui.js 依赖)
 - response_data 同时用于 /api/run 返回 + last_result.json + {ts}.json 的 data (三共用, 改形状三处同断)
 - stock_name 回填 (查简称表) 必须保留 (server.py:459-466 现有逻辑, Pipeline.run 不做)
-- status_sink 用 callable 注入避免循环 import (server import ResultWriter, ResultWriter 延迟 import server)
+- status_sink 必填 callable 注入 (2026-08-01 批次5 C4a), 彻底消除循环 import 回退
 
 本模块管"前端响应+落盘"（原 selection/result_writer.py 已于候选 D 清理时删除）。
 """
@@ -117,33 +117,18 @@ def safe_serialize(obj):
 class ResultWriter:
     """进度回调 adapter + 序列化 + 落盘 (从 server.py:419-531 抽出)."""
 
-    def __init__(self, status_sink: Optional[Callable[[str, int], None]] = None):
-        # status_sink 默认延迟写 server.pipeline_status 单例 (防循环 import)
+    def __init__(self, status_sink: Callable[[str, int], None]):
+        # status_sink 必填注入 (2026-08-01 批次5 C4a): 调用方 (server/tests) 总注入,
+        # 原"缺省回退写 server.pipeline_status 单例"的 lazy import 是循环依赖破口, 已删。
         self._status_sink = status_sink
 
     def _sink(self, step: str, pct: int) -> None:
-        if self._status_sink is not None:
-            try:
-                self._status_sink(step, pct)
-            except Exception:
-                # 回调异常不中断管线 (复刻 pipeline._cb 语义)
-                # P1-3 (2026-07-15): 用模块级 logger, 替代原内联 import logging
-                logger.warning("status_sink 回调异常", exc_info=True)
-        else:
-            # P2-3 (2026-07-15): python server.py 时模块名是 __main__ 非 server,
-            # from server import pipeline_status 会重新导入创建克隆体导致进度丢失.
-            # 优先走 __main__ 兜底.
-            try:
-                import sys
-                main = sys.modules.get("__main__")
-                ps = getattr(main, "pipeline_status", None) if main is not None else None
-                if ps is None:
-                    from server import pipeline_status as ps
-                ps.step = step
-                ps.progress = pct
-            except Exception:
-                # P1-3 (2026-07-15): 用模块级 logger
-                logger.warning("pipeline_status 写入失败", exc_info=True)
+        try:
+            self._status_sink(step, pct)
+        except Exception:
+            # 回调异常不中断管线 (复刻 pipeline._cb 语义)
+            # P1-3 (2026-07-15): 用模块级 logger, 替代原内联 import logging
+            logger.warning("status_sink 回调异常", exc_info=True)
 
     def on_progress(self, pct: int, step: str) -> None:
         """Pipeline.run progress_callback adapter.
