@@ -44,7 +44,8 @@ def tdx_paths():
     2026-07-18 审计 H5: TDX 不可用时 skip (与 test_real_parity 一致),
     不再整类 ERROR — 换机器/上 CI 不会假红。
     """
-    tdx = r"E:\NEW_TDX\PYPlugins\user"
+    from core.tdx_path import tdx_plugins_user
+    tdx = tdx_plugins_user()
     if tdx not in sys.path:
         sys.path.insert(0, tdx)
     from core.connector import TdxConnector
@@ -93,7 +94,7 @@ class TestEndToEndRealPipeline:
             f"引擎回报 trades 为空! 上次审计这里填 None 被当作 0 显示, "
             f"但实际 trades DataFrame 长度 = {len(trades)}. "
             f"metrics.total_trades = {total_trades_metric}. "
-            f"如确为 0, 说明信号日新股新规则把买入给 skip 了, 需查 _simulate_core_v3 买入循环."
+            f"如确为 0, 说明信号日新股新规则把买入给 skip 了, 需查 BacktestLoop 买入循环."
         )
 
     def test_single_stock_entry_price_is_close_not_open(self, cfg):

@@ -16,8 +16,12 @@ gs_txt 公式过滤 — 冒烟前置 (2026-07-18)
 import os
 import re
 import json
+import sys
 
-GS_DIR = r"E:\NEW_TDX\T0001\export\gs_txt"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.tdx_path import tdx_home
+
+GS_DIR = os.path.join(tdx_home(), "T0001", "export", "gs_txt")
 OUT_DIR = os.path.join("output", "gs_filter")
 
 # 画图函数: 仅 POLYLINE (用户明确)

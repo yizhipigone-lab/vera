@@ -8,9 +8,10 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# TDX 安装路径 — 优先环境变量 TDX_HOME，否则用默认值
-_TDX_PATH = os.environ.get("TDX_HOME", r"E:\NEW_TDX")
-TQCENTER_PATH = os.path.join(_TDX_PATH, "PYPlugins", "user", "tqcenter.py")
+from core.tdx_path import tdx_home
+
+# TDX 安装路径 — 优先环境变量 TDX_HOME，否则用默认值 (单一真相: core/tdx_path.py)
+TQCENTER_PATH = os.path.join(tdx_home(), "PYPlugins", "user", "tqcenter.py")
 
 
 class TdxConnector:

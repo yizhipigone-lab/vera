@@ -58,8 +58,7 @@ def test_compute_panel_factor_causal():
     closes = pd.DataFrame(
         {c: np.linspace(100, 120 + j * 5, 80) for j, c in enumerate(["A.SZ", "B.SZ"])},
         index=idx)
-    sys.path.insert(0, str(ROOT / "tools"))
-    from factor_ic_screen import f_dist_ma20, lookup
+    from tools.factor_ic_screen import f_dist_ma20, lookup
     full = f_dist_ma20({"close": closes})
     cut = 60
     trunc = f_dist_ma20({"close": closes.iloc[:cut]})

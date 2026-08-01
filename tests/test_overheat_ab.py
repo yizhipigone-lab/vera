@@ -8,9 +8,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))
-
-import overheat_ab_test as ab  # noqa: E402
+import tools.overheat_ab_test as ab  # noqa: E402
 
 
 def _sel():

@@ -36,6 +36,10 @@ function badge(el, ok, text) {
 
 // ── 渲染 ─────────────────────────────────────────────
 
+// 2026-08-01: 急停状态记忆 —— renderStatus 只在它变化时重写 tdHint,
+// 不覆盖 cmd() 写入的命令反馈 (首次渲染 null≠bool 会写一次默认文案)
+var _tdLastKillActive = null;
+
 function renderStatus(s) {
   badge(document.getElementById('tdConn'), s.connected, s.connected ? '已连接' : '未连接');
   badge(document.getElementById('tdReconciled'), s.reconciled, s.reconciled ? '对账通过' : '对账未通过');
@@ -47,9 +51,14 @@ function renderStatus(s) {
   var btn = document.getElementById('tdKillBtn');
   btn.textContent = s.kill_active ? '急停中 · 点击解除' : '急停';
   btn.classList.toggle('armed', !s.kill_active);
-  document.getElementById('tdHint').textContent =
-    s.kill_active ? '急停激活中: 全面拒单, 解除需二次确认 (只许人工解除)'
-    : 'ETF 持仓不纳入自动管理 (规则: 沪 51/56/58、深 15/16/18 前缀)';
+  // 2026-08-01: tdHint 只在急停状态变化(或首次渲染)时重写 —— 否则 5s 轮询
+  // 会把 cmd() 刚写入的命令反馈 ("急停命令已受理" 等) 闪现覆盖 (浏览器 E2E 实证)
+  if (s.kill_active !== _tdLastKillActive) {
+    _tdLastKillActive = s.kill_active;
+    document.getElementById('tdHint').textContent =
+      s.kill_active ? '急停激活中: 全面拒单, 解除需二次确认 (只许人工解除)'
+      : 'ETF 持仓不纳入自动管理 (规则: 沪 51/56/58、深 15/16/18 前缀)';
+  }
 }
 
 // ── 审计M11修复: 宕机不留"看起来正常"的陈旧数据 ──
@@ -379,15 +388,18 @@ window.tradePageLeave = function () {
 
 // 审计M12修复: 所有命令统一收口 —— 失败有明确提示 (与买入一致),
 // 请求期间按钮 disable 防连点, 4s 超时
-function cmd(btn, url, body, okMsg) {
+// 2026-08-01: hintId 可选 —— 反馈写就近 hint (买/卖/预埋 tdBuyHint),
+// 默认 tdHint (急停/尾盘选股); renderStatus 已改为不覆盖非急停期的 tdHint
+function cmd(btn, url, body, okMsg, hintId) {
   btn.disabled = true;
+  var hintEl = document.getElementById(hintId || 'tdHint');
   var ctl = new AbortController();
   var timer = setTimeout(function () { ctl.abort(); }, 4000);
   post(url, body, ctl.signal).then(function () {
-    document.getElementById('tdHint').textContent = okMsg;
+    hintEl.textContent = okMsg;
     refresh();
   }).catch(function () {
-    document.getElementById('tdHint').textContent = '命令发送失败: 交易服务 (8081) 不可达';
+    hintEl.textContent = '命令发送失败: 交易服务 (8081) 不可达';
   }).finally(function () {
     clearTimeout(timer);
     btn.disabled = false;
@@ -416,7 +428,7 @@ document.getElementById('tdBuyBtn').addEventListener('click', function () {
   if (priceRaw) body.price = parseFloat(priceRaw);
   if (!confirm('待确认买入: ' + code + ' ' + qty + ' 股'
       + (body.price ? ' @' + body.price : ' (最新价)') + '\n将过风控闸门后下单, 确认?')) return;
-  cmd(this, '/api/trade/buy', body, '买入命令已受理 (过闸结果见审计日志)');
+  cmd(this, '/api/trade/buy', body, '买入命令已受理 (过闸结果见审计日志)', 'tdBuyHint');
 });
 
 // 2026-07-30: 配套手工卖出 — 复用代码+数量输入框, 校验可用后走 /api/trade/sell
@@ -441,11 +453,11 @@ document.getElementById('tdSellBtn').addEventListener('click', function () {
     qtyText = qty + ' 股 (可用 ' + canUse + ' 股)';
   }
   if (!confirm('确认卖出 ' + code + ' ' + qtyText + '?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级对手最优)')) return;
-  cmd(this, '/api/trade/sell', body, '卖出命令已受理, 结果见审计日志');
+  cmd(this, '/api/trade/sell', body, '卖出命令已受理, 结果见审计日志', 'tdBuyHint');
 });
 
 document.getElementById('tdLadderBtn').addEventListener('click', function () {
-  cmd(this, '/api/trade/ladder', {}, '预埋命令已受理');});
+  cmd(this, '/api/trade/ladder', {}, '预埋命令已受理', 'tdBuyHint');});
 
 // ── 尾盘自动选股卡片 (2026-07-27 MVP) ────────────────
 

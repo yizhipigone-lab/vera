@@ -208,14 +208,18 @@ def _hold_days(entry_ts: float | None):
     return n
 
 
-def create_api_app(trade_app) -> FastAPI:
+def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastAPI:
     """装配路由。trade_app 是 composition root, 路由只读它的
-    只读快照 / 调它的 submit_command, 不知道任何内部细节。"""
+    只读快照 / 调它的 submit_command, 不知道任何内部细节。
+    allowed_origins: CORS 放行源 (页面服务器的 origin); None 保持
+    默认 8080 两个 —— 页面由回测服务器 serve, 放行的是它的 origin
+    (2026-08-01 参数化, 此前硬编码)。"""
     app = FastAPI(title="VERA 实盘交易系统", version="1.0.0")
     # 交易页由回测服务器 (8080) serve, 跨域打这里 —— 只放本机源
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"],
+        allow_origins=allowed_origins or
+        ["http://127.0.0.1:8080", "http://localhost:8080"],
         allow_methods=["*"], allow_headers=["*"],
     )
 

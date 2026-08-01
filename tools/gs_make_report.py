@@ -13,7 +13,11 @@ gs_txt 5m 扫描 — MD 评测报告生成器 (阶段C, 2026-07-18)
 import os
 import re
 import glob
+import sys
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.tdx_path import tdx_home
 
 BASE = "output/gs_5m_sweep"
 OUT_MD = os.path.join(BASE, "EVAL_REPORT.md")
@@ -22,7 +26,7 @@ TARGET_MAXDD = 0.15
 MIN_TRADES = 1000
 
 # 未来函数排除 (权威清单, 2026-07-20 网上核实). 报告只含干净公式
-GS_DIR = r"E:\NEW_TDX\T0001\export\gs_txt"
+GS_DIR = os.path.join(tdx_home(), "T0001", "export", "gs_txt")
 EXCL_FUNCS = ["ZIG", "ZIGA", "ZIGBARS", "FLATZIG", "FLATZIGA", "PEAK", "PEAKA",
               "PEAKBARS", "PEAKBARSA", "TROUGH", "TROUGHA", "TROUGHBARS", "BACKSET",
               "REFX", "REFXV", "REFXR", "BARSNEXT", "DCLOSE", "DHIGH", "DLOW",

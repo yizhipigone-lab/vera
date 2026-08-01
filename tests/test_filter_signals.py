@@ -13,9 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))
-
-import filter_signal_tournament as fst  # noqa: E402
+import tools.filter_signal_tournament as fst  # noqa: E402
 
 
 def _daily_index(n, end="2026-07-17"):

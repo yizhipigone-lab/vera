@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 
@@ -81,9 +80,8 @@ def _load_panels(codes: list[str], start: pd.Timestamp, end: pd.Timestamp) -> di
 
 
 def _panel_factor_fn(name: str):
-    """从 factor_ic_screen 注册表取面板因子函数(单一数据源)。"""
-    sys.path.insert(0, str(ROOT / "tools"))
-    from factor_ic_screen import PANEL_FACTORS
+    """从 tools/factor_ic_screen 注册表取面板因子函数(单一数据源)。"""
+    from tools.factor_ic_screen import PANEL_FACTORS
     for n, fn, _need, _fam in PANEL_FACTORS:
         if n == name:
             return fn
@@ -108,8 +106,7 @@ def compute_factor_values(selections: pd.DataFrame, factors: list[str]) -> pd.Da
         panels = _load_panels(sel["stock_code"].tolist(), start, end)
         if not panels:
             raise RuntimeError("kline_cache 无选股池个股数据, 无法计算面板因子")
-        sys.path.insert(0, str(ROOT / "tools"))
-        from factor_ic_screen import lookup
+        from tools.factor_ic_screen import lookup
         for f in need_panel:
             fn = _panel_factor_fn(f)
             if fn.__code__.co_argcount == 2:
@@ -118,8 +115,7 @@ def compute_factor_values(selections: pd.DataFrame, factors: list[str]) -> pd.Da
             sel[f] = lookup(panel, sel["select_date"], sel["stock_code"])
 
     if need_db:
-        sys.path.insert(0, str(ROOT / "tools"))
-        from factor_ic_screen import load_daily_basic
+        from tools.factor_ic_screen import load_daily_basic
         tag = f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
         db = load_daily_basic(dates, tag)
         if len(db):

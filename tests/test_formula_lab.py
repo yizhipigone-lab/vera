@@ -9,9 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))
-
-import formula_lab as lab  # noqa: E402
+import tools.formula_lab as lab  # noqa: E402
 
 
 # ── S0 前置检查 ──────────────────────────────────────────────

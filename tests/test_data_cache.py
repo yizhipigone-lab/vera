@@ -63,6 +63,75 @@ class TestDataCache:
         assert not c.has_name_map()
 
 
+class TestDataCacheTTL:
+    """2026-08-01 (D6): TTL 惰性过期 —— has_* 判过期即 miss (调用方回源),
+    get_* 语义不变 (仍返回原值, 不返回 None)。时钟注入, 不 sleep。"""
+
+    def _cache(self, now):
+        # clock 读列表首元素, 测试里改 now[0] 即拨时间
+        return DataCache(clock=lambda: now[0])
+
+    def test_fresh_set_hits(self):
+        now = [1000.0]
+        c = self._cache(now)
+        c.set_sector_list([{"code": "1"}])
+        c.set_sector_stocks("1", ["a"])
+        c.set_name_map({"a": "A"})
+        now[0] += 3600          # 1h 后: 全部远未过期 → 命中
+        assert c.has_sector_list()
+        assert c.has_sector_stocks("1")
+        assert c.has_name_map()
+
+    def test_sector_expires_after_24h(self):
+        now = [1000.0]
+        c = self._cache(now)
+        c.set_sector_list([{"code": "1"}])
+        c.set_sector_stocks("1", ["a"])
+        now[0] += 25 * 3600     # 25h > 24h TTL → miss (回源)
+        assert not c.has_sector_list()
+        assert not c.has_sector_stocks("1")
+        # get_* 语义不变: 旧值还在, 不返回 None/空
+        assert c.get_sector_list() == [{"code": "1"}]
+        assert c.get_sector_stocks("1") == ["a"]
+
+    def test_name_map_expires_after_7d(self):
+        now = [1000.0]
+        c = self._cache(now)
+        c.set_name_map({"a": "A"})
+        now[0] += 6 * 24 * 3600     # 6d < 7d → 仍命中
+        assert c.has_name_map()
+        now[0] += 2 * 24 * 3600     # 8d > 7d → miss
+        assert not c.has_name_map()
+        assert c.get_name_map() == {"a": "A"}   # get 语义不变
+
+    def test_sector_stocks_ttl_is_per_key(self):
+        now = [1000.0]
+        c = self._cache(now)
+        c.set_sector_stocks("old", ["a"])
+        now[0] += 25 * 3600
+        c.set_sector_stocks("new", ["b"])   # 过期后新写的 key
+        assert not c.has_sector_stocks("old")
+        assert c.has_sector_stocks("new")
+
+    def test_refetch_after_expiry_hits_again(self):
+        """过期 miss → 回源重 set → 恢复命中 (回源路径契约)。"""
+        now = [1000.0]
+        c = self._cache(now)
+        c.set_sector_list([{"code": "1"}])
+        now[0] += 25 * 3600
+        assert not c.has_sector_list()
+        c.set_sector_list([{"code": "2"}])  # 模拟回源重写
+        assert c.has_sector_list()
+        assert c.get_sector_list() == [{"code": "2"}]
+
+    def test_clear_resets_ttl_state(self):
+        now = [1000.0]
+        c = self._cache(now)
+        c.set_sector_stocks("1", ["a"])
+        c.clear_sector()
+        assert "1" not in c._sector_stocks_ts
+
+
 class TestDataFetcherCacheDelegation:
     """DataFetcher.clear_* 委托到 DataCache。"""
 

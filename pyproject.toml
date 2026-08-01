@@ -8,10 +8,22 @@ dependencies = [
     "numpy>=1.24",
     "fastapi>=0.100",
     "uvicorn>=0.23",
+    "pydantic>=2.0",
     "pyyaml>=6.0",
+    "pyarrow>=12.0",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
     "matplotlib>=3.7",
     "plotly>=5.15",
 ]
+
+# 平台依赖 (非 pip 安装, 故不列入 dependencies):
+#   tqcenter — 通达信 TQ 策略框架插件
+#     位置: {TDX_HOME}/PYPlugins/user/tqcenter.py
+#     通过环境变量 TDX_HOME 指定通达信安装路径, 默认: E:\NEW_TDX
+#   xtquant — QMT 券商终端内置, 仅 trade/gateway.py 内 lazy import
+# 可选依赖 (缺失时自动降级, 非必需):
+#   akshare / exchange_calendars / jinja2 / scipy / tushare / playwright
 
 [tool.ruff]
 target-version = "py310"

@@ -17,8 +17,10 @@ from utils.logger import get_logger
 
 _logger = get_logger("trade.signals")
 
-# TDX 插件路径 (与 tests/conftest.py:19 同一处真相)
-_TDX_PATH = r"E:\NEW_TDX\PYPlugins\user"
+# TDX 插件路径 (单一真相: core/tdx_path.py, 支持 TDX_HOME 环境变量)
+from core.tdx_path import tdx_plugins_user
+
+_TDX_PATH = tdx_plugins_user()
 
 
 def run_tail_selection(formula_name: str, formula_arg: str,

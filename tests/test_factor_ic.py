@@ -14,9 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))
-
-import factor_ic_screen as fis  # noqa: E402
+import tools.factor_ic_screen as fis  # noqa: E402
 
 
 def _panel(n_days=120, n_stocks=30, seed=1):
