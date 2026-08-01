@@ -55,7 +55,12 @@ CREATE TABLE IF NOT EXISTS trades (
     price       REAL NOT NULL,
     qty         INTEGER NOT NULL,
     amount      REAL NOT NULL,
-    ts          REAL NOT NULL
+    ts          REAL NOT NULL,
+    source      TEXT NOT NULL DEFAULT '', -- 2026-07-30: system=系统单 / manual=手工单
+                                          -- (券商端/手机端, 对账认领); 历史行空=未知
+    reason      TEXT NOT NULL DEFAULT ''  -- 2026-07-31: 成交原因 (阶梯止盈·档1/移动止盈/
+                                          -- 硬止损/人工卖出...), 来自下单侧 fill context;
+                                          -- 无 ctx (部成第二笔/手工单/买入) 空串
 );
 CREATE TABLE IF NOT EXISTS audit (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +108,8 @@ class TradeStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._migrate_tier_state()
+        self._migrate_trades_source()
+        self._migrate_trades_reason()
         self._lock = threading.Lock()
 
         raw_path = Path(raw_log_path)
@@ -140,8 +147,17 @@ class TradeStore:
         原实现订单状态只靠 QMT 订单状态回调刷新 — 回调缺失时 orders 表
         永远停在"已报/成交0" (成交已落 trades 表), 页面显示陈旧。此处以
         成交回报为硬事实直接回写, 与回调路径互补 (QMT 状态回调来后会
-        以同样终态覆盖, 幂等无冲突)。"""
+        以同样终态覆盖, 幂等无冲突)。
+
+        2026-08-01 M4: 终态守卫 —— 已终态的订单 (部撤53/已撤54/已成56/废单57)
+        跳过更新, 防成交回报乱序把"已成"回退为"部成"。
+        """
         with self._lock, self._conn:
+            cur = self._conn.execute(
+                "SELECT status FROM orders WHERE order_id = ?", (order_id,))
+            row = cur.fetchone()
+            if row and row[0] in (53, 54, 56, 57):
+                return  # 终态不可逆
             self._conn.execute(
                 """UPDATE orders SET
                        filled_qty = MIN(qty, filled_qty + ?),
@@ -166,17 +182,24 @@ class TradeStore:
 
     def save_trade(self, record: dict) -> None:
         """落成交记录。traded_id 重复 → sqlite3.IntegrityError 上抛,
-        调用方 (book 层) 负责先判幂等, 这里是最后一道物理约束。"""
+        调用方 (book 层) 负责先判幂等, 这里是最后一道物理约束。
+        source: system=系统单 (回调链路, 默认) / manual=手工单 (对账认领,
+        2026-07-30 —— 前端成交记录要区分"我手工卖的"和"系统卖的")。
+        reason: 成交原因 (2026-07-31, 如 "阶梯止盈·档1"/"移动止盈"/"人工卖出"),
+        由 trade_main._on_trade 从 executor fill context 组装; 无 ctx 时空串。"""
         with self._lock, self._conn:
             self._conn.execute(
                 """INSERT INTO trades
-                   (traded_id, order_id, code, direction, price, qty, amount, ts)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (traded_id, order_id, code, direction, price, qty, amount, ts,
+                    source, reason)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record["traded_id"], record["order_id"], record["code"],
                     record["direction"], record["price"], record["qty"],
                     record.get("amount", record["price"] * record["qty"]),
                     record.get("ts", time.time()),
+                    record.get("source", "system"),
+                    record.get("reason", ""),
                 ),
             )
 
@@ -222,6 +245,26 @@ class TradeStore:
             with self._conn:
                 self._conn.execute("DROP TABLE tier_state")
                 self._conn.execute(_TIER_STATE_DDL)
+
+    def _migrate_trades_source(self) -> None:
+        """2026-07-30: trades 表加 source 列 (区分系统单/手工单)。
+        ALTER ADD COLUMN 幂等演进, 历史行默认空串 (未知, 不回填 —
+        手工/系统的判定依赖当时的认领上下文, 事后猜不如留白)。"""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(trades)")]
+        if cols and "source" not in cols:
+            with self._conn:
+                self._conn.execute(
+                    "ALTER TABLE trades ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_trades_reason(self) -> None:
+        """2026-07-31: trades 表加 reason 列 (成交原因, 成交记录页展示)。
+        同 source 的幂等演进, 历史行默认空串 (下单时的 fill context
+        已随进程消散, 事后无从回填, 留白)。"""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(trades)")]
+        if cols and "reason" not in cols:
+            with self._conn:
+                self._conn.execute(
+                    "ALTER TABLE trades ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
 
     def write_audit(self, kind: str, message: str, detail: dict | None = None) -> None:
         """审计流水 (风控拒绝/对账告警等)。只增不改。"""

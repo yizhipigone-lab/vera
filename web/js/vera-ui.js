@@ -308,10 +308,26 @@ document.getElementById('cfgFormula').addEventListener('change', loadFactorRules
 // ═══════════════════════════════════════════
 
 let _labPollTimer = null;
-function switchTab(name) { const isLab = name==='lab';
-  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab); document.getElementById('tabBtnLab').classList.toggle('active', isLab);
-  document.querySelector('.app').style.display = isLab?'none':''; document.getElementById('pageLab').classList.toggle('active', isLab);
-  if (isLab) { refreshLabStatus(); loadLabHistory(); startLabPoll(); } else stopLabPoll(); }
+function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade';
+  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab && !isTrade);
+  document.getElementById('tabBtnLab').classList.toggle('active', isLab);
+  document.getElementById('tabBtnTrade').classList.toggle('active', isTrade);
+  document.querySelector('.app').style.display = (isLab||isTrade)?'none':'';
+  document.getElementById('pageLab').classList.toggle('active', isLab);
+  document.getElementById('pageTrade').classList.toggle('active', isTrade);
+  var isResearch = name==='research';
+  var _tabR = document.getElementById('tabBtnResearch'); if (_tabR) _tabR.classList.toggle('active', isResearch);
+  var _pr = document.getElementById('pageResearch'); if (_pr) _pr.classList.toggle('active', isResearch);
+  // 2026-07-30: 交易记录 TAB (台账/查询页, 不轮询, 切入时加载)
+  var isRecords = name==='records';
+  var _tabRec = document.getElementById('tabBtnRecords'); if (_tabRec) _tabRec.classList.toggle('active', isRecords);
+  var _pRec = document.getElementById('pageRecords'); if (_pRec) _pRec.classList.toggle('active', isRecords);
+  if (isRecords && window.recordsPageEnter) window.recordsPageEnter();
+  if (!isRecords && window.recordsPageLeave) window.recordsPageLeave();
+  if (isLab) { refreshLabStatus(); loadLabHistory(); startLabPoll(); } else stopLabPoll();
+  // 交易页轮询生命周期由 trade.js 自治 (window 钩子, 解耦两个 JS 模块)
+  if (isTrade && window.tradePageEnter) window.tradePageEnter();
+  if (!isTrade && window.tradePageLeave) window.tradePageLeave(); }
 function startLabPoll() { stopLabPoll(); _labPollTimer = setInterval(refreshLabStatus, 2000); }
 function stopLabPoll() { if (_labPollTimer) { clearInterval(_labPollTimer); _labPollTimer = null; } }
 
@@ -378,6 +394,9 @@ document.getElementById('labTag').addEventListener('change', e => { document.get
 
 document.getElementById('tabBtnBacktest').addEventListener('click', () => switchTab('backtest'));
 document.getElementById('tabBtnLab').addEventListener('click', () => switchTab('lab'));
+document.getElementById('tabBtnTrade').addEventListener('click', () => switchTab('trade'));
+document.getElementById('tabBtnResearch')?.addEventListener('click', () => switchTab('research'));
+document.getElementById('tabBtnRecords')?.addEventListener('click', () => switchTab('records'));
 document.querySelector('.theme-btn').addEventListener('click', toggleTheme);
 document.querySelector('.sidebar-toggle').addEventListener('click', toggleSidebar);
 document.getElementById('historySelect').addEventListener('change', function() { loadHistory(this.value); });

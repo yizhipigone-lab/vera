@@ -118,6 +118,14 @@ class AutoBuyConfig:
 
 
 @dataclass(frozen=True)
+class FeishuConfig:
+    """飞书 webhook 通知 (2026-07-31): enabled=总开关 (设置面板可热关)。
+    webhook URL 走环境变量 FEISHU_WEBHOOK_URL, 不入 yaml (半密钥);
+    URL 缺失时通知器为 no-op (启动告警一次), 交易照常。"""
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class TradeConfig:
     """实盘交易配置。所有字段都有默认值, yaml 只覆写关心的部分。
 
@@ -138,7 +146,10 @@ class TradeConfig:
     position_sizing: PositionSizingConfig = field(
         default_factory=PositionSizingConfig)
     auto_buy: AutoBuyConfig = field(default_factory=AutoBuyConfig)
+    feishu: FeishuConfig = field(default_factory=FeishuConfig)
     monitor_scan_interval_sec: int = 60    # 监控腿轮询间隔
+    sync_interval_sec: int = 180           # 增量同步间隔 (成交补记+委托回写,
+                                           # 2026-07-30: 回调丢失的主动补偿网)
     tick_heartbeat_sec: int = 15           # 开盘时段无 tick 判不健康的秒数
     force_market_after: str = "14:57"
     reconcile_times: tuple = ("09:35", "11:30", "14:55", "15:05")
@@ -161,7 +172,9 @@ _FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "stop": (dict,),
     "position_sizing": (dict,),
     "auto_buy": (dict,),
+    "feishu": (dict,),
     "monitor_scan_interval_sec": (int,),
+    "sync_interval_sec": (int,),
     "tick_heartbeat_sec": (int,),
     "force_market_after": (str,),
     "reconcile_times": (list, tuple),
@@ -367,6 +380,20 @@ def _coerce_auto_buy(data: dict) -> AutoBuyConfig:
     return AutoBuyConfig(**kwargs)
 
 
+def _coerce_feishu(data: dict) -> FeishuConfig:
+    """飞书通知段校验。仅 enabled 一个布尔字段; webhook URL 不入配置。"""
+    if not isinstance(data, dict):
+        raise TypeError(f"trade feishu 必须是映射, 实际 {data!r}")
+    unknown = set(data) - {"enabled"}
+    if unknown:
+        _fail(f"trade feishu 存在未知字段: {sorted(unknown)}")
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            raise TypeError("feishu.enabled 必须是 bool")
+        return FeishuConfig(enabled=data["enabled"])
+    return FeishuConfig()
+
+
 def _coerce(key: str, value: Any) -> Any:
     """顶层字段类型 + 值域校验, 然后归一化。不符直接抛, 不猜不修。"""
     expected = _FIELD_TYPES[key]
@@ -384,6 +411,8 @@ def _coerce(key: str, value: Any) -> Any:
         return _coerce_sizing(value)
     if key == "auto_buy":
         return _coerce_auto_buy(value)
+    if key == "feishu":
+        return _coerce_feishu(value)
     if key == "reconcile_times":
         times = tuple(str(t) for t in value)
         for t in times:
@@ -472,7 +501,9 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
             "max_buys_per_day": cfg.auto_buy.max_buys_per_day,
             "universe": dict(cfg.auto_buy.universe),
         },
+        "feishu": {"enabled": cfg.feishu.enabled},
         "monitor_scan_interval_sec": cfg.monitor_scan_interval_sec,
+        "sync_interval_sec": cfg.sync_interval_sec,
         "tick_heartbeat_sec": cfg.tick_heartbeat_sec,
         "force_market_after": cfg.force_market_after,
         "reconcile_times": list(cfg.reconcile_times),

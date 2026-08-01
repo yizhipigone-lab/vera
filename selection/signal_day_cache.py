@@ -36,7 +36,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 (2026-07-31): 配合 _adaptive_scan_count 修复 (写死3000) bump, 使 v1 旧按日信号缓存失效重算
 KEEP_FILES = 20000       # 全局文件数上限 (单文件 KB 级)
 MAX_AGE_DAYS = 60        # 超过 60 天的旧信号重算 (除权漂移)
 FRESH_DAYS = 2           # 最近 2 个交易日永不缓存 (盘后数据)

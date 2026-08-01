@@ -353,6 +353,18 @@ class Pipeline:
             logger.warning(f"政策匹配标签失败(松耦合, 不影响管线): {e}", exc_info=True)
             policy_priority = None
 
+        # 2026-07-28 P1.5 B层: 给候选池打概念标签 (计划书 §5/§6, 不动 policy_priority; H-2)
+        # 通达信 TDGN 概念 + TTL 日级缓存(实时保持更新); 松耦合: tagger 失败 → None, serialize 不加 key。
+        policy_enriched = None
+        try:
+            from concept_kb.concept_tagger import tag_selections as concept_tag
+            concept_tags = concept_tag(selections)  # {票: [概念]}
+            if concept_tags:
+                policy_enriched = {code: {"concept_tags": tags} for code, tags in concept_tags.items()}
+        except Exception as e:
+            logger.warning(f"概念标签失败(松耦合, 不影响管线): {e}", exc_info=True)
+            policy_enriched = None
+
         # Step 3: 回测
         logger.info("[Step 2/5] 执行回测...")
         _cb(30, "构造回测引擎")
@@ -406,4 +418,5 @@ class Pipeline:
             benchmark=benchmark_results,
             reports=report_outputs,
             policy_priority=policy_priority,
+            policy_enriched=policy_enriched,
         )

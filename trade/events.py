@@ -36,6 +36,13 @@ EVENT_EOD = "eod"                          # 收盘归档
 EVENT_COMMAND = "command"                  # Web/CLI 人工命令
 EVENT_SIGNALS = "signals"                  # 尾盘选股结果 (工作线程→消费者)
 EVENT_CONNECTION_LOST = "connection_lost"  # 断线 (回调或心跳双检测)
+EVENT_SYNC_REPORTS = "sync_reports"        # 增量同步 (成交补记+委托回写)
+
+# 2026-08-01 M1: 关键事件类型 —— 队列满时优先保留, tick/快照可驱逐
+_CRITICAL_TYPES = frozenset({
+    EVENT_RECONCILE, EVENT_SYNC_REPORTS, EVENT_TIMER_SCAN,
+    EVENT_COMMAND, EVENT_SIGNALS, EVENT_CONNECTION_LOST, EVENT_EOD,
+})
 
 
 @dataclass(frozen=True)
@@ -70,17 +77,26 @@ class EventEngine:
 
     def put(self, event: Event) -> None:
         """生产侧唯一入口。回调线程里只许调这个 (铁律 2)。
-        队列满: 阻塞至超时后丢弃 + 告警 + audit (事件可丢, 痕迹不可丢)。"""
+
+        2026-08-01 M1: 关键事件 (对账/同步/扫描/命令/信号/断线/EOD)
+        用更长超时 (5s), 宁可回调线程多等, 不可丢对账/同步/扫描事件
+        (07-31 实测: reconcile 1 + sync_reports 31 + timer_scan 548 被丢);
+        tick/快照/委托/成交仍用短超时 —— 量大可丢弃, 对账兜底补。
+        """
+        is_critical = event.type in _CRITICAL_TYPES
+        timeout = 5.0 if is_critical else self._put_timeout
         try:
-            self._queue.put(event, timeout=self._put_timeout)
+            self._queue.put(event, timeout=timeout)
         except queue.Full:
-            _logger.error("事件队列满 (%d), 丢弃事件: %s",
-                          self._queue.maxsize, event.type)
+            _logger.error("事件队列满 (%d), 丢弃%s事件: %s",
+                          self._queue.maxsize,
+                          "关键" if is_critical else "",
+                          event.type)
             if self._audit_sink:
                 try:
                     self._audit_sink("event_dropped",
-                                     f"事件队列满, 丢弃 {event.type}",
-                                     {"type": event.type})
+                                     f"事件队列满, 丢弃 {'关键' if is_critical else ''}{event.type}",
+                                     {"type": event.type, "critical": is_critical})
                 except Exception:
                     pass  # audit 也失败不能再炸回调线程
 

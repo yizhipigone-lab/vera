@@ -87,6 +87,9 @@ class Monitor:
         当日最高取 max(行情 high, 历史缓存) —— 轮询快照的 high 口径
         与 tick 推送可能不同源, 取大不取新。
 
+        2026-08-01 H2/H3: _quotes 条目带日期戳, 跨日重置 high/prev_close
+        —— 昨日最高不能当今日峰值, 昨日收盘不能当今日昨收。
+
         审计M4修复:
         - event_ts 是 tick 事件自带的生产时刻; 与本地时钟偏差 >30s
           的旧 tick 直接丢弃+WARN —— 断线重连后积压的tick不能盖成
@@ -102,8 +105,17 @@ class Monitor:
                 f"{code} tick 事件过旧 (偏差 {now - ts:.0f}s), 丢弃",
                 {"code": code, "event_ts": ts})
             return
+        today = time.strftime("%Y%m%d", time.localtime(now))
         cur = self._quotes.get(code, {})
+        # H2/H3: 跨日重置 —— 昨日 high/prev_close 不能污染今日
+        if cur.get("_date") != today:
+            cur = {}
+            cur["_date"] = today
         high = max(float(quote.get("high") or 0.0), cur.get("high", 0.0))
+        # 2026-07-31: 缓存昨收 (持仓页"当日涨跌幅/涨跌金额"的数据源)。
+        # tick 缺 lastClose (盘前/个别快照) 时保留已有缓存值
+        prev_close = (float(quote.get("prev_close") or 0.0)
+                      or cur.get("prev_close", 0.0))
         # ts 三种来源: ① quote 显式带 ts (生产 tick, 可能是 None ——
         # 2026-07-27 裁决③: tick 缺时间戳时 gateway 不再兜底 time.time,
         # None 必须被视为陈旧, 否则半夜一条无戳 tick 就能驱动自动规则)
@@ -117,8 +129,10 @@ class Monitor:
             # 丢了它买单会全走对手最优分支
             "ask1": float(quote.get("ask1") or 0.0),
             "high": high,
+            "prev_close": prev_close,
             "ts": effective_ts,
             "tick_ts_missing": tick_ts_missing,
+            "_date": today,  # H2/H3: 跨日重置用日期戳
         }
         self._last_tick_ts = ts
 
@@ -331,25 +345,40 @@ class Monitor:
             "ladder_tp_first": ("ladder_tp", "cost_stop", "trailing"),
             "trailing_first": ("ladder_tp", "trailing", "cost_stop"),
         }
+        # 2026-07-31: 正文自然语言化 (成交记录"原因"列展示全文)。
+        # 除法安全预计算 —— 字符串是无条件拼装的, 命中判定里的
+        # avg_cost>0 守卫管不到这里
+        peak_pct = (peak / avg_cost - 1) if avg_cost > 0 else 0.0
+        high_pct = (high / avg_cost - 1) if avg_cost > 0 else 0.0
+        dd_now = (1 - last / peak) if peak > 0 else 0.0
         checks = {
-            "cost_stop": (hit_cost_stop, f"cost_stop: 现价 {last} ≤ "
-                          f"成本×(1{stop.cost_stop.threshold:+.0%})"),
-            "trailing": (hit_trailing, f"trailing: 现价 {last} 跌破峰值 "
-                         f"{peak}×(1-{stop.trailing_stop.drawdown:.0%})"),
-            "time_stop": (hit_time_stop, f"time_stop: 持有 {days} 天 ≥ "
+            "cost_stop": (hit_cost_stop,
+                          f"cost_stop: 现价 {last:.2f} 跌破止损线 "
+                          f"{avg_cost * (1.0 + stop.cost_stop.threshold):.2f} "
+                          f"(成本 {avg_cost:.2f} {stop.cost_stop.threshold:+.0%})"),
+            "trailing": (hit_trailing,
+                         f"trailing: 最高 {peak:.2f} (峰值涨幅 {peak_pct:+.1%}, "
+                         f"过激活线 {stop.trailing_stop.activation:.0%}), "
+                         f"现价 {last:.2f} 回撤 {dd_now:.1%} 触发 "
+                         f"(阈值 {stop.trailing_stop.drawdown:.0%})"),
+            "time_stop": (hit_time_stop, f"time_stop: 持有 {days} 天达上限 "
                           f"{stop.time_stop.max_hold_days} 天"),
-            "cond_time": (hit_cond_time, f"cond_time: 持有 {days} 天且"
-                          f" 涨幅达 {stop.cond_time_stop.profit:.0%}"),
+            "cond_time": (hit_cond_time,
+                          f"cond_time: 持有 {days} 天, 当日最高涨幅 "
+                          f"{high_pct:+.1%} 达门槛 {stop.cond_time_stop.profit:.0%}"),
             "first_day": (hit_first_day,
-                          f"first_day: 首日最高涨幅未达 {stop.first_day.target:.0%}"),
+                          f"first_day: 首日最高涨幅 {high_pct:+.1%} "
+                          f"未达 {stop.first_day.target:.0%}"),
         }
         for name in _ORDER[stop.priority] + ("time_stop", "cond_time",
                                              "first_day"):
             if name == "ladder_tp":
                 tier = hit_ladder()
                 if tier is not None:
-                    return (f"ladder_tp: 最高 {high} 涨破档 {tier} "
-                            f"({stop.ladder_tp.levels[tier][0]:.0%}, 未预埋兜底)")
+                    profit = stop.ladder_tp.levels[tier][0]
+                    return (f"ladder_tp: 最高 {high:.2f} 涨破档{tier + 1}线 "
+                            f"{avg_cost * (1.0 + profit):.2f} "
+                            f"(成本 {avg_cost:.2f} {profit:+.0%}, 未预埋兜底)")
                 continue
             hit, reason = checks[name]
             if hit():

@@ -6,7 +6,9 @@
     CRITICAL 直接 kill switch;所有结果只写 reconcile_log,
     永不回写 book/store 持仓 —— 对账只告警+熔断, 自动改账会把
     "券商是对的"这个锚也弄丢 (铁律 1)。
-    公开接口刻意只有 reconcile() 一个方法。
+    公开接口两个: reconcile() (三方对账) 与 sync_reports()
+    (2026-07-30 增量同步: QMT 成交/委托单向补记回写本地,
+    是"认领"语义的推广, 同样不按差额改账, 不违反铁律 1)。
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-from trade.book import DIRECTION_BUY
+from trade.book import DIRECTION_BUY, TERMINAL_STATUSES
 from utils.logger import get_logger
 
 _logger = get_logger("trade.reconciler")
@@ -72,6 +74,10 @@ class Reconciler:
         kill_switch,
         quote_price: Callable[[str], float | None] | None = None,
         in_flight_sells: Callable[[], dict[str, int]] | None = None,
+        pop_fill_context: Callable[[str], dict] | None = None,
+        reason_from_ctx: Callable[[dict], str] | None = None,
+        on_adopted_trade: Callable[[dict, dict, float | None], None] | None = None,
+        on_order_terminal: Callable[[str], None] | None = None,
         query_retries: int = 3,
         retry_interval_sec: float = 1.0,
     ):
@@ -84,6 +90,15 @@ class Reconciler:
         # 在途卖单数量 (executor 提供), 用于差异降级:
         # 卖出已报未成的部分, A 已冻结但 B 未扣 —— 这种差异是流水不是错账
         self._in_flight = in_flight_sells or (lambda: {})
+        # 成交原因 (2026-07-31): 回调丢失走补记时 ctx 还在 executor,
+        # peek 读取 (不删) 既落 reason 又给飞书通知; 部成多笔共享同一
+        # 份原因, 订单终态时经 on_order_terminal 回收
+        self._pop_ctx = pop_fill_context or (lambda order_id: {})
+        self._reason_of = reason_from_ctx or (lambda ctx: "")
+        # 补记成交回调 (trade_dict, ctx, avg_cost) → 飞书通知 (2026-07-31)
+        self._on_adopted_trade = on_adopted_trade
+        # 订单终态回调 (executor 清 fill ctx, peek 语义的配套回收)
+        self._on_order_terminal = on_order_terminal
         # 空查询重试参数 (P0-③): 测试注 0 间隔, 生产 3 次 × 1s
         self._query_retries = query_retries
         self._retry_interval = retry_interval_sec
@@ -107,7 +122,8 @@ class Reconciler:
             return ReconcileReport(level=LEVEL_UNKNOWN, diffs=(), ts=now)
         actual = {p["code"]: p for p in actual_list}
         # 2026-07-27 ETF 误卖事件裁决④: 先认领手工成交再算差异
-        adopted = self._adopt_manual_trades(now)
+        # 2026-07-30: 认领升级为 sync_reports (成交补记 + 委托状态回写)
+        adopted = self.sync_reports(now)["adopted"]
         restored = self._restore_positions(now)
         in_flight = self._in_flight()
         # 认领可能改账 (手工成交补记), 差异比对用认领后的最新账本
@@ -190,11 +206,46 @@ class Reconciler:
         return ReconcileReport(level=overall, diffs=tuple(diffs), ts=now,
                                adopted=adopted)
 
+    def sync_reports(self, now: float | None = None) -> dict:
+        """增量同步 (2026-07-30): QMT → 本地单向补记成交 + 回写委托状态。
+
+        背景: QMT 回调链实测不可靠 (on_order_status/on_deal_status 可能
+        缺失), 纯事件驱动会让本地记录永久停在陈旧状态。本方法是回调的
+        主动补偿网 —— 定时 (config.sync_interval_sec) / 对账 / 重连后
+        各跑一轮, traded_id/order_id 幂等, 重复跑无副作用。
+        两腿各自容错: 一路查询失败不影响另一路, 异常记日志不上抛
+        (对账主流程不能被同步腿拖死)。
+        返回 {"adopted": 补记成交笔数, "orders_updated": 回写委托笔数}。
+        """
+        now = now if now is not None else time.time()
+        adopted = 0
+        orders_updated = 0
+        try:
+            adopted = self._adopt_manual_trades(now)
+        except Exception:
+            _logger.exception("成交补记失败 (本轮跳过, 下轮重试)")
+        try:
+            orders_updated = self._sync_orders()
+        except Exception:
+            _logger.exception("委托状态回写失败 (本轮跳过, 下轮重试)")
+        if adopted or orders_updated:
+            self._store.write_audit(
+                "sync_reports",
+                f"增量同步: 补记成交 {adopted} 笔, 回写委托 {orders_updated} 笔",
+                {"adopted": adopted, "orders_updated": orders_updated})
+        return {"adopted": adopted, "orders_updated": orders_updated}
+
     def _adopt_manual_trades(self, now: float) -> int:
         """手工成交认领 (2026-07-27 ETF 误卖事件裁决④): 用户在券商
         客户端手工下的单没有回报流进本系统, A(QMT)≠B(本地账本) 的
         差异先尝试用当日成交记录解释 —— 本地没见过的成交按 QMT 记录
-        补记进账本 (strategy 标"手工") + 落库 + audit, 返回认领笔数。
+        补记进账本 + 落库 + audit, 返回认领笔数。
+
+        2026-07-30 归因修复: 先按 order_id 查本地订单簿 —— 查得到
+        说明是系统自己的单 (成交回调丢失), 继承该单 remark 作策略归属,
+        audit 记 trade_backfill; 查不到才是真手工单 (strategy 标"手工",
+        audit 记 manual_adopt)。同时以成交为硬事实回写 orders 表进度
+        (与 _on_trade 的 update_order_filled 同语义)。
 
         分寸 (注释即契约): 认领是把券商已证明的事实补记进账本
         (QMT→本地单向), 不是按差异改账 —— 不违反"对账永不回写"
@@ -202,34 +253,108 @@ class Reconciler:
         traded_id 判重 (store 当日成交 + book 幂等集合双保险)。"""
         today = datetime.fromtimestamp(now).strftime("%Y%m%d")
         known = self._store.load_today_trade_ids(today)
+        local_orders = self._book.snapshot()["orders"]
         adopted = 0
         for t in self._gateway.query_trades():
             tid = str(t.get("traded_id", ""))
             if not tid or tid in known:
                 continue
+            order_id = str(t.get("order_id", ""))
+            local_order = local_orders.get(order_id)
+            # 归因: 本地订单簿查得到 = 系统的单 (回调丢失补记),
+            # 继承 remark; 查不到 = 券商客户端手工单
+            strategy = (local_order.remark if local_order is not None
+                        and local_order.remark else
+                        ("系统" if local_order is not None else "手工"))
+            # H1 (2026-07-31 审计): apply_trade 清仓会把 avg_cost 清零,
+            # 通知盈亏% 要在 apply 前快照成本 (与 _on_trade 实时路径同口径)
+            pre_pos = self._book.snapshot()["positions"].get(t["code"])
+            pre_avg_cost = pre_pos.avg_cost if pre_pos else 0.0
             ok = self._book.apply_trade(
-                tid, str(t.get("order_id", "")), t["code"],
+                tid, order_id, t["code"],
                 t["direction"], float(t["price"]), int(t["qty"]),
-                strategy="手工")
+                strategy=strategy)
             if not ok:
                 continue  # book 幂等集合已见过 (双保险), 不重复记账
+            # 2026-07-31: peek 读 fill ctx (不删) —— 回调丢失时 ctx 仍在
+            # executor; 部成多笔共享同一份原因, 订单终态由 _sync_orders /
+            # _on_order 回收 (手工单无 ctx)
+            ctx = (self._pop_ctx(order_id)
+                   if local_order is not None else {})
             try:
                 self._store.save_trade({
-                    "traded_id": tid, "order_id": str(t.get("order_id", "")),
+                    "traded_id": tid, "order_id": order_id,
                     "code": t["code"], "direction": t["direction"],
                     "price": float(t["price"]), "qty": int(t["qty"]),
-                    "ts": t.get("ts", now)})
+                    "ts": t.get("ts", now),
+                    # 2026-07-30: 来源落库 — 系统单回调丢失补记仍是 system,
+                    # 只有本地查不到 order_id 的才是真手工单 (manual)
+                    "source": "system" if local_order is not None else "manual",
+                    "reason": (self._reason_of(ctx)
+                               if local_order is not None else "")})
             except Exception:
                 pass  # 唯一约束兜底: 已落库视为已认领
+            try:
+                self._store.update_order_filled(order_id, int(t["qty"]))
+            except Exception:
+                pass  # 本地无此委托 (手工单) 时无行可更新, 正常
+            kind = "trade_backfill" if local_order is not None else "manual_adopt"
             self._store.write_audit(
-                "manual_adopt",
-                f"手工成交认领: {t['code']} "
+                kind,
+                f"{'成交补记(回调丢失)' if local_order is not None else '手工成交认领'}: "
+                f"{t['code']} "
                 f"{'买' if t['direction'] == DIRECTION_BUY else '卖'} "
                 f"{t['qty']}@{t['price']}",
                 {"code": t["code"], "qty": t["qty"], "price": t["price"],
-                 "traded_id": tid, "strategy": "手工"})
+                 "traded_id": tid, "order_id": order_id, "strategy": strategy})
+            # 2026-07-31: 补记成交同样发飞书 (QMT 成交回调常丢失, 补记是主路径)
+            if self._on_adopted_trade:
+                try:
+                    self._on_adopted_trade(t, ctx, pre_avg_cost)
+                except Exception:
+                    pass  # 通知失败不影响对账/补记
             adopted += 1
         return adopted
+
+    def _sync_orders(self) -> int:
+        """委托状态回写 (2026-07-30): 拉 QMT 当日委托, 与本地订单簿比对,
+        状态/已成交量有变化的经状态机校验后回写 book + orders 表。
+        本地是终态而 QMT 返回非终态 (查询滞后) 时状态机拒绝, 保本地 —
+        成交硬事实优先于查询快照。返回回写笔数。"""
+        local_orders = self._book.snapshot()["orders"]
+        updated = 0
+        for o in self._gateway.query_orders():
+            oid = str(o.get("order_id", ""))
+            if not oid:
+                continue
+            local = local_orders.get(oid)
+            status = int(o.get("status", 0))
+            filled = int(o.get("filled_qty", 0))
+            # 2026-07-31: QMT 报终态即回收 fill ctx (peek 语义的配套;
+            # discard 幂等)。成交补记在本轮 _adopt 先跑完, 此处清理安全
+            if status in TERMINAL_STATUSES and self._on_order_terminal:
+                self._on_order_terminal(oid)
+            if (local is not None and local.status == status
+                    and local.filled_qty == filled):
+                continue  # 无变化, 不重写 (3 分钟一轮, 绝大多数走这里)
+            if local is not None and local.status in TERMINAL_STATUSES:
+                continue  # 本地终态不可回退 (成交硬事实 > 查询快照)
+            ok = self._book.apply_order_update(
+                oid, status, code=str(o.get("code", "")),
+                direction=int(o.get("direction", 0)),
+                price=float(o.get("price", 0.0)), qty=int(o.get("qty", 0)),
+                filled_qty=filled, remark=str(o.get("remark", "")))
+            if not ok:
+                continue  # 状态机拒绝 (非法迁移), 记日志由 book 负责
+            self._store.save_order({
+                "order_id": oid, "remark": str(o.get("remark", "")),
+                "code": str(o.get("code", "")),
+                "direction": int(o.get("direction", 0)),
+                "price": float(o.get("price", 0.0)),
+                "qty": int(o.get("qty", 0)), "filled_qty": filled,
+                "status": status})
+            updated += 1
+        return updated
 
     def _query_positions_with_retry(self, book_pos) -> list[dict] | None:
         """查 QMT 持仓, 带"空结果可疑"重试 (P0-③):

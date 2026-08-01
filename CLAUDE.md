@@ -17,6 +17,17 @@
 5. **关注市场**:A 股 / ETF / 可转债、美股 / 港股、跨市场联动
 6. **风险偏好**:中等回撤 + 多策略组合
 
+## 实盘交易铁律(2026-07-26 写入,trade/ 包,源自三项目对比研究)
+
+1. **QMT 是持仓/资产/成交的唯一真相源**;对账只告警+熔断,永不自动改账、绝不自动重发
+2. **回调线程只做入队**:禁止在回调线程调 xtquant 同步接口(官方死锁坑)、写 DB
+3. **交易状态唯一写者 = EventEngine 消费者线程**;业务代码零锁;清仓锁是业务防重入锁,保留
+4. **回测与实盘共用同一份卖出规则与参数定义**(当前为同口径参数+parity 路径,规则核心合并为 P2 候选),禁止第二份实现
+5. **原始回报先落盘(JSONL)再处理**;重启先对账再交易;行情故障 fail-closed(宁可不卖,不可瞎卖)
+6. **预埋单报价锚定最新买一**,档位价超当日涨停价则今日跳过该档、不撞 2% 价格笼子
+7. **kill switch 三重态(内存/DB/文件)任一生效即全面拒单**,只许人工解除
+8. **如无必要勿增实体**:不加进程、不加中间件、不加转发层、不写第二份规则;trade/ 模块公开接口以"能一口气读完"为准,**gateway/store 两个基础设施模块例外**(契约面即接口面:gateway 的抽象方法就是柜台契约本身,store 的方法是持久化契约,拆成多个类只会加转发层),其余模块 ≤8 个方法(2026-07-26 审计 M7 裁决:修文档口径,不拆模块)
+
 ## 架构骨架
 
 | 模块 | 路径 | 职责 |
@@ -26,7 +37,7 @@
 | 回测引擎 | `backtest/engine.py` | 主回测循环:信号→成交→止损止盈→权益曲线。`_simulate_core_v3` 现为兼容壳(2026-07-14 候选 A 阶段2),转调 `backtest/loop/BacktestLoop.run()`;旧 527 行实现保留为 `_simulate_core_v3_legacy` 作 parity 甲骨文。`run_cached` 加厚前门(2026-07-13 候选 A 阶段1,980b04f):9 旧位置参数不动 + 9 keyword-only 能力参数,能力按 `stop_config["capabilities"]` 三开关透传。`run` 走 Pipeline 收口路径。**5m 数据层降级(2026-07-18)**:`degrade_5m: true` 时缺 5m 的股-天用 1d OHLC 填满 48 根 bar 保信号(`backtest/degrade_5m.py`),降级影响报告在 `result.degradation`(`backtest/degrade_report.py`);仅 period=5m + run() 路径(2026-07-26 守卫改 `bars_per_day == 48`:原 >1 会被 1m 踩中静默全错)。**2026-07-21 区间精确化(ENGINE_VERSION v3.5)**:执行窗口=请求区间(窗口 end_time 截断,不再 +win_td 尾巴);降级网格起止=请求区间(5m 深度前也 1d 填充);degrade_5m 配置默认开;期末未平仓按市值计价不强平并导出 `open_positions`;基准对比在指数 5m 深度不足时回退日粒度。**1m 支持(2026-07-26, 计划书 `docs/plan/2026-07-26_1分钟线回测支持_计划书.md`)**:bpday=240 + `STD_1M_BAR_TIMES` + `_drop_nonstandard_intraday_bars` 泛化(旧 5m 名保留 alias,外部 2 调用方);区间硬限 ≥20260126 截断+告警;kline_cache 分钟级泛化 + `_fetch_and_store` ≤80 交易日分段(TDX 单次 ~24000 根上限;`_get_calendar()` 返回 set 必须先排序);matrix_cache 1m keep=2;degrade 对 1m 强制关+warning |
 | 选股 | `selection/selector.py` | 股票池筛选(ST/退市/港股按 TDX 真实标记, 北交所口径剔除; **涨停不在选股排除**——涨停过滤在 engine 入场 `_filter_limit_up`, 默认开) |
 | 选股结果缓存 | `selection/selection_cache.py` | 2026-07-24(计划书 `docs/plan/2026-07-24_选股结果缓存_计划书.md`):整段缓存 `step1_select` 输出(parquet,LRU 10)。key=公式+universe 完整配置(假值默认键归一化,web/yaml 路径收敛)+区间+period+复权+today_str(按日失效)+SCHEMA_VERSION;不纳入 universe 实际输出列表哈希(算它要先花 17s,R8 权衡),日内 ST 漂移由按日失效掩蔽+`selection_cache.force_refresh` 兜底。实测 5m 全A:选股 32.7s→0.01s,总 35.3s→2.2s。空结果不缓存;命中也写 raw CSV(R9);tools/* 直调 StockSelector 不经接缝不受益 |
-| 池缓存+按日信号缓存 (二期) | `selection/universe_cache.py` + `selection/signal_day_cache.py` | 2026-07-26(计划书 `docs/plan/2026-07-26_选股缓存二期_L1池缓存_L2按日信号缓存_计划书.md`,接缝在 selector 内部,tools 自动受益)。L1: resolve_universe 输出按日缓存(json,LRU 10),省拉池+ST过滤 ~17s。L2: 信号按(公式+池内容哈希+1d+复权)×交易日 parquet 存储;全命中(子区间/历史并集覆盖)零公式调用,任一缺失→整段重算按天入库(e2e 实测推翻"按缺失区段补算":TDX 51 批固定地板 ~16s 与扫描量几乎无关,区段补算不省钱)。安全线:当日永不缓存;最近2交易日条目仅当日命中(mtime 判);>60 天重算(除权漂移);批次失败区段不落盘(`FormulaRunner.last_batch_errors` 区分真空/失败空)。实测:子区间 0.03s,同区间重跑 0.15s,与直跑 parity 一致 |
+| 池缓存+按日信号缓存 (二期) | `selection/universe_cache.py` + `selection/signal_day_cache.py` | 2026-07-26(计划书 `docs/plan/2026-07-26_选股缓存二期_L1池缓存_L2按日信号缓存_计划书.md`,接缝在 selector 内部,tools 自动受益)。L1: resolve_universe 输出按日缓存(json,LRU 10),省拉池+ST过滤 ~17s。L2: 信号按(公式+池内容哈希+1d+复权)×交易日 parquet 存储;全命中(子区间/历史并集覆盖)零公式调用,任一缺失→整段重算按天入库(e2e 实测推翻"按缺失区段补算":TDX 51 批固定地板 ~16s 与扫描量几乎无关,区段补算不省钱)。安全线:当日永不缓存;最近2交易日条目仅当日命中(mtime 判);>60 天重算(除权漂移);批次失败区段不落盘(`FormulaRunner.last_batch_errors` 区分真空/失败空)。实测:子区间 0.03s,同区间重跑 0.15s,与直跑 parity 一致。**2026-07-27 投毒事件**:test_sector_selection mock 3 股池经接缝写入真实 data/universe_cache(key 与用户 QUANTQQ 配置相同)→ 用户回测 5003 只变 3 只仅 21 笔。修复:conftest autouse 隔离四个缓存模块 default_cache_root 到 per-test tmp(全量测试后生产缓存目录必须为空)+ selector L1 命中 <10 只告警 |
 | 细粒度进度 | `core/progress.py` | 2026-07-26:全局模块状态报告器(report/snapshot/reset,无人读时 ~1µs no-op)。深层循环埋点: ST过滤(stock_filter)/公式批次(formula_runner)/取数(kline_cache+data_fetcher 窗口批)/核心loop(每100bar)/engine 边界。锚点 ANCHORS 映射全局百分比(选股 10-45,实测占 92% 耗时),done/total 速率法 ETA。server `/api/status` 融合(粗 _cb 与细粒度取 max,单调不回退 guard `_last_served_pct`,additive 字段 detail/eta_s,STAGE_NAMES 替换粗 step 名);前端缓动逼近+文字"阶段 · 批次 x/y · 预计剩余"。不改 progress_callback (pct,step) 契约 |
 | 止损管理 | `backtest/stop_config.py` | 止损/止盈/移动止盈/阶梯止盈。`stop_config.py` 兜底含 priority + capabilities 字段(2026-07-13 修复)。stop_manager.py 已于候选 D C2 删除。**卖出冷却(2026-07-23)**: engine 配置 `sell_cooldown_days`(交易日,默认0=关,零行为变化),全清仓后 N 个交易日内禁止同票重新买入,持仓中换股(reason=1)不受限;loop 层参数 `sell_cooldown_bars`(=days×bpday),跳过计数在 `sell_cooldown` 日志。信号层 30 日首信号过滤在 `selection/signal_rules.py`(工具函数,非引擎默认行为) |
 | 复权口径 | `core/dividend_type.py` | **统一 int/str 映射(候选 D,0b47db5)**:DataFetcher/FormulaRunner 内部用 `to_tdx_str`/`to_formula_int` 归一化,允许混传。`assert_consistent` 由 pipeline.py:101 调用 |
@@ -34,6 +45,7 @@
 | Web 后端 | `server.py` | API + 进度反馈。**现状(2026-07-14 已完成)**:`/api/run` 走 `Pipeline.run` + `ResultWriter`（统一完整流程接缝，2026-07-14 372f59b）；进度回调由 `ResultWriter.on_progress` 驱动 `pipeline_status` 单例（不再手工赋值）；`PipelineResult` frozen dataclass 统一返回结构。C5 真实盘口验证通过（路径 A/B 数字字节级一致）。 |
 | Web 前端 | `web/index.html` + `vera-ui.js` | 管理后台 UI |
 | 测试 | `tests/` | pytest 套件,改核心函数后必跑。守卫式 + 字节级 parity + 能力透传 + 默认值锁 + 复权口径边界 + 进度回调签名 |
+| 实盘交易 | `trade/` + `trade_main.py` | 2026-07-26 P1 MVP(计划书 `docs/2026-07-26_实盘交易系统计划书.md`):QMT 实盘交易,单进程单写者 EventEngine。9 模块:gateway(xtquant 唯一收口+FakeGateway)/events(静态接线)/store(SQLite WAL+JSONL 原始回报)/book(账本+状态机)/executor(预埋单+撤单流水线+两级价格阶梯)/monitor(订阅+心跳+QMT 轮询降级)/reconciler(三方对账只告警不回写)/risk(5 道闸+三重态急停)/api(薄层,独立 8081,交易页为 web 第三页签)。税费未计(P2 回溯补算)。止盈止损复刻回测 stop_loss 结构(parity 测试锁死);风控做减法(集中度闸已砍,sizing 校验接替);设置面板热生效(账号/路径类需重启)。**2026-07-27 ETF 误卖事件后**:时段感知(自动规则仅连续竞价,人工命令任何时段放行;心跳分时段+页面人话原因)、ETF 不纳入自动管理(照常对账)、手工成交对账认领(不拉闸)。**尾盘自动买入 MVP(2026-07-27)**:14:52 TDX 公式选股自动买入(trade/signals.py 桥+工作线程,不堵唯一写者),T+1 次日自动接入预埋/监控,设置面板可配可关。**尾盘价格市场感知(同日实测五连废单驱动)**:深市 14:57 后收盘竞价只收限价单——买挂涨停价/卖挂跌停价(单一价格撮合,成交价=收盘价),沪市维持对手最优 |
 
 **历史背景**:`_simulate_core_v3`(39 参数私有函数)曾是事实公共入口,被 4 脚本 + 4 测试直调。候选 A 阶段 1 + 阶段 1.5 收编 5 脚本 + `optimize_strategies` 收编 + 清理 `optimize_full` 死 import,**生产直调完全清零**(锁私有完整达成,2026-07-13 e62e0ab)。候选 D C4 清理 34 个孤儿脚本(2026-07-14 aa54d19),根目录仅余 main.py / server.py / preprocessor.py 三入口。候选 D C2 删 `stop_manager.py`(死代码,无调用方)。**批量注意**:`Pipeline.run()` 每次执行 `initialize+close`,不适合 in-process 高频复用;批量场景用 subprocess 并行调度 `tools/gs_run_one.py`。
 

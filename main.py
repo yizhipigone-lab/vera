@@ -49,7 +49,9 @@ def main():
     pipe = Pipeline(str(config_path), default_path)
     result = pipe.run(export_tdx=args.tdx)
 
-    if "error" in result:
+    # 2026-07-27 修复: result 恒含 "error" 键(成功时为 None),
+    # 原 `if "error" in result` 把每次成功也误报为失败并 exit 1
+    if result.get("error"):
         logger.error(f"管线执行失败: {result['error']}")
         sys.exit(1)
 

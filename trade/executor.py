@@ -15,6 +15,7 @@ from typing import Callable
 from trade.book import (
     DIRECTION_SELL,
     OS_REPORTED,
+    OS_SUCCEEDED,
     PRICE_TYPE_LIMIT,
     PRICE_TYPE_MARKET_PEER_FIRST,
     TERMINAL_STATUSES,
@@ -25,31 +26,48 @@ from utils.logger import get_logger
 
 _logger = get_logger("trade.executor")
 
-# 撤单 ack 轮询: 正常 <1s, 2s 仍无终态 → 告警继续 (不无限等, 逃生要紧)
-_CANCEL_ACK_TIMEOUT_SEC = 2.0
+# 撤单 ack 轮询: 2026-08-01 M2 修复 —— 原 2s 实测 87% 超时,
+# 按实测分布重定为 5s (覆盖 ~95% 正常 ack 延迟)
+_CANCEL_ACK_TIMEOUT_SEC = 5.0
 _CANCEL_ACK_POLL_SEC = 0.1
 # 卖出单挂出后超过该秒数未成交 → 升级对手最优
 _PENDING_FILL_TIMEOUT_SEC = 5.0
 
+# 成交通知用: monitor _evaluate 的 reason 串前缀 → 中文策略名。
+# 基础版 (2026-07-31): 不改 monitor, 在下单侧把 reason 翻成中文标签存走。
+_REASON_LABELS = {
+    "trailing": "移动止盈",
+    "cost_stop": "硬止损",
+    "time_stop": "时间止损",
+    "cond_time": "条件时间止盈",
+    "first_day": "首日不达标",
+    "ladder_tp": "阶梯止盈",
+}
 
-def limit_ratio(code: str, st: bool = False) -> float:
-    """单票涨停幅度: 主板 10% / 创业 300·301 与科创 688 20% /
-    北交所 (4/8/920 开头) 30% / ST 5%。
 
-    为什么不复用 backtest/engine.py 的 _limit_ratio_vector:
-    那是 numpy 列向量 + TDX get_cached_info 的批量实现, 与回测数据层
-    耦合太紧, 逐票调用会拖进整个 TDX 依赖。此处按同一映射规则重写
-    (规则全项目只有这一份语义, 两处实现)。
-    TODO P2: ST 判定接 TDX IsSTGP 真实标记, 与回测口径合并为一处。
-    """
-    if st:
-        return 0.05
-    num = code.split(".")[0]
-    if num.startswith(("688", "300", "301")):
-        return 0.20
-    if num.startswith(("4", "8", "920")):
-        return 0.30
-    return 0.10
+def _label_from_reason(reason: str) -> str:
+    """monitor reason 串 → 中文策略名 (飞书成交通知)。未知/手工兜底, 永不空。"""
+    if not reason:
+        return "系统卖出"
+    if "manual_sell" in reason or "人工" in reason:
+        return "人工卖出"
+    head = reason.split(":", 1)[0].strip()
+    return _REASON_LABELS.get(head, "系统卖出")
+
+
+def _detail_from_reason(reason: str) -> str:
+    """monitor reason 串 → 自然语言成交原因全文 (trades.reason,
+    成交记录页"原因"列)。monitor 正文 2026-07-31 起已带关键数字
+    (峰值/激活线/回撤/阈值), 这里只把英文头换成中文策略名:
+    'trailing: 最高 12.00 ...' → '移动止盈: 最高 12.00 ...'。"""
+    label = _label_from_reason(reason)
+    body = reason.split(":", 1)[1].strip() if reason and ":" in reason else ""
+    return f"{label}: {body}" if body else label
+
+
+# 2026-08-01 P1: limit_ratio 统一到 core/limit_ratio.py
+# (全项目唯一真相源, 消除回测/实盘两份实现的 ST 口径漂移风险)
+from core.limit_ratio import limit_ratio  # noqa: E402 (re-export for callers)
 
 
 def round_price(x: float) -> float:
@@ -149,6 +167,9 @@ class Executor:
         env: str = "live",
         clock: Callable[[], float] = time.time,
         cancel_ack_timeout_sec: float = _CANCEL_ACK_TIMEOUT_SEC,
+        # 2026-08-01 P0-3: pending 终态为废单/已撤且持仓仍在时回调,
+        # Monitor 注入 _triggered.discard 解除当日触发标记
+        on_pending_died: Callable[[str], None] | None = None,
     ):
         self._gw = gateway
         self._book = book
@@ -163,8 +184,11 @@ class Executor:
         self._st = st_checker or (lambda code: False)
         self._clock = clock
         self._ack_timeout = cancel_ack_timeout_sec
+        self._on_pending_died = on_pending_died
         self.lock = ClearLock(env, config.account_id, clock=clock)
         self._pending: dict[str, dict] = {}  # code -> {order_id, ts, qty, reason}
+        # 成交通知上下文: order_id -> {label, tier, sell_ratio...}, 下单记成交取
+        self._fill_context: dict[str, dict] = {}
         # 审计M1修复: remark 序号进程生命周期单调递增, 不再按日/调用方
         # 重置 —— 重置会让预埋/卖出/人工买入同日出重号, "盘后按 remark
         # 对账"的唯一性前提就破了。mmdd 前缀仍保留 (人读友好)。
@@ -240,6 +264,13 @@ class Executor:
                 remaining -= qty
                 order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
                                           PRICE_TYPE_LIMIT, remark)
+                self.register_fill_context(order_id, {
+                    "label": "阶梯止盈", "tier": tier,
+                    "profit": profit, "sell_ratio": ratio,
+                    # 2026-07-31: 自然语言成交原因 (成交记录页全文展示)
+                    "detail": f"阶梯止盈·档{tier + 1}: 预埋价 {price} "
+                              f"(成本 {pos.avg_cost:.2f} {profit:+.0%}), "
+                              f"卖 {ratio:.0%}"})
                 # 乐观标记: 提交成功即标记 (QP 做法) —— 废单也不重复卖,
                 # 误标漏卖的损失 < 重复卖的损失。审计C1修复: 带当日日期
                 self._book.mark_tier(code, tier, date_str)
@@ -335,8 +366,14 @@ class Executor:
             if status is None:
                 continue  # 查不到状态, 本轮不动 (行情/连接故障 fail-closed)
             if status in TERMINAL_STATUSES:
-                # 终态: 无论成交/废单/已撤, 本轮卖出责任已了 ——
-                # 部成剩余由下一轮监控腿重新触发 (不在这里补枪)
+                # 2026-08-01 P0-3 (H1): 终态为废单/已撤且持仓仍在时,
+                # 通知 Monitor 解除 _triggered —— 该票下轮扫描应重新评估,
+                # 否则废单一笔就把当日保护永久锁死。
+                # 已成不解除: 持仓已清 (或部成剩余由下一轮重新触发)。
+                if self._on_pending_died and status != OS_SUCCEEDED:
+                    pos = self._book.snapshot()["positions"].get(code)
+                    if pos is not None and pos.volume > 0:
+                        self._on_pending_died(code)
                 self.lock.release_by_order_id(p["order_id"])
                 del self._pending[code]
                 continue
@@ -389,6 +426,34 @@ class Executor:
         """在途卖单数量 {code: qty} —— 对账差异降级用 (注入 reconciler)。"""
         return {code: p["qty"] for code, p in self._pending.items()}
 
+    # ── 成交通知上下文 (下单记, 成交取) ───────────────────────────
+
+    _FILL_CONTEXT_CAP = 1000
+
+    def register_fill_context(self, order_id: str, ctx: dict) -> None:
+        """下单时记下这笔单的通知上下文 (策略名/档位/比例), 成交回报
+        来时由 _on_trade 取回拼飞书消息。order_id 是稳定键 (券商单号);
+        限容量防预埋单场景无界增长, 满则丢最老一条 (其通知回退兜底文案,
+        不影响交易)。"""
+        if (order_id not in self._fill_context
+                and len(self._fill_context) >= self._FILL_CONTEXT_CAP):
+            self._fill_context.pop(next(iter(self._fill_context)))
+        self._fill_context[order_id] = ctx
+
+    def pop_fill_context(self, order_id: str) -> dict | None:
+        """成交回报取回 (取即删)。仅兼容保留 —— 新代码用 peek/discard。"""
+        return self._fill_context.pop(order_id, None)
+
+    def peek_fill_context(self, order_id: str) -> dict | None:
+        """成交回报读取 (不删)。2026-07-31: 同一订单的部成多笔共享同一份
+        原因 (金逸影视 1300 股拆 6 笔成交, 只有首笔有原因、看起来像
+        "只买到 100 股"); 清理责任在订单终态 (discard) 与容量上限。"""
+        return self._fill_context.get(order_id)
+
+    def discard_fill_context(self, order_id: str) -> None:
+        """订单终态 (委托回报/状态同步) 时清理 ctx。"""
+        self._fill_context.pop(order_id, None)
+
     # ── 内部 ────────────────────────────────────────────────────
 
     def _sell(self, code: str, qty: int, price: float, price_type,
@@ -405,6 +470,9 @@ class Executor:
         remark = self.next_remark("X")
         order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
                                   price_type, remark)
+        self.register_fill_context(order_id, {
+            "label": _label_from_reason(reason),
+            "detail": _detail_from_reason(reason)})
         self._book.apply_order_update(
             order_id, OS_REPORTED, code=code, direction=DIRECTION_SELL,
             price=price, qty=qty, remark=remark)

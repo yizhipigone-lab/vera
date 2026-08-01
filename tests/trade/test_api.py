@@ -1,0 +1,310 @@
+"""trade/api.py 端点测试 (审计L12修复, 2026-07-26).
+
+TestClient + FakeGateway 装配。锁住: 读端点形状、code 入参正则
+(畸形 422 不进队列)、qty 整手校验、命令端点只 put 不执行
+(accepted 语义)。token 鉴权留 P2 (审计L12④裁决: 不引入 server.py
+改动, 本文件无 token 用例)。
+"""
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from fastapi.testclient import TestClient
+
+from trade.api import create_api_app
+from trade.config import TradeConfig
+from trade_main import TradeApp
+
+SH = "600519.SH"
+
+
+@pytest.fixture()
+def client(tmp_path):
+    cfg = TradeConfig(
+        account_id="API", fake_sdk=True,
+        db_path=str(tmp_path / "t.db"),
+        raw_log_path=str(tmp_path / "r.jsonl"),
+        kill_flag_path=str(tmp_path / "KILL"),
+    )
+    app = TradeApp(cfg, fake=True, fake_gateway_kwargs={
+        "cash": 1_000_000.0,
+        "positions": {SH: {"volume": 1000, "can_use": 1000, "avg_cost": 10.0}}},
+        config_path=str(tmp_path / "trade.yaml"))
+    app.start(start_timers=False)
+    yield TestClient(create_api_app(app)), app
+    app.stop()
+
+
+def _wait(pred, timeout=3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_status_shape(client):
+    c, app = client
+    d = c.get("/api/trade/status").json()
+    assert d["connected"] is True
+    assert d["kill_active"] is False
+    assert d["reconciled"] is True
+    assert d["monitor_healthy"] in (True, False, None)
+    # 2026-07-27 裁决②: 时段 + 人话原因字段
+    assert d["session"] in ("pre_open", "auction", "continuous",
+                            "lunch", "closed")
+    assert isinstance(d["monitor_reason"], str) and d["monitor_reason"]
+
+
+def test_positions_shape(client):
+    c, _ = client
+    d = c.get("/api/trade/positions").json()
+    assert d["positions"][0]["code"] == SH
+    assert d["positions"][0]["volume"] == 1000
+    assert "tiers_done" in d["positions"][0]
+    # 2026-07-27 裁决③: etf/managed 字段
+    assert d["positions"][0]["etf"] is False
+    assert d["positions"][0]["managed"] is True
+    # 2026-07-31: 当日涨跌字段存在 (无行情快照时为 None, 不崩)
+    assert "day_chg_pct" in d["positions"][0]
+    assert "day_chg_amt" in d["positions"][0]
+
+
+def test_positions_day_change(client):
+    """2026-07-31: 有昨收+现价时, 当日涨幅=(现价/昨收-1),
+    当日盈亏额=(现价-昨收)×数量。"""
+    c, app = client
+    app.monitor.on_quote(SH, {"last": 11.0, "bid1": 10.9, "prev_close": 10.0})
+    d = c.get("/api/trade/positions").json()
+    p = d["positions"][0]
+    assert p["day_chg_pct"] == 10.0
+    assert p["day_chg_amt"] == (11.0 - 10.0) * p["volume"]
+
+
+def test_read_endpoints_200(client):
+    c, _ = client
+    for url in ("/api/trade/orders", "/api/trade/reconciles",
+                "/api/trade/audits?limit=10&offset=0"):
+        assert c.get(url).status_code == 200
+
+
+def test_buy_valid_code_accepted(client):
+    c, _ = client
+    r = c.post("/api/trade/buy", json={"code": SH, "qty": 100, "price": 10.0})
+    assert r.status_code == 200 and r.json()["accepted"] is True
+
+
+def test_buy_malformed_code_rejected_422(client):
+    """审计L12修复: 畸形 code 在 HTTP 边界 422, 不进事件队列。"""
+    c, app = client
+    for bad in ("60051.SH", "600519.XX", "ABCDEF.SH", "600519.SH; DROP", ""):
+        r = c.post("/api/trade/buy", json={"code": bad, "qty": 100})
+        assert r.status_code == 422, bad
+    assert app.store._conn.execute(
+        "SELECT COUNT(*) FROM audit WHERE kind='manual_buy'").fetchone()[0] == 0
+
+
+def test_sell_malformed_code_rejected_422(client):
+    c, _ = client
+    assert c.post("/api/trade/sell", json={"code": "bad"}).status_code == 422
+    assert c.post("/api/trade/sell", json={"code": SH}).status_code == 200
+
+
+def test_buy_qty_must_be_lot(client):
+    c, _ = client
+    assert c.post("/api/trade/buy", json={"code": SH, "qty": 150}).status_code == 422
+    assert c.post("/api/trade/buy", json={"code": SH, "qty": 0}).status_code == 422
+
+
+def test_command_endpoints_accepted_only(client):
+    """命令端点全部只 put + accepted (薄层语义, 不同步执行)。"""
+    c, _ = client
+    for url in ("/api/trade/kill", "/api/trade/unkill", "/api/trade/ladder"):
+        r = c.post(url)
+        assert r.status_code == 200 and r.json()["accepted"] is True
+    r = c.post("/api/trade/cancel", json={"order_id": "FAKE000001"})
+    assert r.status_code == 200
+
+
+# ═══════════════════════════════════════════════════════════════
+# 设置面板: GET/PUT /api/trade/config (2026-07-26)
+# ═══════════════════════════════════════════════════════════════
+
+def test_get_config_shape(client):
+    c, _ = client
+    d = c.get("/api/trade/config").json()
+    assert d["account_id"] == "API"
+    assert d["daily_loss_limit"] == 0.05
+    assert d["stop"]["priority"] == "trailing_first"
+    assert d["stop"]["cost_stop"]["threshold"] == -0.12
+    assert d["stop"]["ladder_tp"]["levels"][0] == {"profit": 0.06,
+                                                   "sell_ratio": 0.3}
+    assert d["position_sizing"]["max_positions"] == 10
+    assert d["reconcile_times"] == ["09:35", "11:30", "14:55", "15:05"]
+    assert d["sync_interval_sec"] == 180   # 2026-07-30 增量同步间隔
+
+
+def test_put_config_hot_swap_and_yaml_writeback(client, tmp_path):
+    """合法 PUT → accepted → 消费者热替换 → GET 反映新值 + yaml 写回同值
+    + monitor/executor 引用已换 + 运行时状态 (_triggered) 保留 + audit。"""
+    from trade.config import load_trade_config
+    c, app = client
+    body = c.get("/api/trade/config").json()
+    body["stop"]["trailing_stop"]["drawdown"] = 0.03
+    body["daily_loss_limit"] = 0.08
+    app.monitor._triggered.add("SENTINEL")     # 运行时状态不应被重置
+    r = c.put("/api/trade/config", json=body)
+    assert r.status_code == 200
+    assert set(r.json()["changed"]) == {"stop.trailing_stop.drawdown",
+                                        "daily_loss_limit"}
+    assert _wait(lambda: app.config.stop.trailing_stop.drawdown == 0.03)
+    # GET 反映新值
+    d = c.get("/api/trade/config").json()
+    assert d["stop"]["trailing_stop"]["drawdown"] == 0.03
+    assert d["daily_loss_limit"] == 0.08
+    # 热替换: monitor/executor 引用已换, risk 快照字段已换
+    assert app.monitor._cfg.stop.trailing_stop.drawdown == 0.03
+    assert app.executor._cfg.daily_loss_limit == 0.08
+    assert app.risk._loss_limit == 0.08
+    # 运行时状态保留
+    assert "SENTINEL" in app.monitor._triggered
+    # yaml 写回可重新 load 得同值
+    reloaded = load_trade_config(tmp_path / "trade.yaml")
+    assert reloaded.stop.trailing_stop.drawdown == 0.03
+    assert reloaded.daily_loss_limit == 0.08
+    # audit 留痕
+    rows = app.store._conn.execute(
+        "SELECT kind FROM audit WHERE kind='config_update'").fetchall()
+    assert rows
+
+
+def test_put_config_partial_body_keeps_account(client, tmp_path):
+    """深合并语义: 只发 stop 字段, account_id/qmt_path 等不被清
+    (关键安全语义 —— 面板表单不含这些字段, 全量替换会清掉真账号)。"""
+    c, app = client
+    r = c.put("/api/trade/config",
+              json={"stop": {"trailing_stop": {"drawdown": 0.02}}})
+    assert r.status_code == 200
+    assert _wait(lambda: app.config.stop.trailing_stop.drawdown == 0.02)
+    assert app.config.account_id == "API"          # 没被默认值覆盖
+    d = c.get("/api/trade/config").json()
+    assert d["account_id"] == "API"
+
+
+def test_put_config_invalid_422_and_untouched(client, tmp_path):
+    """非法配置 → 422 + 字段错误; 生效配置与 yaml 都不动。"""
+    c, app = client
+    yaml_path = tmp_path / "trade.yaml"
+    body = c.get("/api/trade/config").json()
+    body["force_market_after"] = "99:99"
+    r = c.put("/api/trade/config", json=body)
+    assert r.status_code == 422 and "force_market_after" in r.json()["detail"]
+    # 坏 levels 结构
+    body = c.get("/api/trade/config").json()
+    body["stop"]["ladder_tp"]["levels"] = [[0.05, 0.33]]
+    assert c.put("/api/trade/config", json=body).status_code == 422
+    # 负 activation
+    body = c.get("/api/trade/config").json()
+    body["stop"]["trailing_stop"]["activation"] = -0.01
+    assert c.put("/api/trade/config", json=body).status_code == 422
+    # sizing 上下限倒挂
+    body = c.get("/api/trade/config").json()
+    body["position_sizing"]["min_buy_amount"] = 30000
+    assert c.put("/api/trade/config", json=body).status_code == 422
+    # 生效配置未变
+    assert app.config.stop.trailing_stop.drawdown == 0.01
+    # yaml 未动 (从未有过合法 PUT → 文件不存在)
+    assert not yaml_path.exists()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-07-30: 交易记录 TAB — /api/trade/deals + orders 历史日期
+# ═══════════════════════════════════════════════════════════════
+
+def test_deals_today_and_history_date(client):
+    """成交记录: 缺省当日; date=YYYYMMDD 查历史; 行内含 name 字段。"""
+    import datetime as _dt
+    c, app = client
+    app.store.save_trade({"traded_id": "T-1", "order_id": "O-1", "code": SH,
+                          "direction": 23, "price": 10.0, "qty": 100,
+                          "ts": time.time()})
+    d = c.get("/api/trade/deals").json()
+    assert len(d["deals"]) == 1
+    row = d["deals"][0]
+    assert row["traded_id"] == "T-1" and row["code"] == SH
+    assert row["qty"] == 100 and "name" in row
+    assert row["source"] == "system"   # 2026-07-30: 成交来源 (系统/手工)
+    today = _dt.datetime.now().strftime("%Y%m%d")
+    assert len(c.get(f"/api/trade/deals?date={today}").json()["deals"]) == 1
+    yesterday = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y%m%d")
+    assert c.get(f"/api/trade/deals?date={yesterday}").json()["deals"] == []
+
+
+def test_deals_invalid_date_422(client):
+    c, _ = client
+    assert c.get("/api/trade/deals?date=2026-07-30").status_code == 422
+    assert c.get("/api/trade/deals?date=abc").status_code == 422
+
+
+def test_orders_history_date_param(client):
+    """委托记录: date=YYYYMMDD 查历史; 非法日期 422。"""
+    import datetime as _dt
+    c, app = client
+    assert c.get("/api/trade/orders?date=bad").status_code == 422
+    yesterday = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y%m%d")
+    assert c.get(f"/api/trade/orders?date={yesterday}").json()["orders"] == []
+    # 默认参数行为不变: 缺省仍是当日
+    assert c.get("/api/trade/orders").status_code == 200
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-01 分页
+# ═══════════════════════════════════════════════════════════════
+
+def test_deals_pagination_stable_across_same_ts(client):
+    """同秒多笔成交翻页不重复不漏 —— ORDER BY ts DESC, traded_id DESC
+    决胜键保证 tie 内顺序一致。"""
+    c, app = client
+    same_ts = time.time()
+    for i in range(5):
+        app.store.save_trade({
+            "traded_id": f"T-pg-{i:04d}", "order_id": f"O-pg-{i:04d}",
+            "code": "000001.SZ", "direction": 23,  # DIRECTION_BUY
+            "price": 10.0, "qty": 100, "amount": 1000.0,
+            "ts": same_ts, "source": "system", "reason": ""})
+    p1 = c.get("/api/trade/deals?limit=2&offset=0").json()["deals"]
+    assert len(p1) == 2
+    p2 = c.get("/api/trade/deals?limit=2&offset=2").json()["deals"]
+    assert len(p2) == 2
+    p3 = c.get("/api/trade/deals?limit=2&offset=4").json()["deals"]
+    assert len(p3) == 1
+    ids = {d["traded_id"] for d in p1 + p2 + p3}
+    assert len(ids) == 5, "跨页不应有重复或遗漏"
+
+
+def test_deals_limit_out_of_range_rejected(client):
+    """limit < 1 或 > 1000 → 422 (SQLite LIMIT -1 = 无限制, 挡在边界)。"""
+    c, _ = client
+    assert c.get("/api/trade/deals?limit=-1").status_code == 422
+    assert c.get("/api/trade/deals?limit=0").status_code == 422
+    assert c.get("/api/trade/deals?limit=1001").status_code == 422
+
+
+def test_orders_default_limit_within_bounds(client):
+    """orders 缺省 limit=200 正常返回 + offset 翻页。"""
+    c, app = client
+    # 造 3 笔委托
+    now = time.time()
+    for i in range(3):
+        app.store.save_order({
+            "order_id": f"O-ord-{i:04d}", "remark": f"X{i}", "code": "000001.SZ",
+            "direction": 23, "price": 10.0, "qty": 100, "status": 50})
+    r = c.get("/api/trade/orders?limit=2&offset=0").json()
+    assert len(r["orders"]) == 2
+    r2 = c.get("/api/trade/orders?limit=2&offset=2").json()
+    assert len(r2["orders"]) == 1

@@ -33,7 +33,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 2  # v2: universe 归一化剔除假值默认键 (web/yaml 路径 key 收敛)
+SCHEMA_VERSION = 3  # v3 (2026-07-31): _adaptive_scan_count 回退写死3000 (TDX count 从当前日期往前、忽略 end_time; 旧自适应按 end_time 估算致 end<今天的历史回测丢前段信号)。bump 使 v2 错误选股缓存全部失效重算
 KEEP_DEFAULT = 10
 
 

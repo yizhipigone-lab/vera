@@ -120,6 +120,8 @@ class RealGateway(BaseGateway):
         self._timeout = timeout_sec
         self._trader = None
         self._account = None
+        # 2026-07-31 断线死循环修复: 连续连接失败计数 (见 _note_connect_failure)
+        self._connect_failures = 0
         # 审计H5修复: 行情订阅状态 —— code → 订阅序号 (unsubscribe 用),
         # run 线程全进程只启一次 (库级全局事件循环)
         self._quote_seqs: dict[str, int] = {}
@@ -144,7 +146,10 @@ class RealGateway(BaseGateway):
         """连接。审计M9修复(计划书 §5.5 "成功才关旧连接"):
         新建实例 → connect 成功 → 才 stop 旧实例并替换。
         失败路径 stop 新实例并置空 —— 不留已 start 未连上的悬活 trader
-        (重连循环每轮新建, 旧实例及回调悬活可能多路推回调)。"""
+        (重连循环每轮新建, 旧实例及回调悬活可能多路推回调)。
+        例外 (2026-07-31): 连续失败 ≥3 次主动释放旧实例并换 session_id,
+        见 _note_connect_failure —— 旧会话半死占着 session 时,
+        "成功才关旧"会把重连锁死成永久 -1。"""
         XtQuantTrader, XtQuantTraderCallback, StockAccount = self._xt()
         gw = self
 
@@ -170,10 +175,13 @@ class RealGateway(BaseGateway):
             rc = _call_with_timeout(trader.connect, self._timeout)
         except Exception:
             trader.stop()   # 失败: 新实例收尸, 旧实例不动 (旧连接还在用)
+            self._note_connect_failure()
             raise
         if rc != 0:
             trader.stop()
+            self._note_connect_failure()
             raise RuntimeError(f"QMT 连接失败, 返回码 {rc}")
+        self._connect_failures = 0
         # 新连接成功 —— 此刻才关旧连接 (§5.5), 断线期旧连接是最后的信息源
         old = self._trader
         self._trader = trader
@@ -190,6 +198,30 @@ class RealGateway(BaseGateway):
         if self._trader is not None:
             self._trader.stop()
             self._trader = None
+
+    # 2026-07-31 断线死循环实测 (14:14 起 46 次 reconnect_failed, rc=-1):
+    # 断线后旧会话半死挂在终端侧, 同 session_id 的新会话被拒; 而
+    # "成功才关旧"意味着旧实例永远等不到释放 → 永不自愈。连续失败达
+    # 阈值即主动释放旧 trader 并更换 session_id —— 心跳已死数十分钟的
+    # 旧连接不可能是"最后的信息源", 此时释放它的收益 >> 残留风险。
+    _CONNECT_FAILURE_RELEASE_THRESHOLD = 3
+
+    def _note_connect_failure(self) -> None:
+        self._connect_failures += 1
+        if (self._connect_failures < self._CONNECT_FAILURE_RELEASE_THRESHOLD
+                or self._trader is None):
+            return
+        old, self._trader = self._trader, None
+        try:
+            old.stop()
+        except Exception:
+            _logger.warning("释放旧 trader 异常 (继续重连)", exc_info=True)
+        old_sid = self._session_id
+        self._session_id = int(time.time()) % 100000
+        if self._session_id == old_sid:   # 同秒撞号兜底, 保证必换
+            self._session_id = (old_sid + 1) % 100000
+        _logger.warning("连续 %d 次连接失败, 已释放旧会话, session_id %d → %d",
+                        self._connect_failures, old_sid, self._session_id)
 
     def order(self, code: str, direction: int, price: float, qty: int,
               price_type: Any = PRICE_TYPE_LIMIT, remark: str = "") -> str:
@@ -214,7 +246,7 @@ class RealGateway(BaseGateway):
         a = _call_with_timeout(
             self._trader.query_stock_asset, self._timeout, self._account)
         return {"cash": a.cash, "frozen_cash": a.frozen_cash,
-                "total_asset": a.total_asset}
+                "market_value": a.market_value, "total_asset": a.total_asset}
 
     def query_positions(self) -> list[dict]:
         ps = _call_with_timeout(
@@ -422,7 +454,7 @@ class FakeGateway(BaseGateway):
         with self._lock:
             market = sum(p["volume"] * p["avg_cost"] for p in self._positions.values())
             return {"cash": self._cash, "frozen_cash": self._frozen,
-                    "total_asset": self._cash + self._frozen + market}
+                    "market_value": market, "total_asset": self._cash + self._frozen + market}
 
     def query_positions(self) -> list[dict]:
         with self._lock:

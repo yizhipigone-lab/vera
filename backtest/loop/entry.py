@@ -33,6 +33,8 @@ class EntryEngine:
         self.params = params
         # F7 [H4]: entry 因停牌/价缺失被 skip 的计数 (loop 结束汇总告警, 补圆"不静默吞信号")
         self.skipped_signal_count = 0
+        # 2026-07-23: 卖出冷却跳过的买入信号计数 (loop 结束汇总)
+        self.cooldown_skip_count = 0
 
     def _record_skip(self, i: int, ci: int):
         self.skipped_signal_count += 1
@@ -42,13 +44,16 @@ class EntryEngine:
                 entry_np: np.ndarray,
                 tradable_np: Optional[np.ndarray],
                 prev_equity: float,
-                sig_cis: Optional[np.ndarray] = None) -> float:
+                sig_cis: Optional[np.ndarray] = None,
+                last_exit_bar: Optional[np.ndarray] = None) -> float:
         """_simulate_core_v3_legacy 买入块的移植。返回更新后的 cash。
 
         sig_cis: 本 bar 有信号的股票列索引(升序)。None 时按旧路径全列扫描
         (兼容直调方); BacktestLoop.run 传入预计算的 np.nonzero 结果
         (2026-07-17 Phase 1 项2: 25.5ms→1.1ms)。升序保证与 range(n_stocks)
         扫描顺序一致 → 同 bar 多信号买入顺序不变 → parity 不破。
+        last_exit_bar: 2026-07-23 卖出冷却 — 每票最近一次全清仓 bar 索引
+        (BacktestLoop 传入; None = 冷却关闭, 老行为)。
         """
         p = self.params
         if sig_cis is None:
@@ -77,6 +82,14 @@ class EntryEngine:
                 trade_buf.append(ci, os_ei, i, os_ep, bp, os_sh,
                                  gross - os_sh * os_ep, os_pp, 1)
                 book.remove_swap_pop(old_p)
+            # ── 卖出冷却 (2026-07-23): 空仓后的新买, 距上次全清仓不足
+            # sell_cooldown_bars → skip。仅约束新买; 上方换股 (old_p>=0,
+            # 持仓中卖旧买新) 不触发冷却。
+            if (old_p < 0 and last_exit_bar is not None
+                    and ci < last_exit_bar.shape[0]
+                    and i - int(last_exit_bar[ci]) < p.sell_cooldown_bars):
+                self.cooldown_skip_count += 1
+                continue
             # ── 买入新仓 ──
             buy_amount = min(cash, p.max_buy_amount)
             if p.max_position_pct < 1.0:

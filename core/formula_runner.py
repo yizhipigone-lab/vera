@@ -14,38 +14,26 @@ from utils.code_normalizer import normalize_list
 
 logger = get_logger(__name__)
 
-# 各周期每个自然日的 bar 数 (用于自适应扫描深度)。
-# 注意：语义与 backtest._constants.BARS_PER_DAY（交易日 bar 数 / 年化基数）不同，
-# 这里用于把请求区间跨度（日历日）换算成需要扫描的 bar 数。
-_CALENDAR_BARS_PER_DAY = {"1d": 1.0, "1w": 1.0 / 7.0, "5m": 48.0}
-
-# 指标预热缓冲 (bar): 覆盖 MA250/HHV(250) 一类长窗口指标, 留 ~20% 余量
-_WARMUP_BARS = 300
-
-# TDX 扫描深度上限：历史最大深度，覆盖 ~12 年日线
+# TDX 选股扫描深度: 从"当前日期"往前的 bar 数 (公式计算与命中返回都受此窗口约束)。
+# 覆盖 ~12 年日线 (今天往前 3000 个交易日 ≈ 到 2014)。
 _MAX_SCAN_COUNT = 3000
 
 
 def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> int:
-    """按请求区间自适应 TDX 扫描深度 (2026-07-23).
+    """TDX 选股扫描深度 (恒返回 _MAX_SCAN_COUNT=3000)。
 
-    原写死 3000 (~12年日线), 2024 起点也会扫 2013 起的数据 —— 约 4 倍浪费,
-    且是当年逼出 BATCH_SIZE=100 ("返回数据过大") 的根因。
-    现改为: 区间交易日估算 + 300 根预热缓冲, 下限 400, 封顶 3000 (保持旧上限,
-    5m 等长区间行为不劣化)。无法估算时回退 3000。
+    2026-07-31 回退: 2026-07-23 引入的"区间跨度+预热"自适应算法有致命缺陷 ——
+    它按 (end_time - start_time) 估算 count, 误以为 count 是从 end_time 往前扫。
+    但实测 TDX formula_process_mul_xg 的 count 是从**当前真实日期**往前、且忽略
+    end_time 参数。当回测 end_time 早于今天 (如 2020-2022 回测, 今天 2026-07-31):
+    自适应算出 count=1030, 从今天往前只到 2022-08 → 2020-2021 的信号全在窗口外
+    被丢弃 (实测 600800.SH 在 2020-2021 本有 20 个 QUANTQQ 信号, 却返回 0,
+    导致回测前两年权益曲线为 0)。写死 3000 覆盖到 2014, 代价仅全市场公式阶段
+    多约 13s (实测 0.37s→0.87s/批×50批), 相对回测总耗时为噪音。
+    参数保留以兼容调用方 (run_stock_selection_with_dates)。
+    若未来需 start<2014 的回测: 提上限并同步调小 BATCH_SIZE 防 "返回数据过大"。
     """
-    rate = _CALENDAR_BARS_PER_DAY.get(stock_period)
-    if rate is None or not start_time or not end_time:
-        return _MAX_SCAN_COUNT
-    try:
-        span_days = (pd.to_datetime(end_time) - pd.to_datetime(start_time)).days
-    except (ValueError, TypeError):
-        return _MAX_SCAN_COUNT
-    if span_days < 0:
-        return _MAX_SCAN_COUNT
-    # 244/365 ≈ 每年交易日占比
-    bars = int(span_days * 244 / 365 * rate) + _WARMUP_BARS
-    return max(400, min(_MAX_SCAN_COUNT, bars))
+    return _MAX_SCAN_COUNT
 
 # T-H-2 connector seam
 _connector_override = None

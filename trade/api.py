@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 
@@ -51,6 +52,24 @@ class CancelRequest(BaseModel):
 def _rows_to_dicts(cursor) -> list[dict]:
     cols = [d[0] for d in cursor.description]
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+_SECONDS_PER_DAY = 86400
+
+
+def _today_range() -> tuple[float, float]:
+    """当日 [00:00, 次日 00:00) epoch 秒。"""
+    start = datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp()
+    return start, start + _SECONDS_PER_DAY
+
+
+def _day_range(date: str) -> tuple[float, float]:
+    """YYYYMMDD → [当日 00:00, 次日 00:00) epoch 秒。格式非法抛 ValueError。"""
+    if not re.fullmatch(r"\d{8}", date or ""):
+        raise ValueError(f"date 必须是 YYYYMMDD, 实际 {date!r}")
+    start = datetime.strptime(date, "%Y%m%d").timestamp()
+    return start, start + _SECONDS_PER_DAY
 
 
 def _diff_dicts(old: dict, new: dict, prefix: str = "") -> list[str]:
@@ -233,12 +252,22 @@ def create_api_app(trade_app) -> FastAPI:
         for code, p in sorted(snap["positions"].items()):
             quote = trade_app.monitor.quote_of(code)
             last = quote["last"] if quote else None
+            # 2026-07-31: 当日涨跌 (昨收来自 monitor quote 缓存的 prev_close,
+            # 即网关 tick 的 lastClose)。幅度按价格, 金额按持仓市值口径
+            # ((现价-昨收)×数量, 即当日浮动盈亏额)。无价/无昨收 → None。
+            prev_close = (quote.get("prev_close") or None) if quote else None
+            day_chg_pct = (round((last / prev_close - 1) * 100, 2)
+                           if last and prev_close else None)
+            day_chg_amt = (round((last - prev_close) * p.volume, 2)
+                           if last and prev_close else None)
             etf = is_etf(code)
             result.append({
                 "code": code, "name": _name_of(code),
                 "volume": p.volume, "can_use": p.can_use,
                 "avg_cost": p.avg_cost, "strategy": p.strategy,
                 "last": last,
+                "day_chg_pct": day_chg_pct,
+                "day_chg_amt": day_chg_amt,
                 "market_value": round(last * p.volume, 2) if last else None,
                 "pnl": round((last - p.avg_cost) * p.volume, 2)
                 if last else None,
@@ -255,31 +284,66 @@ def create_api_app(trade_app) -> FastAPI:
         return {"positions": result, "closed": closed, "ts": time.time()}
 
     @app.get("/api/trade/orders")
-    def orders():
-        """当日委托 (只读连接, WAL 下不堵写者)。"""
-        day_start = datetime.now().replace(
-            hour=0, minute=0, second=0, microsecond=0).timestamp()
+    def orders(date: str = Query(default=""),
+               limit: int = Query(default=200, ge=1, le=1000),
+               offset: int = Query(default=0, ge=0)):
+        """委托记录 (只读连接, WAL 下不堵写者)。
+        date=YYYYMMDD 查历史 (缺省当日); limit/offset 翻页。"""
+        try:
+            start, end = _day_range(date) if date else _today_range()
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
         ro = trade_app.store.open_readonly()
         try:
             cur = ro.execute(
-                "SELECT * FROM orders WHERE created_ts >= ? "
-                "ORDER BY created_ts DESC", (day_start,))
-            return {"orders": _rows_to_dicts(cur)}
+                "SELECT * FROM orders WHERE created_ts >= ? AND created_ts < ? "
+                "ORDER BY created_ts DESC, order_id DESC LIMIT ? OFFSET ?",
+                (start, end, limit, offset))
+            rows = _rows_to_dicts(cur)
+            for r in rows:
+                r["name"] = _name_of(r["code"])
+            return {"orders": rows}
+        finally:
+            ro.close()
+
+    @app.get("/api/trade/deals")
+    def deals(date: str = Query(default=""),
+              limit: int = Query(default=200, ge=1, le=1000),
+              offset: int = Query(default=0, ge=0)):
+        """成交记录 (2026-07-30 交易记录 TAB)。date=YYYYMMDD 查历史
+        (缺省当日); limit/offset 翻页。数据源 trades 表
+        (成交回调 + sync_reports 双向补记, traded_id 幂等)。"""
+        try:
+            start, end = _day_range(date) if date else _today_range()
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        ro = trade_app.store.open_readonly()
+        try:
+            cur = ro.execute(
+                "SELECT * FROM trades WHERE ts >= ? AND ts < ? "
+                "ORDER BY ts DESC, traded_id DESC LIMIT ? OFFSET ?",
+                (start, end, limit, offset))
+            rows = _rows_to_dicts(cur)
+            for r in rows:
+                r["name"] = _name_of(r["code"])
+            return {"deals": rows}
         finally:
             ro.close()
 
     @app.get("/api/trade/reconciles")
-    def reconciles(limit: int = Query(default=50, le=200)):
+    def reconciles(limit: int = Query(default=50, ge=1, le=200),
+                   offset: int = Query(default=0, ge=0)):
         ro = trade_app.store.open_readonly()
         try:
             cur = ro.execute(
-                "SELECT * FROM reconcile_log ORDER BY id DESC LIMIT ?", (limit,))
+                "SELECT * FROM reconcile_log ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset))
             return {"reconciles": _rows_to_dicts(cur)}
         finally:
             ro.close()
 
     @app.get("/api/trade/audits")
-    def audits(limit: int = Query(default=50, le=200),
+    def audits(limit: int = Query(default=50, ge=1, le=200),
                offset: int = Query(default=0, ge=0)):
         ro = trade_app.store.open_readonly()
         try:

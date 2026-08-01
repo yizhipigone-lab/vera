@@ -1068,11 +1068,10 @@ class BacktestEngine:
         """每列涨停幅度向量 (0.10 主板 / 0.20 创业板+科创板 / 0.30 北交所 / 0.05 ST)。
 
         2026-07-17 Phase 1: 按列集合缓存, 批量跑 N 个公式时 ST 信息只查一次。
-        缓存有效期 = 进程内, 与 get_cached_info 自身缓存语义一致 (ST 标记日频更新)。
-        判定优先级复刻旧逐列逻辑: 688/300/301 先判, 否则查 ST。
-        2026-07-18: 补北交所 30% (8xx/4xx/920 开头, 此前误按主板 10% 会过度滤信号);
-        缓存加 32 键上限 (FIFO), 防长驻进程无界增长。
+        2026-08-01 P1: 涨停幅度规则统一到 core/limit_ratio.py (全项目唯一真相源),
+        消除与 trade/executor.py 的 ST 标记来源漂移。
         """
+        from core.limit_ratio import limit_ratio
         key = tuple(str(c) for c in columns)
         cache = getattr(self, "_limit_ratio_cache", None)
         if cache is None:
@@ -1082,20 +1081,11 @@ class BacktestEngine:
             vec = np.full(len(columns), 0.10)
             for j, col in enumerate(columns):
                 col_str = str(col)
-                if col_str.startswith('688'):
-                    vec[j] = 0.20
-                elif col_str.startswith('300') or col_str.startswith('301'):
-                    vec[j] = 0.20
-                elif col_str.startswith(('4', '8', '920')):
-                    # 北交所: 43/83/87/88/920 开头, 涨跌幅 30%
-                    vec[j] = 0.30
-                else:
-                    # P0-3: 用 TDX IsSTGP 真实判定 ST（原 'ST' in col_str 对纯代码恒 False）
-                    info = get_cached_info(col_str)
-                    if str(info.get('IsSTGP', '0')) == '1':
-                        vec[j] = 0.05
+                info = get_cached_info(col_str)
+                is_st = str(info.get('IsSTGP', '0')) == '1'
+                vec[j] = limit_ratio(col_str, is_st)
             if len(cache) >= self._LIMIT_RATIO_CACHE_MAX:
-                cache.pop(next(iter(cache)))  # FIFO 淘汰最旧键
+                cache.pop(next(iter(cache)))
             cache[key] = vec
         return vec
 

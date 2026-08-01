@@ -101,6 +101,29 @@ def _reset_all_connectors():
     FormulaRunner.reset_connector()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_caches(tmp_path, monkeypatch):
+    """缓存根目录隔离 (2026-07-27 缓存投毒事件)。
+
+    事件: test_sector_selection 把 mock 的 3 股池经 selector 接缝写入真实
+    data/universe_cache, key 与用户 QUANTQQ 配置完全相同 → 用户回测命中
+    毒缓存, 300 只池变 3 只, 1.5 年只有 21 笔交易。
+
+    四个缓存模块的 default_cache_root 统一指到 per-test tmp:
+    测试自己的缓存行为不受影响 (各 cache 测试本来就显式传 root 或自行 patch),
+    但任何"忘了隔离"的测试从此不可能再污染生产缓存。
+    """
+    from backtest import matrix_cache
+    from selection import selection_cache, signal_day_cache, universe_cache
+    for mod, name in ((universe_cache, "universe_cache"),
+                      (selection_cache, "selection_cache"),
+                      (signal_day_cache, "signal_day_cache"),
+                      (matrix_cache, "matrix_cache")):
+        d = tmp_path / name
+        monkeypatch.setattr(mod, "default_cache_root", lambda _d=d: _d)
+    yield
+
+
 class FakeLoop:
     """Mock BacktestLoop for monkeypatch tests. Captures run() args, returns stub equity/trades."""
     def __init__(self, equity=None, trades=None):

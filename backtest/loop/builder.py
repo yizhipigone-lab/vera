@@ -45,6 +45,8 @@ def build_backtest_loop(
     # 移动止盈跳空保护 (2026-07-21 用户拍板, opt-in 默认关):
     # 跳空低开跌穿回撤线时按 min(回撤线, 开盘价) 成交
     trailing_gap_protection: bool = False,
+    # 卖出冷却 (2026-07-23, bar 数): 全清仓后 N bar 内禁止同票重新买入, 0=关闭
+    sell_cooldown_bars: int = 0,
 ) -> BacktestLoop:
     """从 _simulate_core_v3 的参数构造 BacktestLoop。
 
@@ -59,6 +61,7 @@ def build_backtest_loop(
         min_buy_amount=min_buy_amount, max_buy_amount=max_buy_amount,
         lot_size=lot_size, min_lots=min_lots,
         bpday=bpday, max_position_pct=max_position_pct,
+        sell_cooldown_bars=sell_cooldown_bars,
     )
 
     # ── capability gating: 按 enabled 过滤策略 ──

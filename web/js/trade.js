@@ -72,13 +72,14 @@ function clearStale(id) {
   if (tag) tag.remove();
 }
 function markOffline() {
-  // 徽章置断连/未知, 四个数据区打离线缓存角标 + 灰化
+  // 徽章置断连/未知, 数据区打离线缓存角标 + 灰化
   badge(document.getElementById('tdConn'), false, '断连');
   badge(document.getElementById('tdReconciled'), null, '对账未知');
   badge(document.getElementById('tdQuote'), null, '行情未知');
   document.getElementById('tdHint').textContent =
     '交易服务 (8081) 不可达 — 显示的是最后一次成功刷新的缓存数据';
-  ['tdPositions', 'tdOrders', 'tdReconciles', 'tdAudits'].forEach(staleTag);
+  // 2026-07-30: 对账/审计已迁交易记录 TAB (查询页, 不做 stale 角标)
+  ['tdPositions', 'tdOrders'].forEach(staleTag);
 }
 
 function renderPositions(d) {
@@ -90,12 +91,19 @@ function renderPositions(d) {
     box.innerHTML = '<div style="color:var(--text2);font-size:12px">无持仓</div>'; return;
   }
   // 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例 + 已平仓
+  // 2026-07-31: 当日涨幅 (价格口径) + 当日盈亏额 ((现价-昨收)×数量)
   var html = '<table class="td-table"><tr><th>代码</th><th>简称</th><th>数量</th><th>可用</th>'
-    + '<th>成本</th><th>现价</th><th>市值</th><th>浮盈</th><th>盈亏%</th>'
+    + '<th>成本</th><th>现价</th><th>当日涨幅</th><th>当日盈亏</th><th>市值</th><th>浮盈</th><th>盈亏%</th>'
     + '<th>入场时间</th><th>持仓天数</th><th>已触发档</th><th></th></tr>';
   d.positions.forEach(function (p) {
     var pnl = p.pnl === null ? '—' : p.pnl.toFixed(2);
     var pnlColor = p.pnl === null ? '' : p.pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+    var dayColor = p.day_chg_pct === null || p.day_chg_pct === undefined ? ''
+      : p.day_chg_pct >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+    var dayPct = (p.day_chg_pct === null || p.day_chg_pct === undefined) ? '—'
+      : (p.day_chg_pct > 0 ? '+' : '') + p.day_chg_pct.toFixed(2) + '%';
+    var dayAmt = (p.day_chg_amt === null || p.day_chg_amt === undefined) ? '—'
+      : (p.day_chg_amt > 0 ? '+' : '') + p.day_chg_amt.toLocaleString('zh-CN', {maximumFractionDigits: 0});
     // 2026-07-27 裁决③: ETF 行灰化 + "不管理"徽标, 无卖出按钮
     var rowStyle = p.managed === false ? ' style="opacity:.5"' : '';
     var etfTag = p.managed === false
@@ -104,6 +112,8 @@ function renderPositions(d) {
       + '<td>' + esc(p.name || '—') + '</td>'
       + '<td>' + p.volume + '</td><td>' + p.can_use
       + '</td><td>' + p.avg_cost.toFixed(2) + '</td><td>' + (p.last === null ? '—' : p.last.toFixed(2))
+      + '</td><td style="' + dayColor + '">' + dayPct
+      + '</td><td style="' + dayColor + '">' + dayAmt
       + '</td><td>' + (p.market_value === null ? '—' : p.market_value.toLocaleString('zh-CN', {maximumFractionDigits: 0}))
       + '</td><td style="' + pnlColor + '">' + pnl
       + '</td><td style="' + pnlColor + '">' + (p.pnl_pct === null ? '—' : (p.pnl_pct > 0 ? '+' : '') + p.pnl_pct.toFixed(2) + '%')
@@ -149,14 +159,16 @@ function renderOrders(d) {
   }
   // 2026-07-30: 委托表加撤单按钮 (用户要求) — 终态 (部撤53/已撤/已成/废单) 不可撤
   var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
-    + '<th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th></th></tr>';
+    + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th></th></tr>';
   d.orders.forEach(function (o) {
     // 审计L12修复: qty/filled_qty/status 统一 Number() 强转 ——
     // 其他字段走 esc, 这三个直插 innerHTML 是纵深防御缺口
     var st = Number(o.status);
     var canCancel = (st === 50 || st === 51 || st === 55);   // 已报/待撤/部成 可撤
-    html += '<tr><td>' + fmtTs(o.created_ts) + '</td><td>' + esc(o.remark) + '</td><td>'
-      + esc(o.code) + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
+    // 2026-07-30: remark 为空 = 手工单 (券商端/手机端委托, 同步认领进表)
+    var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
+    html += '<tr><td>' + fmtTs(o.created_ts) + '</td><td>' + remark + '</td><td>'
+      + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + st + '</td><td>'
       + (canCancel
@@ -203,6 +215,136 @@ function renderAudits(d) {
   }).join('\n');
 }
 
+// ── 交易记录 TAB (2026-07-30): 查询型页面, 不进 5s 轮询 ──
+// 切入时自动加载 + 手动查询/刷新; 成交/委托支持 YYYYMMDD 查历史。
+
+function renderDeals(d) {
+  var box = document.getElementById('recDeals');
+  if (!d.deals || !d.deals.length) {
+    box.innerHTML = '<div style="color:var(--text2);font-size:12px">该日无成交</div>'; return;
+  }
+  // 2026-07-30: 来源列 — 区分手工单 (券商端/手机端, 对账认领) 与系统单
+  // 2026-07-31: 原因列 — 为什么成交 (trades.reason: 阶梯止盈·档1/移动止盈/
+  // 硬止损/人工卖出...); 空 = 无 fill context (买入/部成续笔/历史行)
+  var html = '<table class="td-table"><tr><th>时间</th><th>代码</th><th>简称</th>'
+    + '<th>方向</th><th>来源</th><th>原因</th><th>价格</th><th>数量</th><th>金额</th><th>委托号</th></tr>';
+  d.deals.forEach(function (t) {
+    var isBuy = Number(t.direction) === 23;
+    var src = t.source === 'manual' ? '<span class="trade-badge wait">手工</span>'
+      : t.source === 'system' ? '系统' : '—';
+    html += '<tr><td>' + fmtTs(t.ts) + '</td><td>' + esc(t.code) + '</td><td>'
+      + esc(t.name || '—') + '</td><td style="color:'
+      + (isBuy ? 'var(--up)' : 'var(--ok)') + '">' + (isBuy ? '买' : '卖') + '</td><td>'
+      + src + '</td><td>' + (t.reason ? esc(t.reason) : '—') + '</td><td>'
+      + Number(t.price).toFixed(2) + '</td><td>' + Number(t.qty) + '</td><td>'
+      + Number(t.amount).toLocaleString('zh-CN', {maximumFractionDigits: 2}) + '</td><td>'
+      + esc(t.order_id) + '</td></tr>';
+  });
+  box.innerHTML = html + '</table>';
+}
+
+function renderHistoryOrders(d) {
+  var box = document.getElementById('recOrders');
+  if (!d.orders || !d.orders.length) {
+    box.innerHTML = '<div style="color:var(--text2);font-size:12px">该日无委托</div>'; return;
+  }
+  // 历史台账只读 — 撤单按钮只在交易页"当日委托"卡片 (操作区)
+  var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
+    + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th></tr>';
+  d.orders.forEach(function (o) {
+    var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
+    html += '<tr><td>' + fmtTs(o.created_ts) + '</td><td>' + remark + '</td><td>'
+      + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
+      + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
+      + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td></tr>';
+  });
+  box.innerHTML = html + '</table>';
+}
+
+function _dateParam(inputId, hintId) {
+  var v = document.getElementById(inputId).value.trim();
+  if (v && !/^\d{8}$/.test(v)) {
+    document.getElementById(hintId).textContent = '日期格式应为 YYYYMMDD';
+    return null;
+  }
+  document.getElementById(hintId).textContent = '';
+  return v ? '?date=' + v : '';
+}
+
+function loadDeals() {
+  var q = _dateParam('recDealDate', 'recDealHint');
+  if (q === null) return;
+  get('/api/trade/deals' + q).then(renderDeals).catch(function () {
+    document.getElementById('recDealHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+  });
+}
+
+function loadHistoryOrders() {
+  var q = _dateParam('recOrderDate', 'recOrderHint');
+  if (q === null) return;
+  get('/api/trade/orders' + q).then(renderHistoryOrders).catch(function () {
+    document.getElementById('recOrderHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+  });
+}
+
+function loadReconciles() {
+  get('/api/trade/reconciles?limit=50').then(renderReconciles).catch(function () {
+    document.getElementById('tdReconciles').innerHTML =
+      '<div style="color:var(--text2);font-size:12px">查询失败: 交易服务 (8081) 不可达</div>';
+  });
+}
+
+function loadAudits() {
+  get('/api/trade/audits?limit=100').then(renderAudits).catch(function () {
+    document.getElementById('tdAudits').textContent = '查询失败: 交易服务 (8081) 不可达';
+  });
+}
+
+window.recordsPageEnter = function () {
+  loadDeals(); loadHistoryOrders(); loadReconciles(); loadAudits();
+};
+window.recordsPageLeave = function () {};   // 无轮询可停, 钩子对齐 trade 页生命周期
+
+document.getElementById('recDealBtn').addEventListener('click', loadDeals);
+document.getElementById('recOrderBtn').addEventListener('click', loadHistoryOrders);
+document.getElementById('recReconcileBtn').addEventListener('click', loadReconciles);
+document.getElementById('recAuditBtn').addEventListener('click', loadAudits);
+
+// ── 资产卡片 (2026-07-30: 总资产/当日盈亏/可用/市值/冻结, QMT query_asset) ──
+
+function renderAsset(a) {
+  var card = document.getElementById('tdAssetCard');
+  if (!a || a.error) { if (card) card.style.display = 'none'; return; }
+  card.style.display = '';
+  card.style.opacity = '1';  // 清除 staleTag 灰显
+  function fmt(v) { return v != null ? '¥' + Number(v).toLocaleString('zh-CN', {maximumFractionDigits:2}) : '—'; }
+  document.getElementById('tdTotalAsset').textContent = fmt(a.total_asset);
+  document.getElementById('tdCash').textContent = fmt(a.cash);
+  document.getElementById('tdMarketValue').textContent = fmt(a.market_value);
+  document.getElementById('tdFrozenCash').textContent = fmt(a.frozen_cash);
+  // 当日盈亏 = total - 今日首次基准 (localStorage; 首次拉存基准, 后续算差)
+  var today = new Date().toDateString();
+  var baseKey = 'vera_asset_base_' + today;
+  var base = localStorage.getItem(baseKey);
+  if (!base && a.total_asset != null) {
+    localStorage.setItem(baseKey, a.total_asset);
+    base = a.total_asset;
+  }
+  var pnlEl = document.getElementById('tdDayPnl');
+  var pctEl = document.getElementById('tdDayPnlPct');
+  if (base && a.total_asset != null) {
+    var pnl = a.total_asset - parseFloat(base);
+    var pct = parseFloat(base) > 0 ? pnl / parseFloat(base) * 100 : 0;
+    pnlEl.textContent = (pnl >= 0 ? '+¥' : '-¥') + Math.abs(pnl).toLocaleString('zh-CN', {maximumFractionDigits:2});
+    pnlEl.style.color = pnl >= 0 ? 'var(--up)' : 'var(--down)';  // A股涨红跌绿
+    pctEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+    pctEl.style.color = pnl >= 0 ? 'var(--up)' : 'var(--down)';
+  } else {
+    pnlEl.textContent = '—'; pnlEl.style.color = '';
+    pctEl.textContent = '';
+  }
+}
+
 // ── 轮询 ─────────────────────────────────────────────
 
 // 审计L12修复: 在途保护 (一轮未回完不发起下一轮) + fetch 4s 超时
@@ -214,13 +356,13 @@ function refresh() {
   var ctl = new AbortController();
   var timer = setTimeout(function () { ctl.abort(); }, 4000);
   var s = ctl.signal;
+  // 2026-07-30: 对账/审计迁交易记录 TAB (查询页手动加载), 驾驶舱轮询瘦身
   Promise.allSettled([
     get('/api/trade/status', s).then(renderStatus).catch(markOffline),
     get('/api/trade/positions', s).then(renderPositions).catch(function () { staleTag('tdPositions'); }),
     get('/api/trade/orders', s).then(renderOrders).catch(function () { staleTag('tdOrders'); }),
-    get('/api/trade/reconciles?limit=20', s).then(renderReconciles).catch(function () { staleTag('tdReconciles'); }),
-    get('/api/trade/audits?limit=100', s).then(renderAudits).catch(function () { staleTag('tdAudits'); }),
     get('/api/trade/auto_buy/last', s).then(renderAutoBuy).catch(function () {}),
+    get('/api/trade/asset', s).then(renderAsset).catch(function () { staleTag('tdAssetCard'); }),
   ]).then(function () { clearTimeout(timer); inflight = false; });
 }
 
@@ -403,6 +545,8 @@ function fillSettings(cfg) {
   _setv('tdsAbArg', cfg.auto_buy.formula_arg);
   _setv('tdsAbAmt', cfg.auto_buy.amount_per_stock);
   _setv('tdsAbMax', cfg.auto_buy.max_buys_per_day);
+  // 飞书通知区 (2026-07-31): 仅总开关; webhook URL 走环境变量
+  _setc('tdsFeishuEn', cfg.feishu && cfg.feishu.enabled);
 }
 
 function gatherSettings() {
@@ -438,6 +582,7 @@ function gatherSettings() {
       amount_per_stock: _num('tdsAbAmt'),
       max_buys_per_day: _int('tdsAbMax'),
     },
+    feishu: { enabled: _chk('tdsFeishuEn') },
   };
 }
 

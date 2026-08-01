@@ -42,6 +42,7 @@ from trade.events import (  # noqa: E402
     EVENT_QUOTE_SNAPSHOT,
     EVENT_RECONCILE,
     EVENT_SIGNALS,
+    EVENT_SYNC_REPORTS,
     EVENT_TICK,
     EVENT_TIMER_SCAN,
     EVENT_TRADE_FILL,
@@ -50,6 +51,7 @@ from trade.events import (  # noqa: E402
 )
 from trade.executor import Executor, limit_ratio, round_price  # noqa: E402
 from trade.gateway import FakeGateway, RealGateway  # noqa: E402
+from trade.notifier import FeishuNotifier  # noqa: E402
 from trade.monitor import Monitor, SESSION_NAMES, trading_session  # noqa: E402
 from trade.reconciler import Reconciler  # noqa: E402
 from trade.risk import KillSwitch, OrderIntent, RiskContext, RiskGate  # noqa: E402
@@ -60,6 +62,22 @@ _logger = get_logger("trade.main")
 
 # 断线重连退避序列上限 (计划书 §5.5: 1s→2s→…→60s)
 _RECONNECT_BACKOFF_MAX_SEC = 60.0
+
+
+def _reason_from_ctx(ctx: dict) -> str:
+    """fill context → 成交原因串 (trades.reason, 成交记录页"原因"列)。
+    优先 detail (2026-07-31 起下单侧登记的自然语言全文, 如
+    "移动止盈: 最高 12.00 (峰值涨幅 +20.0%, 过激活线 5%), 现价 11.30
+    回撤 5.8% 触发 (阈值 1%)"); 旧格式回退 label+档位;
+    无 ctx (买入/部成第二笔/手工认领单) 空串, 前端按来源兜底展示。"""
+    detail = ctx.get("detail")
+    if detail:
+        return detail
+    label = ctx.get("label") or ""
+    tier = ctx.get("tier")
+    if label and tier is not None:
+        return f"{label}·档{int(tier) + 1}"
+    return label
 
 
 class _DailyTimer:
@@ -76,6 +94,7 @@ class _DailyTimer:
         self._thread: threading.Thread | None = None
         self._fired: set[tuple[str, str]] = set()   # (标签, 日期) 当日不重复
         self._last_scan = 0.0
+        self._last_sync = 0.0
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -110,6 +129,11 @@ class _DailyTimer:
             if now - self._last_scan >= self._cfg.monitor_scan_interval_sec:
                 self._last_scan = now
                 self._engine.put(Event(type=EVENT_TIMER_SCAN, data={"hhmm": hhmm}))
+            # 增量同步时点 (2026-07-30: 成交补记 + 委托状态回写,
+            # 回调丢失的主动补偿; 时段过滤在消费者侧 handler)
+            if now - self._last_sync >= self._cfg.sync_interval_sec:
+                self._last_sync = now
+                self._engine.put(Event(type=EVENT_SYNC_REPORTS, data={"hhmm": hhmm}))
             # 定时对账时点
             if hhmm in self._cfg.reconcile_times:
                 self._fire_once(f"reconcile-{hhmm}",
@@ -174,6 +198,11 @@ class TradeApp:
         self._connected = False
         self._reconciled = False
         self._day_baseline: float | None = None
+        # 重连状态 (2026-07-31 方案C): _on_connection_lost 不再 while True 占
+        # 消费者, 改由 _on_scan 周期驱动 _try_reconnect (单次 ≤5s 不死锁)
+        self._reconnect_pending = False
+        self._reconnect_backoff = 1.0
+        self._last_reconnect_attempt = 0.0
 
         # 网关回调 → 先落 JSONL 再入队 (铁律 5: 先落盘再处理)。
         # 审计M10修复(定位改写): JSONL 是审计/复盘留痕, 不是崩溃重放
@@ -199,6 +228,7 @@ class TradeApp:
                 EVENT_QUOTE_SNAPSHOT: lambda e: self._on_quote_event(e.data, e.ts),
                 EVENT_TIMER_SCAN: lambda e: self._on_scan(e.data or {}),
                 EVENT_RECONCILE: lambda e: self._on_reconcile(),
+                EVENT_SYNC_REPORTS: lambda e: self._on_sync_reports(),
                 EVENT_EOD: lambda e: self._on_eod(),
                 EVENT_COMMAND: lambda e: self.dispatch_command(e.data or {}),
                 EVENT_SIGNALS: lambda e: self._on_signals(e.data or {}),
@@ -231,6 +261,13 @@ class TradeApp:
             self.gateway, self.book, self.store, self.kill,
             quote_price=lambda code: (q := self.monitor.quote_of(code)) and q["last"],
             in_flight_sells=lambda: self.executor.in_flight_sells(),
+            # 2026-07-31: 回调丢失走补记时同样读 fill ctx 落成交原因 +
+            # 飞书通知。peek 不删 (部成多笔共享原因), 终态由
+            # on_order_terminal 回收 (lambda 延迟取 self.executor —— 构造序在后)
+            pop_fill_context=lambda oid: self.executor.peek_fill_context(oid) or {},
+            reason_from_ctx=_reason_from_ctx,
+            on_adopted_trade=self._on_adopted_trade,
+            on_order_terminal=lambda oid: self.executor.discard_fill_context(oid),
         )
         self.executor = Executor(
             self.gateway, self.book, self.store, self.risk, config,
@@ -239,10 +276,39 @@ class TradeApp:
             get_prev_close=self._prev_close,
             clock=clock,
         )
+        # 2026-08-01 P0-1: hold_days 接线 —— 从 trades 表取首笔买入时间,
+        # 经交易日历算持仓天数, 救活 Monitor 的三条时间类卖出规则
+        # (time_stop/cond_time/first_day, 此前默认 lambda:0 永不会触发)。
+        def _hold_days_for_code(code: str) -> int:
+            try:
+                ro = self.store.open_readonly()
+                cur = ro.execute(
+                    "SELECT MIN(ts) FROM trades WHERE code=? AND direction=?",
+                    (code, DIRECTION_BUY))
+                row = cur.fetchone()
+                ro.close()
+                if not row or not row[0]:
+                    return 0
+                from trade.api import _hold_days as _calc_hold_days
+                days = _calc_hold_days(row[0])
+                return days if days is not None else 0
+            except Exception:
+                return 0
+
         self.monitor = Monitor(
             self.gateway, self.book, self.executor, self.store, config,
+            hold_days=_hold_days_for_code,
             clock=clock,
         )
+        # 2026-08-01 P0-3 (H1): executor pending 终态废单/已撤时,
+        # 通知 monitor 解除 _triggered —— 该票下轮扫描重新评估
+        self.executor._on_pending_died = lambda code: self.monitor._triggered.discard(code)
+        # 飞书通知器 (2026-07-31): 自带 worker 线程, 生产侧只入队裸 dict,
+        # 消费者线程零阻塞 (铁律 3); URL 走环境变量, enabled 走 config 热关。
+        self._notifier = FeishuNotifier(
+            enabled_getter=lambda: self._cfg.feishu.enabled,
+            webhook_getter=lambda: os.environ.get("FEISHU_WEBHOOK_URL"),
+            clock=clock)
         self.timer = _DailyTimer(self._engine, config, clock=clock)
 
     # ═══════════════════════════════════════════════════════════
@@ -288,6 +354,7 @@ class TradeApp:
                 _logger.warning("启动快照预填报价失败 (等待 tick 补价): %s", e)
 
         self._engine.start()
+        self._notifier.start()
         report = self.reconciler.reconcile()
         self._reconciled = report.passed
         if not report.passed:
@@ -320,12 +387,13 @@ class TradeApp:
                 self.store.write_audit(
                     "eod_catchup", f"15:05 后启动 ({hhmm}) 且当日无 EOD, 补偿归档",
                     {"hhmm": hhmm})
-                self._on_eod()
+                self._on_eod(notify_daily=False)  # M-功1: 补偿路径不发零盈亏日报
 
     def stop(self) -> None:
         """优雅退出: 先停事件源 (定时器), 再停消费者, 最后断网关/关库。"""
         self.timer.stop()
         self._engine.stop()
+        self._notifier.stop()
         try:
             self.gateway.disconnect()
         finally:
@@ -413,8 +481,15 @@ class TradeApp:
             qty=rec.get("qty", 0), filled_qty=rec.get("filled_qty"),
             remark=rec.get("remark", ""))
         self.store.save_order(rec)
+        # 注意: fill ctx 不在这里按终态清理 —— 终态委托回报可能先于
+        # 成交回报到达 (FakeGateway 双回报顺序实证), 先清会丢原因。
+        # 回收点: _on_trade 订单满量后 + reconciler._sync_orders 同步腿。
 
     def _on_trade(self, rec: dict) -> None:
+        # H1 (2026-07-31 审计): apply_trade 清仓会把 avg_cost 清零,
+        # 盈亏% 必须在 apply 前取成本快照, 传给 _notify_fill。
+        pre_pos = self.book.snapshot()["positions"].get(rec["code"])
+        pre_avg_cost = pre_pos.avg_cost if pre_pos else 0.0
         # 幂等: book 按 traded_id 判重; store 唯一约束是物理底线,
         # 重复回报插入炸 IntegrityError 属预期, 不是故障
         if not self.book.apply_trade(
@@ -430,16 +505,85 @@ class TradeApp:
         except Exception as e:
             _logger.warning("新买入订阅行情失败 (监控将无价跳过): %s: %s",
                             rec["code"], e)
+        # 2026-07-31: 成交原因落库 (成交记录页"原因"列)。fill context
+        # peek 不删 —— 部成多笔共享同一份原因, 订单终态才由
+        # _on_order/_sync_orders 回收; 组装一次供 save_trade 和
+        # _notify_fill 共用 —— 必须在 save_trade 前取。
+        ctx = self.executor.peek_fill_context(rec["order_id"]) or {}
+        rec["reason"] = _reason_from_ctx(ctx)
         try:
             self.store.save_trade(rec)
         except Exception as e:
-            _logger.error("成交落库异常 (账本已更新): %s", e)
+            # M3 (2026-08-01): 落库失败不静默 —— WAL 写偶尔被 SQLite busy
+            # 挡住, 重试一次 (0.1s 间隔, 消费者线程可接受)。仍失败则靠
+            # sync_reports 补记路径自愈 (QMT 是真相源, 下次 sync 会兜底)。
+            import time as _time
+            _time.sleep(0.1)
+            try:
+                self.store.save_trade(rec)
+            except Exception:
+                _logger.error("成交落库异常 (重试仍失败, 待 sync_reports 补记): %s", e)
         # 2026-07-30 (600808 事件): 成交进度回写订单表 — 原实现只靠
         # QMT 订单状态回调, 回调缺失时页面永远"已报/成交0"。
         try:
             self.store.update_order_filled(rec["order_id"], rec["qty"])
         except Exception as e:
             _logger.error("订单进度回写异常: %s", e)
+        # 飞书成交通知 (2026-07-31): 消费者线程只组装裸 dict 入队,
+        # 拼卡+POST 在 notifier worker, 不阻塞唯一写者 (铁律 3)
+        try:
+            self._notify_fill(rec, ctx, avg_cost=pre_avg_cost)
+        except Exception:
+            _logger.debug("成交通知组装异常 (不影响交易)")
+        # 2026-07-31: 订单满量 (apply_trade 已把 book 订单推入终态) →
+        # 回收 fill ctx (peek 语义的配套; 回调全丢时由 _sync_orders 兜底)
+        order = self.book.snapshot()["orders"].get(rec["order_id"])
+        if order is not None and order.status in TERMINAL_STATUSES:
+            self.executor.discard_fill_context(rec["order_id"])
+
+    def _notify_fill(self, rec: dict, ctx: dict,
+                    avg_cost: float | None = None) -> None:
+        """组装成交通知裸 dict 入队 (消费者线程, 微秒级; 拼卡+POST 在 worker)。
+        剩余股数取 apply_trade 之后的 book 快照; 盈亏%=成交价 vs 成本。
+        avg_cost: apply_trade **之前**的成本快照 (H1: 清仓卖出 apply 会把
+        avg_cost 清零, 必须由调用方传 apply 前成本)。None 时回退取 book。"""
+        code = rec["code"]
+        direction = rec["direction"]
+        price = float(rec["price"])
+        qty = int(rec["qty"])
+        amount = rec.get("amount")
+        if amount is None:
+            amount = round(price * qty, 2)
+        is_buy = direction == DIRECTION_BUY
+        pos = self.book.snapshot()["positions"].get(code)
+        payload: dict = {
+            "code": code, "direction": direction,
+            "price": price, "qty": qty, "amount": amount,
+            "ts": rec.get("ts") or self._clock(),
+            "label": ctx.get("label"),
+        }
+        if not is_buy:
+            # H1: 优先用调用方传的 apply 前成本; 没传才回退 book (清仓时已 0)
+            cost = avg_cost if avg_cost is not None else (
+                pos.avg_cost if pos else 0.0)
+            payload["pnl_pct"] = (round((price / cost - 1) * 100, 2)
+                                  if cost > 0 else None)
+            payload["tier"] = ctx.get("tier")
+            payload["sell_ratio"] = ctx.get("sell_ratio")
+            remaining_vol = pos.volume if pos else 0
+            payload["remaining_vol"] = remaining_vol
+            payload["remaining_value"] = round(price * remaining_vol, 2)
+        self._notifier.notify_fill(payload)
+
+    def _on_adopted_trade(self, trade_dict: dict, ctx: dict,
+                          avg_cost: float | None = None) -> None:
+        """补记成交也发飞书 (2026-07-31): QMT 成交回调常丢失, 补记是主路径。
+        ctx 由 reconciler 一次 pop 得到 (系统单有 label/tier, 手工单空);
+        avg_cost 由 reconciler 在 apply_trade 前快照传入 (H1 清仓盈亏%)。"""
+        try:
+            self._notify_fill(trade_dict, ctx, avg_cost=avg_cost)
+        except Exception:
+            _logger.debug("补记成交通知异常 (不影响交易)")
 
     def _on_quote_event(self, data: dict, event_ts: float | None = None) -> None:
         # 审计M4修复: 事件自带 ts 透传给 monitor (心跳用生产时刻,
@@ -447,6 +591,12 @@ class TradeApp:
         self.monitor.on_quote(data["code"], data, event_ts=event_ts)
 
     def _on_scan(self, data: dict) -> None:
+        # 2026-07-31 方案C: 断线重连挪出 _on_connection_lost 的阻塞循环,
+        # 由 timer_scan 离散驱动 _try_reconnect (单次 connect ≤5s, 不死锁
+        # 消费者)。重连进行中跳过监控评估 (断线无行情, 评估无意义)。
+        if self._reconnect_pending and not self._connected:
+            self._try_reconnect()
+            return
         # 2026-07-27 ETF 误卖事件裁决②: 心跳/断线检测只在连续竞价
         # 时段进行 —— 午休/收盘后无 tick 是常态, 此前误报断连
         if trading_session(self._clock()) != "continuous":
@@ -478,28 +628,102 @@ class TradeApp:
         # reconciled 同理: 一旦 False 就要等人工 unkill 后才允许重置
         self._reconciled = report.passed and not self.kill.is_active()
 
-    def _on_eod(self) -> None:
+    def _on_sync_reports(self) -> None:
+        """增量同步 (2026-07-30): 定时把 QMT 成交/委托补记回写本地。
+        只在盘中时段跑 (auction/continuous/lunch) —— 盘前/收盘后无新
+        回报可补, 且启动/对账/重连路径已各自带同步 (reconcile 内部
+        先走 sync_reports)。"""
+        if not self._connected:
+            return
+        if trading_session(self._clock()) not in ("auction", "continuous", "lunch"):
+            return
+        self.reconciler.sync_reports()
+
+    def _on_eod(self, notify_daily: bool = True) -> None:
         # 持仓快照归档 = 对账 C 方的明日基准; tier_state 在乐观标记时
         # 已逐笔落库 (executor.place_ladder), 此处无需重复归档
-        self.store.save_position_snapshot(self.gateway.query_positions())
-        self.store.write_audit("eod", "EOD 持仓快照已归档", {})
+        # 2026-08-01 P0-4 (H4): query_positions 空列表 = 查询不可用
+        # (断线后 QMT 不抛异常, 静默返回空), 跳过归档+audit 留痕,
+        # 不把"空"当成"零持仓"写入 C 方基准。
+        # 飞书盘后日报独立: 它查的是 asset (与持仓查询不同 API),
+        # 持仓查不到不意味着资产查不到 —— 照常推送。
+        positions = self.gateway.query_positions()
+        if positions:
+            self.store.save_position_snapshot(positions)
+            self.store.write_audit("eod", "EOD 持仓快照已归档", {})
+        else:
+            self.store.write_audit(
+                "eod_skip", "query_positions 返回空, 跳过 EOD 归档 (查询不可用)", {})
+        # 飞书盘后日报 (2026-07-31): 搭 15:05 EOD 的车; 查不到资产 fail-soft 不推。
+        # notify_daily=False: 启动补偿路径 (15:05 后重启) 不发日报 —— baseline
+        # 刚用当前 total_asset 设, 差值≈0, 是启动噪声非当日真实表现 (M-功1)。
+        if not notify_daily:
+            return
+        try:
+            self._notify_daily()
+        except Exception:
+            _logger.debug("盘后日报组装异常 (不影响交易)")
+
+    def _notify_daily(self) -> None:
+        """盘后日报: QMT 资产 + 盘前基准算当日盈亏。查不到资产不推。"""
+        try:
+            asset = self.gateway.query_asset()
+        except Exception:
+            return
+        total_asset = float(asset.get("total_asset", 0.0) or 0.0)
+        cash = float(asset.get("cash", 0.0) or 0.0)
+        market_value = float(asset.get("market_value", 0.0) or 0.0)
+        day_pnl = None
+        day_pnl_pct = None
+        if self._day_baseline:
+            day_pnl = round(total_asset - self._day_baseline, 2)
+            day_pnl_pct = round((total_asset / self._day_baseline - 1) * 100, 2)
+        pos_count = sum(1 for p in self.book.snapshot()["positions"].values()
+                        if p.volume > 0)
+        self._notifier.notify_daily({
+            "total_asset": total_asset, "cash": cash,
+            "market_value": market_value,
+            "day_pnl": day_pnl, "day_pnl_pct": day_pnl_pct,
+            "position_count": pos_count, "ts": self._clock(),
+        })
 
     def _on_connection_lost(self, reason) -> None:
-        """断线守护: 指数退避重连 → 重新订阅 → 全量对账 (计划书 §5.5)。
-        在消费者线程内跑 —— 断线期间事件排队不消费, 本来就不能交易。"""
+        """断线守护 (2026-07-31 方案C 重构): 不再 while True 阻塞消费者线程。
+        设状态 + 写 audit + 立即首次重连尝试; 失败由 _on_scan 周期接力
+        (backoff 节流)。原实现 connect 持续失败时永久死锁消费者, 事件队列
+        堆满、监控/止盈止损停摆 (0731 event_dropped 实证: disconnect 5 次
+        仅 reconnect 1 次)。重连不碰 kill_switch (铁律: 急停只许人工解除),
+        靠 connected=False + reconciled 挡交易, 恢复后自动对账解禁。"""
         self._connected = False
+        self._reconnect_pending = True
+        self._reconnect_backoff = 1.0
+        self._last_reconnect_attempt = 0.0
         self.store.write_audit("disconnect", f"连接断开: {reason}", {})
-        backoff = 1.0
-        while True:
-            try:
-                self.gateway.connect()
-                break
-            except Exception as e:
-                _logger.warning("重连失败, %.0fs 后重试: %s", backoff, e)
-                time.sleep(backoff)
-                backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX_SEC)
-        # 重连成功: 重新订阅 → 全量对账 (推送丢失靠对账自愈)
+        self._try_reconnect()   # 立即首次尝试; 失败由 _on_scan 接力
+
+    def _try_reconnect(self) -> None:
+        """单次重连尝试 (消费者线程, 由 _on_scan / _on_connection_lost 调)。
+        backoff 节流: 距上次尝试不足 backoff 秒则跳过; connect 用网关自带
+        5s 超时 (RealGateway._call_with_timeout), 单次最坏 5s 不死锁。"""
+        now = self._clock()
+        if now - self._last_reconnect_attempt < self._reconnect_backoff:
+            return
+        self._last_reconnect_attempt = now
+        try:
+            self.gateway.connect()
+        except Exception as e:
+            self._reconnect_backoff = min(self._reconnect_backoff * 2,
+                                          _RECONNECT_BACKOFF_MAX_SEC)
+            _logger.warning("重连失败, 下次 ≥%.0fs 后重试: %s",
+                            self._reconnect_backoff, e)
+            self.store.write_audit("reconnect_failed", f"重连失败: {e}",
+                                   {"backoff": self._reconnect_backoff})
+            return
+        # 重连成功: 重新订阅 → 全量对账 (推送丢失靠对账自愈;
+        # reconcile 内含 sync_reports: 成交补记 + 委托状态回写)
         self._connected = True
+        self._reconnect_pending = False
+        self._reconnect_backoff = 1.0
         codes = sorted(self.book.snapshot()["positions"])
         if codes:
             self.gateway.subscribe_quotes(codes)
@@ -640,19 +864,31 @@ class TradeApp:
                 dispositions.append({"code": code, "action": "skip",
                                      "reason": f"风控拒: {why}"})
                 continue
-            # 定价 (2026-07-27 实测驱动, 市场感知):
-            # - 正常时段: 卖一价限价;
-            # - ≥force_market_after 的 .SZ: 限价@涨停价 —— 深市收盘
-            #   集合竞价只收限价单 (当日实测五张深市"对手最优"全废单),
-            #   单一价格撮合, 挂涨停=最大成交优先权, 成交价仍是收盘价;
-            # - ≥force_market_after 的 .SH / 取不到卖一: 对手最优
-            #   (沪市连续竞价到 15:00 可市价单)
+            # 定价 (2026-07-27 实测驱动, 市场感知; 2026-08-01 P0-2 修复):
+            # - ≥force_market_after: **全板块禁市价单** —— 深市 14:57-15:00
+            #   收盘集合竞价只收限价单 (07-31 实测 5 张"对手最优"全废单),
+            #   沪市 2018 年起收盘也是集合竞价、同样拒市价单 (6/6 废单)。
+            # - .SZ 创业/科创 (300/301/688): 20% 涨停价超 2% 价格笼子,
+            #   被交易主机暂存不废不成交 (07-31 实测 0/12 零成交),
+            #   改为 min(涨停价, 卖一×1.02) 贴笼子上限。
+            #   **注意**: 科创板 688.SH 同样是 20% 涨停 + 2% 笼子,
+            #   不能靠 is_sz 判定 —— 688 是沪市, is_sz 恒 False,
+            #   条件只用代码前缀 (08-01 实测 688099 同死法)。
+            # - 深主板 / 沪主板: 10% 涨停价在笼子内, 直接挂涨停
+            #   (单一价格撮合, 成交价=收盘价, 与限价@涨停同效)。
             force = hhmm >= self._cfg.force_market_after
-            if force and code.split(".")[-1].upper() == "SZ":
-                order_price = round_price(limit_up)
+            if force:
                 order_type = PRICE_TYPE_LIMIT
-                price_kind = "涨停价限价(收盘竞价)"
-            elif force or not quote.get("ask1"):
+                code_num = code.split(".")[0]
+                # 20% 涨跌幅品种 (创业 300/301 + 科创 688): 涨停价超 2% 笼子
+                if code_num.startswith(("300", "301", "688")):
+                    ask1 = quote.get("ask1") or quote["last"]
+                    order_price = round_price(min(limit_up, ask1 * 1.02))
+                    price_kind = "笼子上限限价(收盘竞价)"
+                else:
+                    order_price = round_price(limit_up)
+                    price_kind = "涨停价限价(收盘竞价)"
+            elif not quote.get("ask1"):
                 order_price = 0.0
                 order_type = PRICE_TYPE_MARKET_PEER_FIRST
                 price_kind = "对手最优"
@@ -663,12 +899,16 @@ class TradeApp:
             remark = self.executor.next_remark("B")
             order_id = self.gateway.order(
                 code, DIRECTION_BUY, order_price, qty, order_type, remark)
+            self.executor.register_fill_context(order_id, {"label": "TDX买入"})
+            # P0-6: apply_order_update 和 save_order 用实际委托价 order_price,
+            # 非参考价 price —— 收盘竞价挂涨停/笼子上限时两者不同,
+            # 原用 price 导致页面"成交价>委托价"矛盾记录
             self.book.apply_order_update(
                 order_id, OS_REPORTED, code=code, direction=DIRECTION_BUY,
-                price=price, qty=qty, remark=remark)
+                price=order_price, qty=qty, remark=remark)
             self.store.save_order({
                 "order_id": order_id, "remark": remark, "code": code,
-                "direction": DIRECTION_BUY, "price": price, "qty": qty,
+                "direction": DIRECTION_BUY, "price": order_price, "qty": qty,
                 "status": OS_REPORTED})
             placed_codes.add(code)
             cash -= qty * price
@@ -756,6 +996,7 @@ class TradeApp:
         remark = self.executor.next_remark("B")
         order_id = self.gateway.order(code, DIRECTION_BUY, float(price), qty,
                                       PRICE_TYPE_LIMIT, remark)
+        self.executor.register_fill_context(order_id, {"label": "人工买入"})
         self.store.write_audit(
             "manual_buy", f"人工买入 {code} {qty}@{price}",
             {"code": code, "qty": qty, "price": price, "order_id": order_id})

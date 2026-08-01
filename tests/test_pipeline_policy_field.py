@@ -57,11 +57,16 @@ def test_serialize_includes_when_present():
 
 
 def test_old_five_fields_still_work():
-    """回归: 加第 6 字段不破坏现有 5 字段的 in / [] 访问。"""
+    """回归: 加字段不破坏现有字段的 in / [] 访问。
+
+    A 层(2026-07-26)加 policy_priority → 6 字段; P1.5(2026-07-28)加 policy_enriched → 7 字段。
+    老字段 (selections/backtest/benchmark/reports/error) 访问不变。
+    """
     r = _make_result()
     for k in ("selections", "backtest", "benchmark", "reports", "error"):
         assert k in r
         _ = r[k]  # 不抛 KeyError
-    # _FIELDS 含 6 个
-    assert len(PipelineResult._FIELDS) == 6
+    # _FIELDS 含 7 个 (A 层 policy_priority + P1.5 policy_enriched)
+    assert len(PipelineResult._FIELDS) == 7
     assert "policy_priority" in PipelineResult._FIELDS
+    assert "policy_enriched" in PipelineResult._FIELDS  # P1.5 新增 (H-3 _FIELDS 同步)

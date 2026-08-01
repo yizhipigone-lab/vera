@@ -294,8 +294,8 @@ input.invalid~.input-error{display:block}
 .tab-btn{padding:6px 18px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:13px}
 .tab-btn:hover{color:var(--text)}
 .tab-btn.active{background:var(--card);color:var(--text);border-color:var(--border);font-weight:600}
-#pageLab,#pageTrade,#pageResearch{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
-#pageLab.active,#pageTrade.active,#pageResearch.active{display:block}
+#pageLab,#pageTrade,#pageResearch,#pageRecords{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
+#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
 .lab-card h3{margin:0 0 12px;font-size:13px;color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px dashed var(--border);font-size:12px}
@@ -355,6 +355,7 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn active" id="tabBtnBacktest">回测</button>
   <button class="tab-btn" id="tabBtnLab">公式体检</button>
   <button class="tab-btn" id="tabBtnTrade">交易</button>
+  <button class="tab-btn" id="tabBtnRecords">交易记录</button>
   <button class="tab-btn" id="tabBtnResearch">研究</button>
 </div>
 <!-- 2026-07-24: 内置边界口径页首声明 — 改代码口径时必须同步此块
@@ -793,7 +794,25 @@ input:focus-visible,select:focus-visible{outline:none}
 
 <!-- ===== 交易页 (P1 第三阶段, 2026-07-26): 读快照 + 发命令, 业务判断全在后端 ===== -->
 <div id="pageResearch">
-    <!-- 政策影响查询卡片 (可折叠, 默认折叠; 展开状态存 localStorage) -->
+    <!-- ===== 对话大脑 (P3, 2026-07-28): 多会话, 松耦合独立卡片(可折叠,默认折叠), 卸载删此卡片+brain_chat.js ===== -->
+    <details id="foldBrain" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
+      <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">对话大脑
+        <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">自然语言问政策/持仓/图谱(每次 20-150 秒),多会话可并行,纯研究不调仓</span>
+      </summary>
+      <div style="padding:0 18px 16px">
+      <div id="brainConvBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+      <div id="brainMessages" style="height:calc(100vh - 320px);min-height:320px;overflow-y:auto;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);margin-bottom:10px;font-size:14px"></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="brainInput" placeholder="问点什么, 如: 当前持仓哪些在 AVOID 档?" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px">
+        <button id="brainSendBtn" class="btn btn-primary" style="padding:8px 16px">发送</button>
+        <button id="brainResetBtn" class="btn" style="padding:8px 12px;font-size:11px" title="清空本会话记忆,重开">重开</button>
+      </div>
+      <div id="brainStatus" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
+      </div>
+    </details>
+
+    <!-- 政策影响查询卡片 (可折叠, 默认折叠; 展开状态存 localStorage)
+         2026-07-31: 移到对话大脑下方 (用户要求) -->
     <details id="foldPolicy" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
       <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">政策影响查询
         <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">输入股票代码,看它的行业受哪些政策影响(方向/力度/原文证据)</span>
@@ -806,23 +825,6 @@ input:focus-visible,select:focus-visible{outline:none}
         <span style="font-size:11px;color:var(--text2)">例: 300750 宁德 / 688981 中芯 / 600519 茅台</span>
       </div>
       <div id="researchPolicyResult" style="margin-top:14px;font-size:12px;color:var(--text2)">输入代码点查询 (政策库现有: 新能源汽车/AI/集成电路 三条种子政策)</div>
-      </div>
-    </details>
-
-    <!-- ===== 对话大脑 (P3, 2026-07-28): 多会话, 松耦合独立卡片(可折叠,默认折叠), 卸载删此卡片+brain_chat.js ===== -->
-    <details id="foldBrain" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
-      <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">对话大脑
-        <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">自然语言问政策/持仓/图谱(每次 20-150 秒),多会话可并行,纯研究不调仓</span>
-      </summary>
-      <div style="padding:0 18px 16px">
-      <div id="brainConvBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-      <div id="brainMessages" style="max-height:480px;overflow-y:auto;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);margin-bottom:10px;font-size:12px"></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input id="brainInput" placeholder="问点什么, 如: 当前持仓哪些在 AVOID 档?" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px">
-        <button id="brainSendBtn" class="btn btn-primary" style="padding:8px 16px">发送</button>
-        <button id="brainResetBtn" class="btn" style="padding:8px 12px;font-size:11px" title="清空本会话记忆,重开">重开</button>
-      </div>
-      <div id="brainStatus" style="margin-top:8px;font-size:11px;color:var(--text2)"></div>
       </div>
     </details>
   </div>
@@ -838,6 +840,24 @@ input:focus-visible,select:focus-visible{outline:none}
       <button class="trade-kill-btn" id="tdKillBtn">急停</button>
     </div>
     <div class="trade-hint" id="tdHint"></div>
+  </div>
+
+  <div class="lab-card" id="tdAssetCard" style="display:none">
+    <h3>资产</h3>
+    <style>
+    .asset-kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:10px}
+    .asset-kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;text-align:center}
+    .asset-kpi .label{display:block;font-size:11px;color:var(--text2);margin-bottom:6px}
+    .asset-kpi .value{display:block;font-family:var(--mono);font-size:20px;font-weight:600;color:var(--text)}
+    .asset-kpi .sub{display:block;font-size:11px;margin-top:3px;font-family:var(--mono)}
+    </style>
+    <div class="asset-kpi-grid">
+      <div class="asset-kpi"><span class="label">总资产</span><span class="value" id="tdTotalAsset">—</span></div>
+      <div class="asset-kpi"><span class="label">当日盈亏</span><span class="value" id="tdDayPnl">—</span><span class="sub" id="tdDayPnlPct"></span></div>
+      <div class="asset-kpi"><span class="label">可用现金</span><span class="value" id="tdCash">—</span></div>
+      <div class="asset-kpi"><span class="label">持仓市值</span><span class="value" id="tdMarketValue">—</span></div>
+      <div class="asset-kpi"><span class="label">冻结资金</span><span class="value" id="tdFrozenCash">—</span></div>
+    </div>
   </div>
 
   <div class="lab-card">
@@ -901,6 +921,11 @@ input:focus-visible,select:focus-visible{outline:none}
             <label style="min-width:0">每日上限</label>
             <input type="number" id="tdsAbMax" step="1" min="1" max="20"> 笔</div>
         </div>
+        <div class="tds-sec">
+          <div class="tds-sec-title">飞书通知</div>
+          <div class="tds-row"><input type="checkbox" id="tdsFeishuEn"><label for="tdsFeishuEn">推送成交提醒与盘后日报</label></div>
+          <div class="tds-row"><span style="color:var(--text2);font-size:11px">webhook 地址走环境变量 FEISHU_WEBHOOK_URL (不在面板填写); 关闭后通知为 no-op, 交易照常</span></div>
+        </div>
         <div class="tds-sec" style="display:flex;gap:10px;align-items:center">
           <button class="btn btn-primary" id="tdsSaveBtn">保存设置</button>
           <span class="trade-hint" id="tdsHint">保存后立即热生效 (账号/路径类字段不在面板内, 改它们请编辑 yaml 重启)</span>
@@ -941,15 +966,41 @@ input:focus-visible,select:focus-visible{outline:none}
     <h3>当日委托</h3>
     <div id="tdOrders"><div style="color:var(--text2);font-size:12px">加载中…</div></div>
   </div>
+</div>
 
+<!-- 2026-07-30: 交易记录 TAB — 台账/查询类卡片从交易驾驶舱拆出。
+     查询型页面, 不进 5s 轮询: 切到本页自动加载 + 手动查询/刷新 -->
+<div id="pageRecords">
   <div class="lab-card">
-    <h3>对账记录</h3>
-    <div id="tdReconciles"><div style="color:var(--text2);font-size:12px">加载中…</div></div>
+    <h3>成交记录</h3>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input class="lab-input" id="recDealDate" placeholder="YYYYMMDD 缺省当日" style="width:160px;font-family:var(--mono)">
+      <button class="btn" id="recDealBtn" style="padding:4px 14px;font-size:12px">查询</button>
+      <span class="trade-hint" id="recDealHint"></span>
+    </div>
+    <div id="recDeals"><div style="color:var(--text2);font-size:12px">切换到本页时自动加载</div></div>
   </div>
 
   <div class="lab-card">
-    <h3>审计日志 (5s 轮询)</h3>
-    <div class="lab-pre" id="tdAudits">加载中…</div>
+    <h3>委托记录</h3>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input class="lab-input" id="recOrderDate" placeholder="YYYYMMDD 缺省当日" style="width:160px;font-family:var(--mono)">
+      <button class="btn" id="recOrderBtn" style="padding:4px 14px;font-size:12px">查询</button>
+      <span class="trade-hint" id="recOrderHint"></span>
+    </div>
+    <div id="recOrders"><div style="color:var(--text2);font-size:12px">切换到本页时自动加载</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>对账记录
+      <button class="btn" id="recReconcileBtn" style="padding:2px 10px;font-size:11px;margin-left:8px">刷新</button></h3>
+    <div id="tdReconciles"><div style="color:var(--text2);font-size:12px">切换到本页时自动加载</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>审计日志
+      <button class="btn" id="recAuditBtn" style="padding:2px 10px;font-size:11px;margin-left:8px">刷新</button></h3>
+    <div class="lab-pre" id="tdAudits">切换到本页时自动加载</div>
   </div>
 </div>
 
@@ -958,11 +1009,11 @@ input:focus-visible,select:focus-visible{outline:none}
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script src="/web/js/trade.js?v=20260730c"></script>
+<script src="/web/js/trade.js?v=20260730e"></script>
 <script src="/web/js/research.js?v=20260728a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
-<script src="/web/js/brain_chat.js?v=20260728c"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260728b"></script>
+<script src="/web/js/brain_chat.js?v=20260731a"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260730a"></script>
 </body>
 </html>

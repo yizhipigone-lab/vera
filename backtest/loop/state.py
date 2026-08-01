@@ -50,6 +50,10 @@ class BacktestParams:
     min_lots: int
     bpday: int = 1               # bars per day
     max_position_pct: float = 1.0  # 单票占比上限（1.0=不约束, 老行为）
+    # 2026-07-23: 卖出冷却 (bar 数, 0=关闭, 默认关闭零行为变化)。
+    # 全清仓后 cooldown bar 内禁止同票重新买入; 仅约束"空仓后的新买",
+    # 持仓中的换股 (reason=1 卖旧买新) 不受影响。
+    sell_cooldown_bars: int = 0
 
     def __post_init__(self):
         # M2: 启动期 fail-fast, 防 bpday=0 除零

@@ -64,6 +64,13 @@ class StockSelector:
                 if not _ucache.FORCE_REFRESH:
                     _cached = _ucache.load(_ucache.default_cache_root(), _l1_key)
                     if _cached is not None:
+                        # 2026-07-27 投毒事件防线: 非 custom 池 <10 只极可能是
+                        # 污染/误存 (正常池数十~数千只), 仅警告不拦截 (合法小板块存在)
+                        if len(_cached) < 10:
+                            logger.warning(
+                                "池缓存命中但仅 %d 只 (key=%s) — 疑似异常小池, "
+                                "如非预期请清理 data/universe_cache 后重跑",
+                                len(_cached), _l1_key[:12])
                         _progress.report("universe_list", 1.0, f"股票池 {len(_cached)} 只 (缓存)")
                         return _cached
             except Exception as e:
