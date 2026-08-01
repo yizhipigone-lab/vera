@@ -292,6 +292,13 @@ class Reconciler:
                 "source": "system" if local_order is not None else "manual",
                 "reason": (self._reason_of(ctx)
                            if local_order is not None else "")}
+            # 落库一次, 两条路径共用 (唯一约束兜底: 已落库视为已认领);
+            # A3 补写分支视落库成败决定是否留痕计数
+            saved = True
+            try:
+                self._store.save_trade(record)
+            except Exception:
+                saved = False
             if not ok:
                 # A3 (2026-08-01 计划书批次1): book 幂等命中 = 实时 _on_trade
                 # 已记过账; 能走到这里说明 tid 不在当日 trades 表 (上方 known
@@ -302,10 +309,8 @@ class Reconciler:
                 # 注意只补 trades 行 —— update_order_filled 是累加语义不可
                 # 重放 (_on_trade 已累过), 订单进度由 _sync_orders 腿兜底;
                 # 飞书通知实时路径已发过, 不重复打扰。
-                try:
-                    self._store.save_trade(record)
-                except Exception:
-                    continue  # 唯一约束兜底: 已落库视为已认领
+                if not saved:
+                    continue
                 self._store.write_audit(
                     "trade_db_backfill",
                     f"成交落库补写(book已记账/trades表缺): {t['code']} "
@@ -316,10 +321,6 @@ class Reconciler:
                      "strategy": strategy})
                 adopted += 1
                 continue
-            try:
-                self._store.save_trade(record)
-            except Exception:
-                pass  # 唯一约束兜底: 已落库视为已认领
             try:
                 self._store.update_order_filled(order_id, int(t["qty"]))
             except Exception:

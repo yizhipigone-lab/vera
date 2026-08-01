@@ -162,55 +162,51 @@ class AutoBuyFeature:
             return
         dispositions: list[dict] = []
         bought = 0
+
+        def _skip(code: str, reason: str) -> None:
+            dispositions.append({"code": code, "action": "skip",
+                                 "reason": reason})
+
         for sig in signals:
             code = sig["code"]
             if bought >= cfg.max_buys_per_day:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "达每日上限"})
+                _skip(code, "达每日上限")
                 continue
             pos = positions.get(code)
             if pos is not None and pos.volume > 0:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "已持仓"})
+                _skip(code, "已持仓")
                 continue
             if self._cfg_getter().exclude_etf and is_etf(code):
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "ETF不管理"})
+                _skip(code, "ETF不管理")
                 continue
             if code in placed_codes or code in bought_codes:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "今日已买过"})
+                _skip(code, "今日已买过")
                 continue
             # 涨停拒买 + 定价: 都需要行情。无价/无昨收 fail-closed —
             # 尾盘买入不是救火, 宁可不买不可瞎买
             quote = quotes.get(code) or self._monitor.quote_of(code)
             if not quote or not quote.get("last"):
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "无行情"})
+                _skip(code, "无行情")
                 continue
             prev_close = quote.get("prev_close") or self._get_prev_close(code)
             if not prev_close:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "无昨收无法判涨停"})
+                _skip(code, "无昨收无法判涨停")
                 continue
             limit_up = prev_close * (1 + limit_ratio(code))
             if quote["last"] >= limit_up:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "涨停拒买"})
+                _skip(code, "涨停拒买")
                 continue
             price = quote.get("ask1") or quote["last"]
             amount = min(cfg.amount_per_stock, cash * 0.95)
             qty = int(amount / price / 100) * 100
             if qty < 100:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": "现金不足一手"})
+                _skip(code, "现金不足一手")
                 continue
             intent = OrderIntent(code=code, direction=DIRECTION_BUY,
                                  price=price, qty=qty)
             ok, why = self._risk.check(intent, self._build_risk_ctx())
             if not ok:
-                dispositions.append({"code": code, "action": "skip",
-                                     "reason": f"风控拒: {why}"})
+                _skip(code, f"风控拒: {why}")
                 continue
             # 定价 (2026-07-27 实测驱动, 市场感知; 2026-08-01 P0-2 修复):
             # - ≥force_market_after: **全板块禁市价单** —— 深市 14:57-15:00
