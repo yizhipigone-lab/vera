@@ -250,7 +250,10 @@ class Reconciler:
         分寸 (注释即契约): 认领是把券商已证明的事实补记进账本
         (QMT→本地单向), 不是按差异改账 —— 不违反"对账永不回写"
         铁律 (那禁止的是按 A/B 差额直接改持仓数字)。幂等:
-        traded_id 判重 (store 当日成交 + book 幂等集合双保险)。"""
+        traded_id 判重 (store 当日成交 + book 幂等集合双保险)。
+        A3 (2026-08-01): book 幂等命中但 trades 表缺行 (首次
+        save_trade 失败的遗留态) 时仍补写 trades 行 —— QMT 为
+        真相源, 本方法是回调/落库丢失的统一兜底网。"""
         today = datetime.fromtimestamp(now).strftime("%Y%m%d")
         known = self._store.load_today_trade_ids(today)
         local_orders = self._book.snapshot()["orders"]
@@ -274,24 +277,47 @@ class Reconciler:
                 tid, order_id, t["code"],
                 t["direction"], float(t["price"]), int(t["qty"]),
                 strategy=strategy)
-            if not ok:
-                continue  # book 幂等集合已见过 (双保险), 不重复记账
             # 2026-07-31: peek 读 fill ctx (不删) —— 回调丢失时 ctx 仍在
             # executor; 部成多笔共享同一份原因, 订单终态由 _sync_orders /
             # _on_order 回收 (手工单无 ctx)
             ctx = (self._pop_ctx(order_id)
                    if local_order is not None else {})
+            record = {
+                "traded_id": tid, "order_id": order_id,
+                "code": t["code"], "direction": t["direction"],
+                "price": float(t["price"]), "qty": int(t["qty"]),
+                "ts": t.get("ts", now),
+                # 2026-07-30: 来源落库 — 系统单回调丢失补记仍是 system,
+                # 只有本地查不到 order_id 的才是真手工单 (manual)
+                "source": "system" if local_order is not None else "manual",
+                "reason": (self._reason_of(ctx)
+                           if local_order is not None else "")}
+            if not ok:
+                # A3 (2026-08-01 计划书批次1): book 幂等命中 = 实时 _on_trade
+                # 已记过账; 能走到这里说明 tid 不在当日 trades 表 (上方 known
+                # 已过滤, 查询先行不依赖异常) —— 即"book 有 / trades 表缺"
+                # 的遗留态 (首次 save_trade 失败, 如 WAL busy 重试仍败, 重启
+                # 后会成双扣洞)。QMT 是真相源, sync_reports 是所有回调/落库
+                # 丢失的统一兜底网: 此处主动补写 trades 行闭环。
+                # 注意只补 trades 行 —— update_order_filled 是累加语义不可
+                # 重放 (_on_trade 已累过), 订单进度由 _sync_orders 腿兜底;
+                # 飞书通知实时路径已发过, 不重复打扰。
+                try:
+                    self._store.save_trade(record)
+                except Exception:
+                    continue  # 唯一约束兜底: 已落库视为已认领
+                self._store.write_audit(
+                    "trade_db_backfill",
+                    f"成交落库补写(book已记账/trades表缺): {t['code']} "
+                    f"{'买' if t['direction'] == DIRECTION_BUY else '卖'} "
+                    f"{t['qty']}@{t['price']}",
+                    {"code": t["code"], "qty": t["qty"], "price": t["price"],
+                     "traded_id": tid, "order_id": order_id,
+                     "strategy": strategy})
+                adopted += 1
+                continue
             try:
-                self._store.save_trade({
-                    "traded_id": tid, "order_id": order_id,
-                    "code": t["code"], "direction": t["direction"],
-                    "price": float(t["price"]), "qty": int(t["qty"]),
-                    "ts": t.get("ts", now),
-                    # 2026-07-30: 来源落库 — 系统单回调丢失补记仍是 system,
-                    # 只有本地查不到 order_id 的才是真手工单 (manual)
-                    "source": "system" if local_order is not None else "manual",
-                    "reason": (self._reason_of(ctx)
-                               if local_order is not None else "")})
+                self._store.save_trade(record)
             except Exception:
                 pass  # 唯一约束兜底: 已落库视为已认领
             try:

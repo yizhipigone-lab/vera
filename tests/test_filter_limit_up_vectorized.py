@@ -90,6 +90,22 @@ def test_ratio_vector_board_rules(st_map):
     assert list(vec) == [0.10, 0.20, 0.20, 0.20, 0.05]
 
 
+def test_live_and_backtest_same_ratio(st_map):
+    """A6 (2026-08-01): 两路径同口径 —— 回测 _limit_ratio_vector
+    (TDX IsSTGP → core.limit_ratio) 与实盘 executor 路径
+    (st_checker → core.limit_ratio, trade_main 接线同款) 逐票一致。"""
+    from core.limit_ratio import limit_ratio
+    eng = BacktestEngine({})
+    codes = ['600001', '300001', '301001', '688001', '00005T']
+    vec = eng._limit_ratio_vector(codes)
+    # 与 trade_main 接线同语义: st_checker = IsSTGP=='1' → core.limit_ratio
+    # (engine_mod.get_cached_info 经 st_map fixture 已 patch 为可控源,
+    #  与 trade_main 用的 core.stock_filter.get_cached_info 是同一函数)
+    live = [limit_ratio(c, str(engine_mod.get_cached_info(c).get('IsSTGP', '0')) == '1')
+            for c in codes]
+    assert list(vec) == live
+
+
 def test_ratio_cache_reuses_across_calls(st_map):
     """同列集合第二次调用不再查 ST 信息 (批量跑 N 公式只查一次)。"""
     eng = BacktestEngine({})

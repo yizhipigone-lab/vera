@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import time
 from typing import Callable, Mapping
 
+from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.book import is_etf
 from utils.logger import get_logger
 
@@ -22,6 +24,30 @@ _logger = get_logger("trade.monitor")
 SESSION_NAMES = {"pre_open": "盘前", "auction": "集合竞价",
                  "continuous": "盘中", "lunch": "午休中", "closed": "已收盘"}
 
+# D5 (2026-08-01): 节假日日历统一 —— trading_session 原只判周末
+# (TODO P2), 现接 scheduler.trading_calendar (exchange_calendars 精确历,
+# 缺失时降级内置 2026 假日表, 其自身松耦合不抛异常)。盘中热路径
+# (scan 每轮都调) 按日 memoize; 日历万一异常回落周末判定
+# (fail-open, 与 D5 前行为一致, 不让日历故障压制盘中规则)。
+_TRADING_DAY_CACHE: dict[str, bool] = {}
+
+
+def is_trading_day_cached(d: _dt.date | None = None) -> bool:
+    """按日 memoize 的交易日判定 (D5)。trade_main 风险闸也经此取值,
+    与 trading_session 同一口径、同一份缓存。"""
+    day = (d or _dt.date.today())
+    key = day.isoformat()
+    hit = _TRADING_DAY_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        v = bool(_cal_is_trading_day(day))
+    except Exception as e:  # 日历故障不阻断盘中判定
+        _logger.warning("交易日历异常, 回落周末判定 (fail-open): %s", e)
+        v = day.weekday() < 5
+    _TRADING_DAY_CACHE[key] = v
+    return v
+
 
 def trading_session(now: float | None = None) -> str:
     """A 股交易时段判定 (2026-07-27 ETF 误卖事件裁决①):
@@ -29,11 +55,12 @@ def trading_session(now: float | None = None) -> str:
 
     返回: pre_open(<09:15) / auction(09:15-09:30) /
     continuous(09:30-11:30 ∪ 13:00-15:00) / lunch(11:30-13:00) /
-    closed(≥15:00 及周末)。TODO P2: 节假日日历 (当前只判周末+时刻)。
+    closed(≥15:00 及非交易日)。D5 (2026-08-01): 非交易日判定由
+    "周末"升级为节假日日历 (is_trading_day_cached, 含法定节假日)。
     now 为 epoch 秒, 可注入便于测试; None 取当前。
     """
     t = time.localtime(now) if now is not None else time.localtime()
-    if t.tm_wday >= 5:
+    if not is_trading_day_cached(_dt.date(t.tm_year, t.tm_mon, t.tm_mday)):
         return "closed"
     hm = t.tm_hour * 60 + t.tm_min
     if hm < 9 * 60 + 15:
