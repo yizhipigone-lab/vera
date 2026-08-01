@@ -1,11 +1,11 @@
 """
 阶梯止盈/成本止损优先级开关测试 (2026-07-05)
 
-验证 _simulate_core_v3 的 ladder_tp_first 参数:
+验证核心循环的 ladder_tp_first 参数 (2026-08-01 起经 tests/loop_direct.py 直调 BacktestLoop):
   - ladder_tp_first=False (stop_first, 历史默认): 同 bar 双触发 → cost_stop 先赢 → reason=3
   - ladder_tp_first=True  (ladder_tp_first 新模式): 同 bar 双触发 → ladder_tp 先赢 → reason=5
 
-不依赖 TDX, 直接调 _simulate_core_v3 + 合成数据。
+不依赖 TDX, 直接调 BacktestLoop + 合成数据。
 
 买入语义: bar 5 信号 → bar 5 当日收盘买入 (pos_entry_idx=5), bar 6 首次进卖出循环 (T+1).
 """
@@ -19,7 +19,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engine import _simulate_core_v3
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +51,7 @@ def _make_dual_trigger_market():
 
 
 def _make_args(close, entries, high, low, **kwargs):
-    """构造 _simulate_core_v3 的标准参数, 关闭除 cost_stop / ladder_tp 外的所有机制."""
+    """构造核心循环的标准参数, 关闭除 cost_stop / ladder_tp 外的所有机制."""
     base = dict(
         price_np=close.values.astype(np.float64),
         entry_np=entries.values,
@@ -88,7 +89,7 @@ def test_stop_first_cost_stop_wins():
     """ladder_tp_first=False: cost_stop 先检查, 双触发时 reason=3, 成交价按 cost_stop 算."""
     close, high, low, entries = _make_dual_trigger_market()
     args = _make_args(close, entries, high, low, ladder_tp_first=False)
-    equity_arr, raw_trades = _simulate_core_v3(**args)
+    equity_arr, raw_trades = run_loop_direct(**args)
 
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     assert len(real_trades) >= 1, f"应有至少 1 笔交易, 实际 {len(real_trades)}"
@@ -113,7 +114,7 @@ def test_ladder_tp_first_ladder_tp_wins():
     """ladder_tp_first=True: ladder_tp 先检查, 双触发时 reason=5, 成交价按 ladder_tp 算."""
     close, high, low, entries = _make_dual_trigger_market()
     args = _make_args(close, entries, high, low, ladder_tp_first=True)
-    equity_arr, raw_trades = _simulate_core_v3(**args)
+    equity_arr, raw_trades = run_loop_direct(**args)
 
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     assert len(real_trades) >= 1, f"应有至少 1 笔交易, 实际 {len(real_trades)}"
@@ -138,8 +139,8 @@ def test_ladder_tp_first_higher_profit_than_stop_first():
     """同 bar 双触发: ladder_tp_first 模式收益 (锁利+6%) 应 > stop_first 模式收益 (止损-8%)."""
     close, high, low, entries = _make_dual_trigger_market()
 
-    _, trades_stop = _simulate_core_v3(**_make_args(close, entries, high, low, ladder_tp_first=False))
-    _, trades_tp = _simulate_core_v3(**_make_args(close, entries, high, low, ladder_tp_first=True))
+    _, trades_stop = run_loop_direct(**_make_args(close, entries, high, low, ladder_tp_first=False))
+    _, trades_tp = run_loop_direct(**_make_args(close, entries, high, low, ladder_tp_first=True))
 
     real_stop = [t for t in trades_stop if t[8] != 0.0 or t[0] != 0.0]
     real_tp = [t for t in trades_tp if t[8] != 0.0 or t[0] != 0.0]
@@ -165,7 +166,7 @@ def test_only_cost_stop_triggered_both_modes_same():
 
     for ladder_tp_first in (False, True):
         args = _make_args(close, entries, high, low, ladder_tp_first=ladder_tp_first)
-        _, raw_trades = _simulate_core_v3(**args)
+        _, raw_trades = run_loop_direct(**args)
         real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
         reasons = [t[8] for t in real_trades]
         assert 3.0 in reasons, f"ladder_tp_first={ladder_tp_first}: 单 cost_stop 触发应 reason=3, 实际 {reasons}"
@@ -183,7 +184,7 @@ def test_only_ladder_tp_triggered_both_modes_same():
 
     for ladder_tp_first in (False, True):
         args = _make_args(close, entries, high, low, ladder_tp_first=ladder_tp_first)
-        _, raw_trades = _simulate_core_v3(**args)
+        _, raw_trades = run_loop_direct(**args)
         real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
         reasons = [t[8] for t in real_trades]
         assert 5.0 in reasons, f"ladder_tp_first={ladder_tp_first}: 单 ladder 触发应 reason=5, 实际 {reasons}"
@@ -235,7 +236,7 @@ def test_trailing_first_beats_cost_stop():
                       cost_stop_enabled=True, cost_stop_threshold=-0.08,
                       ladder_enabled=False,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     reasons = [t[8] for t in real_trades]
     assert 3.0 not in reasons, f"trailing_first 应让 trailing 先赢, 不应 reason=3, 实际 {reasons}"
@@ -256,7 +257,7 @@ def test_trailing_first_ladder_tp_still_wins():
                       ladder_enabled=True,
                       ladder_profits=np.array([0.06]), ladder_ratios=np.array([1.0]), n_ladder=1,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     reasons = [t[8] for t in real_trades]
     assert 5.0 in reasons, f"ladder_tp 应仍优先于 trailing, 应 reason=5, 实际 {reasons}"
@@ -273,7 +274,7 @@ def test_trailing_execution_price_is_trail_line():
                       cost_stop_enabled=False,  # 关闭 cost_stop 避免干扰
                       ladder_enabled=False,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, f"应有 trailing 触发, 实际 reasons={[t[8] for t in real_trades]}"
@@ -293,7 +294,7 @@ def test_trailing_low_trigger_even_if_close_far_below():
                       trailing_enabled=True, trailing_activation=0.03, trailing_drawdown=0.01,
                       cost_stop_enabled=False, ladder_enabled=False,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, "应触发 trailing"
@@ -317,7 +318,7 @@ def test_trailing_no_gap_protection_always_trail_line():
                       cost_stop_enabled=False, ladder_enabled=False,
                       trailing_first=True,
                       open_np=open_np)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, "应触发 trailing"
@@ -357,7 +358,7 @@ def test_t_day_high_not_counted_for_trailing_activation():
                       trailing_enabled=True, trailing_activation=0.03, trailing_drawdown=0.01,
                       cost_stop_enabled=False, ladder_enabled=False,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     # bar 6 不应触发 trailing (T 日 high=103 不算)
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
@@ -378,7 +379,7 @@ def test_trailing_flat_open_no_false_gap_protection():
                       cost_stop_enabled=False, ladder_enabled=False,
                       trailing_first=True,
                       open_np=open_np)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, "应触发 trailing"
@@ -403,7 +404,7 @@ def test_trailing_reason_uses_trail_line_price():
                       trailing_enabled=True, trailing_activation=0.03, trailing_drawdown=0.01,
                       cost_stop_enabled=False, ladder_enabled=False,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, "应触发 trailing"
@@ -427,7 +428,7 @@ def test_trailing_reason_loss_when_trail_line_below_ep():
                       trailing_enabled=True, trailing_activation=0.005, trailing_drawdown=0.01,
                       cost_stop_enabled=False, ladder_enabled=False,
                       trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
     trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
     assert len(trail_trades) >= 1, "应触发 trailing"
@@ -446,7 +447,7 @@ def test_trailing_new_semantics_all_modes():
                               cost_stop_enabled=False, ladder_enabled=False,
                               trailing_first=trailing_first,
                               ladder_tp_first=ladder_tp_first)
-            _, raw_trades = _simulate_core_v3(**args)
+            _, raw_trades = run_loop_direct(**args)
             real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
             trail_trades = [t for t in real_trades if t[8] in (4.0, 8.0)]
             assert len(trail_trades) >= 1, \

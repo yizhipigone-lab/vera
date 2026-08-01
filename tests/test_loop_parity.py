@@ -1,7 +1,10 @@
 """BacktestLoop 回归测试 —— 原 parity 测试转化。
 
-stage 3/4 核心验证: 同一份数据 + 同一套参数, 新循环 BacktestLoop 必须与
+stage 3/4 核心验证 (历史): 同一份数据 + 同一套参数, 新循环 BacktestLoop 必须与
 旧 _simulate_core_v3 产出**完全一致**的 equity_arr 与 raw_trades。
+2026-08-01 批次 3a/3b: legacy 甲骨文与兼容壳均已删除, 本文件转为
+"形状/不崩溃" 冒烟网 (assert_valid), 数值级回归由快照基线
+tests/test_snapshot_parity.py 承担 (合成数据生成器两文件共用)。
 
 覆盖矩阵（v3 计划书 §4.2）:
   3 priority × 4 capability × 2 trade_count × 2 trailing 状态 + 边界场景

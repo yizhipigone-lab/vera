@@ -47,6 +47,14 @@ def test_std_bar_times_mapping():
 
 
 def test_calendar_bars_per_day_no_1m():
-    """计划书 §3.1 v2 修订: 不加 1m 映射, 防 _MAX_SCAN_COUNT=3000 静默浅扫。"""
-    from core.formula_runner import _CALENDAR_BARS_PER_DAY
-    assert "1m" not in _CALENDAR_BARS_PER_DAY
+    """计划书 §3.1 v2 修订: 不加 1m 映射, 防 _MAX_SCAN_COUNT=3000 静默浅扫。
+
+    2026-07-30 (8b0a1ba): _CALENDAR_BARS_PER_DAY 随自适应扫描深度一并移除,
+    扫描深度回到全周期恒定 3000。守注意图不变 —— 钉死"1m 无独立浅扫映射":
+    任何 period (含 1m) 都返回同一深度。注意 3000 根 1m bar ≈ 12.5 个交易日,
+    即当前设计不支持 1m 选股; 若未来支持, 必须重设计扫描深度并改本测试。
+    """
+    from core.formula_runner import _adaptive_scan_count, _MAX_SCAN_COUNT
+    for period in ("1d", "5m", "1m"):
+        assert _adaptive_scan_count("2024-01-01", "2024-12-31", period) \
+            == _MAX_SCAN_COUNT

@@ -7,8 +7,8 @@
   Low 触及 trail_line → 按 trail_line 成交（与 trailing 同款锁利语义, 不做跳空保护）
 
 ATR 值由调用方预算成 (n_dates, n_stocks) 矩阵传入（策略不自己算 ATR, 关注触发逻辑）。
-属新 API 策略: 经 build_backtest_loop(atr_enabled=True, atr_matrix=...) 启用,
-不走冻结 39 参的 _simulate_core_v3 兼容壳（legacy 无 ATR）。
+属新 API 策略: 经 build_backtest_loop(atr_enabled=True, atr_matrix=...) 启用
+(2026-08-01 前不走冻结 39 参的 _simulate_core_v3 兼容壳, 壳现已退役)。
 """
 
 from __future__ import annotations

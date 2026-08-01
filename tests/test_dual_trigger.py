@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import pytest
-from backtest.engine import _simulate_core_v3
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
 
 
 def _make_dual_trigger_market():
@@ -68,7 +69,7 @@ def test_ladder_then_trailing_dual_trigger():
     """ladder 部分卖后, trailing 接力清仓剩余 → 两笔交易, reason=5 + reason=8, 同 bar."""
     close, high, low, entries = _make_dual_trigger_market()
     args = _make_args(close, entries, high, low, trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
 
     # 应有两笔: ladder 部分卖 (reason=5) + trailing 全卖剩余 (reason=8)
@@ -101,7 +102,7 @@ def test_ladder_only_no_trailing_trigger():
     # bar 6: high=110 (ladder 触发), low=108.5 (> cost_stop 95.4, 不触发)
     low.iloc[6, 0] = 108.5
     args = _make_args(close, entries, high, low, trailing_first=True, trailing_enabled=False)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
 
     reasons = [t[8] for t in real_trades]
@@ -119,7 +120,7 @@ def test_cost_stop_fallback_when_no_ladder_no_trailing():
     high.iloc[6, 0] = 101.0  # +1% < 3%, ladder 不触发
     low.iloc[6, 0] = 94.0    # -6% ≤ -4.6%, cost_stop 触发
     args = _make_args(close, entries, high, low, trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
 
     reasons = [t[8] for t in real_trades]
@@ -138,7 +139,7 @@ def test_002788_scenario_profit_priority_over_cost_stop():
     close, high, low, entries = _make_dual_trigger_market()
     # bar 6: high=110, low=95 → ladder(+10%) + trailing(回撤线108.13) + cost_stop(-5%< -4.6%) 都满足
     args = _make_args(close, entries, high, low, trailing_first=True)
-    _, raw_trades = _simulate_core_v3(**args)
+    _, raw_trades = run_loop_direct(**args)
     real_trades = [t for t in raw_trades if t[8] != 0.0 or t[0] != 0.0]
 
     reasons = [t[8] for t in real_trades]

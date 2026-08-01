@@ -1,6 +1,7 @@
-"""BacktestLoop 构造器 — 把 _simulate_core_v3 的 39 参数映射成 BacktestLoop 对象图。
+"""BacktestLoop 构造器 — 把原 _simulate_core_v3 壳的 39 参数映射成 BacktestLoop 对象图。
 
 候选 A 阶段 2 — stage 4 兼容壳 + parity 测试共用此桥。
+2026-08-01 批次 3b C2: 壳已退役, 本构造器成为唯一直调入口。
 capability gating（HA1）: enabled=False 的策略不进 dispatcher dict。
 """
 
@@ -48,9 +49,10 @@ def build_backtest_loop(
     # 卖出冷却 (2026-07-23, bar 数): 全清仓后 N bar 内禁止同票重新买入, 0=关闭
     sell_cooldown_bars: int = 0,
 ) -> BacktestLoop:
-    """从 _simulate_core_v3 的参数构造 BacktestLoop。
+    """从原 _simulate_core_v3 壳的参数构造 BacktestLoop。
 
-    签名顺序对齐 _simulate_core_v3 的 positional 参数（engine.py）。
+    签名顺序对齐原壳的 positional 参数 (2026-08-01 壳退役后, 本签名即契约,
+    由 tests/test_engine_run_path.py 签名守卫锁定)。
     """
     # M7: ladder 数组入口归一化 float64, 防外部传 float32/list 导致触发边界漂移
     ladder_profits = np.asarray(ladder_profits, dtype=np.float64)

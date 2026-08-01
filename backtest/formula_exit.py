@@ -4,7 +4,7 @@
   1. build_formula_exit_matrix — 矩阵构造（核心纯函数）
   2. cache_key / load_cached / save_cached — 24h TTL 磁盘缓存（避免每次回测都跑 TDX）
 
-矩阵形状约定（与 backtest/engine.py:_simulate_core_v3 主循环一致）：
+矩阵形状约定（与 BacktestLoop 主循环一致；2026-08-01 前为 engine._simulate_core_v3）：
   matrix[i, j] = True 表示"在 date_index[i] 这天，stock_columns[j] 这只股票，TDX 公式命中"
   dtype: bool（节省内存 + 直接当 numpy bool 索引用）
 """

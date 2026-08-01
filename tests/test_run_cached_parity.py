@@ -1,8 +1,9 @@
 """
-候选 A 阶段 1 — run_cached vs _simulate_core_v3 字节级 parity 测试 (RED)
+候选 A 阶段 1 — run_cached vs 核心循环直调 字节级 parity 测试
 
 同数据同配置下, run_cached(filter_limit_up=False, return_raw=True) 的
-raw_equity / raw_trades 必须与直调 _simulate_core_v3 字节级一致。
+raw_equity / raw_trades 必须与直调 BacktestLoop (tests/loop_direct.py,
+2026-08-01 壳退役后的等价展开) 字节级一致。
 
 这是最硬的等价证据: 证明深化 run_cached 没改回测口径, 只是补齐了 6 个能力 keyword。
 
@@ -16,7 +17,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engine import BacktestEngine, _simulate_core_v3
+from backtest.engine import BacktestEngine
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
 
 
 def _make_engine():
@@ -81,7 +84,7 @@ def _direct_call(eng, close, entries, high_np, low_np, stop_config,
                  open_np=None, tradable_np=None, last_tradable_idx=None,
                  formula_exit_np=None, formula_exit_ratio=None,
                  formula_exit_lag_bars=1):
-    """精确复现 run_cached 深化后的参数准备 (含 capabilities gate), 直调 _simulate_core_v3."""
+    """精确复现 run_cached 深化后的参数准备 (含 capabilities gate), 直调核心循环。"""
     stop = stop_config
     cost = stop.get("cost_stop", {})
     trail = stop.get("trailing_stop", {})
@@ -125,7 +128,7 @@ def _direct_call(eng, close, entries, high_np, low_np, stop_config,
     # filter_limit_up=False → entries 不变 (与 run_cached 一致)
     entry_np = entries.values
 
-    return _simulate_core_v3(
+    return run_loop_direct(
         close.values.astype(np.float64), entry_np,
         float(eng.initial_capital), float(eng.eff_commission),
         float(eng.min_buy_amount), float(eng.max_buy_amount),

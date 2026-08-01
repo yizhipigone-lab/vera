@@ -127,10 +127,14 @@ def test_engine_run_passes_end_time_to_windowed(monkeypatch):
     monkeypatch.setattr(engine_module.DataFetcher, "get_kline_windowed", fake_windowed)
     monkeypatch.setattr(BacktestEngine, "_filter_limit_up",
                         lambda self, entries, prices: entries)
+    # 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, stub 目标改 build_backtest_loop
+    class _StubLoop:
+        def run(self, price_np, entry_np, *a, **kw):
+            return np.full(price_np.shape[0], 100000.0), np.empty((0, 9))
+
     monkeypatch.setattr(
-        engine_module, "_simulate_core_v3",
-        lambda price_np, entry_np, *a, **kw: (
-            np.full(price_np.shape[0], 100000.0), np.empty((0, 9))))
+        engine_module, "build_backtest_loop",
+        lambda *a, **kw: _StubLoop())
 
     eng = BacktestEngine({"period": "5m"})
     sel = pd.DataFrame([{"select_date": idx[0], "stock_code": "600001.SH"}])

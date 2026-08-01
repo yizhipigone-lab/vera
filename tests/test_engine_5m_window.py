@@ -2,7 +2,7 @@
 
 被测块: backtest/engine.py:758-824 (get_kline_windowed 调用 / win_td 自动加长 /
 tradable∩window_mask / last_tradable_idx 窗口内重算)。
-mock DataFetcher.get_kline_windowed + _simulate_core_v3(捕获透传矩阵), 不触 TDX。
+mock DataFetcher.get_kline_windowed + build_backtest_loop(捕获透传矩阵), 不触 TDX。
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _make_5m(n_bars=96, n_stocks=2):
 
 
 def _run_5m(monkeypatch, close, mask, stop_config=None, capture=None, config=None):
-    """公共驱动: mock 窗口拉取 + 捕获 _simulate_core_v3 入参。"""
+    """公共驱动: mock 窗口拉取 + 捕获 build_backtest_loop 入参。"""
     eng = BacktestEngine(config or {'period': '5m'})
     kline = {'Close': close, 'High': close * 1.01, 'Low': close * 0.99,
              'Open': close.copy()}

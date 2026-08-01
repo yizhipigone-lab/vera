@@ -9,7 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from backtest.engine import _simulate_core_v3
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
 from backtest.loop.builder import build_backtest_loop
 from backtest.loop.prefilter import TriggerPreFilter
 from backtest.loop.state import Bar, Context, Position
@@ -92,9 +93,9 @@ def test_no_false_negative_property():
 def test_forced_true_control_byte_identical(monkeypatch):
     """预筛强制恒 True(全评估) 与正常版整 loop 字节一致 → 预筛不改变任何结果。"""
     price, high, low, open_, entry = make_synthetic(seed=99)
-    eq1, tr1 = _simulate_core_v3(price, entry, *_args(price, entry))
+    eq1, tr1 = run_loop_direct(price, entry, *_args(price, entry))
     monkeypatch.setattr(TriggerPreFilter, "could_trigger", lambda self, **kw: True)
-    eq2, tr2 = _simulate_core_v3(price, entry, *_args(price, entry))
+    eq2, tr2 = run_loop_direct(price, entry, *_args(price, entry))
     assert np.array_equal(eq1, eq2) and np.array_equal(tr1, tr2)
 
 

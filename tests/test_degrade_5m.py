@@ -331,7 +331,7 @@ def test_recompute_last_tradable_idx():
 def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
                    selections, config=None, stop_config=None, capture=None,
                    core_raw_trades=None):
-    """公共驱动: mock 窗口拉取 + 交易日历 + 1d 拉取, 捕获 _simulate_core_v3 入参。"""
+    """公共驱动: mock 窗口拉取 + 交易日历 + 1d 拉取, 捕获 build_backtest_loop 入参。"""
     eng = BacktestEngine(config or {'period': '5m', 'degrade_5m': True})
     kline = {'Close': close_5m, 'High': close_5m * 1.01,
              'Low': close_5m * 0.99, 'Open': close_5m.copy()}

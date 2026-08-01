@@ -1,7 +1,7 @@
 """
 formula_sell 端到端集成测试
 
-不依赖 TDX, 直接调 _simulate_core_v3 + 合成数据, 验证:
+不依赖 TDX, 直调 BacktestLoop (tests/loop_direct.py) + 合成数据, 验证:
   1. formula_exit_np 传入 → reason=12 触发 → trade.exit_reason="formula_sell"
   2. formula_exit_ratio < 1 → 部分卖出
   3. formula_exit_np=None → 旧路径不变 (无 reason=12 触发)
@@ -22,7 +22,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engine import _simulate_core_v3
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
 from backtest.formula_exit import build_formula_exit_matrix
 
 
@@ -58,7 +59,7 @@ def synthetic_market():
 
 
 def _make_args(close, entries, **kwargs):
-    """构造 _simulate_core_v3 的标准参数 (尽量宽松: 不触发任何其他止损)."""
+    """构造核心循环的标准参数 (尽量宽松: 不触发任何其他止损)."""
     n_dates, n_stocks = close.shape
     base = dict(
         price_np=close.values.astype(np.float64),
@@ -118,7 +119,7 @@ def test_formula_exit_triggers_after_t1(synthetic_market):
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64),
     )
-    equity_arr, raw_trades = _simulate_core_v3(**kwargs)
+    equity_arr, raw_trades = run_loop_direct(**kwargs)
 
     assert len(raw_trades) >= 1, "应有 1 笔交易 (买入 + 公式卖)"
     trade = raw_trades[0]
@@ -145,7 +146,7 @@ def test_formula_exit_partial_sell_ratio(synthetic_market):
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64),
     )
-    equity_arr, raw_trades = _simulate_core_v3(**kwargs)
+    equity_arr, raw_trades = run_loop_direct(**kwargs)
 
     assert len(raw_trades) >= 1, "应有 1 笔 (部分卖出)"
     trade = raw_trades[0]
@@ -169,7 +170,7 @@ def test_call_without_formula_exit_uses_legacy_path(synthetic_market):
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64),
     )  # 不传 formula_exit_np
-    equity_arr, raw_trades = _simulate_core_v3(**kwargs)
+    equity_arr, raw_trades = run_loop_direct(**kwargs)
 
     # 无 sell 触发, raw_trades 为空 (期末不平仓的持仓不出现在 trades)
     assert len(raw_trades) == 0, (
@@ -200,7 +201,7 @@ def test_formula_exit_beats_cost_stop_in_priority(synthetic_market):
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64),
     )
-    equity_arr, raw_trades = _simulate_core_v3(**kwargs)
+    equity_arr, raw_trades = run_loop_direct(**kwargs)
 
     assert len(raw_trades) >= 1, "应有交易"
     trade = raw_trades[0]
@@ -210,10 +211,10 @@ def test_formula_exit_beats_cost_stop_in_priority(synthetic_market):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: build_formula_exit_matrix → _simulate_core_v3 端到端
+# Test 5: build_formula_exit_matrix → 核心循环端到端
 # ---------------------------------------------------------------------------
 def test_end_to_end_with_build_matrix(synthetic_market):
-    """完整链路: build_formula_exit_matrix (TDX 模拟) → _simulate_core_v3."""
+    """完整链路: build_formula_exit_matrix (TDX 模拟) → 核心循环."""
     dates, close, high, low, open_, entries, columns = synthetic_market
 
     # 模拟 TDX: 在 bar 6 返回 (600519.SH, idx[6]) 一条卖出信号
@@ -232,7 +233,7 @@ def test_end_to_end_with_build_matrix(synthetic_market):
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64),
     )
-    equity_arr, raw_trades = _simulate_core_v3(**kwargs)
+    equity_arr, raw_trades = run_loop_direct(**kwargs)
 
     assert len(raw_trades) >= 1
     trade = raw_trades[0]
@@ -258,7 +259,7 @@ def test_t1_protection_blocks_same_day_sell(synthetic_market):
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64),
     )
-    equity_arr, raw_trades = _simulate_core_v3(**kwargs)
+    equity_arr, raw_trades = run_loop_direct(**kwargs)
 
     assert len(raw_trades) == 1, (
         f"应 1 笔 (bar5 买入 + bar6 卖出), 实际 {len(raw_trades)} 笔"

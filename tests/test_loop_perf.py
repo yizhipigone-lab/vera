@@ -1,7 +1,12 @@
 """候选 A 阶段 2 — 性能基准（CR1）。
 
-固化"新 BacktestLoop vs legacy 甲骨文"wall-clock 退化阈值 < 2x。
-非严格计时测试（CI 环境波动大）, 阈值放宽到 3x 防误报; 真实退化用本地脚本复核。
+2026-08-01 批次 3b C2: `_simulate_core_v3` 壳退役, benchmark 对象改为
+`build_backtest_loop` 直调路径:
+  1. test_perf_baseline — 核心循环绝对耗时阈值 (防性能退化)。
+  2. test_perf_regression_ratio — 测试适配层 run_loop_direct (tests/loop_direct.py,
+     原壳的等价展开) vs 裸 build_backtest_loop+loop.run 的开销比, 应 ~1.0x
+     (适配层只做参数转发, 不允许引入可观 overhead)。
+非严格计时测试（CI 环境波动大）, 阈值放宽防误报; 真实退化用本地脚本复核。
 """
 
 from __future__ import annotations
@@ -11,7 +16,8 @@ import time
 import numpy as np
 import pytest
 
-from backtest.engine import _simulate_core_v3
+from backtest.loop import build_backtest_loop
+from tests.loop_direct import run_loop_direct
 from tests.test_loop_parity import BASE_PARAMS
 
 
@@ -28,6 +34,7 @@ def _make_data(n_dates=500, n_stocks=100, seed=1):
 
 
 def _args(price, high, low, op, entry):
+    """run_loop_direct 位置参数 (原 _simulate_core_v3 壳的 39 参顺序)。"""
     kw = BASE_PARAMS
     return (price, entry, kw["initial_capital"], kw["commission"],
             kw["min_buy_amount"], kw["max_buy_amount"], kw["lot_size"], kw["min_lots"],
@@ -38,7 +45,25 @@ def _args(price, high, low, op, entry):
             None, None, op, None, 1.0, 1, False, False, 1.0)
 
 
-@pytest.mark.parametrize("runner", [_simulate_core_v3])
+def _run_raw(price, high, low, op, entry):
+    """裸 build_backtest_loop + loop.run (无测试适配层)。"""
+    kw = BASE_PARAMS
+    loop = build_backtest_loop(
+        kw["initial_capital"], kw["commission"],
+        kw["min_buy_amount"], kw["max_buy_amount"], kw["lot_size"], kw["min_lots"],
+        True, kw["cost_stop_threshold"],
+        True, kw["trailing_activation"], kw["trailing_drawdown"],
+        True, kw["ladder_profits"], kw["ladder_ratios"], kw["n_ladder"],
+        True, kw["max_hold_days"],
+        False, kw["cond_time_days"], kw["cond_time_profit"],
+        False, kw["first_day_target"],
+        bpday=1, slippage=kw["slippage"], stamp_tax=kw["stamp_tax"],
+        max_position_pct=1.0,
+    )
+    return loop.run(price, entry, high, low, op, None, None, None)
+
+
+@pytest.mark.parametrize("runner", [run_loop_direct])
 def test_perf_baseline(runner):
     """100 股 × 500 bar, 单次 < 1.0s (2026-07-17 Phase 2 收紧: 5.0s→1.0s, 本地实测 ~20ms)。"""
     price, high, low, op, entry = _make_data()
@@ -52,24 +77,24 @@ def test_perf_baseline(runner):
 
 
 def test_perf_regression_ratio():
-    """新壳 vs legacy wall-clock 比 < 2.0x (2026-07-17 Phase 2 收紧: 3.0x→2.0x)。
+    """适配层 run_loop_direct vs 裸直调 wall-clock 比 < 2.0x (本地实测应 ~1.0x)。
 
-    本地实测基线: Phase 1 后新壳 ~1.5-1.7x (稀疏持仓), 密集持仓 ~1.05x。
-    无 CI, 全本地跑, 2.0x 阈值不误报; 未来上 CI 再放宽。
+    2026-08-01 批次 3b C2 改义: 原"新壳 vs legacy 甲骨文"对比对象 (legacy) 已删,
+    现锁定测试适配层不引入可观开销 — 它只做参数转发, ratio 应接近 1.0。
     """
     price, high, low, op, entry = _make_data()
     args = _args(price, high, low, op, entry)
-    _simulate_core_v3(*args)
-    _simulate_core_v3(*args)
+    _run_raw(price, high, low, op, entry)
+    run_loop_direct(*args)
     t0 = time.time()
     for _ in range(3):
-        _simulate_core_v3(*args)
-    t_legacy = (time.time() - t0) / 3
+        _run_raw(price, high, low, op, entry)
+    t_raw = (time.time() - t0) / 3
     t0 = time.time()
     for _ in range(3):
-        _simulate_core_v3(*args)
-    t_new = (time.time() - t0) / 3
-    ratio = t_new / t_legacy if t_legacy > 0 else 0
+        run_loop_direct(*args)
+    t_adapter = (time.time() - t0) / 3
+    ratio = t_adapter / t_raw if t_raw > 0 else 0
     assert ratio < 2.0, (
-        f"性能退化 {ratio:.2f}x 超阈值(legacy={t_legacy:.3f}s new={t_new:.3f}s); "
-        f"Phase 1 后本地应 < 1.8x")
+        f"适配层开销 {ratio:.2f}x 超阈值(raw={t_raw:.3f}s adapter={t_adapter:.3f}s); "
+        f"run_loop_direct 只做参数转发, 本地应 ~1.0x")

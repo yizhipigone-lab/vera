@@ -1,8 +1,10 @@
 """VeraCore 回测引擎 — 纯Python，内置OHLC止盈止损判断。
 
 核心循环: `backtest/loop/BacktestLoop` (候选 A 阶段 2, 2026-07-14)。
-run()/run_cached() 直接调用 `build_backtest_loop` + `loop.run()`。
-`_simulate_core_v3` 保留为测试兼容壳 (53行, 转调 build_backtest_loop)。
+run()/run_cached() 经共享段 `_resolve_stop_and_build_loop` 调用
+`build_backtest_loop` + `loop.run()` (2026-08-01 批次 3b C2: 双入口重复段合并,
+原 `_simulate_core_v3` 测试兼容壳同日退役, 测试改直调 build_backtest_loop,
+等价展开见 tests/loop_direct.py)。
 设计说明: `docs/architecture/loop.md`。
 """
 
@@ -34,55 +36,6 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 ENGINE_VERSION = "v3.6-no-legacy-20260723"
-
-# ═══════════════════════════════════════════════════════════════
-# 测试兼容壳: _simulate_core_v3 — 保留给 7 个测试文件
-# 生产路径(run/run_cached)已直接使用 build_backtest_loop
-# ═══════════════════════════════════════════════════════════════
-
-def _simulate_core_v3(
-    price_np, entry_np,
-    initial_capital, commission,
-    min_buy_amount, max_buy_amount, lot_size, min_lots,
-    cost_stop_enabled, cost_stop_threshold,
-    trailing_enabled, trailing_activation, trailing_drawdown,
-    ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
-    time_enabled, max_hold_days,
-    cond_time_enabled, cond_time_days, cond_time_profit,
-    first_day_enabled=False, first_day_target=0.03,
-    first_day_n_bars=1, high_np=None, low_np=None, bpday=1,
-    slippage=0.0, stamp_tax=0.0,
-    tradable_np=None, last_tradable_idx=None,
-    open_np=None,
-    formula_exit_np=None, formula_exit_ratio=1.0, formula_exit_lag_bars=1,
-    ladder_tp_first=False,
-    trailing_first=False,
-    max_position_pct=1.0,
-    atr_enabled=False, atr_matrix=None, atr_multiplier=3.0,
-    trailing_gap_protection=False,
-):
-    """测试兼容壳 — 转调 build_backtest_loop + BacktestLoop.run()。
-    保留给 7 个测试文件 (test_priority_switch 等) 的 import 兼容。
-    注: first_day_n_bars 为历史半死参数 (legacy 函数体从未引用, FirstDayStrategy 用
-        bpday-1), 此处接收但忽略, 仅为兼容测试调用签名; 勿在此接新逻辑。
-    """
-    loop = build_backtest_loop(
-        initial_capital, commission,
-        min_buy_amount, max_buy_amount, lot_size, min_lots,
-        cost_stop_enabled, cost_stop_threshold,
-        trailing_enabled, trailing_activation, trailing_drawdown,
-        ladder_enabled, ladder_profits, ladder_ratios, n_ladder,
-        time_enabled, max_hold_days,
-        cond_time_enabled, cond_time_days, cond_time_profit,
-        first_day_enabled, first_day_target,
-        bpday, slippage, stamp_tax, max_position_pct,
-        ladder_tp_first, trailing_first,
-        formula_exit_np, formula_exit_ratio, formula_exit_lag_bars,
-        atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
-        trailing_gap_protection=trailing_gap_protection,
-    )
-    return loop.run(price_np, entry_np, high_np, low_np, open_np,
-                    tradable_np, last_tradable_idx, formula_exit_np)
 
 # ═══════════════════════════════════════════════════════════════
 # VeraCore 设计要点 — 核心循环实现已迁至 backtest/loop/ (候选 A 阶段 2, 2026-07-14)
@@ -342,6 +295,101 @@ class BacktestEngine:
             "degraded_np": degraded_np, "degrade_res": degrade_res,
         }
 
+    def _resolve_stop_and_build_loop(self, stop, close, entry_np,
+                                     high_np, low_np, open_np,
+                                     tradable_np, last_tradable_idx,
+                                     ladder_profits, ladder_ratios, n_ladder,
+                                     formula_exit_np, formula_exit_ratio,
+                                     formula_exit_lag_bars=1):
+        """run()/run_cached() 共享段 (2026-08-01 批次 3b C2 合并)。
+
+        priority 校验 → trailing 缺省 → 时间参数 ×bpday 缩放 → ATR →
+        build_backtest_loop → loop.run。两入口曾各自维护这段 ~60 行且发生过
+        漂移 (计划书批次 3 C2), 抽出单一实现; 行为与合并前逐字节一致,
+        由快照基线 tests/test_snapshot_parity.py 锁定。
+
+        注意: 必须经模块级 `build_backtest_loop` 名字调用 (tests 会
+        monkeypatch engine_module.build_backtest_loop 捕获参数)。
+
+        返回 (equity_arr, raw_trades, resolved); resolved 携带调用方后续需要的
+        解析值 (目前仅 run() 的 degrade 报告用 trailing 缺省后值)。
+        """
+        cost = stop.get("cost_stop", {})
+        trail = stop.get("trailing_stop", {})
+        # 移动止损止盈缺字段/None 语义: 回退命名常量 (两入口同一兜底, 防漂移)
+        trailing_activation = trail.get("activation")
+        if trailing_activation is None:
+            trailing_activation = DEFAULT_TRAILING_ACTIVATION
+        trailing_drawdown = trail.get("drawdown")
+        if trailing_drawdown is None:
+            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
+        ladder = stop.get("ladder_tp", {})
+        time_s = stop.get("time_stop", {})
+        cond_t = stop.get("cond_time_stop", {})
+        first_day = stop.get("first_day", {})
+        # 优先级 (ladder_tp_first / trailing_first), 非法值回退默认
+        priority = str(stop.get("priority", DEFAULT_PRIORITY))
+        if priority not in VALID_PRIORITIES:
+            logger.warning(
+                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
+                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
+            )
+            priority = DEFAULT_PRIORITY
+        ladder_tp_first = (priority == "ladder_tp_first")
+        trailing_first = (priority == "trailing_first")
+
+        bpday = self.bars_per_day
+        mhd_scaled = int(time_s.get("max_hold_days", 20)) * bpday
+        ctd_scaled = int(cond_t.get("days", 7)) * bpday
+
+        # ATR 波动率止损: stop_config["atr_stop"], 内部从 high/low/close 预算
+        atr_cfg = stop.get("atr_stop", {})
+        atr_enabled = bool(atr_cfg.get("enabled", False))
+        atr_matrix = None
+        atr_multiplier = float(atr_cfg.get("multiplier", 3.0))
+        if atr_enabled:
+            if high_np is not None and low_np is not None:
+                atr_matrix = _compute_atr_matrix(
+                    high_np, low_np, close.values.astype(np.float64),
+                    period=int(atr_cfg.get("period", 14)))
+            else:
+                logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
+                atr_enabled = False
+
+        loop = build_backtest_loop(
+            float(self.initial_capital), float(self.eff_commission),
+            float(self.min_buy_amount), float(self.max_buy_amount),
+            int(self.lot_size), int(self.min_lots),
+            cost.get("enabled", True), float(cost.get("threshold", -0.12)),
+            trail.get("enabled", True), float(trailing_activation),
+            float(trailing_drawdown),
+            ladder.get("enabled", True), ladder_profits, ladder_ratios, n_ladder,
+            time_s.get("enabled", True), mhd_scaled,
+            cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
+            first_day_enabled=first_day.get("enabled", False),
+            first_day_target=float(first_day.get("target", 0.03)),
+            bpday=bpday, slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
+            max_position_pct=float(self.max_position_pct),
+            ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
+            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
+            formula_exit_lag_bars=formula_exit_lag_bars,
+            atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
+            trailing_gap_protection=bool(trail.get("gap_protection", False)),
+            sell_cooldown_bars=self.sell_cooldown_days * bpday,
+        )
+        self._last_loop = loop
+        equity_arr, raw_trades = loop.run(
+            close.values.astype(np.float64), entry_np,
+            high_np=high_np, low_np=low_np, open_np=open_np,
+            tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
+            formula_exit_np=formula_exit_np,
+        )
+        resolved = {
+            "trailing_activation": float(trailing_activation),
+            "trailing_drawdown": float(trailing_drawdown),
+        }
+        return equity_arr, raw_trades, resolved
+
     def run(self, selections, start_time="", end_time="", stop_config=None):
         """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
 
@@ -361,29 +409,14 @@ class BacktestEngine:
                 start_time = "20260126"
 
         stop = stop_config or {}
-        # 2026-07-05: 优先级 (ladder_tp_first / trailing_first)
-        # 2026-07-18 审计 F5: 补 run_cached 同款合法性校验 + 常量收口 stop_config
-        priority = str(stop.get("priority", DEFAULT_PRIORITY))
-        if priority not in VALID_PRIORITIES:
-            logger.warning(
-                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
-                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
-            )
-            priority = DEFAULT_PRIORITY
-        ladder_tp_first = (priority == "ladder_tp_first")
-        trailing_first = (priority == "trailing_first")
+        # 2026-08-01 批次 3b C2: priority 校验/trailing 缺省/时间缩放/ATR/build+run
+        # 已并入 _resolve_stop_and_build_loop (run/run_cached 共享, 防漂移);
+        # 此处只保留本入口后续仍直接引用的子配置 (degrade 报告/日志/ladder 数组)。
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
-        trailing_activation = trail.get("activation")
-        if trailing_activation is None:
-            trailing_activation = DEFAULT_TRAILING_ACTIVATION
-        trailing_drawdown = trail.get("drawdown")
-        if trailing_drawdown is None:
-            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
         ladder = stop.get("ladder_tp", {})
         time_s = stop.get("time_stop", {})
         cond_t = stop.get("cond_time_stop", {})
-        first_day = stop.get("first_day", {})
 
         codes = selections["stock_code"].unique().tolist()
 
@@ -510,55 +543,23 @@ class BacktestEngine:
                      time_s.get("max_hold_days", "?"), cond_t.get("days", "?"), cond_profit_pct * 100,
                      len(codes))
 
-        mhd = int(time_s.get("max_hold_days", 20))
         bpday = self.bars_per_day
-        mhd_scaled = mhd * bpday
-        ctd = int(cond_t.get("days", 7))
-        ctd_scaled = ctd * bpday
-        fd_bars = bpday - 1 if bpday > 1 else 1
+        # ENGINE_DEBUG 日志的缩放值仅作展示 (2026-08-01 批次 3b C2);
+        # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化。
         logger.info("ENGINE_DEBUG max_hold_days=%d(scaled=%d) time_enabled=%s period=%s bpday=%d",
-                     mhd, mhd_scaled, time_s.get("enabled", True), self.period, bpday)
+                     int(time_s.get("max_hold_days", 20)),
+                     int(time_s.get("max_hold_days", 20)) * bpday,
+                     time_s.get("enabled", True), self.period, bpday)
         t0 = pd.Timestamp.now()
         entries = self._filter_limit_up(entries, close)
-        # ATR 波动率止损: stop_config["atr_stop"], 内部从 high/low/close 预算
-        atr_cfg = stop.get("atr_stop", {})
-        atr_enabled = bool(atr_cfg.get("enabled", False))
-        atr_matrix = None
-        atr_multiplier = float(atr_cfg.get("multiplier", 3.0))
-        if atr_enabled:
-            if high_np is not None and low_np is not None:
-                atr_matrix = _compute_atr_matrix(
-                    high_np, low_np, close.values.astype(np.float64),
-                    period=int(atr_cfg.get("period", 14)))
-            else:
-                logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
-                atr_enabled = False
-        loop = build_backtest_loop(
-            float(self.initial_capital), float(self.eff_commission),
-            float(self.min_buy_amount), float(self.max_buy_amount),
-            int(self.lot_size), int(self.min_lots),
-            cost.get("enabled", True), float(cost.get("threshold", -0.12)),
-            trail.get("enabled", True), float(trailing_activation),
-            float(trailing_drawdown),
-            ladder.get("enabled", True), ladder_profits, ladder_ratios, len(lv),
-            time_s.get("enabled", True), mhd_scaled,
-            cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
-            first_day_enabled=first_day.get("enabled", False),
-            first_day_target=float(first_day.get("target", 0.03)),
-            bpday=bpday, slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
-            max_position_pct=float(self.max_position_pct),
-            ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
-            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio, formula_exit_lag_bars=1,
-            atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
-            trailing_gap_protection=bool(trail.get("gap_protection", False)),
-            sell_cooldown_bars=self.sell_cooldown_days * bpday,
-        )
-        self._last_loop = loop
         _progress.report("loop", 0.0, "核心回测...")  # 2026-07-26
-        equity_arr, raw_trades = loop.run(
-            close.values.astype(np.float64), entries.values,
+        # 2026-08-01 批次 3b C2: 共享段 (priority/trailing 缺省/缩放/ATR/build+run)
+        equity_arr, raw_trades, resolved = self._resolve_stop_and_build_loop(
+            stop, close, entries.values,
             high_np, low_np, open_np,
-            tradable_np, last_tradable_idx, formula_exit_np,
+            tradable_np, last_tradable_idx,
+            ladder_profits, ladder_ratios, len(lv),
+            formula_exit_np, formula_exit_ratio,
         )
         _progress.report("loop", 1.0, "回测完成")  # 2026-07-26
         # 2026-07-21: 期末未平仓持仓快照
@@ -603,8 +604,9 @@ class BacktestEngine:
                     cost_enabled=cost.get("enabled", True),
                     cost_threshold=float(cost.get("threshold", -0.12)),
                     trailing_enabled=trail.get("enabled", True),
-                    trailing_activation=float(trailing_activation),
-                    trailing_drawdown=float(trailing_drawdown),
+                    # 2026-08-01 批次 3b C2: 缺省后值取自共享段 resolved (口径一致)
+                    trailing_activation=resolved["trailing_activation"],
+                    trailing_drawdown=resolved["trailing_drawdown"],
                     ladder_enabled=ladder.get("enabled", True),
                     ladder_profits=tuple(float(p) for p in ladder_profits),
                     initial_capital=float(self.initial_capital),
@@ -678,7 +680,7 @@ class BacktestEngine:
         已提供的数据, 不自动造数据。
 
         - filter_limit_up: 默认 True（40 调用方现状, 跑涨停过滤）; 收编脚本传 False
-          复现旧直调 _simulate_core_v3 口径。
+          复现旧直调核心循环口径 (2026-08-01 前为直调 _simulate_core_v3, 壳已退役)。
         - open_np/tradable_np/last_tradable_idx/formula_exit_np: 能力数据, None=off。
         - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np（不从 close 自动建,
           防 ffill 调用方误触发退市）。
@@ -688,27 +690,8 @@ class BacktestEngine:
         (计划书 2026-07-18 LOW-3): 批量优化走预取数据, 缺 5m 的股-天照旧丢信号。
         """
         stop = stop_config or {}
-        cost = stop.get("cost_stop", {})
-        trail = stop.get("trailing_stop", {})
-        trailing_activation = trail.get("activation")
-        if trailing_activation is None:
-            trailing_activation = DEFAULT_TRAILING_ACTIVATION
-        trailing_drawdown = trail.get("drawdown")
-        if trailing_drawdown is None:
-            trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
-        time_s = stop.get("time_stop", {})
-        cond_t = stop.get("cond_time_stop", {})
-        first_day = stop.get("first_day", {})
-        # 2026-07-05: 阶梯止盈/成本止损优先级 (ladder_tp_first / trailing_first)
-        priority = str(stop.get("priority", DEFAULT_PRIORITY))
-        if priority not in VALID_PRIORITIES:
-            logger.warning(
-                "stop_config.priority=%r 非法, 回退 %s (合法: %s)",
-                priority, DEFAULT_PRIORITY, sorted(VALID_PRIORITIES),
-            )
-            priority = DEFAULT_PRIORITY
-        ladder_tp_first = (priority == "ladder_tp_first")
-        trailing_first = (priority == "trailing_first")
+        # 2026-08-01 批次 3b C2: priority 校验/trailing 缺省/时间缩放/ATR/build+run
+        # 已并入 _resolve_stop_and_build_loop (run/run_cached 共享, 防漂移)。
 
         # 2026-07-06: bug fix - v3 优化脚本发现 close 是 tuple, 详情见 optimize_quantqq_v3.py 失败堆栈
         # DEBUG 输出 close 实际类型 + 调用栈
@@ -719,12 +702,7 @@ class BacktestEngine:
                 close, entries = close[0], close[1]
                 logger.debug("已自动 unpack tuple → (close, entries)")
 
-        mhd = int(time_s.get("max_hold_days", 20))
         bpday = self.bars_per_day
-        mhd_scaled = mhd * bpday
-        ctd = int(cond_t.get("days", 7))
-        ctd_scaled = ctd * bpday
-        fd_bars = bpday - 1 if bpday > 1 else 1
 
         # 候选 A 阶段 1: capabilities 三开关 (默认全开), gate 已提供的能力数据。
         # 语义: 开关 on + 数据 None → 能力 off (=旧行为); 开关 off → 强制 None。
@@ -751,47 +729,16 @@ class BacktestEngine:
         # ladder 隐含约定: ladder_profits 应升序 (调用方责任); 不升序 warning 不重排
         if n_ladder > 1 and not bool(np.all(np.diff(ladder_profits[:n_ladder]) >= 0)):
             logger.warning("ladder_profits 非升序, 阶梯触发可能不符预期 (调用方应预排序)")
-        # ATR 波动率止损: stop_config["atr_stop"], 内部从 high/low/close 预算矩阵
-        atr_cfg = stop.get("atr_stop", {})
-        atr_enabled = bool(atr_cfg.get("enabled", False))
-        atr_matrix = None
-        atr_multiplier = float(atr_cfg.get("multiplier", 3.0))
-        atr_period = int(atr_cfg.get("period", 14))
-        if atr_enabled:
-            if high_np is not None and low_np is not None:
-                atr_matrix = _compute_atr_matrix(
-                    high_np, low_np, close.values.astype(np.float64), period=atr_period)
-            else:
-                logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
-                atr_enabled = False
 
         entries = self._filter_limit_up(entries, close) if filter_limit_up else entries
-        loop = build_backtest_loop(
-            float(self.initial_capital), float(self.eff_commission),
-            float(self.min_buy_amount), float(self.max_buy_amount),
-            int(self.lot_size), int(self.min_lots),
-            cost.get("enabled", True), float(cost.get("threshold", -0.12)),
-            trail.get("enabled", True), float(trailing_activation),
-            float(trailing_drawdown),
-            stop.get("ladder_tp", {}).get("enabled", True), ladder_profits, ladder_ratios, n_ladder,
-            time_s.get("enabled", True), mhd_scaled,
-            cond_t.get("enabled", False), ctd_scaled, float(cond_t.get("profit", 0.01)),
-            first_day_enabled=first_day.get("enabled", False),
-            first_day_target=float(first_day.get("target", 0.03)),
-            bpday=bpday, slippage=float(self.eff_slippage), stamp_tax=float(self.eff_stamp_tax),
-            max_position_pct=float(self.max_position_pct),
-            ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
-            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
-            formula_exit_lag_bars=formula_exit_lag_bars,
-            atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
-            trailing_gap_protection=bool(trail.get("gap_protection", False)),
-            sell_cooldown_bars=self.sell_cooldown_days * bpday,
-        )
-        self._last_loop = loop
-        equity_arr, raw_trades = loop.run(
-            close.values.astype(np.float64), entries.values,
+        # 2026-08-01 批次 3b C2: 共享段 (priority/trailing 缺省/缩放/ATR/build+run)
+        equity_arr, raw_trades, _ = self._resolve_stop_and_build_loop(
+            stop, close, entries.values,
             high_np, low_np, open_np,
-            tradable_np, last_tradable_idx, formula_exit_np,
+            tradable_np, last_tradable_idx,
+            ladder_profits, ladder_ratios, n_ladder,
+            formula_exit_np, formula_exit_ratio,
+            formula_exit_lag_bars=formula_exit_lag_bars,
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
@@ -879,9 +826,6 @@ class BacktestEngine:
             "exit_reason": [reason_map.get(v, "换股卖出") for v in raw[:, 8]],
             "hold_days": list(hold),
         })
-
-    def _fetch_prices(self, codes, start, end):
-        return DataFetcher.get_close_price(codes, start, end, dividend_type="front", period=self.period, use_cache=self.use_kline_cache)
 
     def _ensure_index(self, df):
         if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)

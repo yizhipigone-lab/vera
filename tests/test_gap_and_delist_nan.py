@@ -9,7 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from backtest.engine import BacktestEngine, _simulate_core_v3
+from backtest.engine import BacktestEngine
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
 
 
 def _engine():
@@ -70,7 +72,7 @@ def test_delist_with_nan_price_exits_at_entry_price():
     entry[0, 0] = True
     tradable = np.array([[True, True], [True, True], [False, True], [False, True]])
     last_tradable_idx = np.array([1, 3])  # 600001 最后可交易 bar=1
-    eq, raw = _simulate_core_v3(
+    eq, raw = run_loop_direct(
         price, entry, 100000.0, 0.0, 2000.0, 20000.0, 100, 1,
         False, -0.12, False, 0.05, 0.03, False, np.array([0.06]), np.array([0.5]), 1,
         False, 20, False, 7, 0.01, False, 0.03, 1, None, None, 1, 0.0, 0.0,
