@@ -16,12 +16,12 @@ tools 默认全开 (L1/L2 接缝在 selector 内部, tools 自动受益)。
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import time
 from pathlib import Path
 
+# 2026-08-01 批次2: 公共原语收编 (B1 pid+uuid tmp 修并发竞态, B2 去样板)
+from utils import parquet_cache as pcu
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,8 +43,9 @@ def configure(enabled=None, force_refresh=None) -> None:
 
 
 def default_cache_root() -> Path:
-    """项目根 data/universe_cache。"""
-    return Path(__file__).resolve().parent.parent / "data" / "universe_cache"
+    """项目根 data/universe_cache (可经 pcu.set_root 覆盖, conftest 隔离)。"""
+    return pcu.get_root("universe_cache",
+                        Path(__file__).resolve().parent.parent / "data" / "universe_cache")
 
 
 def build_key(universe_cfg: dict, today_str: str) -> str:
@@ -52,20 +53,13 @@ def build_key(universe_cfg: dict, today_str: str) -> str:
     from selection.selection_cache import _normalize_universe
     uni_json = json.dumps(_normalize_universe(universe_cfg),
                           sort_keys=True, ensure_ascii=False, default=str)
-    h = hashlib.blake2b(digest_size=16)
-    for part in (uni_json, today_str, SCHEMA_VERSION):
-        h.update(str(part).encode("utf-8"))
-        h.update(b"\x00")
-    return h.hexdigest()
+    # 2026-08-01: 哈希拼接收编 pcu.blake2b_key, 与旧实现逐字节一致 (文件名不变)
+    return pcu.blake2b_key(uni_json, today_str, SCHEMA_VERSION)
 
 
 def pool_hash(stock_list) -> str:
     """池内容哈希 (L2 组合 key 用; L1 命中后算它零成本, 比按日失效更精确)。"""
-    h = hashlib.blake2b(digest_size=16)
-    for c in sorted(str(x) for x in stock_list):
-        h.update(c.encode("utf-8"))
-        h.update(b"\x00")
-    return h.hexdigest()
+    return pcu.blake2b_key(*sorted(str(x) for x in stock_list))
 
 
 def load(cache_root, key: str):
@@ -97,21 +91,14 @@ def save(cache_root, key: str, stocks: list, keep: int = KEEP_DEFAULT) -> None:
         root = Path(cache_root)
         root.mkdir(parents=True, exist_ok=True)
         pfile = root / f"{key}.json"
-        tmp = pfile.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(list(stocks), ensure_ascii=False), encoding="utf-8")
-        last_err = None
-        for _attempt in range(3):
-            try:
-                os.replace(tmp, pfile)
-                break
-            except (PermissionError, FileNotFoundError) as e:
-                last_err = e
-                time.sleep(0.5 * (_attempt + 1))
-                if isinstance(e, FileNotFoundError) and not tmp.exists():
-                    tmp.write_text(json.dumps(list(stocks), ensure_ascii=False),
-                                   encoding="utf-8")
-        else:
-            raise last_err
+        # 2026-08-01 B1: pid+uuid 独立 tmp (原固定 .tmp 名并发写同 key 互踩
+        # → FileNotFoundError, kline_cache 07-23 同类事故); 退避重试收编原语
+        tmp = pcu.tmp_path_for(pfile)
+        payload = json.dumps(list(stocks), ensure_ascii=False)
+        tmp.write_text(payload, encoding="utf-8")
+        pcu.atomic_replace(
+            tmp, pfile,
+            rewrite=lambda t: t.write_text(payload, encoding="utf-8"))
         logger.info("池缓存已保存: %s (%d 只)", key[:12], len(stocks))
         _prune(root, keep)
     except Exception as e:
@@ -120,20 +107,6 @@ def save(cache_root, key: str, stocks: list, keep: int = KEEP_DEFAULT) -> None:
 
 def _prune(root: Path, keep: int) -> None:
     """LRU: 只保留最近 keep 份 (按 json mtime)。"""
-    entries = list(root.glob("*.json"))
-    if len(entries) <= keep:
-        return
-
-    def _mtime(f):
-        try:
-            return f.stat().st_mtime
-        except OSError:
-            return 0.0
-
-    entries.sort(key=_mtime)
-    for f in entries[: len(entries) - keep]:
-        logger.info("池缓存 LRU 清理: %s", f.name[:12])
-        try:
-            f.unlink()
-        except OSError:
-            pass
+    pcu.prune_lru(root, keep, "*.json",
+                  on_prune=lambda f: logger.info("池缓存 LRU 清理: %s",
+                                                 f.name[:12]))

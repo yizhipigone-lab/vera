@@ -15,8 +15,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-# TDX 插件路径 (通达信 PYPlugins\user 目录)
-_TDX_PATH = r"E:\NEW_TDX\PYPlugins\user"
+# TDX 插件路径 (通达信 PYPlugins\user 目录; 单一真相: core/tdx_path.py)
+from core.tdx_path import tdx_plugins_user
+
+_TDX_PATH = tdx_plugins_user()
 
 
 @pytest.fixture(scope="session")
@@ -102,25 +104,22 @@ def _reset_all_connectors():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_caches(tmp_path, monkeypatch):
+def _isolate_caches(tmp_path):
     """缓存根目录隔离 (2026-07-27 缓存投毒事件)。
 
     事件: test_sector_selection 把 mock 的 3 股池经 selector 接缝写入真实
     data/universe_cache, key 与用户 QUANTQQ 配置完全相同 → 用户回测命中
     毒缓存, 300 只池变 3 只, 1.5 年只有 21 笔交易。
 
-    四个缓存模块的 default_cache_root 统一指到 per-test tmp:
+    2026-08-01 批次2: 改经 utils.parquet_cache 注册表一行式覆盖, 不再
+    import/monkeypatch 四个缓存模块。四个缓存根统一指到 per-test tmp:
     测试自己的缓存行为不受影响 (各 cache 测试本来就显式传 root 或自行 patch),
     但任何"忘了隔离"的测试从此不可能再污染生产缓存。
     """
-    from backtest import matrix_cache
-    from selection import selection_cache, signal_day_cache, universe_cache
-    for mod, name in ((universe_cache, "universe_cache"),
-                      (selection_cache, "selection_cache"),
-                      (signal_day_cache, "signal_day_cache"),
-                      (matrix_cache, "matrix_cache")):
-        d = tmp_path / name
-        monkeypatch.setattr(mod, "default_cache_root", lambda _d=d: _d)
+    from utils import parquet_cache as pcu
+    for name in ("universe_cache", "selection_cache",
+                 "signal_day_cache", "matrix_cache"):
+        pcu.set_root(name, tmp_path / name)
     yield
 
 

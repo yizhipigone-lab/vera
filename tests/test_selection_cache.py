@@ -73,7 +73,10 @@ def cache_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def pipe(tmp_path, monkeypatch, cache_dir):
-    """最小 Pipeline 实例: 替身选股 + tmp 输出目录。"""
+    """最小 Pipeline 实例: 替身选股 + tmp 输出目录。
+
+    period=5m: 批次6 D4 起 L0 对 1d 收缩 (1d 走 L2), L0 行为测试用 5m。
+    """
     _FakeSelector.calls = 0
     monkeypatch.setattr(pipeline_module, "StockSelector", _FakeSelector)
     cfg_file = tmp_path / "strategy.yaml"
@@ -81,7 +84,7 @@ def pipe(tmp_path, monkeypatch, cache_dir):
         "strategy:\n  name: TESTSEL\n"
         "selection:\n  formula_name: FOO\n  formula_arg: '3'\n"
         "  universe:\n    type: '23'\n    exclude_st: true\n"
-        "  period: 1d\n  dividend_type: 1\n"
+        "  period: 5m\n  dividend_type: 1\n"
         "time_range:\n  start: '20240101'\n  end: '20241231'\n",
         encoding="utf-8")
     p = Pipeline(str(cfg_file))
@@ -230,9 +233,26 @@ class TestPipelineSeam:
             formula_name="FOO", formula_arg="3",
             universe_cfg=pipe.config["selection"]["universe"],
             start_time="20240101", end_time="20241231",
-            period="1d", dividend_type=1,
+            period="5m", dividend_type=1,
             today_str=datetime.now().strftime("%Y%m%d"))
         assert (cache_dir / f"{expected}.parquet").exists()
+
+    def test_l0_skipped_for_1d(self, pipe, cache_dir):
+        """批次6 D4: period=1d 时 L0 不读不写 (1d 由 L2 接管, 消双写)。"""
+        pipe.config["selection"]["period"] = "1d"
+        pipe.step1_select()
+        pipe.step1_select()
+        assert _FakeSelector.calls == 2  # L0 未命中: 每次都直跑
+        assert list(cache_dir.glob("*.parquet")) == []  # L0 未落盘
+
+    def test_l0_covers_1d_when_l2_disabled(self, pipe, cache_dir):
+        """批次6 D4 例外: L2 配置关闭时 1d 仍走 L0, 不留无缓存空档。"""
+        pipe.config["selection"]["period"] = "1d"
+        pipe.config["selection_cache"] = {"enabled": True, "l2_enabled": False}
+        pipe.step1_select()
+        pipe.step1_select()
+        assert _FakeSelector.calls == 1  # L0 命中
+        assert len(list(cache_dir.glob("*.parquet"))) == 1
 
     def test_hit_feeds_matrix_cache_build_key(self, pipe):
         """回归: 命中产物能正常进 matrix_cache.build_key (两层缓存叠加)。"""

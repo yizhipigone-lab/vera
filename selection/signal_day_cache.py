@@ -22,9 +22,7 @@
 """
 from __future__ import annotations
 
-import hashlib
 import os
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +30,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+# 2026-08-01 批次2: 公共原语收编 (B1 pid+uuid tmp 修并发竞态, B2 去样板)
+from utils import parquet_cache as pcu
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -62,18 +62,16 @@ def configure(enabled=None, force_refresh=None, max_age_days=None,
 
 
 def default_cache_root() -> Path:
-    """项目根 data/signal_day_cache。"""
-    return Path(__file__).resolve().parent.parent / "data" / "signal_day_cache"
+    """项目根 data/signal_day_cache (可经 pcu.set_root 覆盖, conftest 隔离)。"""
+    return pcu.get_root("signal_day_cache",
+                        Path(__file__).resolve().parent.parent / "data" / "signal_day_cache")
 
 
 def _combo_key(formula_name: str, formula_arg: str, pool_h: str,
                period: str, dividend_type) -> str:
-    h = hashlib.blake2b(digest_size=16)
-    for part in (formula_name, formula_arg or "", pool_h, period,
-                 dividend_type, SCHEMA_VERSION):
-        h.update(str(part).encode("utf-8"))
-        h.update(b"\x00")
-    return h.hexdigest()
+    # 2026-08-01: 哈希拼接收编 pcu.blake2b_key, 与旧实现逐字节一致 (目录名不变)
+    return pcu.blake2b_key(formula_name, formula_arg or "", pool_h, period,
+                           dividend_type, SCHEMA_VERSION)
 
 
 def _day_path(root: Path, combo: str, ds: str) -> Path:
@@ -123,22 +121,14 @@ def _save_day(root: Path, combo: str, ds: str, df: pd.DataFrame) -> None:
     try:
         pfile = _day_path(root, combo, ds)
         pfile.parent.mkdir(parents=True, exist_ok=True)
-        tmp = pfile.with_suffix(".parquet.tmp")
+        # 2026-08-01 B1: pid+uuid 独立 tmp (原固定 .tmp 名并发写同 key 互踩
+        # → FileNotFoundError, kline_cache 07-23 同类事故); 退避重试收编原语
+        tmp = pcu.tmp_path_for(pfile)
         table = pa.Table.from_pandas(df.reset_index(drop=True),
                                      preserve_index=False)
         pq.write_table(table, tmp)
-        last_err = None
-        for _attempt in range(3):
-            try:
-                os.replace(tmp, pfile)
-                break
-            except (PermissionError, FileNotFoundError) as e:
-                last_err = e
-                time.sleep(0.5 * (_attempt + 1))
-                if isinstance(e, FileNotFoundError) and not tmp.exists():
-                    pq.write_table(table, tmp)
-        else:
-            raise last_err
+        pcu.atomic_replace(tmp, pfile,
+                           rewrite=lambda t: pq.write_table(table, t))
     except Exception as e:
         logger.warning("L2 日缓存保存失败 (%s/%s, 不中断选股): %s",
                        combo[:8], ds, e)
@@ -147,23 +137,9 @@ def _save_day(root: Path, combo: str, ds: str, df: pd.DataFrame) -> None:
 def _prune(root: Path, keep: int) -> None:
     """全局 LRU: 文件数超上限, 按 mtime 最老先清。"""
     try:
-        entries = list(root.glob("*/*.parquet"))
-        if len(entries) <= keep:
-            return
-
-        def _mtime(f):
-            try:
-                return f.stat().st_mtime
-            except OSError:
-                return 0.0
-
-        entries.sort(key=_mtime)
-        for f in entries[: len(entries) - keep]:
-            logger.info("L2 缓存 LRU 清理: %s/%s", f.parent.name[:8], f.name)
-            try:
-                f.unlink()
-            except OSError:
-                pass
+        pcu.prune_lru(root, keep, "*/*.parquet",
+                      on_prune=lambda f: logger.info("L2 缓存 LRU 清理: %s/%s",
+                                                     f.parent.name[:8], f.name))
     except Exception as e:
         logger.warning("L2 LRU 清理异常 (不影响选股): %s", e)
 

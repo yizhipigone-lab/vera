@@ -34,7 +34,11 @@ def _env(tmp_path, monkeypatch):
         staticmethod(lambda start_time, end_time, market="SH":
                      list(pd.bdate_range(start_time, end_time))))
     saved = (sdc.ENABLED, sdc.FORCE_REFRESH, sdc.MAX_AGE_DAYS, sdc.FRESH_DAYS)
-    sdc.configure(enabled=True, force_refresh=False, max_age_days=60, fresh_days=2)
+    # 2026-08-01: max_age_days 放大到永不 stale — 用例用固定历史区间
+    # (20260601~26), 真实日期跨过 60 天边界后 "距今 >60 天" 被判 stale 重算,
+    # 与用例意图 (测命中/合并) 无关却批量假失败; stale 语义由
+    # test_stale_days_recomputed 显式 configure(max_age_days=30) 单独覆盖
+    sdc.configure(enabled=True, force_refresh=False, max_age_days=10000, fresh_days=2)
     yield tmp_path / "sdc"
     sdc.configure(enabled=saved[0], force_refresh=saved[1],
                   max_age_days=saved[2], fresh_days=saved[3])

@@ -19,16 +19,16 @@ resolve_universe ~17s + 公式分批 ~16s), 而 selector/formula_runner 零缓�
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import time
 from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+# 2026-08-01 批次2: 公共原语收编 (B1 pid+uuid tmp 修并发竞态, B2 去样板)
+from utils import parquet_cache as pcu
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,8 +38,10 @@ KEEP_DEFAULT = 10
 
 
 def default_cache_root() -> Path:
-    """项目根 data/selection_cache (照 data/matrix_cache, data/kline_cache)。"""
-    return Path(__file__).resolve().parent.parent / "data" / "selection_cache"
+    """项目根 data/selection_cache (照 data/matrix_cache, data/kline_cache)。
+    可经 pcu.set_root 覆盖 (conftest 一行式隔离, 2026-08-01)。"""
+    return pcu.get_root("selection_cache",
+                        Path(__file__).resolve().parent.parent / "data" / "selection_cache")
 
 
 def _normalize_universe(cfg: dict) -> dict:
@@ -69,13 +71,10 @@ def build_key(formula_name: str, formula_arg: str, universe_cfg: dict,
     """
     uni_json = json.dumps(_normalize_universe(universe_cfg),
                           sort_keys=True, ensure_ascii=False, default=str)
-    h = hashlib.blake2b(digest_size=16)
-    for part in (formula_name, formula_arg or "", uni_json,
-                 start_time, end_time, period, dividend_type,
-                 today_str, SCHEMA_VERSION):
-        h.update(str(part).encode("utf-8"))
-        h.update(b"\x00")  # 字段分隔, 防拼接歧义
-    return h.hexdigest()
+    # 2026-08-01: 哈希拼接收编 pcu.blake2b_key, 与旧实现逐字节一致 (文件名不变)
+    return pcu.blake2b_key(formula_name, formula_arg or "", uni_json,
+                           start_time, end_time, period, dividend_type,
+                           today_str, SCHEMA_VERSION)
 
 
 def _parquet_path(cache_root, key: str) -> Path:
@@ -120,25 +119,14 @@ def save(cache_root, key: str, selections: pd.DataFrame,
         root = Path(cache_root)
         root.mkdir(parents=True, exist_ok=True)
         pfile = _parquet_path(root, key)
-        tmp = pfile.with_suffix(".parquet.tmp")
+        # 2026-08-01 B1: pid+uuid 独立 tmp (原固定 .tmp 名并发写同 key 互踩
+        # → FileNotFoundError, kline_cache 07-23 同类事故); 退避重试收编原语
+        tmp = pcu.tmp_path_for(pfile)
         table = pa.Table.from_pandas(selections.reset_index(drop=True),
                                      preserve_index=False)
         pq.write_table(table, tmp)
-        # 照 kline_cache._write_merge (2026-07-21/23): Windows 杀软/索引器短暂锁
-        # 文件 → PermissionError; 并发写同 key 时 tmp 被另一进程 replace 移走 →
-        # FileNotFoundError (重写 tmp 再试)。两种异常退避重试 3 次。
-        last_err = None
-        for _attempt in range(3):
-            try:
-                os.replace(tmp, pfile)
-                break
-            except (PermissionError, FileNotFoundError) as e:
-                last_err = e
-                time.sleep(0.5 * (_attempt + 1))
-                if isinstance(e, FileNotFoundError) and not tmp.exists():
-                    pq.write_table(table, tmp)
-        else:
-            raise last_err
+        pcu.atomic_replace(tmp, pfile,
+                           rewrite=lambda t: pq.write_table(table, t))
         logger.info("选股缓存已保存: %s (%d 条)", key[:12], len(selections))
         _prune(root, keep)
     except Exception as e:
@@ -147,20 +135,6 @@ def save(cache_root, key: str, selections: pd.DataFrame,
 
 def _prune(root: Path, keep: int) -> None:
     """LRU: 只保留最近 keep 份 (按 parquet mtime)。"""
-    entries = [f for f in root.glob("*.parquet")]
-    if len(entries) <= keep:
-        return
-
-    def _mtime(f):
-        try:
-            return f.stat().st_mtime
-        except OSError:
-            return 0.0
-
-    entries.sort(key=_mtime)
-    for f in entries[: len(entries) - keep]:
-        logger.info("选股缓存 LRU 清理: %s", f.name[:12])
-        try:
-            f.unlink()
-        except OSError:
-            pass
+    pcu.prune_lru(root, keep, "*.parquet",
+                  on_prune=lambda f: logger.info("选股缓存 LRU 清理: %s",
+                                                 f.name[:12]))

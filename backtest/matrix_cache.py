@@ -20,16 +20,16 @@ high/low/open/tradable/last_tradable_idx + idx/cols) 按 key 落盘 .npy;
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+# 2026-08-01 批次2: 公共原语收编 (B2 去样板; B1 pid+uuid tmp 顺带覆盖 tmp 目录名)
+from utils import parquet_cache as pcu
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,8 +43,9 @@ _ARRAY_FIELDS = ("close", "entries", "high", "low", "open",
 
 
 def default_cache_root() -> Path:
-    """项目根 data/matrix_cache。"""
-    return Path(__file__).resolve().parent.parent / "data" / "matrix_cache"
+    """项目根 data/matrix_cache (可经 pcu.set_root 覆盖, conftest 隔离)。"""
+    return pcu.get_root("matrix_cache",
+                        Path(__file__).resolve().parent.parent / "data" / "matrix_cache")
 
 
 def _kline_cache_dir() -> Path:
@@ -86,15 +87,12 @@ def build_key(selections: pd.DataFrame, start_time: str, end_time: str,
     sel["select_date"] = pd.to_datetime(sel["select_date"])
     sel = sel.sort_values(["stock_code", "select_date"]).reset_index(drop=True)
     row_hashes = pd.util.hash_pandas_object(sel, index=False).values
-    h = hashlib.blake2b(row_hashes.tobytes(), digest_size=16)
-    h.update(str(start_time).encode())
-    h.update(str(end_time).encode())
-    h.update(str(period).encode())
-    h.update(str(win_td).encode())
-    h.update(str(bool(use_kline_cache)).encode())
-    h.update(str(engine_version).encode())
-    h.update(str(SCHEMA_VERSION).encode())
-    return h.hexdigest()
+    # 2026-08-01: 哈希拼接收编 pcu.blake2b_key, 与旧实现逐字节一致
+    # (seed=行哈希字节流, sep=None 复刻原无分隔拼接 — 目录名不变)
+    return pcu.blake2b_key(start_time, end_time, period, win_td,
+                           bool(use_kline_cache), engine_version,
+                           SCHEMA_VERSION,
+                           seed=row_hashes.tobytes(), sep=None)
 
 
 def load(cache_root, key: str, engine_version: str):
@@ -158,7 +156,9 @@ def save(cache_root, key: str, engine_version: str, prep: dict,
     try:
         root = Path(cache_root)
         entry = root / key
-        tmp = root / f".{key}.tmp"
+        # 2026-08-01 B1: tmp 目录名带 pid+uuid (原固定 .{key}.tmp 并发同 key 互踩);
+        # 隐藏名前缀 "." 保持 _prune 忽略中途残留 tmp 的语义
+        tmp = pcu.tmp_path_for(root / f".{key}")
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir(parents=True, exist_ok=True)
@@ -186,7 +186,7 @@ def save(cache_root, key: str, engine_version: str, prep: dict,
         (tmp / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         shutil.rmtree(entry, ignore_errors=True)
-        os.replace(tmp, entry)
+        pcu.atomic_replace(tmp, entry)  # 目录内容重建代价高, 不带 rewrite 回调
         logger.info("矩阵缓存已保存: %s (%d 股 × %d bar)",
                     key[:12], len(meta["cols"]), len(idx))
         _prune(root, keep)
@@ -195,18 +195,15 @@ def save(cache_root, key: str, engine_version: str, prep: dict,
 
 
 def _prune(root: Path, keep: int) -> None:
-    """LRU: 只保留最近 keep 份 (按 meta.json mtime)。"""
-    entries = [d for d in root.iterdir()
-               if d.is_dir() and not d.name.startswith(".")]
-    if len(entries) <= keep:
-        return
-    def _mtime(d):
+    """LRU: 只保留最近 keep 份 (按 meta.json mtime; 隐藏 tmp 目录不计入)。"""
+    def _meta_mtime(d):
         try:
             return (d / "meta.json").stat().st_mtime
         except OSError:
             return 0.0
-    entries.sort(key=_mtime)
-    import shutil
-    for d in entries[: len(entries) - keep]:
-        logger.info("矩阵缓存 LRU 清理: %s", d.name[:12])
-        shutil.rmtree(d, ignore_errors=True)
+
+    pcu.prune_lru(root, keep, "*",
+                  pred=lambda d: d.is_dir() and not d.name.startswith("."),
+                  mtime=_meta_mtime,
+                  on_prune=lambda d: logger.info("矩阵缓存 LRU 清理: %s",
+                                                 d.name[:12]))

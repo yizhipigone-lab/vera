@@ -23,6 +23,7 @@ import pyarrow.parquet as pq
 
 from utils.logger import get_logger
 from utils.code_normalizer import normalize_list
+from utils import parquet_cache as pcu
 from core.dividend_type import to_tdx_str
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)。批量脚本从不置位, 行为不变。
 from core.stop_flag import raise_if_stopped
@@ -129,9 +130,13 @@ class KlineCache:
             return set(df["date"].astype(str).tolist())
         dates = [str(d) for d in self.calendar_fetcher()]
         df = pd.DataFrame({"date": dates})
-        tmp = p.with_suffix(".tmp")
-        pq.write_table(pa.Table.from_pandas(df), tmp)
-        os.replace(tmp, p)
+        # 2026-08-01: 收编 pcu 原语 (原固定 .tmp 名是最后一个没收编点) —
+        # pid+uuid 独立 tmp + Windows 退避 atomic replace, 同 _write_merge 范式
+        tmp = pcu.tmp_path_for(p)
+        table = pa.Table.from_pandas(df)
+        pq.write_table(table, tmp)
+        pcu.atomic_replace(tmp, p,
+                           rewrite=lambda t: pq.write_table(table, t))
         return set(dates)
 
     # ───────────────────── public: get ─────────────────────
