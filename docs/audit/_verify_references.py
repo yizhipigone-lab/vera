@@ -19,8 +19,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
-
+from typing import List, Optional
 
 # 匹配 [path/to/file.py:42] 或 [path/to/file.py:42-51]
 # 支持反引号包围 (报告里偶尔出现 `[file.py:42]`)
