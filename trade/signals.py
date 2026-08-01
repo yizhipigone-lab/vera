@@ -13,13 +13,12 @@ from __future__ import annotations
 import sys
 import time
 
+from core.tdx_path import tdx_plugins_user
 from utils.logger import get_logger
 
 _logger = get_logger("trade.signals")
 
 # TDX 插件路径 (单一真相: core/tdx_path.py, 支持 TDX_HOME 环境变量)
-from core.tdx_path import tdx_plugins_user
-
 _TDX_PATH = tdx_plugins_user()
 
 
