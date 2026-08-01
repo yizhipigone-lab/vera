@@ -14,9 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest._constants import PERIODS_PER_YEAR, BARS_PER_DAY
+from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR
 from backtest.benchmark import BenchmarkComparator
-
 
 # ---------- P1-4 / F-H6 关键回归保护 ----------
 

@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
-from server import app, lab_status, pipeline_status  # noqa: E402
+
+from server import app, lab_status  # noqa: E402
 
 
 @pytest.fixture

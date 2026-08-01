@@ -10,11 +10,20 @@ import numpy as np
 import pytest
 
 from backtest.loop import (
-    BacktestParams, Context, Position, PositionBook, TradeBuffer, Bar,
-    TradeColumns, assert_state_dtype,
-    CostStopStrategy, LadderTpStrategy, TrailingStrategy,
-    TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
     AtrStopStrategy,
+    Bar,
+    CondTimeStrategy,
+    Context,
+    CostStopStrategy,
+    FirstDayStrategy,
+    LadderTpStrategy,
+    Position,
+    PositionBook,
+    TimeStopStrategy,
+    TradeBuffer,
+    TradeColumns,
+    TrailingStrategy,
+    assert_state_dtype,
 )
 
 

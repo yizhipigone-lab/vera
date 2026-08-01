@@ -21,6 +21,6 @@ def test_connector_uses_tdx_home(monkeypatch):
     monkeypatch.delenv("TDX_HOME", raising=False)
     from core import connector
 
-    assert connector.TQCENTER_PATH == os.path.join(
+    assert os.path.join(
         tdx_home(), "PYPlugins", "user", "tqcenter.py"
-    )
+    ) == connector.TQCENTER_PATH

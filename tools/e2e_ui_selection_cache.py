@@ -4,7 +4,9 @@ v3: 完成判定 = statusText 回到 '就绪' 且日志出现 "回测完成: N�
 第二轮点击前等待按钮回到运行模式 (防误触停止)。两轮到同一全新区间:
 第一轮 miss (慢), 第二轮 hit (应显著快), 交易数一致。
 """
-import sys, time, json
+import json
+import sys
+import time
 
 from playwright.sync_api import sync_playwright
 

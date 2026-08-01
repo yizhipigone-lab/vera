@@ -12,10 +12,10 @@
     python tools/formula_lab.py --formula QUANTQQ --tag 20250719_20260718 --tag2 20230719_20260718
     python tools/formula_lab.py --formula UPN --tag 20250719_20260718   # 单窗口降级(报告标"待复核")
 """
-import sys
-import os
 import argparse
+import os
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path

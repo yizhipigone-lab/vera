@@ -31,8 +31,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backtest.engine import BacktestEngine, ENGINE_VERSION
+from backtest.engine import ENGINE_VERSION, BacktestEngine
 from backtest.loop import build_backtest_loop
+
 # 复用既有固定种子合成数据生成器 (不依赖真实行情缓存 — 真实数据会漂移)
 from tests.test_loop_parity import make_crafted_dual_trigger, make_synthetic
 

@@ -10,9 +10,9 @@ tushare 事件因子接口可得性探测(腿 B 数据源摸底 —— "能拿�
 
 token 来源:环境变量 TUSHARE_TOKEN 或项目根 .env
 """
+import json
 import os
 import sys
-import json
 from pathlib import Path
 
 if sys.platform == "win32":

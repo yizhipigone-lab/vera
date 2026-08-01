@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.lab_runner import LabQueue, FORMULA_RE  # noqa: E402
+from core.lab_runner import FORMULA_RE, LabQueue  # noqa: E402
 
 
 def _wait(task_id, q, timeout=5):

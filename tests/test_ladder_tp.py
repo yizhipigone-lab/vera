@@ -14,10 +14,9 @@ from __future__ import annotations
 import pytest
 
 from backtest.ladder_tp import (
-    compute_ladder_trigger,
     compute_ladder_sell_ratio,
+    compute_ladder_trigger,
 )
-
 
 # 阶梯: 6% 卖 30%, 15% 卖 30%  (两档)
 TWO_LVL_PROFITS = (0.06, 0.15)

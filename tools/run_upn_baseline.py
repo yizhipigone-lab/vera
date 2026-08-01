@@ -13,9 +13,9 @@
     {label}_selections_<tag>.parquet
     {label}_trades_<tag>.parquet
 """
-import sys
-import os
 import argparse
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,10 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE_DIR = ROOT / "data" / "baseline"
 BASELINE_DIR.mkdir(parents=True, exist_ok=True)
 
-from utils.config_loader import ConfigLoader
-from selection.selector import StockSelector
 from backtest.engine import BacktestEngine
 from backtest.stop_config import load_stop_config
+from selection.selector import StockSelector
+from utils.config_loader import ConfigLoader
 
 
 def main() -> None:

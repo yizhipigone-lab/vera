@@ -18,18 +18,19 @@ engine.run() / engine.run_cached() 参数契约回归测试
   3. engine.py 源码扫描: 共享段调 build_backtest_loop 时
      slippage/stamp_tax 必须用 keyword 形式 (防 'multiple values' bug 回归)
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import inspect
 
-import backtest.engine as engine_module
-import backtest.stop_config as stop_config_module
 import numpy as np
 import pandas as pd
 import pytest
 
+import backtest.engine as engine_module
+import backtest.stop_config as stop_config_module
 from backtest.engine import BacktestEngine
 from backtest.loop import build_backtest_loop
 from backtest.stop_config import load_stop_config

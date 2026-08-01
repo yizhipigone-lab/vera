@@ -10,10 +10,19 @@ import numpy as np
 import pytest
 
 from backtest.loop import (
-    Context, Position, Bar, Priority, ExitDispatcher, PRE_DISPATCH_STRATEGIES,
-    CostStopStrategy, LadderTpStrategy, TrailingStrategy,
-    TimeStopStrategy, CondTimeStrategy, FirstDayStrategy,
+    PRE_DISPATCH_STRATEGIES,
+    Bar,
+    CondTimeStrategy,
+    Context,
+    CostStopStrategy,
+    ExitDispatcher,
+    FirstDayStrategy,
     FormulaSellStrategy,
+    LadderTpStrategy,
+    Position,
+    Priority,
+    TimeStopStrategy,
+    TrailingStrategy,
 )
 
 

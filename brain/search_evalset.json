@@ -1,0 +1,62 @@
+[
+  {
+    "id": "s01",
+    "q": "信邦制药 002390 ",
+    "expect_path": "company/company_002390.md"
+  },
+  {
+    "id": "s02",
+    "q": "韶能股份 000601 ",
+    "expect_path": "company/company_000601.md"
+  },
+  {
+    "id": "s03",
+    "q": "精研科技 300709 ",
+    "expect_path": "company/company_300709.md"
+  },
+  {
+    "id": "s04",
+    "q": "赢合科技 300457 ",
+    "expect_path": "company/company_300457.md"
+  },
+  {
+    "id": "s05",
+    "q": "和晶科技 300279 ",
+    "expect_path": "company/company_300279.md"
+  },
+  {
+    "id": "s06",
+    "q": "美吉姆 002621 ",
+    "expect_path": "company/company_002621.md"
+  },
+  {
+    "id": "s07",
+    "q": "亚联发展 002316 ",
+    "expect_path": "company/company_002316.md"
+  },
+  {
+    "id": "s08",
+    "q": "青达环保 688501 ",
+    "expect_path": "company/company_688501.md"
+  },
+  {
+    "id": "s09",
+    "q": "利达光电 002189 ",
+    "expect_path": "company/company_002189.md"
+  },
+  {
+    "id": "s10",
+    "q": "陕西黑猫 601015 ",
+    "expect_path": "company/company_601015.md"
+  },
+  {
+    "id": "s11",
+    "q": "当代东方 000673 ",
+    "expect_path": "company/company_000673.md"
+  },
+  {
+    "id": "s12",
+    "q": "金科股份 000656 ",
+    "expect_path": "company/company_000656.md"
+  }
+]

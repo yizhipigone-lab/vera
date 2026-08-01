@@ -8,14 +8,12 @@ from __future__ import annotations
 import datetime as dt
 import signal
 import threading
-import time
 
 import pytest
 
 from scheduler import trading_calendar as tc
 from scheduler import vera_scheduler as vs
 from scheduler.graceful_shutdown import install
-
 
 # ── 交易日历 ─────────────────────────────────────────────────
 

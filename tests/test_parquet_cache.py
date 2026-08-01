@@ -15,7 +15,6 @@ import hashlib
 import threading
 
 import pandas as pd
-import pytest
 
 from selection import selection_cache as sc
 from selection import signal_day_cache as sdc

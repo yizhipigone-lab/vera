@@ -66,8 +66,8 @@ def probe(code: str) -> None:
     ③ 长窗口 front 与缓存 5m/1d 是否一致 (锚定漂移是否已自愈)。
     TDX K线"前复权"只应用落在请求窗口内的除权事件 — 验证必须用长窗口。
     """
-    from core.data_fetcher import DataFetcher
     from core.connector import TdxConnector
+    from core.data_fetcher import DataFetcher
     TdxConnector.ensure_connected()
     tq = TdxConnector.tq()
 

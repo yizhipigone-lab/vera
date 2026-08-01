@@ -14,17 +14,17 @@ from __future__ import annotations
 
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from utils.config_loader import ConfigLoader
-from core.formula_runner import FormulaRunner
-from core.data_fetcher import DataFetcher
 from backtest.engine import BacktestEngine
-
+from core.data_fetcher import DataFetcher
+from core.formula_runner import FormulaRunner
+from utils.config_loader import ConfigLoader
 
 # === Fixtures ===
 

@@ -14,8 +14,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from backtest._constants import (  # noqa: E402
-    BARS_PER_DAY, PERIODS_PER_YEAR, STD_1M_BAR_TIMES, STD_5M_BAR_TIMES,
-    STD_BAR_TIMES)
+    BARS_PER_DAY,
+    PERIODS_PER_YEAR,
+    STD_1M_BAR_TIMES,
+    STD_5M_BAR_TIMES,
+    STD_BAR_TIMES,
+)
 
 
 def test_bars_per_day_1m():
@@ -54,7 +58,7 @@ def test_calendar_bars_per_day_no_1m():
     任何 period (含 1m) 都返回同一深度。注意 3000 根 1m bar ≈ 12.5 个交易日,
     即当前设计不支持 1m 选股; 若未来支持, 必须重设计扫描深度并改本测试。
     """
-    from core.formula_runner import _adaptive_scan_count, _MAX_SCAN_COUNT
+    from core.formula_runner import _MAX_SCAN_COUNT, _adaptive_scan_count
     for period in ("1d", "5m", "1m"):
         assert _adaptive_scan_count("2024-01-01", "2024-12-31", period) \
             == _MAX_SCAN_COUNT

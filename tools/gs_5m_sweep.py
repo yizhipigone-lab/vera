@@ -32,8 +32,12 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, _THIS)
 
 from quantqq_5m_sweep import (  # noqa: E402
-    gen_coarse_combos, combo_key, combo_stop_config, CSV_COLUMNS,
+    CSV_COLUMNS,
+    combo_key,
+    combo_stop_config,
+    gen_coarse_combos,
 )
+
 from utils.config_loader import ConfigLoader  # noqa: E402
 from utils.logger import get_logger  # noqa: E402
 
@@ -71,12 +75,14 @@ def _cache_dir(formula: str, window_td: int) -> str:
 
 def do_prep(args):
     """选股(formula) + 5m 窗口取数 + 矩阵落盘. 幂等: 有缓存则跳过."""
-    from selection.selector import StockSelector
-    from core.data_fetcher import DataFetcher
     from backtest.engine import (
-        BacktestEngine, _build_tradable_from_raw, recompute_last_tradable_idx,
         ENGINE_VERSION,
+        BacktestEngine,
+        _build_tradable_from_raw,
+        recompute_last_tradable_idx,
     )
+    from core.data_fetcher import DataFetcher
+    from selection.selector import StockSelector
 
     formula = args.formula
     win_td = args.window_td
@@ -210,7 +216,7 @@ def _load_cache(formula, window_td=WINDOW_TD):
 def do_run(args):
     import logging
     logging.getLogger().setLevel(logging.WARNING)
-    from backtest.engine import BacktestEngine, ENGINE_VERSION
+    from backtest.engine import ENGINE_VERSION, BacktestEngine
 
     formula = args.formula
     meta, mats = _load_cache(formula, args.window_td)

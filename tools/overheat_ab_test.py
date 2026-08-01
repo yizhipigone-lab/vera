@@ -18,9 +18,9 @@
     python tools/overheat_ab_test.py --tag 20250719_20260718
     python tools/overheat_ab_test.py --tag 20230719_20260718
 """
-import sys
-import os
 import argparse
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -38,10 +38,12 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from utils.config_loader import ConfigLoader, resolve_strategy_yaml
-from backtest.stop_config import load_stop_config
 from combo_filter_test import run_backtest
-from factor_ic_screen import load_panels, f_dist_ma20, lookup
+from factor_ic_screen import f_dist_ma20, load_panels, lookup
+
+from backtest.stop_config import load_stop_config
+from selection.factor_filter import KEEP_COLS
+from utils.config_loader import ConfigLoader, resolve_strategy_yaml
 
 # 实验臂: (名称, 因子, 剔除规则) — top10/top20 = 剔除日截面最热 X%; bottom20 = 剔除最小 20%
 ARMS = [
@@ -52,8 +54,6 @@ ARMS = [
     ("drop_distma_top20", "dist_ma20", "top20"),
     ("keep_bigcap80", "circ_mv", "bottom20"),
 ]
-
-KEEP_COLS = ["stock_code", "select_date", "formula_name"]
 
 
 def parse_arms(s: str) -> list:

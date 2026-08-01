@@ -12,9 +12,9 @@
 
 用法:python tools/smoke_event_factors.py
 """
+import json
 import os
 import sys
-import json
 from pathlib import Path
 
 import pandas as pd

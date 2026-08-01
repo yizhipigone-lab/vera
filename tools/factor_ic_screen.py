@@ -15,10 +15,10 @@
     python tools/factor_ic_screen.py --formula QUANTQQ --tag 20250719_20260718
     python tools/factor_ic_screen.py --formula QUANTQQ --tag 20230719_20260718 --skip-event-factors
 """
-import sys
-import os
 import argparse
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -311,8 +311,8 @@ def load_daily_basic(dates: pd.DatetimeIndex, tag: str) -> pd.DataFrame:
     want = [d.strftime("%Y%m%d") for d in dates]
     missing = [d for d in want if d not in have]
     if missing:
-        from fetch_event_factors import load_token
         import tushare as ts
+        from fetch_event_factors import load_token
         pro = ts.pro_api(load_token())
         print(f"[INFO] 拉 daily_basic {len(missing)} 个交易日(约 {len(missing) // 180 + 1} 分钟)...")
         frames = []
@@ -345,8 +345,8 @@ def _pull_tushare_daily(api_name: str, fields: list, dates: pd.DatetimeIndex, ca
     have = set(got["trade_date"]) if len(got) else set()
     missing = [d.strftime("%Y%m%d") for d in dates if d.strftime("%Y%m%d") not in have]
     if missing:
-        from fetch_event_factors import load_token
         import tushare as ts
+        from fetch_event_factors import load_token
         pro = ts.pro_api(load_token())
         print(f"[INFO] 拉 {api_name} {len(missing)} 个交易日...")
         frames = []

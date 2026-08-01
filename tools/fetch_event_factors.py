@@ -11,10 +11,10 @@
 
 缓存:data/factors/{moneyflow,top_inst,block_trade}_<start>_<end>.parquet
 """
+import argparse
 import os
 import sys
 import time
-import argparse
 from pathlib import Path
 
 import pandas as pd

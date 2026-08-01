@@ -21,8 +21,8 @@ except Exception:
 import pandas as pd
 
 from backtest.engine import BacktestEngine
-from backtest.loop.strategies.trailing import TrailingStrategy
 from backtest.loop.strategies.base import TriggerResult
+from backtest.loop.strategies.trailing import TrailingStrategy
 from core.connector import TdxConnector
 
 SEL_CSV = 'output/selections/回测_raw_20260724_233551.csv'
@@ -168,7 +168,7 @@ def main():
                    ('C 放开涨停', m_c), ('D B+C 组合', m_d)]:
         print(f'{lab:<18}{m["total_trades"]:>8}{m["cumulative_return"]:>10.4f}'
               f'{m["win_rate"]:>8.4f}')
-    print(f'\n对照: x-tdxqmt 79% (9710 笔), 我们 23:36 线上结果 40.67% (8145 笔)')
+    print('\n对照: x-tdxqmt 79% (9710 笔), 我们 23:36 线上结果 40.67% (8145 笔)')
     print(f'B-A (移动止盈语义贡献): {m_b["cumulative_return"] - m_a["cumulative_return"]:+.4f}')
     print(f'C-A (涨停过滤贡献):     {m_c["cumulative_return"] - m_a["cumulative_return"]:+.4f}')
     print(f'D-A (组合):             {m_d["cumulative_return"] - m_a["cumulative_return"]:+.4f}')

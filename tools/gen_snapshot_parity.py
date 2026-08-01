@@ -18,8 +18,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_snapshot_parity import (  # noqa: E402
-    SCENARIOS, SNAPSHOT_DIR, build_snapshot_doc,
-    equity_to_json, trades_to_json,
+    SCENARIOS,
+    SNAPSHOT_DIR,
+    build_snapshot_doc,
+    equity_to_json,
+    trades_to_json,
 )
 
 

@@ -12,8 +12,8 @@ import json
 import os
 import subprocess
 import sys
-import time
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,9 +58,8 @@ def _csv_done_count(formula):
 def _log(msg):
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     print(line, flush=True)
-    with _lock:
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+    with _lock, open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 def run_formula(formula):

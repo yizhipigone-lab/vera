@@ -13,9 +13,9 @@ gs_txt 公式过滤 — 冒烟前置 (2026-07-18)
 用法:
   python tools/gs_formula_filter.py
 """
+import json
 import os
 import re
-import json
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

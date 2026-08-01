@@ -10,9 +10,8 @@ T-H-2 (2026-07-15): 加 FakeTq/FakeConnector mock 工厂 + autouse teardown
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-import pandas as pd
+import numpy as np
 import pytest
 
 # TDX 插件路径 (通达信 PYPlugins\user 目录; 单一真相: core/tdx_path.py)

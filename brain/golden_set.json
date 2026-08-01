@@ -1,0 +1,62 @@
+[
+  {
+    "id": "g01",
+    "q": "当前实盘持仓有哪些票？各自成本多少？",
+    "must_contain": ["持仓|仓位|在持", "\\d"],
+    "note": "应调 tools/policy_report_zero.py 或读 data/trade/trade.db"
+  },
+  {
+    "id": "g02",
+    "q": "我历史上买过的票里，属于 AVOID 档的有哪些？总共盈亏多少？",
+    "must_contain": ["AVOID", "\\d"],
+    "note": "偏离清单口径，零号报告第 3 块"
+  },
+  {
+    "id": "g03",
+    "q": "kg 知识图谱里有多少条 affects 边？涉及几条政策？",
+    "must_contain": ["\\d+"],
+    "note": "应查 kg/graph.db（SELECT COUNT）"
+  },
+  {
+    "id": "g04",
+    "q": "新能源汽车这条政策利好还是利空哪些行业？力度如何？",
+    "must_contain": ["新能源", "利好|利空|中性"],
+    "note": "种子政策已在库（policy_pipeline 3 条种子）"
+  },
+  {
+    "id": "g05",
+    "q": "300750.SZ 属于什么行业？这个行业在十五五里是什么档位？",
+    "must_contain": ["300750", "P1|P2|P3|AVOID|UNTAGGED"],
+    "note": "应走 policy_kb A 层标签"
+  },
+  {
+    "id": "g06",
+    "q": "我的选股结果里有哪些概念标签？",
+    "must_contain": ["概念"],
+    "note": "concept_kb 层"
+  },
+  {
+    "id": "g07",
+    "q": "当前持仓哪些票不值得继续持有？",
+    "must_contain": ["<counter_evidence>"],
+    "note": "判断类问题：必须含反证段（counter.py 硬校验）"
+  },
+  {
+    "id": "g08",
+    "q": "P1 档的票我的胜率是多少？和 AVOID 档比呢？",
+    "must_contain": ["胜率|\\d+%", "\\d"],
+    "note": "样本不足时应明说样本量"
+  },
+  {
+    "id": "g09",
+    "q": "VERA 的阶梯止盈档位是怎么配的？",
+    "must_contain": ["0\\.05|5%|阶梯", "\\d"],
+    "note": "应读 trade/config.py，附文件路径依据"
+  },
+  {
+    "id": "g10",
+    "q": "帮我分析一下政策库里 AI 相关政策的传导逻辑",
+    "must_contain": ["AI|人工智能|集成电路"],
+    "note": "图谱查询 + 引用 evidence_quote"
+  }
+]

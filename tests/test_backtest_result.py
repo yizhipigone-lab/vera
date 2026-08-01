@@ -1,7 +1,6 @@
 """C3 — BacktestResult dataclass + dict 兼容语义测试。"""
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import pytest
 

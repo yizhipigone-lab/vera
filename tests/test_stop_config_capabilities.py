@@ -6,8 +6,9 @@
   - load_stop_config_or_default() 兜底含 capabilities + priority (修了原兜底漏 priority)
   - yaml/stop_config 缺 capabilities 时 .get 回退全 True (安全, 40 调用方零感知)
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.stop_config import load_stop_config, load_stop_config_or_default

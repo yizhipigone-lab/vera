@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.result_writer import PipelineResult, ResultWriter
 
-
 # ---------- PipelineResult ----------
 
 def test_pipeline_result_has_four_fields():
@@ -157,7 +156,6 @@ def test_persist_swallows_failure(tmp_path, monkeypatch):
     而非依赖"Windows Z: 盘不存在"这种环境相关的不稳定路径。
     """
     import builtins
-    import io
 
     call_count = [0]
 

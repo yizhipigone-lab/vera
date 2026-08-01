@@ -11,11 +11,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest.loop.state import (
-    BacktestParams, Bar, Context, Position,
-    TradeBuffer, PositionBook, TradeColumns,
+    BacktestParams,
+    Bar,
+    Context,
+    Position,
+    PositionBook,
+    TradeBuffer,
+    TradeColumns,
     assert_state_dtype,
 )
-
 
 # ═══════════════════════════════════════════════════════════════
 # BacktestParams 约束
@@ -343,4 +347,4 @@ def test_trade_columns_ncols_matches_max_index():
         TradeColumns.ENTRY_PX, TradeColumns.SELL_PX, TradeColumns.SHARES,
         TradeColumns.PROFIT, TradeColumns.RETURN, TradeColumns.REASON,
     )
-    assert TradeColumns.NCOLS == max_idx + 1
+    assert max_idx + 1 == TradeColumns.NCOLS

@@ -11,9 +11,9 @@
     python tools/warmup_kline_cache.py --universe 50          # 沪深A股 (默认 5=全部A股)
     python tools/warmup_kline_cache.py --start 20240101 --end 20260717
 """
+import argparse
 import sys
 import time
-import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

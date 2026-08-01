@@ -9,7 +9,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -17,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import backtest.engine as engine_module
 from backtest.engine import BacktestEngine
-
 
 DAYS = ["2026-06-22", "2026-06-23"]
 BARS = 48

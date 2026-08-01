@@ -10,12 +10,13 @@ metrics.py 年化口径基准测试 — A2 闭环修复用
 回归保护:
   - 任何把 365 改回年化基数的尝试都会让本测试失败
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 from backtest.metrics import MetricsCalculator

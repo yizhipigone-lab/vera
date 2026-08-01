@@ -6,9 +6,8 @@
 - TRAILING_FIRST: 双触发 (ladder 部分卖不阻塞, trailing/cost_stop 全卖剩余)
 """
 import sys
-from pathlib import Path
-
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,14 +15,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest.loop.exit_engine import ExitDispatcher, Priority
-from backtest.loop.strategies.cost_stop import CostStopStrategy
-from backtest.loop.strategies.ladder_tp import LadderTpStrategy
-from backtest.loop.strategies.trailing import TrailingStrategy
-from backtest.loop.strategies.time_stop import TimeStopStrategy
-from backtest.loop.strategies.cond_time import CondTimeStrategy
-from backtest.loop.strategies.first_day import FirstDayStrategy
 from backtest.loop.state import Bar, Context, Position
-
+from backtest.loop.strategies.cond_time import CondTimeStrategy
+from backtest.loop.strategies.cost_stop import CostStopStrategy
+from backtest.loop.strategies.first_day import FirstDayStrategy
+from backtest.loop.strategies.ladder_tp import LadderTpStrategy
+from backtest.loop.strategies.time_stop import TimeStopStrategy
+from backtest.loop.strategies.trailing import TrailingStrategy
 
 # ──────────────── fixtures ────────────────
 

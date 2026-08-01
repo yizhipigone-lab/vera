@@ -5,13 +5,10 @@
 2. selector 北交所口径过滤 — 板块成份股可能含 .BJ (实测 881008 含 920088.BJ),
    仅 全部A股(5)/北交所(53) 口径保留, 沪深A股(50) 等一律剔除
 """
-import pandas as pd
-import pytest
 
+from core.data_fetcher import DataFetcher
 from core.formula_runner import _adaptive_scan_count
 from selection.selector import StockSelector
-from core.data_fetcher import DataFetcher
-
 
 # === _adaptive_scan_count (2026-07-31: 恒返回 _MAX_SCAN_COUNT=3000) ===
 

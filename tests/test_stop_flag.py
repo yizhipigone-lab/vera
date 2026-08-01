@@ -10,8 +10,11 @@ import numpy as np
 import pytest
 
 from core.stop_flag import (
-    BacktestStoppedError, clear_stop, request_stop, stop_requested,
+    BacktestStoppedError,
+    clear_stop,
     raise_if_stopped,
+    request_stop,
+    stop_requested,
 )
 
 

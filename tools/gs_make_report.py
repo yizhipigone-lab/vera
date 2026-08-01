@@ -10,10 +10,11 @@ gs_txt 5m 扫描 — MD 评测报告生成器 (阶段C, 2026-07-18)
 
 用法: python tools/gs_make_report.py
 """
+import glob
 import os
 import re
-import glob
 import sys
+
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,7 +73,6 @@ def combo_cn(r) -> str:
 def main():
     rows = []
     dirs = sorted(d for d in glob.glob(os.path.join(BASE, "*")) if os.path.isdir(d))
-    files = []  # 兼容下方参数分布段 (存每公式 sweep concat 后的 df 路径)
     if not dirs:
         print("[ERR] 无公式目录")
         return
@@ -122,19 +122,19 @@ def main():
     n_zero_combo = (rep["n_combos"] == 0).sum()
 
     lines = []
-    lines.append(f"# gs_txt 5m 全参数扫描 — 评测报告\n")
-    lines.append(f"> 生成: 阶段C 汇总 | 区间 2024-08-01 ~ 2026-07-17 | "
-                 f"5m | T收盘买入 | 沪深300 | 300万/单票2万 | 移动止盈优先\n")
+    lines.append("# gs_txt 5m 全参数扫描 — 评测报告\n")
+    lines.append("> 生成: 阶段C 汇总 | 区间 2024-08-01 ~ 2026-07-17 | "
+                 "5m | T收盘买入 | 沪深300 | 300万/单票2万 | 移动止盈优先\n")
     lines.append(f"> 达标硬口径: 年化>{TARGET_ANN*100:.0f}% 且 回撤≤{TARGET_MAXDD*100:.0f}% "
                  f"且 交易≥{MIN_TRADES}笔\n")
-    lines.append(f"> **已排除未来函数** (权威清单: ZIG/PEAK/TROUGH/BACKSET/REFX/DCLOSE/DRAWLINE/XMA/FFT/#周期等) "
-                 f"— 含 DCLOSE/DRAWLINE 的公式(之前回测虚高)已剔除\n")
-    lines.append(f"\n## 一、总览\n")
+    lines.append("> **已排除未来函数** (权威清单: ZIG/PEAK/TROUGH/BACKSET/REFX/DCLOSE/DRAWLINE/XMA/FFT/#周期等) "
+                 "— 含 DCLOSE/DRAWLINE 的公式(之前回测虚高)已剔除\n")
+    lines.append("\n## 一、总览\n")
     lines.append(f"- 扫描公式数: **{n_formulas}**")
     lines.append(f"- 达标公式数: **{n_hit}** ({n_hit/max(n_formulas,1)*100:.1f}%)")
     lines.append(f"- 零组合公式(选股零信号/prep失败): {n_zero_combo}\n")
 
-    lines.append(f"## 二、达标公式 Top（按 Calmar 降序）\n")
+    lines.append("## 二、达标公式 Top（按 Calmar 降序）\n")
     if hit_rep.empty:
         lines.append("_无公式达标_\n")
     else:
@@ -146,7 +146,7 @@ def main():
                          f"{r['best_calmar']:.2f} | {int(r['best_trades'])} | {r['best_combo']} |")
         lines.append("")
 
-    lines.append(f"\n## 三、全部公式最佳组合（按年化降序 Top 30）\n")
+    lines.append("\n## 三、全部公式最佳组合（按年化降序 Top 30）\n")
     lines.append("| 公式 | 达标组合数 | 最佳年化 | 回撤 | Calmar | 交易 | 最佳参数 |")
     lines.append("|---|---|---|---|---|---|---|")
     for _, r in rep.sort_values("best_annret", ascending=False).head(30).iterrows():
@@ -158,7 +158,7 @@ def main():
     lines.append("")
 
     # 参数分布 (Top 30 公式最佳组合, 从 best_combo 中文解析)
-    lines.append(f"\n## 四、参数分布（Top 30 公式最佳组合）\n")
+    lines.append("\n## 四、参数分布（Top 30 公式最佳组合）\n")
     top30 = rep.sort_values("best_annret", ascending=False).head(30)
     from collections import Counter
 
@@ -184,8 +184,8 @@ def main():
         lines.append(f"  - {k}: {v} 个")
     lines.append("")
 
-    lines.append(f"\n---\n> 详细每公式结果: output/gs_5m_sweep/<公式>/report_merged.csv")
-    lines.append(f"> 汇总 CSV: output/gs_5m_sweep/eval_summary.csv\n")
+    lines.append("\n---\n> 详细每公式结果: output/gs_5m_sweep/<公式>/report_merged.csv")
+    lines.append("> 汇总 CSV: output/gs_5m_sweep/eval_summary.csv\n")
 
     with open(OUT_MD, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

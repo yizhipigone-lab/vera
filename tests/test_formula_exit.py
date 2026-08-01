@@ -9,12 +9,10 @@ formula_exit 矩阵构造 + 缓存 — 纯函数单测
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -24,7 +22,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.formula_exit import (
     FormulaExitResult,
-    _CACHE_ROOT,
     build_formula_exit_matrix,
     cache_key,
     load_cached_formula_exit,

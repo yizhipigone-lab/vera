@@ -18,8 +18,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest.engine import BacktestEngine
 from backtest.benchmark import BenchmarkComparator
+from backtest.engine import BacktestEngine
 
 # web 运行 (last_result.json stop_config_summary) 复刻:
 # 成本止损 -40% / 阶梯 盈利1000%卖20% / 移动止盈 激活6%回撤1% / 时间止损 60天

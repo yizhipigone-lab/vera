@@ -223,6 +223,7 @@ def _clock_last_trading_day(hour: int, minute: int) -> list:
     卖出"生效后, 预埋卖出场景只在交易日有意义; 尽量贴真实日期,
     仅向前回退到最近交易日)。"""
     from datetime import datetime, timedelta
+
     from trade.monitor import is_trading_day_cached
     d = datetime.now().replace(hour=hour, minute=minute,
                                second=0, microsecond=0)

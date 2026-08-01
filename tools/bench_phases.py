@@ -6,18 +6,20 @@ so we can see where the wall-clock actually goes:
 
 Usage: python tools/bench_phases.py
 """
-import sys, os, time
+import os
+import sys
+import time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 except Exception:
     pass
 
-import pandas as pd
-from pipeline.pipeline import Pipeline
-from core.connector import TdxConnector
-from core import data_fetcher
 from backtest.loop.loop import BacktestLoop
+from core import data_fetcher
+from core.connector import TdxConnector
+from pipeline.pipeline import Pipeline
 
 # ── shared timers ──
 fetch_t = [0.0]; fetch_n = [0]; loop_t = [0.0]
@@ -59,7 +61,7 @@ def run_once(yaml_path, label):
     t = time.perf_counter(); rp = pipe.step4_report(bt, bm); r = time.perf_counter() - t
     tot = time.perf_counter() - T0
     other = b - f - lp
-    print(f"\n  ---- phase timing (seconds) ----", flush=True)
+    print("\n  ---- phase timing (seconds) ----", flush=True)
     print(f"  select(step1)      : {s:7.2f}   signals={n_sel}", flush=True)
     print(f"  backtest(step2)    : {b:7.2f}", flush=True)
     print(f"    fetch(network)   : {f:7.2f}   calls={fetch_n[0]}", flush=True)

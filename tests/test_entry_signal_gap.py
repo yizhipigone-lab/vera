@@ -7,12 +7,13 @@ else 分支顺延到 6.30 入场, 用未来价格成交旧信号, 违反"信号�
 修复策略: 信号日整天不在价格 index (跨日缺口) → WARN+丢弃, 不顺延。
 同日顺延 (5m: 信号日 00:00 不在 9:35-15:00 bar 里, 但当天有 bar) → 保留, 取当天尾盘 bar。
 """
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from backtest.engine import BacktestEngine
 
@@ -147,9 +148,8 @@ def test_pipeline_no_warn_on_period_match(caplog):
 
 
 def _make_entry_engine():
-    import numpy as np
-    from backtest.loop.state import BacktestParams, PositionBook, TradeBuffer
     from backtest.loop.entry import EntryEngine
+    from backtest.loop.state import BacktestParams, PositionBook, TradeBuffer
     p = BacktestParams(
         initial_capital=100_000.0, commission=0.0003, slippage=0.001, stamp_tax=0.0005,
         min_buy_amount=1000.0, max_buy_amount=50000.0, lot_size=100, min_lots=1,
@@ -160,7 +160,7 @@ def _make_entry_engine():
 def test_f7_entry_skip_counts_on_nan_price():
     """F7 [H4] 单股信号日价 NaN → entry 被 skip 且计数 (不静默吞)。"""
     import numpy as np
-    from backtest.loop.state import PositionBook, TradeBuffer
+
     eng, book, trade_buf = _make_entry_engine()
     price_np = np.array([[np.nan, 10.0]])          # 股0 价 NaN, 股1 正常
     entry_np = np.array([[True, False]])            # 股0 有信号

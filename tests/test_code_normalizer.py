@@ -2,11 +2,9 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from utils.code_normalizer import normalize, normalize_list, to_market_format, get_market
+from utils.code_normalizer import get_market, normalize, normalize_list, to_market_format
 
 
 def test_normalize_with_suffix():

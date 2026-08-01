@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import BacktestEngine
+
 # 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
 from tests.loop_direct import run_loop_direct
 

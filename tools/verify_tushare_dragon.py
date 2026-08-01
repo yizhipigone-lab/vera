@@ -16,9 +16,9 @@ token 来源(按优先级):
 
 输出:打印观察数据 + 最后一行 JSON 结论
 """
+import json
 import os
 import sys
-import json
 from pathlib import Path
 
 # Windows GBK 终端中文输出修复

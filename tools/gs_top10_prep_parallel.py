@@ -40,9 +40,8 @@ def prep_one(formula):
     last = tail[-1][:200] if tail else ""
     if proc.returncode == 0:
         return {"formula": formula, "ok": True, "minutes": minutes, "summary": last}
-    else:
-        err = (proc.stderr or "")[-200:]
-        return {"formula": formula, "ok": False, "minutes": minutes, "error": err, "summary": last}
+    err = (proc.stderr or "")[-200:]
+    return {"formula": formula, "ok": False, "minutes": minutes, "error": err, "summary": last}
 
 
 def main():

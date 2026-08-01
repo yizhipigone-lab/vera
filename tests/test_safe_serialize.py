@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.result_writer import safe_serialize
 
-
 # ═══════════════════════════════════════════════════════════════
 # 标量路径
 # ═══════════════════════════════════════════════════════════════

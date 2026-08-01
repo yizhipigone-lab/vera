@@ -18,7 +18,6 @@ import os
 import subprocess
 import sys
 import time
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -109,7 +108,7 @@ def main():
     args = ap.parse_args()
 
     data = json.load(open(ALL, encoding="utf-8"))
-    items = data["has_sorted"]
+    items = data["has_signals_sorted"]
     if args.limit:
         items = items[: args.limit]
     n_big = sum(1 for i in items if i["signals"] > BIG_THRESH)

@@ -9,11 +9,11 @@
   python tools/gs_1d_sweep.py                                    # 全候选(从 candidates_12pct.json)
 """
 import argparse
+import ctypes
 import json
 import os
 import sys
 import time
-import ctypes
 
 import pandas as pd
 
@@ -23,11 +23,14 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, _THIS)
 
 from quantqq_5m_sweep import (  # noqa: E402
-    gen_coarse_combos, combo_key, combo_stop_config, CSV_COLUMNS,
+    combo_key,
+    combo_stop_config,
+    gen_coarse_combos,
 )
-from utils.config_loader import ConfigLoader  # noqa: E402
-from selection.selector import StockSelector  # noqa: E402
+
 from backtest.engine import BacktestEngine  # noqa: E402
+from selection.selector import StockSelector  # noqa: E402
+from utils.config_loader import ConfigLoader  # noqa: E402
 
 OUT_BASE = "output/gs_1d_sweep"
 PRIORITY = "trailing_first"  # 默认移动止盈优先; "stop_first"=止损优先

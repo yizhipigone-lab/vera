@@ -3,15 +3,15 @@
 
 用 fake tdx_fetcher / calendar_fetcher mock TDX, 不依赖真实行情接口。
 """
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from core.kline_cache import KlineCache
-
 
 # ── fake TDX fetcher / calendar ─────────────────────────────
 
@@ -366,23 +366,6 @@ def test_5m_partial_bars_warns(tmp_path, caplog):
     assert any("kline_gap_5m" in r.message for r in caplog.records), (
         "5m 部分缺 bar (某天 <48 根) 必须告警"
     )
-
-
-def test_get_close_price_passes_use_cache(monkeypatch, tmp_path):
-    """③b: get_close_price(use_cache=True) 透传到 get_kline (run_cached 路径接缓存)。"""
-    from core.data_fetcher import DataFetcher
-    seen = {}
-
-    def fake_get_kline(cls, *a, **k):
-        seen["use_cache"] = k.get("use_cache")
-        return {"Close": pd.DataFrame({"002008.SZ": [1.0, 2.0]},
-                                      index=pd.to_datetime(["2024-01-02", "2024-01-03"]))}
-
-    monkeypatch.setattr(DataFetcher, "get_kline", classmethod(fake_get_kline))
-    DataFetcher.get_close_price(["002008.SZ"], "20240101", "20240110", use_cache=True)
-    assert seen["use_cache"] is True, "get_close_price 应把 use_cache 透传给 get_kline"
-
-
 
 
 def test_get_kline_windowed_passes_use_cache(monkeypatch):

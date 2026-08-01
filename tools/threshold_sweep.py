@@ -7,9 +7,9 @@
     python tools/threshold_sweep.py --strategy-yaml config/strategy_QUANTQQ.yaml --tag 20250719_20260718
     python tools/threshold_sweep.py --strategy-yaml config/strategy_QUANTQQ.yaml --tag 20250719_20260718 --thresholds -3,-2,-1,0,1
 """
-import sys
-import os
 import argparse
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,10 +26,11 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from utils.config_loader import ConfigLoader, resolve_strategy_yaml
+from factor_score import score_selections
+
 from backtest.engine import BacktestEngine
 from backtest.stop_config import load_stop_config
-from factor_score import score_selections
+from utils.config_loader import ConfigLoader, resolve_strategy_yaml
 
 
 def run_bt(selections, bt_cfg, stop_config, start, end):

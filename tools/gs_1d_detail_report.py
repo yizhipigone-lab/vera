@@ -4,10 +4,8 @@
 每公式: 最优组合 + 达标组合 + Top10 + 参数敏感度.
 分年份需重跑(用户暂不跑), 本报告是组合级详细.
 """
-import os
-import re
-import glob
 import json
+import os
 
 import pandas as pd
 
@@ -75,7 +73,7 @@ def main():
         else:
             L.append("_无_\n")
 
-        L.append(f"\n**Top 10 组合**（按年化，不看约束）:\n")
+        L.append("\n**Top 10 组合**（按年化，不看约束）:\n")
         L.append("| 参数 | 年化 | 回撤 | Calmar | 交易 | 胜率 |")
         L.append("|---|---|---|---|---|---|")
         for _, r in df.sort_values("annret", ascending=False).head(10).iterrows():
@@ -83,7 +81,7 @@ def main():
                      f"{r['calmar']:.2f} | {int(r['trades'])} | {r['winrate']*100:.0f}% |")
 
         # 参数敏感度
-        L.append(f"\n**参数敏感度**（各档最佳年化）:\n")
+        L.append("\n**参数敏感度**（各档最佳年化）:\n")
         for param, label in [("act", "移动止盈激活"), ("cost", "硬止损"),
                              ("time_days", "时间止损"), ("dd", "移动止盈回撤")]:
             grp = df.groupby(param)["annret"].max().sort_index()
@@ -98,7 +96,7 @@ def main():
             L.append(f"- **{label}**: {vals}")
 
     # 汇总
-    L.append(f"\n---\n\n## 6 公式汇总排名（按最优年化）\n")
+    L.append("\n---\n\n## 6 公式汇总排名（按最优年化）\n")
     L.append("| 排名 | 公式 | 最优年化 | 回撤 | Calmar | 达标组合数 | 最优参数 |")
     L.append("|---|---|---|---|---|---|---|")
     for i, (formula, top, hit, n) in enumerate(
@@ -106,7 +104,7 @@ def main():
         L.append(f"| {i} | {formula} | {top['annret']*100:.1f}% | "
                  f"{top['maxdd']*100:.1f}% | {top['calmar']:.2f} | {len(hit)} | {combo_cn(top)} |")
 
-    L.append(f"\n## 参数铁律（跨公式共识）\n")
+    L.append("\n## 参数铁律（跨公式共识）\n")
     L.append("- **移动止盈激活 2.0%**：所有公式最优都选 2%（涨 2% 即锁利；8% 直接亏损）")
     L.append("- **硬止损 8%**：紧硬止损回撤可控（5 公式最优都 8%）")
     L.append("- **移动止盈回撤 0.5%**：极紧（从高点回撤 0.5% 即卖）")

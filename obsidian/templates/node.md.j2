@@ -1,0 +1,35 @@
+---
+node_id: {{ node.node_id | yaml_scalar }}
+node_type: {{ node.node_type | yaml_scalar }}
+code: {{ node.code | yaml_scalar }}
+name: {{ node.name | yaml_scalar }}
+export_date: {{ export_date | yaml_scalar }}
+{% for k, v in node.fields.items() -%}
+{{ k }}: {{ v | yaml_scalar }}
+{% endfor -%}
+---
+
+# {{ node.name }}
+
+> 类型 `{{ node.node_type }}`{% if node.code %} · 代码 `{{ node.code }}`{% endif %} · 节点 `{{ node.node_id }}`
+
+## 属性
+{% for k, v in node.payload_lines -%}
+- **{{ k }}**: {{ v }}
+{% else -%}
+- (无)
+{% endfor %}
+
+## 出边 ({{ node.out_edges | length }})
+{% for e in node.out_edges -%}
+- [[{{ e.stem }}|{{ e.name }}]] · `{{ e.edge_type }}` · weight={{ e.weight_str }}
+{% else -%}
+- (无)
+{% endfor %}
+
+## 入边 ({{ node.in_edges | length }})
+{% for e in node.in_edges -%}
+- [[{{ e.stem }}|{{ e.name }}]] · `{{ e.edge_type }}` · weight={{ e.weight_str }}
+{% else -%}
+- (无)
+{% endfor %}

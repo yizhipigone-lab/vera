@@ -14,7 +14,6 @@ try:
 except Exception:
     pass
 
-import pandas as pd
 
 from backtest.engine import BacktestEngine
 from core.connector import TdxConnector

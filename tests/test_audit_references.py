@@ -13,15 +13,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from docs.audit._verify_references import (
-    Reference,
-    VerificationResult,
     AuditReport,
+    Reference,
+    audit_markdown_file,
     extract_references,
     verify_references,
-    audit_markdown_file,
-    REF_PATTERN,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

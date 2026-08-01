@@ -13,13 +13,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import backtest.engine as engine_mod
-from backtest._constants import STD_1M_BAR_TIMES, STD_5M_BAR_TIMES
+from backtest._constants import STD_1M_BAR_TIMES
 from backtest.engine import BacktestEngine
 
 
@@ -86,7 +85,7 @@ class TestGuards:
 
         def fake_prep(self, selections, start_time, end_time, win_td):
             captured["start"] = start_time
-            return None
+            return
 
         monkeypatch.setattr(BacktestEngine, "_prepare_run_matrices", fake_prep)
         eng = BacktestEngine({"period": "1m", "matrix_cache": False,
@@ -100,7 +99,7 @@ class TestGuards:
 
         def fake_prep(self, selections, start_time, end_time, win_td):
             captured["start"] = start_time
-            return None
+            return
 
         monkeypatch.setattr(BacktestEngine, "_prepare_run_matrices", fake_prep)
         eng = BacktestEngine({"period": "1m", "matrix_cache": False,

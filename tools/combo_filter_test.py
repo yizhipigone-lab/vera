@@ -8,9 +8,9 @@
     python tools/combo_filter_test.py --strategy-yaml config/strategy_QUANTQQ.yaml --tag 20250719_20260718
     python tools/combo_filter_test.py --strategy-yaml config/strategy_QUANTQQ.yaml --tag 20250719_20260718 --threshold -1
 """
-import sys
-import os
 import argparse
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,10 +27,11 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from utils.config_loader import ConfigLoader, resolve_strategy_yaml
+from factor_score import score_selections
+
 from backtest.engine import BacktestEngine
 from backtest.stop_config import load_stop_config
-from factor_score import score_selections
+from utils.config_loader import ConfigLoader, resolve_strategy_yaml
 
 
 def run_backtest(selections, bt_cfg, stop_config, start, end, label):
@@ -106,7 +107,7 @@ def main() -> None:
     print_metrics(filt)
 
     # 5. 差异
-    print(f"\n=== 差异(剔除后 - 基线)===")
+    print("\n=== 差异(剔除后 - 基线)===")
     print(f"  年化 {filt['annret']-base['annret']:+.4f} | 回撤 {filt['maxdd']-base['maxdd']:+.4f} | 夏普 {filt['sharpe']-base['sharpe']:+.4f}")
     print(f"  胜率 {filt['winrate']-base['winrate']:+.4f}")
 

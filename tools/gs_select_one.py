@@ -9,16 +9,17 @@ gs_txt 单公式全A选股 — 独立进程 (2026-07-18)
 stdout 最后一行 JSON:
     {"status":"ok","formula":"...","signals":N,"stocks":N,"elapsed":..}
 """
-import sys
-import os
-import time
 import json
+import os
+import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.config_loader import ConfigLoader  # noqa: E402
-from selection.selector import StockSelector  # noqa: E402
 import logging  # noqa: E402
+
+from selection.selector import StockSelector  # noqa: E402
+from utils.config_loader import ConfigLoader  # noqa: E402
 
 logging.getLogger().setLevel(logging.WARNING)  # 压掉批次刷屏
 

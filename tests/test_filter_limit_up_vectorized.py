@@ -22,9 +22,7 @@ def _old_filter_limit_up(entries, close, get_info):
     for col in entries.columns:
         limit_ratio = 0.10
         col_str = str(col)
-        if col_str.startswith('688'):
-            limit_ratio = 0.20
-        elif col_str.startswith('300') or col_str.startswith('301'):
+        if col_str.startswith('688') or col_str.startswith('300') or col_str.startswith('301'):
             limit_ratio = 0.20
         else:
             info = get_info(col_str)

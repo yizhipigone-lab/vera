@@ -18,7 +18,6 @@ import backtest.engine as engine_module
 from backtest.engine import BacktestEngine
 from core.data_fetcher import DataFetcher
 
-
 # ── compute_window_bounds: end_time 截断 ─────────────────────
 
 def _tdays(start="2024-01-02", n=120):

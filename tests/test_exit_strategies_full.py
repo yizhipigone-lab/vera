@@ -7,24 +7,21 @@
 - reason 码正确 (3/4/5/6/7/8/9/10)
 - 边界条件 (ep=0 / NaN / 等于阈值)
 """
-import math
 import sys
-from pathlib import Path
-
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest.loop.strategies.cost_stop import CostStopStrategy
-from backtest.loop.strategies.trailing import TrailingStrategy
-from backtest.loop.strategies.time_stop import TimeStopStrategy
-from backtest.loop.strategies.cond_time import CondTimeStrategy
-from backtest.loop.strategies.first_day import FirstDayStrategy
 from backtest.loop.state import Bar, Context, Position
-
+from backtest.loop.strategies.cond_time import CondTimeStrategy
+from backtest.loop.strategies.cost_stop import CostStopStrategy
+from backtest.loop.strategies.first_day import FirstDayStrategy
+from backtest.loop.strategies.time_stop import TimeStopStrategy
+from backtest.loop.strategies.trailing import TrailingStrategy
 
 # ──────────────── fixtures ────────────────
 

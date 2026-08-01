@@ -109,7 +109,7 @@ def main() -> int:
         print("[校准] 没有可校准的股票")
         return 1
     all_days = sorted({d for ds in per_code_days.values() for d in ds})
-    print(f"[校准] 人为降级股-天: "
+    print("[校准] 人为降级股-天: "
           + ", ".join(f"{c}×{len(ds)}" for c, ds in per_code_days.items()))
 
     stop_config = {

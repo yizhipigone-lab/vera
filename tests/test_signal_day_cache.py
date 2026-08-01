@@ -218,7 +218,6 @@ class TestFreshAndStale:
 
     def test_today_never_cached(self, _env, monkeypatch):
         # 当日 (2026-07-24 周五, 交易日) 永不缓存
-        import os
         FakeDT = self._fake_dt(2026, 7, 24)
         monkeypatch.setattr(sdc, "datetime", FakeDT)
         calls = []

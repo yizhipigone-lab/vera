@@ -16,13 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtest._entry_basis import (
     ENTRY_BASIS_BACKTEST,
     ENTRY_BASIS_LIVE,
-    EntryPath,
     EntryBasisConflictError,
+    EntryPath,
     LiveBiasEstimate,
     assert_single_path,
 )
 from backtest.loop.entry import ENTRY_PATH
-
 
 # ═══════════════════════════════════════════════════════════════
 # 铁律 2: 回测 = 信号日 T 收盘价

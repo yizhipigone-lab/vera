@@ -10,13 +10,13 @@
 用法:
     python tools/factor_correlation_analysis.py --tag 20250719_20260718
 """
-import sys
-import os
 import argparse
+import os
+import sys
 from pathlib import Path
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # 项目根
 sys.path.insert(0, str(Path(__file__).resolve().parent))                          # tools/(for factor_score)

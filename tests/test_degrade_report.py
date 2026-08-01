@@ -10,18 +10,13 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 import pytest
 
-import backtest.engine as engine_module
 from backtest.degrade_report import compute_impact_report
-from backtest.engine import BacktestEngine
 from tests.test_degrade_5m import (
     BARS_5M_PER_DAY,
-    DAYS,
     _engine_fixture,
     _mk_1d,
-    _mk_5m,
     _run_engine_5m,
 )
 

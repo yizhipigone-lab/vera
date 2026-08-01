@@ -23,9 +23,9 @@
 用法:
     python tools/smoke_lockup_filter.py
 """
+import json
 import os
 import sys
-import json
 from pathlib import Path
 
 import pandas as pd
@@ -170,7 +170,7 @@ def main() -> None:
         print(removed.to_string(index=False))
 
     # 5. 验证三类
-    print(f"\n=== 4. 验证 ===")
+    print("\n=== 4. 验证 ===")
     removed_set = set(removed["stock_code"])
 
     a_removed = [c for c in a_codes if c in removed_set]

@@ -10,9 +10,9 @@
     python tools/filter_signal_tournament.py --strategy-yaml config/strategy_QUANTQQ.yaml --tag 20250719_20260718 --skip-breadth
     python tools/filter_signal_tournament.py --strategy-yaml config/strategy_QUANTQQ.yaml --tag 20250719_20260718 --skip-backtest  # 只生成信号序列+诊断
 """
-import sys
-import os
 import argparse
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -31,10 +31,11 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from utils.config_loader import ConfigLoader
-from backtest.stop_config import load_stop_config
-from factor_score import score_selections
 from combo_filter_test import run_backtest
+from factor_score import score_selections
+
+from backtest.stop_config import load_stop_config
+from utils.config_loader import ConfigLoader
 
 # ═══════════════════════════════════════════════════════════════
 # 信号源(纯函数, trailing-only, True=严格日)

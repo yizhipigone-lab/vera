@@ -26,7 +26,7 @@ def _log(msg):
 
 
 def main():
-    _log(f"=== Top10 全A prep 启动 (config type=50) ===")
+    _log("=== Top10 全A prep 启动 (config type=50) ===")
     t_start = time.time()
     ok = 0
     for i, f in enumerate(FORMULAS, 1):

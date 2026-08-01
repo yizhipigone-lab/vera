@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """把候选A阶段2审计报告 md 转成 Word(.docx) —— 用 officecli batch 一次性生成。"""
-import json, subprocess, sys, pathlib
+import json
+import pathlib
+import subprocess
 
 BIN = pathlib.Path(r"C:/Users/liuziheng/AppData/Local/OfficeCLI/officecli.exe")
 OUT = pathlib.Path(r"e:/1target/VERA/docs/audit/2026-07-15_候选A阶段2_项目审计报告.docx")
@@ -235,6 +237,7 @@ if OUT.exists():
     OUT.unlink()
 subprocess.run([str(BIN), "create", str(OUT)], check=True, capture_output=True)
 import tempfile
+
 tmpf = pathlib.Path(tempfile.gettempdir()) / "officecli_batch.json"
 tmpf.write_text(json.dumps(cmds, ensure_ascii=False), encoding="utf-8")
 r = subprocess.run([str(BIN), "batch", str(OUT), "--input", str(tmpf), "--stop-on-error"],

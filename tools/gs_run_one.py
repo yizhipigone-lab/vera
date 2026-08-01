@@ -22,18 +22,18 @@ gs_txt 单公式回测独立脚本
 注意: 批量场景请用 subprocess 并行调度本脚本，每次调用相互独立。
       Pipeline.run 内部每次执行 initialize+close，不适合 in-process 高频复用。
 """
-import sys
-import os
-import json
 import argparse
+import json
+import os
+import sys
 
 # 项目根目录入 path（tools/ 的父目录）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.config_loader import ConfigLoader
-from selection.selector import StockSelector
 from backtest.engine import BacktestEngine
 from backtest.stop_config import load_stop_config
+from selection.selector import StockSelector
+from utils.config_loader import ConfigLoader
 
 
 def main():

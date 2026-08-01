@@ -11,8 +11,9 @@
 深化前 run_cached 不认识 filter_limit_up/return_raw/formula_exit_np 等 keyword
 → 全部 TypeError 失败 (RED)。深化后全绿 (GREEN)。
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np

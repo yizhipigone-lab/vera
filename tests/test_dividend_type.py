@@ -6,15 +6,23 @@
 - to_formula_int: str/int/数字str/未知 全部归一化到 TDX formula_process 用整数
 - assert_consistent: 一致不 raise / 不一致 raise ValueError
 """
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
 from core.dividend_type import (
-    ADJ_NONE, ADJ_FRONT, ADJ_BACK, ADJ_FRONT_RAW,
-    ADJ_TO_TDX_STR, ADJ_TO_FORMULA_INT,
-    to_tdx_str, to_formula_int, assert_consistent,
+    ADJ_BACK,
+    ADJ_FRONT,
+    ADJ_FRONT_RAW,
+    ADJ_NONE,
+    ADJ_TO_FORMULA_INT,
+    ADJ_TO_TDX_STR,
+    assert_consistent,
+    to_formula_int,
+    to_tdx_str,
 )
 
 

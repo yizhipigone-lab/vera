@@ -17,8 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest.ladder_tp import compute_ladder_trigger, compute_ladder_sell_ratio
-
+from backtest.ladder_tp import compute_ladder_sell_ratio, compute_ladder_trigger
 
 # ═══════════════════════════════════════════════════════════════
 # compute_ladder_trigger — 位掩码生成

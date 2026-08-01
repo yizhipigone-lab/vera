@@ -16,9 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from fastapi.testclient import TestClient
 
 from trade.api import create_api_app
-from trade.book import DIRECTION_BUY, PRICE_TYPE_LIMIT, PRICE_TYPE_MARKET_PEER_FIRST, Book
+from trade.book import PRICE_TYPE_LIMIT
 from trade.config import TradeConfig, load_trade_config
-from trade.events import Event, EVENT_TICK
+from trade.events import EVENT_TICK, Event
 from trade_main import TradeApp
 
 CODE = "000001.SZ"

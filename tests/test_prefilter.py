@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
-from tests.loop_direct import run_loop_direct
 from backtest.loop.builder import build_backtest_loop
 from backtest.loop.prefilter import TriggerPreFilter
 from backtest.loop.state import Bar, Context, Position
-from tests.test_loop_parity import BASE_PARAMS, run_loop, assert_valid, make_synthetic
+
+# 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
+from tests.loop_direct import run_loop_direct
+from tests.test_loop_parity import BASE_PARAMS, assert_valid, make_synthetic, run_loop
 
 
 def _build_loop_and_filter(**over):

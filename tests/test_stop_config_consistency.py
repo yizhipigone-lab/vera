@@ -11,8 +11,6 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest.stop_config import (
@@ -159,7 +157,6 @@ def test_summary_omits_disabled_trailing_stop():
 
 def test_load_stop_config_or_default_fallback():
     """yaml 缺失时走代码内兜底, 不抛异常."""
-    import os
     # 用不存在的路径强迫 fallback
     cfg = load_stop_config_or_default()
     assert isinstance(cfg, dict)

@@ -126,12 +126,14 @@ def combo_stop_config(c, priority="trailing_first"):
 
 def do_prep(args):
     """选股 + 5m 窗口取数 + 矩阵落盘。幂等: 有缓存则跳过。"""
-    from selection.selector import StockSelector
-    from core.data_fetcher import DataFetcher
     from backtest.engine import (
-        BacktestEngine, _build_tradable_from_raw, recompute_last_tradable_idx,
         ENGINE_VERSION,
+        BacktestEngine,
+        _build_tradable_from_raw,
+        recompute_last_tradable_idx,
     )
+    from core.data_fetcher import DataFetcher
+    from selection.selector import StockSelector
 
     win_td = args.window_td
     cache_dir = _cache_dir(win_td)
@@ -268,7 +270,7 @@ CSV_COLUMNS = ["key", "cost", "act", "dd", "ladder", "time_days",
 def do_run(args):
     import logging
     logging.getLogger().setLevel(logging.WARNING)  # 引擎每组合 INFO 刷屏, 扫描期压掉
-    from backtest.engine import BacktestEngine, ENGINE_VERSION
+    from backtest.engine import ENGINE_VERSION, BacktestEngine
 
     meta, mats = _load_cache(args.window_td)
     if meta.get("engine_version") and meta["engine_version"] != ENGINE_VERSION:

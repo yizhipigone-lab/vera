@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 
@@ -19,7 +18,7 @@ import pytest
 
 import backtest.engine as engine_module
 from backtest import matrix_cache as mc
-from backtest.engine import BacktestEngine, ENGINE_VERSION
+from backtest.engine import ENGINE_VERSION, BacktestEngine
 from core.data_fetcher import DataFetcher
 
 

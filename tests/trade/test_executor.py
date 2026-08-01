@@ -105,10 +105,6 @@ def test_fill_context_peek_shared_and_discard(store, kill):
     ex.discard_fill_context("O1")
     assert ex.peek_fill_context("O1") is None
     ex.discard_fill_context("O1")                               # 幂等
-    # pop 兼容接口仍在 (取即删)
-    ex.register_fill_context("O2", {"label": "阶梯止盈"})
-    assert ex.pop_fill_context("O2") == {"label": "阶梯止盈"}
-    assert ex.peek_fill_context("O2") is None
 
 
 # ═══════════════════════════════════════════════════════════════

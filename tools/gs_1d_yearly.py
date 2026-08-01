@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from quantqq_5m_sweep import COARSE, combo_stop_config  # noqa: E402
+
 from backtest.engine import BacktestEngine  # noqa: E402
 
 YEARS = [("2023H2", "20230801", "20231231"),

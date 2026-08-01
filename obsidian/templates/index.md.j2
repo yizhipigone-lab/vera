@@ -1,0 +1,14 @@
+# VERA 知识图谱索引
+
+- 导出时间: {{ export_time }}
+- 节点总数: {{ total_nodes }}
+- 边总数 (导出席位内): {{ total_edges }}
+
+## 各类型节点计数
+{% for t, c in type_counts -%}
+- `{{ t }}`: {{ c }}
+{% endfor %}
+
+## 说明
+- 数据源: kg/graph.db (SQLite 只读渲染, 真相源在 db)
+- Dataview 示例: `TABLE node_type, code WHERE node_type = "policy"`

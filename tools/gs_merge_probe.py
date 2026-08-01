@@ -1,6 +1,6 @@
 """合并 6 分片信号探测结果 -> 有信号公式清单 (阶段A -> 阶段B 桥接). 2026-07-18"""
-import json
 import glob
+import json
 
 IN_GLOB = "output/gs_filter/signals_probe_shard*of6.json"
 OUT = "output/gs_filter/signals_probe_all.json"

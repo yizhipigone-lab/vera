@@ -89,6 +89,7 @@ class TestStatusFusion:
     @pytest.fixture
     def client(self):
         from fastapi.testclient import TestClient
+
         from server import app
         return TestClient(app)
 

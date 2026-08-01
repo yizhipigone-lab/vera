@@ -4,11 +4,14 @@
 如果 Low 触及回撤线, 剩余仓位移动止盈清仓. 不再走 cost_stop (止盈优先).
 """
 from __future__ import annotations
-import sys, os
+
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
-import pytest
+
 # 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
 from tests.loop_direct import run_loop_direct
 

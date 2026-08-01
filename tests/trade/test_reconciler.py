@@ -52,7 +52,7 @@ def _reconciler(store, kill, book, gw_positions, quote=None, in_flight=None):
     return Reconciler(
         gw, book, store, kill,
         quote_price=quote or (lambda code: None),
-        in_flight_sells=in_flight or (lambda: {}),
+        in_flight_sells=in_flight or (dict),
         retry_interval_sec=0.0,   # 测试不等真实 1s 重试间隔
     )
 
