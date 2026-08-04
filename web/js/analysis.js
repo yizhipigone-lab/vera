@@ -1,0 +1,439 @@
+// ====== VERA Analysis Tab — 交易日历 + 实盘图表 ======
+import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc } from './charts.js';
+
+const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
+const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
+const SVR_BASE = '';
+const DIR_BUY = 23, DIR_SELL = 24;
+
+let _calendarYear, _calendarMonth;
+let _selectedDate = '';
+let _allDeals = [];
+let _dealPage = 0;
+const DEAL_PAGE_SIZE = 200;
+
+// ── Entry (called by vera-ui.js switchTab) ──
+window.analysisPageEnter = async function() {
+  const now = new Date();
+  _calendarYear = now.getFullYear();
+  _calendarMonth = now.getMonth() + 1;
+  await loadAnalysisData();
+};
+
+// ── Data loading ──
+async function loadAnalysisData() {
+  const emptyEl = document.getElementById('analysisEmpty');
+  const contentEl = document.getElementById('analysisContent');
+  let fetchError = false;
+  try {
+    const results = await Promise.allSettled([
+      fetch(API_BASE + '/summary').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+      fetch(API_BASE + '/equity').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+      fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+    ]);
+    const summary = results[0].status === 'fulfilled' ? results[0].value : null;
+    const equity = results[1].status === 'fulfilled' ? results[1].value : null;
+    const dailyPnl = results[2].status === 'fulfilled' ? results[2].value : null;
+    if (results.some(r => r.status === 'rejected')) fetchError = true;
+
+    if (!summary || (!fetchError && summary.total_trades === 0 && (!equity || !equity.equity || equity.equity.length === 0))) {
+      if (emptyEl) { emptyEl.style.display = ''; emptyEl.querySelector('p').textContent = fetchError ? '数据加载失败，请确认 trade 服务运行中' : '实盘开始后这里会出现业绩分析'; }
+      if (contentEl) contentEl.style.display = 'none';
+      return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (contentEl) contentEl.style.display = '';
+
+    // Load benchmarks & calendar in parallel
+    const startDate = summary.start_date || '';
+    const endDate = summary.end_date || '';
+    const [benchData, calData] = await Promise.all([
+      startDate ? fetch(SVR_BASE + '/api/benchmark/history?indices=shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500&start=' + startDate + '&end=' + endDate).then(r => r.json()).catch(() => null) : null,
+      fetch(SVR_BASE + '/api/calendar?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null),
+    ]);
+
+    // Render KPI
+    renderKpiCards(summary);
+
+    // Render calendar
+    renderCalendar(calData, dailyPnl);
+
+    // Render equity curve
+    if (equity && equity.equity && equity.equity.length > 0) {
+      const eqData = { equity: equity.equity, benchmarks: {} };
+      if (benchData) {
+        for (const [k, v] of Object.entries(benchData)) {
+          eqData.benchmarks[k] = (v || []).map(r => ({ date: r.date, index_close: r.close, close: r.close }));
+        }
+      }
+      renderEquityCurve('chartAnalysisEquity', eqData, '实盘', getColors());
+    }
+
+    // Render heatmap from equity data
+    if (equity && equity.equity && equity.equity.length > 1) {
+      renderHeatmap(equity.equity);
+    }
+
+    // Load deals for this month
+    await loadDeals();
+
+    // Render distribution charts
+    renderDistribution(_allDeals);
+    renderExitPie(_allDeals);
+
+    // Wire calendar nav
+    wireCalendarNav();
+  } catch (e) {
+    console.error('Analysis load error:', e);
+    if (emptyEl) { emptyEl.style.display = ''; emptyEl.querySelector('p').textContent = '数据加载失败，请重试'; }
+    if (contentEl) contentEl.style.display = 'none';
+  }
+}
+
+// ── KPI Cards ──
+function renderKpiCards(s) {
+  if (!s) return;
+  const grid = document.getElementById('analysisKpiGrid');
+  if (!grid) return;
+  const fmtPct = v => v != null ? (v * 100).toFixed(2) + '%' : '--';
+  const fmtNum = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) : '--';
+  const fmtInt = v => v != null ? Math.round(v) : '--';
+  const cards = [
+    { label: '累计收益', id: 'akpi1', val: s.cumulative_return, fmt: v => fmtPct(v), cls: s.cumulative_return > 0 ? 'pos' : 'neg' },
+    { label: '年化收益', id: 'akpi2', val: s.annualized_return, fmt: v => fmtPct(v), cls: s.annualized_return > 0 ? 'pos' : 'neg' },
+    { label: '最大回撤', id: 'akpi3', val: s.max_drawdown, fmt: v => fmtPct(v), cls: s.max_drawdown < 0 ? 'pos' : 'neg' },
+    { label: '夏普比率', id: 'akpi4', val: s.sharpe_ratio, fmt: v => fmtNum(v), cls: '' },
+    { label: '胜率', id: 'akpi5', val: s.win_rate, fmt: v => v != null ? (v * 100).toFixed(1) + '%' : '--', cls: '' },
+    { label: '盈亏比', id: 'akpi6', val: s.profit_loss_ratio, fmt: v => fmtNum(v), cls: '' },
+    { label: '交易笔数', id: 'akpi7', val: s.total_trades, fmt: v => fmtInt(v), cls: '' },
+    { label: '卡玛比率', id: 'akpi8', val: s.calmar_ratio, fmt: v => fmtNum(v), cls: '' },
+    { label: 'Sortino', id: 'akpi9', val: s.sortino_ratio, fmt: v => fmtNum(v), cls: '' },
+    { label: '盈利因子', id: 'akpi10', val: s.profit_factor, fmt: v => fmtNum(v), cls: '' },
+  ];
+  const warnHtml = s.reconciliation_warning
+    ? '<span style="color:var(--warn);font-size:11px;margin-left:4px" title="净值推算与QMT资产偏差>1%">⚠</span>' : '';
+  grid.innerHTML = '<div class="kpi-row-primary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">' +
+    cards.slice(0, 5).map(c => '<div class="kpi-card"><div class="kpi-label">' + c.label + warnHtml + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '">' + c.fmt(c.val) + '</div></div>').join('') +
+    '</div><div class="kpi-row-secondary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px">' +
+    cards.slice(5).map(c => '<div class="kpi-card"><div class="kpi-label">' + c.label + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '" style="font-size:18px">' + c.fmt(c.val) + '</div></div>').join('') +
+    '</div>';
+}
+
+// ── Calendar ──
+function renderCalendar(calData, dailyPnl) {
+  const grid = document.getElementById('analysisCalendarGrid');
+  const title = document.getElementById('calTitle');
+  if (!grid) return;
+  title.textContent = _calendarYear + '年' + _calendarMonth + '月';
+
+  // Get days in month
+  const daysInMonth = new Date(_calendarYear, _calendarMonth, 0).getDate();
+  const firstDow = new Date(_calendarYear, _calendarMonth - 1, 1).getDay(); // 0=Sun
+  const today = new Date();
+  const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+
+  const cells = [];
+  // Leading blanks
+  for (let i = 0; i < firstDow; i++) {
+    cells.push('<div class="cal-cell cal-empty"></div>');
+  }
+  // Month days
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    const calInfo = calData && calData.trading_calendar ? calData.trading_calendar[dateStr] : null;
+    const isTrading = calInfo ? calInfo.is_trading : (new Date(_calendarYear, _calendarMonth - 1, d).getDay() !== 0 && new Date(_calendarYear, _calendarMonth - 1, d).getDay() !== 6);
+    const pnl = dailyPnl && dailyPnl[dateStr];
+    const isToday = dateStr === todayStr;
+    const isSel = dateStr === _selectedDate;
+
+    let bgStyle = '';
+    let borderStyle = '';
+    if (isToday) borderStyle = 'border:2px solid var(--accent);';
+    else if (isSel) borderStyle = 'border:2px solid var(--accent2);';
+
+    if (!isTrading) {
+      bgStyle = 'background:var(--surface);opacity:0.6';
+    } else if (pnl && pnl.pnl_rate !== 0) {
+      const color = pnl.pnl_rate > 0 ? 'var(--up)' : 'var(--down)';
+      bgStyle = 'background:radial-gradient(circle at 50% 50%, color-mix(in srgb, ' + color + ' 22%, transparent), color-mix(in srgb, ' + color + ' 6%, var(--surface)))';
+    }
+
+    const pnlRateStr = pnl ? (pnl.pnl_rate >= 0 ? '+' : '') + (pnl.pnl_rate * 100).toFixed(2) + '%' : '—';
+    const pnlAmtStr = pnl ? ((pnl.pnl_amount >= 0 ? '+¥' : '-¥') + Math.abs(pnl.pnl_amount).toLocaleString('zh-CN', {maximumFractionDigits: 0})) : '';
+    const pnlCls = pnl && pnl.pnl_rate > 0 ? 'cal-up' : pnl && pnl.pnl_rate < 0 ? 'cal-down' : '';
+    const tradeInfo = pnl ? ('买' + pnl.buy_count + ' 卖' + pnl.sell_count) : isTrading ? '无成交' : '休市';
+
+    const dataAttrs = isTrading && pnl ? ' data-date="' + dateStr + '"' : '';
+    cells.push('<div class="cal-cell' + (isTrading && pnl ? ' cal-clickable' : '') + '" style="' + bgStyle + ';' + borderStyle + '"' + dataAttrs +
+      ' role="button" tabindex="' + (isTrading ? '0' : '-1') + '" aria-label="' + (d + '日 ' + tradeInfo + ' ' + pnlRateStr) + '">' +
+      '<span class="cal-day">' + d + '</span>' +
+      '<span class="cal-pnl ' + pnlCls + '">' + pnlRateStr + '</span>' +
+      (pnlAmtStr ? '<span class="cal-amt ' + pnlCls + '">' + pnlAmtStr + '</span>' : '') +
+      '<span class="cal-trades">' + tradeInfo + '</span></div>');
+  }
+  grid.innerHTML = cells.join('');
+
+  // Click handlers
+  grid.querySelectorAll('.cal-clickable').forEach(el => {
+    el.addEventListener('click', function() {
+      const ds = this.dataset.date;
+      if (_selectedDate === ds) { _selectedDate = ''; }
+      else { _selectedDate = ds; }
+      renderCalendar(calData, dailyPnl);
+      filterDealsByDate(_selectedDate);
+    });
+  });
+}
+
+function wireCalendarNav() {
+  document.getElementById('calPrevYear').onclick = () => { _calendarYear--; refreshCalendarMonth(); };
+  document.getElementById('calPrevMonth').onclick = () => { _calendarMonth--; if (_calendarMonth < 1) { _calendarMonth = 12; _calendarYear--; } refreshCalendarMonth(); };
+  document.getElementById('calNextMonth').onclick = () => { _calendarMonth++; if (_calendarMonth > 12) { _calendarMonth = 1; _calendarYear++; } refreshCalendarMonth(); };
+  document.getElementById('calNextYear').onclick = () => { _calendarYear++; refreshCalendarMonth(); };
+  document.getElementById('calToday').onclick = () => {
+    const n = new Date(); _calendarYear = n.getFullYear(); _calendarMonth = n.getMonth() + 1;
+    _selectedDate = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+    refreshCalendarMonth();
+  };
+}
+
+async function refreshCalendarMonth() {
+  const calData = await fetch(SVR_BASE + '/api/calendar?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
+  const dailyPnl = await fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
+  renderCalendar(calData, dailyPnl);
+}
+
+// ── Heatmap ──
+function renderHeatmap(equity) {
+  const dom = document.getElementById('chartAnalysisHeat');
+  if (!dom || equity.length < 2) return;
+  const c = getColors();
+  const chart = echartsInit('chartAnalysisHeat');
+  if (!chart) return;
+
+  // Aggregate monthly from daily equity
+  const monthly = {};
+  for (let i = 1; i < equity.length; i++) {
+    if (equity[i - 1].equity > 0) {
+      const d = new Date(equity[i].date);
+      const y = d.getFullYear();
+      const m = d.getMonth() + 1;
+      const key = y + '-' + String(m).padStart(2, '0');
+      const ret = (equity[i].equity - equity[i - 1].equity) / equity[i - 1].equity;
+      if (!monthly[key]) monthly[key] = [];
+      monthly[key].push(ret);
+    }
+  }
+  const keys = Object.keys(monthly).sort();
+  const years = [...new Set(keys.map(k => parseInt(k.split('-')[0])))].sort();
+  const months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const data = [];
+  const yLabels = years.map(String);
+  const xLabels = months.map(m => m + '月');
+
+  years.forEach(y => {
+    months.forEach(m => {
+      const key = y + '-' + String(m).padStart(2, '0');
+      const rets = monthly[key];
+      if (rets && rets.length > 0) {
+        const product = rets.reduce((acc, r) => acc * (1 + r), 1);
+        data.push([yLabels.indexOf(String(y)), m - 1, Number(((product - 1) * 100).toFixed(2))]);
+      }
+    });
+  });
+
+  chart.setOption({
+    tooltip: {
+      formatter: p => p.value[0] !== undefined
+        ? years[p.value[0]] + '年' + months[p.value[1]] + '月: <b>' + (p.value[2] >= 0 ? '+' : '') + p.value[2].toFixed(2) + '%</b>'
+        : ''
+    },
+    grid: { left: 50, right: 30, top: 10, bottom: 30 },
+    xAxis: { type: 'category', data: xLabels, axisLabel: { color: c.text2, fontSize: 10 } },
+    yAxis: { type: 'category', data: yLabels, axisLabel: { color: c.text2, fontSize: 10 } },
+    visualMap: {
+      min: -15, max: 15, calculable: true, orient: 'horizontal', left: 'center', bottom: 0,
+      inRange: { color: [c.down, hexToRgba(c.down, 0.4), 'transparent', hexToRgba(c.up, 0.4), c.up] },
+      textStyle: { color: c.text2, fontSize: 9 }
+    },
+    series: [{
+      type: 'heatmap', data: data,
+      label: { show: true, color: c.text, fontSize: 10, formatter: p => p.value[2] >= 0 ? '+' + p.value[2].toFixed(1) + '%' : p.value[2].toFixed(1) + '%' },
+      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } }
+    }]
+  }, true);
+}
+
+// ── Distribution charts ──
+function renderDistribution(deals) {
+  const dom = document.getElementById('chartAnalysisDist');
+  if (!dom || !deals || !deals.length) return;
+  const c = getColors();
+  const chart = echartsInit('chartAnalysisDist');
+  if (!chart) return;
+  // Group by direction-matched P&L
+  const buyMap = {}, sellMap = {};
+  deals.forEach(t => {
+    const code = t.code;
+    if (t.direction === DIR_BUY) {
+      if (!buyMap[code]) buyMap[code] = { total: 0, qty: 0 };
+      buyMap[code].total += t.price * t.qty;
+      buyMap[code].qty += t.qty;
+    } else if (t.direction === DIR_SELL) {
+      if (!sellMap[code]) sellMap[code] = { total: 0, qty: 0 };
+      sellMap[code].total += t.price * t.qty;
+      sellMap[code].qty += t.qty;
+    }
+  });
+  const pnls = [];
+  for (const code of Object.keys(sellMap)) {
+    if (buyMap[code] && buyMap[code].qty > 0) {
+      const buyAvg = buyMap[code].total / buyMap[code].qty;
+      const sellAvg = sellMap[code].total / sellMap[code].qty;
+      pnls.push((sellAvg - buyAvg) / buyAvg * 100);
+    }
+  }
+  if (!pnls.length) return;
+  const ranges = [
+    { label: '< -10%', min: -Infinity, max: -10 },
+    { label: '-10~-5%', min: -10, max: -5 },
+    { label: '-5~0%', min: -5, max: 0 },
+    { label: '0~5%', min: 0, max: 5 },
+    { label: '5~10%', min: 5, max: 10 },
+    { label: '10~20%', min: 10, max: 20 },
+    { label: '> 20%', min: 20, max: Infinity },
+  ];
+  const downShades = [hexToRgba(c.down, 0.7), hexToRgba(c.down, 0.9), c.down];
+  const upShades = [c.up, hexToRgba(c.up, 0.8), hexToRgba(c.up, 0.5), hexToRgba(c.up, 0.35)];
+  const colors = [...downShades, ...upShades];
+  const counts = ranges.map((r, i) => ({
+    name: r.label, value: pnls.filter(v => v >= r.min && v < r.max).length, itemStyle: { color: colors[i] }
+  }));
+  chart.setOption({
+    tooltip: { trigger: 'axis', formatter: p => p[0].name + '<br/>交易: <b>' + p[0].value + '</b>' },
+    grid: { left: 40, right: 10, top: 10, bottom: 40 },
+    xAxis: { type: 'category', data: counts.map(d => d.name), axisLabel: { color: c.text2, fontSize: 9, rotate: 30 } },
+    yAxis: { type: 'value', name: '笔数', axisLabel: { color: c.text2, fontSize: 9 }, splitLine: { lineStyle: { color: c.border } } },
+    series: [{ type: 'bar', data: counts }],
+  }, true);
+}
+
+function renderExitPie(deals) {
+  const dom = document.getElementById('chartAnalysisExit');
+  if (!dom || !deals || !deals.length) return;
+  const c = getColors();
+  const chart = echartsInit('chartAnalysisExit');
+  if (!chart) return;
+  const reasonMap = {
+    '成本止损': c.up, '移动止盈': c.down, '阶梯止盈': c.accent,
+    '时间止损': c.accent2, '换股卖出': hexToRgba(c.up, 0.6),
+    '公式止损': hexToRgba(c.accent, 0.6), '退市': c.text2,
+  };
+  const reasonCount = {};
+  deals.filter(t => t.direction === DIR_SELL).forEach(t => {
+    const reason = t.reason || (t.source === 'manual' ? '人工卖出' : '未标注');
+    const label = reason.length > 12 ? reason.slice(0, 12) + '…' : reason;
+    reasonCount[label] = (reasonCount[label] || 0) + 1;
+  });
+  const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
+  chart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
+    legend: { bottom: 0, textStyle: { color: c.text, fontSize: 9 } },
+    series: [{
+      type: 'pie', radius: ['30%', '55%'], center: ['50%', '45%'],
+      data: pieData.map(d => ({ ...d, itemStyle: { color: reasonMap[d.name] || c.text2, borderColor: c.bg, borderWidth: 1 } })),
+      label: { color: c.text, fontSize: 9, formatter: '{b}\n{d}%' }
+    }],
+  }, true);
+}
+
+// ── Deals table ──
+async function loadDeals() {
+  try {
+    const start = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-01';
+    const end = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-31';
+    // Use the trade API deals endpoint
+    const resp = await fetch(TRADE_API + '/deals?limit=5000').then(r => r.json()).catch(() => null);
+    _allDeals = (resp && resp.deals) ? resp.deals : [];
+    renderDealTable();
+  } catch (e) {
+    _allDeals = [];
+    renderDealTable();
+  }
+}
+
+function filterDealsByDate(dateStr) {
+  _dealPage = 0;
+  document.getElementById('analysisTradeSearch').value = '';
+  document.getElementById('analysisTradeFilter').value = '';
+  document.getElementById('analysisTradeDir').value = '';
+  renderDealTable(dateStr);
+}
+
+function renderDealTable(forceDate) {
+  const searchStr = (document.getElementById('analysisTradeSearch').value || '').toLowerCase();
+  const pnlFilter = document.getElementById('analysisTradeFilter').value;
+  const dirFilter = document.getElementById('analysisTradeDir').value;
+  let rows = _allDeals.slice();
+  // Filter
+  if (searchStr) rows = rows.filter(t => (t.code || '').toLowerCase().includes(searchStr) || (t.name || '').toLowerCase().includes(searchStr));
+  if (forceDate) {
+    const d = forceDate;
+    rows = rows.filter(t => {
+      const ts = new Date(t.ts * 1000);
+      const ds = ts.getFullYear() + '-' + String(ts.getMonth() + 1).padStart(2, '0') + '-' + String(ts.getDate()).padStart(2, '0');
+      return ds === d;
+    });
+  }
+  if (dirFilter === 'buy') rows = rows.filter(t => t.direction === DIR_BUY);
+  if (dirFilter === 'sell') rows = rows.filter(t => t.direction === DIR_SELL);
+  // Paginate
+  const total = rows.length;
+  const nPages = Math.max(1, Math.ceil(total / DEAL_PAGE_SIZE));
+  if (_dealPage >= nPages) _dealPage = nPages - 1;
+  const pageRows = rows.slice().reverse().slice(_dealPage * DEAL_PAGE_SIZE, (_dealPage + 1) * DEAL_PAGE_SIZE);
+  const tbody = document.getElementById('analysisTradeBody');
+  tbody.innerHTML = pageRows.map((t, i) => {
+    const ts = new Date(t.ts * 1000);
+    const ds = ts.getFullYear() + '-' + String(ts.getMonth() + 1).padStart(2, '0') + '-' + String(ts.getDate()).padStart(2, '0');
+    const dir = t.direction === DIR_BUY ? '买' : '卖';
+    const cls = t.direction === DIR_BUY ? 'td-down' : 'td-up';
+    return '<tr><td>' + (total - (_dealPage * DEAL_PAGE_SIZE + i)) + '</td>' +
+      '<td>' + esc(t.code || '') + '</td>' +
+      '<td>' + esc(t.name || '') + '</td>' +
+      '<td>' + ds + '</td>' +
+      '<td class="' + cls + '">' + dir + '</td>' +
+      '<td>' + (t.price || 0).toFixed(2) + '</td>' +
+      '<td>' + (t.qty || 0) + '</td>' +
+      '<td>' + (t.amount || (t.price * t.qty) || 0).toLocaleString('zh-CN') + '</td>' +
+      '<td style="font-size:10px;max-width:100px">' + esc(t.reason || (t.source === 'manual' ? '人工' : '')) + '</td></tr>';
+  }).join('');
+  document.getElementById('analysisTradeCount').textContent = '共 ' + total + ' 笔';
+  // Pager
+  const pager = document.getElementById('analysisTradePager');
+  if (nPages <= 1) { pager.innerHTML = ''; }
+  else {
+    pager.innerHTML = '<button class="btn btn-sm" ' + (_dealPage === 0 ? 'disabled' : '') + ' id="adpPrev">‹ 上一页</button>' +
+      '<span style="margin:0 8px">第 ' + (_dealPage + 1) + ' / ' + nPages + ' 页</span>' +
+      '<button class="btn btn-sm" ' + (_dealPage >= nPages - 1 ? 'disabled' : '') + ' id="adpNext">下一页 ›</button>';
+    document.getElementById('adpPrev').onclick = () => { _dealPage--; renderDealTable(forceDate); };
+    document.getElementById('adpNext').onclick = () => { _dealPage++; renderDealTable(forceDate); };
+  }
+}
+
+// Wire deal table toolbar
+(function wireDealToolbar() {
+  // Deferred until DOM ready
+  setTimeout(() => {
+    const search = document.getElementById('analysisTradeSearch');
+    const filt = document.getElementById('analysisTradeFilter');
+    const dirF = document.getElementById('analysisTradeDir');
+    const reset = document.getElementById('analysisTradeReset');
+    const goTrade = document.getElementById('analysisGoTradeBtn');
+    if (search) search.addEventListener('input', () => { _dealPage = 0; renderDealTable(); });
+    if (filt) filt.addEventListener('change', () => { _dealPage = 0; renderDealTable(); });
+    if (dirF) dirF.addEventListener('change', () => { _dealPage = 0; renderDealTable(); });
+    if (reset) reset.addEventListener('click', () => { _dealPage = 0; _selectedDate = ''; document.getElementById('analysisTradeSearch').value = ''; document.getElementById('analysisTradeFilter').value = ''; document.getElementById('analysisTradeDir').value = ''; renderDealTable(); });
+    if (goTrade) goTrade.addEventListener('click', () => { document.getElementById('tabBtnTrade')?.click(); });
+  }, 100);
+})();

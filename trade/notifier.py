@@ -192,8 +192,16 @@ class FeishuNotifier:
         if not is_buy:
             extra = []
             pnl_pct = d.get("pnl_pct")
-            if pnl_pct is not None:
-                extra.append(f"盈亏 {float(pnl_pct):+.2f}%")
+            pnl_amount = d.get("pnl_amount")
+            if pnl_pct is not None or pnl_amount is not None:
+                parts = []
+                if pnl_amount is not None:
+                    sign = "+" if pnl_amount >= 0 else ""
+                    parts.append(f"{sign}{float(pnl_amount):,.2f}")
+                if pnl_pct is not None:
+                    parts.append(f"{float(pnl_pct):+.2f}%")
+                extra.append("盈亏 " + "（".join(parts) + "）" if len(parts) == 2 else
+                             ("盈亏 " + parts[0]))
             tier = d.get("tier")
             sell_ratio = d.get("sell_ratio")
             if tier is not None and sell_ratio is not None:

@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS tier_state (
 """
 
 _SCHEMA = _TIER_STATE_DDL + """
+CREATE TABLE IF NOT EXISTS daily_asset (
+    date        TEXT PRIMARY KEY,   -- YYYY-MM-DD
+    total_asset REAL NOT NULL,      -- 总资产
+    available   REAL NOT NULL,      -- 可用资金
+    market_value REAL NOT NULL,     -- 持仓市值
+    ts          REAL NOT NULL       -- 写入时间戳
+);
 CREATE TABLE IF NOT EXISTS orders (
     order_id    TEXT PRIMARY KEY,
     remark      TEXT NOT NULL DEFAULT '',
@@ -118,7 +125,10 @@ class TradeStore:
     # ── 写接口 (消费者线程) ─────────────────────────────────────
 
     def save_order(self, record: dict) -> None:
-        """按 order_id upsert 委托记录 (回报乱序/重复都以最新状态覆盖)。"""
+        """按 order_id upsert 委托记录 (回报乱序/重复都以最新状态覆盖)。
+        2026-08-03 修复: QMT order_id 跨会话复用 (同 order_id 可能先分配给
+        000721, 下次分配给 300158), ON CONFLICT 必须更新全部业务字段,
+        否则新订单静默合并进旧记录的 code/price/qty。"""
         now = time.time()
         with self._lock, self._conn:
             self._conn.execute(
@@ -127,6 +137,11 @@ class TradeStore:
                     filled_qty, status, created_ts, updated_ts)
                    VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(order_id) DO UPDATE SET
+                    remark=excluded.remark,
+                    code=excluded.code,
+                    direction=excluded.direction,
+                    price=excluded.price,
+                    qty=excluded.qty,
                     filled_qty=excluded.filled_qty,
                     status=excluded.status,
                     updated_ts=excluded.updated_ts""",
@@ -372,6 +387,58 @@ class TradeStore:
                 json.dumps(payload, ensure_ascii=False, default=str) + "\n"
             )
             self._raw_fp.flush()
+
+    # ── 每日资产快照 (分析 Tab 净值曲线数据源) ──────────────
+
+    def save_daily_asset(self, date: str, total_asset: float,
+                         available: float, market_value: float) -> None:
+        """EOD 日终资产快照。date=YYYY-MM-DD。幂等 (冲突覆盖)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO daily_asset (date, total_asset, available,
+                   market_value, ts) VALUES (?,?,?,?,?)
+                   ON CONFLICT(date) DO UPDATE SET
+                    total_asset=excluded.total_asset,
+                    available=excluded.available,
+                    market_value=excluded.market_value,
+                    ts=excluded.ts""",
+                (date, total_asset, available, market_value, time.time()),
+            )
+
+    def get_daily_assets(self, start: str = "", end: str = "") -> list[dict]:
+        """读日终资产序列 (YYYY-MM-DD)。缺省 start/end = 全部。"""
+        with self._lock:
+            if start and end:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset WHERE date >= ? AND date <= ? "
+                    "ORDER BY date ASC", (start, end),
+                ).fetchall()
+            elif start:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset WHERE date >= ? ORDER BY date ASC",
+                    (start,),
+                ).fetchall()
+            elif end:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset WHERE date <= ? ORDER BY date ASC",
+                    (end,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset ORDER BY date ASC",
+                ).fetchall()
+        return [{"date": r[0], "total_asset": r[1], "available": r[2],
+                 "market_value": r[3], "ts": r[4]} for r in rows]
+
+    def get_daily_asset_count(self) -> int:
+        """daily_asset 行数 (判断有无历史数据)。"""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM daily_asset").fetchone()[0]
 
     def close(self) -> None:
         with self._lock:

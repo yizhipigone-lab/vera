@@ -294,8 +294,19 @@ input.invalid~.input-error{display:block}
 .tab-btn{padding:6px 18px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:13px}
 .tab-btn:hover{color:var(--text)}
 .tab-btn.active{background:var(--card);color:var(--text);border-color:var(--border);font-weight:600}
-#pageLab,#pageTrade,#pageResearch,#pageRecords{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
-#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active{display:block}
+/* 分析 Tab — 日历格子 */
+.cal-cell{border-radius:6px;padding:6px 8px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:72px;transition:transform .15s,box-shadow .15s;border:1px solid transparent;background:var(--surface)}
+.cal-cell.cal-empty{background:transparent;border:none;min-height:0}
+.cal-clickable{cursor:pointer}
+.cal-clickable:hover{transform:scale(1.04);box-shadow:var(--shadow-md);z-index:1}
+.cal-clickable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.cal-day{font-size:11px;color:var(--text2);font-family:var(--mono);align-self:flex-start}
+.cal-pnl{font-size:15px;font-weight:700;font-family:var(--mono);margin:2px 0}
+.cal-pnl.cal-up{color:var(--up)} .cal-pnl.cal-down{color:var(--down)}
+.cal-amt{font-size:10px;font-family:var(--mono);color:var(--text2)}
+.cal-trades{font-size:9px;color:var(--text2);margin-top:2px}
+#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
+#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
 .lab-card h3{margin:0 0 12px;font-size:13px;color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px dashed var(--border);font-size:12px}
@@ -320,6 +331,9 @@ input.invalid~.input-error{display:block}
 .trade-kill-btn.armed{background:var(--ok)}
 .td-table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
 .td-table th{text-align:right;padding:6px 10px;color:var(--text2);font-weight:500;font-size:10px;text-transform:uppercase;border-bottom:2px solid var(--border)}
+.td-sortable{cursor:pointer;user-select:none;transition:color .15s}
+.td-sortable:hover{color:var(--accent)}
+.td-sort-arrow{font-size:9px;margin-left:2px;opacity:.7}
 .td-table td{text-align:right;padding:5px 10px;border-bottom:1px solid var(--border)}
 .td-table td:first-child,.td-table th:first-child{text-align:left}
 .td-table tr:hover td{background:var(--surface)}
@@ -355,6 +369,7 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn active" id="tabBtnBacktest">回测</button>
   <button class="tab-btn" id="tabBtnLab">公式体检</button>
   <button class="tab-btn" id="tabBtnTrade">交易</button>
+  <button class="tab-btn" id="tabBtnAnalysis">分析</button>
   <button class="tab-btn" id="tabBtnRecords">交易记录</button>
   <button class="tab-btn" id="tabBtnResearch">研究</button>
 </div>
@@ -793,6 +808,91 @@ input:focus-visible,select:focus-visible{outline:none}
 </div>
 
 <!-- ===== 交易页 (P1 第三阶段, 2026-07-26): 读快照 + 发命令, 业务判断全在后端 ===== -->
+<!-- ===== 分析页 (2026-08-03): 交易日历 + 实盘图表 ===== -->
+<div id="pageAnalysis">
+  <div class="analysis-empty-state" id="analysisEmpty" style="display:none">
+    <div class="empty-state">
+      <div class="icon"></div>
+      <p style="color:var(--text);font-size:14px;font-weight:600;margin-bottom:4px">实盘开始后这里会出现业绩分析</p>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:8px">当前 trade/ 模块无成交记录，或 daily_asset 表尚未写入日终资产快照。</p>
+      <button class="btn btn-primary" id="analysisGoTradeBtn" style="font-size:12px">前往交易页</button>
+    </div>
+  </div>
+  <div id="analysisContent" style="display:none">
+    <!-- KPI 卡片 -->
+    <div class="kpi-grid" id="analysisKpiGrid"></div>
+    <!-- 交易日历 -->
+    <div class="chart-box full" style="margin-bottom:12px">
+      <div class="chart-box-header">
+        <span id="analysisCalendarTitle">交易日历</span>
+        <div style="display:flex;gap:4px;align-items:center">
+          <div class="nav-controls" style="display:flex;align-items:center;gap:4px">
+            <button class="btn btn-sm" id="calPrevYear" title="上一年">◀◀</button>
+            <button class="btn btn-sm" id="calPrevMonth" title="上月">◀</button>
+            <span id="calTitle" style="font-size:14px;font-weight:600;color:var(--text);min-width:120px;text-align:center">2026年8月</span>
+            <button class="btn btn-sm" id="calNextMonth" title="下月">▶</button>
+            <button class="btn btn-sm" id="calNextYear" title="下一年">▶▶</button>
+            <button class="btn btn-sm btn-primary" id="calToday">今天</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-box-body tall" style="height:auto;padding:8px">
+        <div class="weekdays-header" style="display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:11px;color:var(--text2);font-weight:600;padding:4px 0 8px">
+          <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+        </div>
+        <div class="calendar-grid" id="analysisCalendarGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
+      </div>
+    </div>
+    <!-- 权益曲线 -->
+    <div class="chart-box full" style="margin-bottom:12px">
+      <div class="chart-box-header"><span>权益曲线 & 基准对比</span></div>
+      <div class="chart-box-body tall" id="chartAnalysisEquity"></div>
+    </div>
+    <!-- 月度收益热力图 -->
+    <div class="chart-box full" style="margin-bottom:12px">
+      <div class="chart-box-header"><span>月度收益热力图</span></div>
+      <div class="chart-box-body tall" id="chartAnalysisHeat"></div>
+    </div>
+    <!-- 盈亏分布 + 卖出原因 -->
+    <div class="chart-row" style="margin-bottom:12px">
+      <div class="chart-box">
+        <div class="chart-box-header"><span>盈亏分布</span></div>
+        <div class="chart-box-body" id="chartAnalysisDist"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-header"><span>卖出原因</span></div>
+        <div class="chart-box-body" id="chartAnalysisExit"></div>
+      </div>
+    </div>
+    <!-- 成交明细 -->
+    <div class="chart-box full">
+      <div class="chart-box-header">
+        <span>成交明细</span>
+        <span id="analysisTradeCount" style="font-size:11px;color:var(--text2)"></span>
+      </div>
+      <div class="trade-toolbar">
+        <input id="analysisTradeSearch" placeholder="代码/名称搜索..." style="width:160px;font-size:11px;padding:4px 8px">
+        <select id="analysisTradeFilter" style="width:100px;font-size:11px;padding:4px 8px">
+          <option value="">全部盈亏</option><option value="win">盈利</option><option value="loss">亏损</option>
+        </select>
+        <select id="analysisTradeDir" style="width:100px;font-size:11px;padding:4px 8px">
+          <option value="">全部方向</option><option value="buy">买入</option><option value="sell">卖出</option>
+        </select>
+        <button class="btn btn-sm" id="analysisTradeReset">重置</button>
+      </div>
+      <div class="trade-table-wrap" style="max-height:400px">
+        <table class="trade-table">
+          <thead><tr>
+            <th>#</th><th>代码</th><th>名称</th><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>原因</th>
+          </tr></thead>
+          <tbody id="analysisTradeBody"></tbody>
+        </table>
+      </div>
+      <div id="analysisTradePager" style="padding:8px;text-align:center;font-size:11px;color:var(--text2)"></div>
+    </div>
+  </div>
+</div>
+
 <div id="pageResearch">
     <!-- ===== 对话大脑 (P3, 2026-07-28): 多会话, 松耦合独立卡片(可折叠,默认折叠), 卸载删此卡片+brain_chat.js ===== -->
     <details id="foldBrain" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
@@ -1014,6 +1114,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_chat.js?v=20260731a"></script>
+<script type="module" src="/web/js/analysis.js?v=20260803a"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260730a"></script>
 </body>
 </html>

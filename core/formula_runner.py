@@ -19,10 +19,13 @@ logger = get_logger(__name__)
 # TDX 选股扫描深度: 从"当前日期"往前的 bar 数 (公式计算与命中返回都受此窗口约束)。
 # 覆盖 ~12 年日线 (今天往前 3000 个交易日 ≈ 到 2014)。
 _MAX_SCAN_COUNT = 3000
+# 2026-08-02: start<2014 的回测 (如 2005 起) 需要更深窗口, 按 start 距今天估算,
+# 上限 7000 根 (~28 年), 防止触碰 TDX 单侧返回上限。
+_MAX_SCAN_COUNT_CAP = 7000
 
 
 def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> int:
-    """TDX 选股扫描深度 (恒返回 _MAX_SCAN_COUNT=3000)。
+    """TDX 选股扫描深度 (默认 _MAX_SCAN_COUNT=3000; start<2014 时按需加深)。
 
     2026-07-31 回退: 2026-07-23 引入的"区间跨度+预热"自适应算法有致命缺陷 ——
     它按 (end_time - start_time) 估算 count, 误以为 count 是从 end_time 往前扫。
@@ -33,9 +36,18 @@ def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> i
     导致回测前两年权益曲线为 0)。写死 3000 覆盖到 2014, 代价仅全市场公式阶段
     多约 13s (实测 0.37s→0.87s/批×50批), 相对回测总耗时为噪音。
     参数保留以兼容调用方 (run_stock_selection_with_dates)。
-    若未来需 start<2014 的回测: 提上限并同步调小 BATCH_SIZE 防 "返回数据过大"。
+
+    2026-08-02: 落实上文"若需 start<2014 的回测"——按 start 距**今天**的跨度估算
+    (与 TDX "从今天往前扫"的实测行为一致, 不再用 end_time), 估算值 = 交易日×242/365
+    + 300 根预热, floor=3000 保证 start>=2014 的老行为逐根不变, cap=7000 防 TDX 上限。
     """
-    return _MAX_SCAN_COUNT
+    try:
+        from datetime import date, datetime
+        start_d = datetime.strptime(str(start_time), "%Y%m%d").date()
+        est = int((date.today() - start_d).days * 242 / 365) + 300
+    except (ValueError, TypeError):
+        return _MAX_SCAN_COUNT
+    return max(_MAX_SCAN_COUNT, min(est, _MAX_SCAN_COUNT_CAP))
 
 
 def _empty_selection_df() -> pd.DataFrame:
@@ -93,17 +105,18 @@ class FormulaRunner(ConnectorSeam):
             f"pool={len(str_codes)} range={start_time}~{end_time}"
         )
 
+        # count 决定 TDX 从当前日期往前扫多少根 bar (见 _adaptive_scan_count 注释)
+        count = _adaptive_scan_count(start_time, end_time, stock_period)
+
         # 分批执行，避免 "返回数据过大" 错误
         # A2 修复: 300 → 100, GUPIAO_012 实测 17/18 批报"返回数据过大",
         # 信号被截断导致累计收益被低估. 100 只/批牺牲时间换稳定性.
-        BATCH_SIZE = 100
+        # 2026-08-02: count 超 3000 (start<2014) 时单批返回体积随窗口加深而增大,
+        # 批次减半到 50 防 "返回数据过大" (与 _adaptive_scan_count 注释的预案一致)。
+        BATCH_SIZE = 100 if count <= _MAX_SCAN_COUNT else 50
         all_records = []
         batch_errors = 0
         total_batches = (len(str_codes) - 1) // BATCH_SIZE + 1
-
-        # count 决定 TDX 从 end_time 往前扫多少根 bar
-        # 2026-07-23: 自适应 (区间交易日 + 预热缓冲), 原写死 3000 扫 ~12年全历史
-        count = _adaptive_scan_count(start_time, end_time, stock_period)
 
         for batch_start in range(0, len(str_codes), BATCH_SIZE):
             batch = str_codes[batch_start:batch_start + BATCH_SIZE]

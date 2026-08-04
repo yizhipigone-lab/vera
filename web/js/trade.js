@@ -34,6 +34,34 @@ function badge(el, ok, text) {
   el.textContent = text;
 }
 
+// ── 排序 ─────────────────────────────────────────────
+// 2026-08-03: 持仓表按列排序 —— 点表头切换升降序, 第二次点同一列反转方向
+
+var _posSort = { field: 'entry_ts', asc: false };   // 默认按入场时间最新在前
+var _lastClosed = null;                      // 缓存已平仓数据, sort 重渲染时复用
+
+// 排序用值提取: null/undefined 一律排到最后
+function _sortVal(p, field) {
+  var v = p[field];
+  if (v === null || v === undefined) return null;
+  return v;
+}
+
+function _applySort(positions) {
+  if (!_posSort.field) return positions;
+  var field = _posSort.field;
+  var asc = _posSort.asc;
+  return positions.slice().sort(function (a, b) {
+    var va = _sortVal(a, field);
+    var vb = _sortVal(b, field);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (asc) return va > vb ? 1 : va < vb ? -1 : 0;
+    return va < vb ? 1 : va > vb ? -1 : 0;
+  });
+}
+
 // ── 渲染 ─────────────────────────────────────────────
 
 // 2026-08-01: 急停状态记忆 —— renderStatus 只在它变化时重写 tdHint,
@@ -91,20 +119,42 @@ function markOffline() {
   ['tdPositions', 'tdOrders'].forEach(staleTag);
 }
 
+// 2026-08-03: 生成可排序表头 —— data-sort 字段与 position 对象字段对应
+function _sortTh(field, label) {
+  var arrow = '';
+  if (_posSort.field === field) {
+    arrow = _posSort.asc ? ' ▲' : ' ▼';
+  }
+  return '<th class="td-sortable" data-sort="' + field + '">' + label
+    + '<span class="td-sort-arrow">' + arrow + '</span></th>';
+}
+
 function renderPositions(d) {
   var box = document.getElementById('tdPositions');
   clearStale('tdPositions');
   // 2026-07-30: 缓存最近持仓供卖出可用校验 (tdSellBtn 复用数量框)
+  // 2026-08-03: 存原始未排序数据 —— sort 重渲染时 _lastPositions 不变
   window._lastPositions = d.positions || [];
+  _lastClosed = d.closed || null;
   if (!d.positions || !d.positions.length) {
     box.innerHTML = '<div style="color:var(--text2);font-size:12px">无持仓</div>'; return;
   }
   // 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例 + 已平仓
   // 2026-07-31: 当日涨幅 (价格口径) + 当日盈亏额 ((现价-昨收)×数量)
+  // 2026-08-03: 7 个可排序列: 当日涨幅/当日盈亏/市值/浮盈/盈亏%/入场时间/持仓天数
   var html = '<table class="td-table"><tr><th>代码</th><th>简称</th><th>数量</th><th>可用</th>'
-    + '<th>成本</th><th>现价</th><th>当日涨幅</th><th>当日盈亏</th><th>市值</th><th>浮盈</th><th>盈亏%</th>'
-    + '<th>入场时间</th><th>持仓天数</th><th>已触发档</th><th></th></tr>';
-  d.positions.forEach(function (p) {
+    + '<th>成本</th><th>现价</th>'
+    + _sortTh('day_chg_pct', '当日涨幅')
+    + _sortTh('day_chg_amt', '当日盈亏')
+    + _sortTh('market_value', '市值')
+    + _sortTh('pnl', '浮盈')
+    + _sortTh('pnl_pct', '盈亏%')
+    + _sortTh('entry_ts', '入场时间')
+    + _sortTh('hold_days', '持仓天数')
+    + '<th>已触发档</th><th></th></tr>';
+  // 2026-08-03: 应用排序后再渲染
+  var positions = _applySort(window._lastPositions);
+  positions.forEach(function (p) {
     var pnl = p.pnl === null ? '—' : p.pnl.toFixed(2);
     var pnlColor = p.pnl === null ? '' : p.pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
     var dayColor = p.day_chg_pct === null || p.day_chg_pct === undefined ? ''
@@ -158,6 +208,21 @@ function renderPositions(d) {
       cmd(b, '/api/trade/sell', { code: code }, '卖出命令已受理, 结果见审计日志');
     });
   });
+  // 2026-08-03: 可排序表头点击 —— 同列反转方向, 不同列切列且默认升序
+  box.querySelectorAll('.td-sortable').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var field = th.getAttribute('data-sort');
+      if (!field) return;
+      if (_posSort.field === field) {
+        _posSort.asc = !_posSort.asc;
+      } else {
+        _posSort.field = field;
+        _posSort.asc = true;
+      }
+      // 用缓存的原始数据重渲染 (不发起网络请求)
+      renderPositions({ positions: window._lastPositions, closed: _lastClosed });
+    });
+  });
 }
 
 function renderOrders(d) {
@@ -176,7 +241,7 @@ function renderOrders(d) {
     var canCancel = (st === 50 || st === 51 || st === 55);   // 已报/待撤/部成 可撤
     // 2026-07-30: remark 为空 = 手工单 (券商端/手机端委托, 同步认领进表)
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
-    html += '<tr><td>' + fmtTs(o.created_ts) + '</td><td>' + remark + '</td><td>'
+    html += '<tr><td>' + fmtTs(o.updated_ts || o.created_ts) + '</td><td>' + remark + '</td><td>'
       + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + st + '</td><td>'
@@ -201,7 +266,7 @@ function renderReconciles(d) {
   if (!d.reconciles || !d.reconciles.length) {
     box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无对账记录</div>'; return;
   }
-  var html = '<table class="td-table"><tr><th>时间</th><th>级别</th><th>代码</th>'
+  var html = '<table class="td-table"><tr><th>时间</th><th>级别</th><th>代码</th><th>简称</th>'
     + '<th>本地</th><th>QMT</th><th>说明</th></tr>';
   d.reconciles.slice(0, 20).forEach(function (r) {
     var color = r.level === 'CRITICAL' ? 'color:var(--up);font-weight:700'
@@ -209,7 +274,8 @@ function renderReconciles(d) {
     var detail = '';
     try { detail = JSON.parse(r.detail_json || '{}').reason || ''; } catch (e) {}
     html += '<tr><td>' + fmtTs(r.ts) + '</td><td style="' + color + '">' + esc(r.level)
-      + '</td><td>' + esc(r.code || '—') + '</td><td>' + esc(r.expected) + '</td><td>'
+      + '</td><td>' + esc(r.code || '—') + '</td><td>' + esc(r.name || '')
+      + '</td><td>' + esc(r.expected) + '</td><td>'
       + esc(r.actual) + '</td><td style="text-align:left">' + esc(detail) + '</td></tr>';
   });
   box.innerHTML = html + '</table>';
@@ -235,18 +301,30 @@ function renderDeals(d) {
   // 2026-07-30: 来源列 — 区分手工单 (券商端/手机端, 对账认领) 与系统单
   // 2026-07-31: 原因列 — 为什么成交 (trades.reason: 阶梯止盈·档1/移动止盈/
   // 硬止损/人工卖出...); 空 = 无 fill context (买入/部成续笔/历史行)
+  // 2026-08-03: 盈亏金额/盈亏比例列 — 卖出记录计算 (卖价-买入均价)×数量 及百分比
   var html = '<table class="td-table"><tr><th>时间</th><th>代码</th><th>简称</th>'
-    + '<th>方向</th><th>来源</th><th>原因</th><th>价格</th><th>数量</th><th>金额</th><th>委托号</th></tr>';
+    + '<th>方向</th><th>来源</th><th>原因</th><th>价格</th><th>数量</th><th>金额</th>'
+    + '<th>盈亏金额</th><th>盈亏比例</th><th>委托号</th></tr>';
   d.deals.forEach(function (t) {
     var isBuy = Number(t.direction) === 23;
+    var isSell = Number(t.direction) === 24;
     var src = t.source === 'manual' ? '<span class="trade-badge wait">手工</span>'
       : t.source === 'system' ? '系统' : '—';
+    // 盈亏列: 仅卖出有值, 买入显示 "—"
+    var pnlAmt = '—', pnlPct = '—', pnlColor = '';
+    if (isSell && t.pnl_amount !== null && t.pnl_amount !== undefined) {
+      pnlColor = t.pnl_amount >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+      pnlAmt = (t.pnl_amount >= 0 ? '+' : '') + t.pnl_amount.toLocaleString('zh-CN', {maximumFractionDigits: 2});
+      pnlPct = (t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct.toFixed(2) + '%';
+    }
     html += '<tr><td>' + fmtTs(t.ts) + '</td><td>' + esc(t.code) + '</td><td>'
       + esc(t.name || '—') + '</td><td style="color:'
       + (isBuy ? 'var(--up)' : 'var(--ok)') + '">' + (isBuy ? '买' : '卖') + '</td><td>'
       + src + '</td><td>' + (t.reason ? esc(t.reason) : '—') + '</td><td>'
       + Number(t.price).toFixed(2) + '</td><td>' + Number(t.qty) + '</td><td>'
-      + Number(t.amount).toLocaleString('zh-CN', {maximumFractionDigits: 2}) + '</td><td>'
+      + Number(t.amount).toLocaleString('zh-CN', {maximumFractionDigits: 2}) + '</td>'
+      + '<td style="' + pnlColor + '">' + pnlAmt + '</td>'
+      + '<td style="' + pnlColor + '">' + pnlPct + '</td><td>'
       + esc(t.order_id) + '</td></tr>';
   });
   box.innerHTML = html + '</table>';
@@ -262,7 +340,7 @@ function renderHistoryOrders(d) {
     + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th></tr>';
   d.orders.forEach(function (o) {
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
-    html += '<tr><td>' + fmtTs(o.created_ts) + '</td><td>' + remark + '</td><td>'
+    html += '<tr><td>' + fmtTs(o.updated_ts || o.created_ts) + '</td><td>' + remark + '</td><td>'
       + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td></tr>';

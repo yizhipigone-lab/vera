@@ -20,9 +20,13 @@ import threading
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+load_dotenv(_PROJECT_ROOT / ".env")  # 加载 FEISHU_WEBHOOK_URL 等环境变量
 
 from core.stock_filter import get_cached_info  # noqa: E402
 from trade.auto_buy import AutoBuyFeature  # noqa: E402
@@ -587,8 +591,9 @@ class TradeApp:
             # H1: 优先用调用方传的 apply 前成本; 没传才回退 book (清仓时已 0)
             cost = avg_cost if avg_cost is not None else (
                 pos.avg_cost if pos else 0.0)
-            payload["pnl_pct"] = (round((price / cost - 1) * 100, 2)
-                                  if cost > 0 else None)
+            if cost > 0:
+                payload["pnl_pct"] = round((price / cost - 1) * 100, 2)
+                payload["pnl_amount"] = round((price - cost) * qty, 2)
             payload["tier"] = ctx.get("tier")
             payload["sell_ratio"] = ctx.get("sell_ratio")
             remaining_vol = pos.volume if pos else 0
@@ -675,6 +680,18 @@ class TradeApp:
         else:
             self.store.write_audit(
                 "eod_skip", "query_positions 返回空, 跳过 EOD 归档 (查询不可用)", {})
+        # 分析 Tab 数据源: 每日资产快照 (2026-08-03)
+        try:
+            asset = self.gateway.query_asset()
+            total_asset = float(asset.get("total_asset", 0.0) or 0.0)
+            available = float(asset.get("available", 0.0) or 0.0)
+            market_value = float(asset.get("market_value", 0.0) or 0.0)
+            if total_asset > 0:
+                from datetime import datetime
+                date_str = datetime.now().strftime("%Y-%m-%d")
+                self.store.save_daily_asset(date_str, total_asset, available, market_value)
+        except Exception:
+            _logger.debug("EOD 资产快照写入失败 (分析 Tab 不受影响)")
         # 飞书盘后日报 (2026-07-31): 搭 15:05 EOD 的车; 查不到资产 fail-soft 不推。
         # notify_daily=False: 启动补偿路径 (15:05 后重启) 不发日报 —— baseline
         # 刚用当前 total_asset 设, 差值≈0, 是启动噪声非当日真实表现 (M-功1)。

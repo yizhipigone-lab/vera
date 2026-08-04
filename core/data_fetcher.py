@@ -359,11 +359,17 @@ class DataFetcher(ConnectorSeam):
                     field_frames[f].append(data[f])
 
             # 构建本批 window_mask: 每只股只在自己 [win_start, win_end] 内为 True
+            # 2026-08-04 修复: win_end 是当日子夜 (00:00) 时间戳 (交易日历/end_time
+            # 截断均如此), 直接比较时间戳会把窗口最后一天的全部分钟 bar 排除在外,
+            # 回测区间末日仍持仓的仓位会在末日第一根 bar 被误判退市强平 (reason=11)。
+            # 终点按日期比较 (含末日全天), 与 degrade_5m 的 normalize() 语义一致。
             m = pd.DataFrame(False, index=close_b.index, columns=close_b.columns)
+            idx_days = m.index.normalize()
             for c in codes:
                 if c not in m.columns:
                     continue
-                in_win = (m.index >= win_start[c]) & (m.index <= win_end[c])
+                in_win = (m.index >= win_start[c]) & (
+                    idx_days <= win_end[c].normalize())
                 m.loc[in_win, c] = True
             mask_frames.append(m)
 

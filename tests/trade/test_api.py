@@ -288,11 +288,11 @@ def test_deals_pagination_stable_across_same_ts(client):
 
 
 def test_deals_limit_out_of_range_rejected(client):
-    """limit < 1 或 > 1000 → 422 (SQLite LIMIT -1 = 无限制, 挡在边界)。"""
+    """limit < 1 或 > 5000 → 422。"""
     c, _ = client
     assert c.get("/api/trade/deals?limit=-1").status_code == 422
     assert c.get("/api/trade/deals?limit=0").status_code == 422
-    assert c.get("/api/trade/deals?limit=1001").status_code == 422
+    assert c.get("/api/trade/deals?limit=5001").status_code == 422
 
 
 def test_orders_default_limit_within_bounds(client):

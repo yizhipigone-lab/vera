@@ -406,6 +406,126 @@ export function filterTrades(allTrades, renderFn) {
   if (renderFn) renderFn(filtered, allTrades.length);
 }
 
+// ── 权益曲线可复用函数 (分析 Tab 和回测 Tab 共用) ──
+
+export function renderEquityCurve(domId, data, strategyName, colors) {
+  if (!data.equity || data.equity.length < 1) return null;
+  const c = colors || getColors();
+  const chart = echartsInit(domId);
+  if (!chart) return null;
+  const dates = data.equity.map(r => String(r.date || '').slice(0, 10));
+  const eq0 = data.equity[0].equity ?? 1;
+  const eqPct = data.equity.map(r => (r.equity / eq0 - 1) * 100);
+  const dd = data.equity.map(r => (r.drawdown || 0) * 100);
+  const strategyLabel = strategyName || '策略';
+  const series = [
+    { name: strategyLabel, type: 'line', data: eqPct, smooth: true,
+      itemStyle: { color: c.accent },
+      lineStyle: { color: c.accent, width: 2.5 }, symbol: 'none',
+      markLine: { silent: true, data: [{ yAxis: 0, lineStyle: { color: c.text2, type: 'dashed', width: 1 } }] } },
+    { name: '回撤', type: 'line', yAxisIndex: 1, data: dd,
+      itemStyle: { color: c.down },
+      lineStyle: { color: c.down, width: 1 }, areaStyle: { color: hexToRgba(c.down, 0.13) },
+      symbol: 'none' },
+  ];
+  if (data.benchmarks) {
+    const bmNames = { shanghai: '上证', hs300: '沪深300', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
+    const bmColors = [c.bm1, c.bm2, c.bm3, c.bm4, c.bm5];
+    let ci = 0;
+    for (const [name, bm] of Object.entries(data.benchmarks)) {
+      if (!bm || !bm.length) continue;
+      const bmMap = {};
+      bm.forEach(r => {
+        const d = String(r.date || '').slice(0, 10);
+        if (r.index_close != null) bmMap[d] = r.index_close;
+        if (r.close != null) bmMap[d] = r.close;
+      });
+      let bmStart = null;
+      for (const d of dates) {
+        if (bmMap[d] != null) { bmStart = bmMap[d]; break; }
+      }
+      if (bmStart == null) continue;
+      const bmVals = dates.map(d => bmMap[d] != null ? (bmMap[d] / bmStart - 1) * 100 : null);
+      if (bmVals.every(v => v === null)) continue;
+      const bmColor = bmColors[ci % bmColors.length];
+      series.push({ name: bmNames[name] || name, type: 'line', data: bmVals,
+        itemStyle: { color: bmColor },
+        lineStyle: { color: bmColor, width: 1, type: 'dashed' }, symbol: 'none',
+        connectNulls: true });
+      ci++;
+    }
+  }
+  chart.setOption({
+    tooltip: { trigger: 'axis', formatter: function(params) {
+      let s = params[0].axisValue + '<br/>';
+      params.forEach(p => {
+        s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:5px"></span>';
+        s += p.seriesName + ': <b>' + (p.value != null ? p.value.toFixed(2) + '%' : '-') + '</b><br/>';
+      });
+      return s;
+    }},
+    legend: { top: 0, textStyle: { color: c.text, fontSize: 10 } },
+    dataZoom: [
+      { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20,
+        borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
+        textStyle: { color: c.text2, fontSize: 9 } },
+    ],
+    grid: { left: 60, right: 50, top: 35, bottom: 60 },
+    xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
+    yAxis: [
+      { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
+        axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
+      { type: 'value', name: '回撤 %', nameTextStyle: { color: c.text2, fontSize: 10 },
+        axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
+    ],
+    toolbox: { right: 800, top: 0, feature: {
+      saveAsImage: { title: '保存图片', pixelRatio: 2 },
+      dataZoom: { title: { zoom: '区域缩放', back: '还原' } },
+      restore: { title: '刷新' },
+    }, iconStyle: { borderColor: c.text2 } },
+    series: series,
+  }, true);
+
+  // 2026-08-03: 聚焦激活缩放 —— 点一下图表才启用双指/滚轮缩放, 点别处恢复页面滚动
+  var chartDom = document.getElementById(domId);
+  if (chartDom) {
+    var parentBox = chartDom.closest('.chart-box');
+    var dzOn  = [{ type: 'inside', xAxisIndex: 0, start: 0, end: 100 },
+                 { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20,
+                   borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
+                   textStyle: { color: c.text2, fontSize: 9 } }];
+    var dzOff = [{ type: 'slider', xAxisIndex: 0, bottom: 10, height: 20,
+                   borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
+                   textStyle: { color: c.text2, fontSize: 9 } }];
+    var zoomActive = false;
+
+    function enableZoom() {
+      if (zoomActive) return;
+      zoomActive = true;
+      chart.setOption({ dataZoom: dzOn });
+      if (parentBox) parentBox.style.outline = '1px solid ' + c.accent;
+      setTimeout(function () {
+        document.addEventListener('click', disableZoomOnOutside, { once: true });
+      }, 0);
+    }
+
+    function disableZoomOnOutside(e) {
+      if (!chartDom.contains(e.target)) disableZoom();
+    }
+
+    function disableZoom() {
+      if (!zoomActive) return;
+      zoomActive = false;
+      chart.setOption({ dataZoom: dzOff });
+      if (parentBox) parentBox.style.outline = '';
+    }
+
+    chartDom.addEventListener('click', enableZoom);
+  }
+
+  return chart;
+}
+
 // ── Main Render Entry ──
 
 export function renderAllCharts(data) {
@@ -451,77 +571,8 @@ export function renderAllCharts(data) {
   const hdr = document.getElementById('equityChartHeader');
   if (hdr && formula) hdr.textContent = '权益曲线 & 基准对比 — ' + formula + ' ' + dateRange;
 
-  // ECharts: Equity curve
-  if (data.equity && data.equity.length > 0) {
-    const chart = echartsInit('chartEquity');
-    const dates = data.equity.map(r => r.date.slice(0, 10));
-    const eq0 = data.equity[0].equity ?? 1;
-    const eqPct = data.equity.map(r => (r.equity / eq0 - 1) * 100);
-    const dd = data.equity.map(r => (r.drawdown || 0) * 100);
-    const series = [
-      { name: '策略', type: 'line', data: eqPct, smooth: true,
-        lineStyle: { color: c.accent, width: 2.5 }, symbol: 'none',
-        markLine: { silent: true, data: [{ yAxis: 0, lineStyle: { color: c.text2, type: 'dashed', width: 1 } }] } },
-      { name: '回撤', type: 'line', yAxisIndex: 1, data: dd,
-        lineStyle: { color: c.down, width: 1 }, areaStyle: { color: hexToRgba(c.down, 0.13) },
-        symbol: 'none' },
-    ];
-    if (data.benchmarks) {
-      const bmNames = { shanghai: '上证', hs300: '沪深300', chuangyeban: '创业板', kechuang50: '科创50', zhongzhengA500: '中证A500' };
-      const bmColors = [c.bm1, c.bm2, c.bm3, c.bm4];
-      let ci = 0;
-      for (const [name, bm] of Object.entries(data.benchmarks)) {
-        if (!bm || !bm.length) continue;
-        const bmMap = {};
-        bm.forEach(r => {
-          const d = String(r.date || '').slice(0, 10);
-          if (r.index_close != null) bmMap[d] = r.index_close;
-        });
-        let bmStart = null;
-        for (const d of dates) {
-          if (bmMap[d] != null) { bmStart = bmMap[d]; break; }
-        }
-        if (bmStart == null) continue;
-        const bmVals = dates.map(d => bmMap[d] != null ? (bmMap[d] / bmStart - 1) * 100 : null);
-        if (bmVals.every(v => v === null)) continue;
-        series.push({ name: bmNames[name] || name, type: 'line', data: bmVals,
-          lineStyle: { color: bmColors[ci % 4], width: 1, type: 'dashed' }, symbol: 'none',
-          connectNulls: true });
-        ci++;
-      }
-    }
-    chart.setOption({
-      tooltip: { trigger: 'axis', formatter: function(params) {
-        let s = params[0].axisValue + '<br/>';
-        params.forEach(p => {
-          s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:5px"></span>';
-          s += p.seriesName + ': <b>' + (p.value != null ? p.value.toFixed(2) + '%' : '-') + '</b><br/>';
-        });
-        return s;
-      }},
-      legend: { top: 0, textStyle: { color: c.text, fontSize: 10 } },
-      dataZoom: [
-        { type: 'inside', xAxisIndex: 0, start: 0, end: 100 },
-        { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20,
-          borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
-          textStyle: { color: c.text2, fontSize: 9 } },
-      ],
-      grid: { left: 60, right: 50, top: 35, bottom: 60 },
-      xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
-      yAxis: [
-        { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
-          axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
-        { type: 'value', name: '回撤 %', nameTextStyle: { color: c.text2, fontSize: 10 },
-          axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
-      ],
-      toolbox: { right: 800, top: 0, feature: {
-        saveAsImage: { title: '保存图片', pixelRatio: 2 },
-        dataZoom: { title: { zoom: '区域缩放', back: '还原' } },
-        restore: { title: '刷新' },
-      }, iconStyle: { borderColor: c.text2 } },
-      series: series,
-    }, true);
-  }
+  // Equity curve (delegated to shared renderer)
+  renderEquityCurve('chartEquity', data, '策略', c);
 
   // Monthly returns
   if (data.equity && data.equity.length > 1) {

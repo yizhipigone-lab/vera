@@ -308,13 +308,16 @@ document.getElementById('cfgFormula').addEventListener('change', loadFactorRules
 // ═══════════════════════════════════════════
 
 let _labPollTimer = null;
-function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade';
-  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab && !isTrade);
+function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade', isAnalysis = name==='analysis';
+  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab && !isTrade && !isAnalysis);
   document.getElementById('tabBtnLab').classList.toggle('active', isLab);
   document.getElementById('tabBtnTrade').classList.toggle('active', isTrade);
-  document.querySelector('.app').style.display = (isLab||isTrade)?'none':'';
+  var _tabA = document.getElementById('tabBtnAnalysis'); if (_tabA) _tabA.classList.toggle('active', isAnalysis);
+  document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis)?'none':'';
   document.getElementById('pageLab').classList.toggle('active', isLab);
   document.getElementById('pageTrade').classList.toggle('active', isTrade);
+  var _pa = document.getElementById('pageAnalysis'); if (_pa) _pa.classList.toggle('active', isAnalysis);
+  if (isAnalysis && window.analysisPageEnter) window.analysisPageEnter();
   var isResearch = name==='research';
   var _tabR = document.getElementById('tabBtnResearch'); if (_tabR) _tabR.classList.toggle('active', isResearch);
   var _pr = document.getElementById('pageResearch'); if (_pr) _pr.classList.toggle('active', isResearch);
@@ -395,6 +398,7 @@ document.getElementById('labTag').addEventListener('change', e => { document.get
 document.getElementById('tabBtnBacktest').addEventListener('click', () => switchTab('backtest'));
 document.getElementById('tabBtnLab').addEventListener('click', () => switchTab('lab'));
 document.getElementById('tabBtnTrade').addEventListener('click', () => switchTab('trade'));
+document.getElementById('tabBtnAnalysis')?.addEventListener('click', () => switchTab('analysis'));
 document.getElementById('tabBtnResearch')?.addEventListener('click', () => switchTab('research'));
 document.getElementById('tabBtnRecords')?.addEventListener('click', () => switchTab('records'));
 document.querySelector('.theme-btn').addEventListener('click', toggleTheme);

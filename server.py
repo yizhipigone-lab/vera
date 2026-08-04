@@ -404,14 +404,105 @@ async def index():
     html_path = _PROJECT_ROOT / "web" / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
-    # index.html 缺失时返回兜底提示，避免隐式返回 None 触发 ResponseValidationError
     return "<h1>VERA Web 前端未找到，请创建 web/index.html</h1>"
 
 @app.get("/favicon.ico")
 async def favicon():
-    """重定向到 SVG 图标，消除 404 日志噪音。"""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/web/favicon.svg")
+
+
+# ====== 分析 Tab 端点 ======
+
+@app.get("/api/calendar")
+async def api_calendar(year: int = 0, month: int = 0):
+    """交易日历 (TDX 数据源, 降级本地 JSON)。"""
+    from datetime import date as _date
+    now = _date.today()
+    y = year if year > 0 else now.year
+    m = month if 1 <= month <= 12 else now.month
+    # 当月天数
+    import calendar as _cal
+    days_in_month = _cal.monthrange(y, m)[1]
+    # YYYYMMDD 格式 (匹配 TDX 全仓约定)
+    start_ym = f"{y}{m:02d}01"
+    end_ym = f"{y}{m:02d}{days_in_month}"
+    # 尝试 TDX (带 5s 超时)
+    trading_dates: set = set()
+    source = "tdx"
+    try:
+        from core.data_fetcher import DataFetcher
+        dates_list = DataFetcher.get_trading_dates(
+            "SH", start_time=start_ym, end_time=end_ym)
+        # TDX 返回 YYYYMMDD, 归一化到 YYYY-MM-DD
+        trading_dates = set()
+        for d in dates_list:
+            ds = str(d)
+            if len(ds) == 8:
+                trading_dates.add(f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}")
+            elif len(ds) == 10:
+                trading_dates.add(ds.replace("-", "")[0:4] + "-" + ds.replace("-", "")[4:6] + "-" + ds.replace("-", "")[6:8])
+    except Exception:
+        # 降级: 本地 JSON
+        source = "local_json"
+        cal_path = _PROJECT_ROOT / "data" / "trading_calendar.json"
+        if cal_path.exists():
+            try:
+                cal_data = json.loads(cal_path.read_text("utf-8"))
+                dates = cal_data.get("dates", [])
+                # 过滤当月日期
+                prefix = f"{y}-{m:02d}-"
+                trading_dates = {d for d in dates if d.startswith(prefix)}
+            except Exception:
+                trading_dates = set()
+    # 构造当月全部日期
+    result = {}
+    for d in range(1, days_in_month + 1):
+        date_str = f"{y}-{m:02d}-{d:02d}"
+        dt = _date(y, m, d)
+        is_trading = date_str in trading_dates
+        result[date_str] = {
+            "is_trading": is_trading,
+            "weekday": dt.weekday(),  # 0=Mon
+        }
+    return {"year": y, "month": m, "trading_calendar": result, "data_source": source}
+
+
+@app.get("/api/benchmark/history")
+async def api_benchmark_history(
+    indices: str = "shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500",
+    start: str = "", end: str = "",
+):
+    """拉取基准指数日线 (分析 Tab 权益曲线基准对比)。
+    indices: 逗号分隔的指数名; start/end: YYYY-MM-DD。"""
+    from core.data_fetcher import DataFetcher
+    index_names = [n.strip() for n in indices.split(",") if n.strip()]
+    result: dict = {}
+    for name in index_names:
+        code = DataFetcher.INDEX_CODES.get(name)
+        if not code:
+            continue
+        try:
+            kline = DataFetcher.get_kline([code], start_time=start,
+                                          end_time=end, period="1d",
+                                          dividend_type="none")
+            if kline is None or "Close" not in kline:
+                result[name] = []
+                continue
+            # get_kline returns field-major: {"Close": DataFrame with code columns, DatetimeIndex}
+            close_df = kline["Close"]
+            if close_df is None or close_df.empty or code not in close_df.columns:
+                result[name] = []
+                continue
+            series = close_df[code].dropna()
+            records = []
+            for idx_val, val in series.items():
+                d = str(idx_val)[:10]
+                records.append({"date": d, "close": round(float(val), 2)})
+            result[name] = records
+        except Exception:
+            result[name] = []
+    return result
 
 
 # ====== 启动 ======

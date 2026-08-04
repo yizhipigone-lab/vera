@@ -151,3 +151,33 @@ def test_window_end_never_before_window_start():
     win_start, win_end = DataFetcher.compute_window_bounds(
         sel, 45, trading_days=tdays, end_time=tdays[5].strftime("%Y%m%d"))
     assert win_end["600001.SH"] == win_start["600001.SH"] == tdays[10]
+
+
+def test_window_mask_includes_full_last_day(monkeypatch):
+    """2026-08-04 修复: win_end 是当日子夜时间戳, mask 终点须按日期比较,
+    窗口最后一天的全部分钟 bar 应为 True — 否则回测末日持仓会被误判退市
+    强平 (reason=11), 如 2026-07-31 批 47 笔 (含 000039.SZ 中集集团)。"""
+    days = ["2024-01-02", "2024-01-03", "2024-01-04"]
+    idx = _grid_index(days)
+    close = pd.DataFrame(10.0, index=idx, columns=["600001.SH"])
+    kline = {"Close": close, "High": close * 1.01, "Low": close * 0.99,
+             "Open": close.copy(), "Volume": close.copy(), "Amount": close.copy()}
+
+    monkeypatch.setattr(
+        DataFetcher, "compute_window_bounds",
+        classmethod(lambda cls, selections, wtd, trading_days=None, end_time=None:
+                    ({"600001.SH": pd.Timestamp("2024-01-02")},
+                     {"600001.SH": pd.Timestamp("2024-01-03")})))  # 子夜时间戳
+    monkeypatch.setattr(
+        DataFetcher, "get_kline",
+        classmethod(lambda cls, codes, start_time, end_time, period,
+                    dividend_type, fill_data, use_cache=False: kline))
+
+    sel = pd.DataFrame([{"stock_code": "600001.SH", "select_date": "2024-01-02"}])
+    _, mask = DataFetcher.get_kline_windowed(sel, "5m", 45)
+    days_of = mask.index.normalize()
+    col = mask["600001.SH"]
+    # 窗口最后一天 (2024-01-03) 的 48 根 bar 全部在窗口内
+    assert col[days_of == pd.Timestamp("2024-01-03")].all()
+    # 窗口外次日 (2024-01-04) 仍为 False
+    assert not col[days_of == pd.Timestamp("2024-01-04")].any()
