@@ -55,9 +55,18 @@ class TriggerPreFilter:
                     return True
         # ── trailing: 激活 + 回撤线触及 ──
         t = self._trailing
-        if t is not None and peak_hi_profit >= t.activation \
-                and lo <= peak_hi * (1.0 - t.drawdown):
-            return True
+        if t is not None and peak_hi_profit >= t.activation:
+            conf = getattr(t, "confirm", "intraday")
+            if conf in ("intraday", "simple", "real"):
+                # 2026-08-05: simple/real 同为每 bar 判定 (real 的跳空触发
+                # open<线 蕴含 lo<线, 本条件仍是保守充分条件)
+                if lo <= peak_hi * (1.0 - t.drawdown):
+                    return True
+            else:
+                # 2026-08-04 日频确认模式 (low/close): 只在当日末根 bar 可能触发,
+                # 具体条件 (day_lo/close 触线 + 阶梯值班日休息) 留给全路径
+                if (i % bpday) == bpday - 1:
+                    return True
         # ── time_stop: 持仓到期 ──
         ts = self._time
         if ts is not None and hold_days >= ts.max_hold_days:

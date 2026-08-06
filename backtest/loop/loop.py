@@ -170,12 +170,19 @@ class BacktestLoop:
         high_px_arr = book.high_px_arr
         high_hi_arr = book.high_hi_arr
         ladder_done_arr = book.ladder_done_arr
+        day_lo_arr = book.day_lo_arr          # 2026-08-04: 日频确认模式用
+        ladder_day_arr = book.ladder_day_arr  # 阶梯值班日 (i//bpday)
         pp = 0
         while pp < book.count:
             ci = int(code_arr[pp])
             if ci < 0:
                 pp += 1
                 continue
+            # 2026-08-06 HIGH#4: 日首哨兵必须在退市/停牌 continue 之前置位 —
+            # 否则日首 bar 停牌会在下方 continue 跳过 day_lo 重置, day_lo 沿用昨天,
+            # low/close 确认模式误判。哨兵 inf 由当日首个可交易 bar 的 lo_t 填充。
+            if (i % bpday) == 0:
+                day_lo_arr[pp] = math.inf
             xp = price_np[i, ci]
             # ── 退市/停牌 ──
             if (tradable_np is not None and ci < tradable_np.shape[1]
@@ -202,6 +209,12 @@ class BacktestLoop:
             if math.isnan(xp) or xp <= 0.0:
                 pp += 1
                 continue
+            # 2026-08-04: 当日累计最低价 (日频确认模式用; 日首哨兵重置, 其后取 min)
+            # 2026-08-06 HIGH#4: 日首哨兵已在循环顶置位, 这里只填充+取 min;
+            #   lo_t 为 NaN 时 NaN<inf 为 False 不写入, 比旧逻辑(日首无条件写 NaN)更安全
+            lo_t = low_np[i, ci] if low_np is not None else xp
+            if lo_t < day_lo_arr[pp]:
+                day_lo_arr[pp] = lo_t
             # ── T+1: 当日买入不可当日卖 ──
             if (i // bpday) == (entry_idx_arr[pp] // bpday):
                 if high_np is not None:
@@ -254,6 +267,9 @@ class BacktestLoop:
                 hi_pp=hi_pp, lo_pp=lo_pp,
                 ladder_profits=self.ladder_profits,
                 ladder_ratios=self.ladder_ratios, n_ladder=self.n_ladder,
+                is_last_bar=((i % bpday) == bpday - 1),
+                day_lo=day_lo_arr[pp],
+                ladder_fired_today=(ladder_day_arr[pp] == i // bpday),
             )
 
             # ── 1. 绝对优先 (formula_sell, reason=12) ──
@@ -317,6 +333,9 @@ class BacktestLoop:
                                  tr.execution_price, sell_sh,
                                  gross - sell_sh * ep, ret, tr.reason)
                 book.set_shares(pp, total_sh - sell_sh)
+                if tr.reason == 5:
+                    # 2026-08-04: 记录阶梯值班日 — 日频确认模式下 trailing 当日休息
+                    book.ladder_day_arr[pp] = i // p.bpday
                 return cash, "keep"
             # sell_sh >= total_sh → 落到全卖
         # 全卖

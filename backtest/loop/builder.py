@@ -50,6 +50,10 @@ def build_backtest_loop(
     # 移动止盈跳空保护 (2026-07-21 用户拍板, opt-in 默认关):
     # 跳空低开跌穿回撤线时按 min(回撤线, 开盘价) 成交
     trailing_gap_protection: bool = False,
+    # 移动止盈确认模式 (2026-08-04): intraday=旧行为(每bar判定,线价成交);
+    # low=日频最低价确认, close=日频收盘价确认 (日频模式当日末根bar判定,
+    # 收盘价成交, 阶梯值班日休息)
+    trailing_confirm: str = "intraday",
     # 卖出冷却 (2026-07-23, bar 数): 全清仓后 N bar 内禁止同票重新买入, 0=关闭
     sell_cooldown_bars: int = 0,
 ) -> BacktestLoop:
@@ -79,7 +83,7 @@ def build_backtest_loop(
     if trailing_enabled:
         strategies["trailing"] = TrailingStrategy(
             activation=trailing_activation, drawdown=trailing_drawdown,
-            gap_protection=trailing_gap_protection)
+            gap_protection=trailing_gap_protection, confirm=trailing_confirm)
     if time_enabled:
         strategies["time_stop"] = TimeStopStrategy(max_hold_days=max_hold_days)
     if cond_time_enabled:

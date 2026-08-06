@@ -105,6 +105,11 @@ class Context:
     ladder_profits: np.ndarray
     ladder_ratios: np.ndarray
     n_ladder: int
+    # 2026-08-04: 移动止盈日频确认模式 (trailing confirm=low/close) 用。
+    # intraday 默认模式下全部为占位值, 策略不读。
+    is_last_bar: bool = False       # 当日最后一根 bar (i % bpday == bpday-1)
+    day_lo: float = float("nan")    # 当日累计最低价 (日首 bar 重置)
+    ladder_fired_today: bool = False  # 当日阶梯止盈已触发过新档位 (值班日 trailing 休息)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -233,6 +238,9 @@ class PositionBook:
         self._high_px = np.zeros(max_pos, dtype=np.float64)
         self._high_hi = np.zeros(max_pos, dtype=np.float64)
         self._ladder_done = np.zeros(max_pos, dtype=np.int32)
+        # 2026-08-04: 移动止盈日频确认模式的逐持仓状态
+        self._day_lo = np.zeros(max_pos, dtype=np.float64)     # 当日累计最低价
+        self._ladder_day = np.full(max_pos, -1, dtype=np.int32)  # 最近阶梯触发日 (i//bpday)
         self._count = 0
         # 2026-07-18 Phase 3: code→slot 索引, 换股查找 O(n)→O(1)。
         # 不变量: 同一 code 在 book 中至多一个槽位(同码买入前先换股卖旧)。
@@ -269,6 +277,8 @@ class PositionBook:
         self._high_px[p] = high_px
         self._high_hi[p] = high_hi
         self._ladder_done[p] = 0
+        self._day_lo[p] = 0.0
+        self._ladder_day[p] = -1
         self._slot_of[int(code)] = p
         self._count += 1
         return p
@@ -328,6 +338,14 @@ class PositionBook:
     def ladder_done_arr(self) -> np.ndarray:
         return self._ladder_done
 
+    @property
+    def day_lo_arr(self) -> np.ndarray:
+        return self._day_lo
+
+    @property
+    def ladder_day_arr(self) -> np.ndarray:
+        return self._ladder_day
+
     def slot_of(self, code: int) -> int:
         """code 的槽位, 不存在返回 -1。O(1), 替代逐槽扫描 (2026-07-18 Phase 3)。"""
         return self._slot_of.get(int(code), -1)
@@ -348,5 +366,7 @@ class PositionBook:
             self._high_px[p] = self._high_px[last]
             self._high_hi[p] = self._high_hi[last]
             self._ladder_done[p] = self._ladder_done[last]
+            self._day_lo[p] = self._day_lo[last]
+            self._ladder_day[p] = self._ladder_day[last]
         self._slot_of.pop(removed_code, None)
         self._count -= 1

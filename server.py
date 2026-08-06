@@ -265,6 +265,11 @@ def run_pipeline(cfg: StrategyConfig):
     import os as _os
     import tempfile
     config_dict = _config_to_yaml_dict(cfg)
+    # 2026-08-06 HIGH#5: validate 下沉到 /api/run (原仅 save/validate 端点调).
+    # 不阻塞回测, 仅 warning 入日志, 便于直调 API/yaml 路径暴露 ladder 比例错配。
+    _stop_warnings = ConfigLoader.validate_stop_config(config_dict)
+    if _stop_warnings:
+        logger.warning("止损止盈配置告警 (不阻塞): %s", _stop_warnings)
     tmp_yaml = None
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as fp:

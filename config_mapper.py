@@ -49,6 +49,7 @@ class StrategyConfig(BaseModel):
     trailing_enabled: bool = True
     trailing_activation: Optional[float] = None
     trailing_drawdown: Optional[float] = None
+    trailing_confirm: str = "intraday"  # 2026-08-05: 确认方式 (intraday/low/close/simple/real)
     ladder_enabled: bool = True
     ladder_levels: str = "6:30,15:30"
     time_enabled: bool = True
@@ -84,9 +85,18 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
         for item in cfg.ladder_levels.split(","):
             parts = item.strip().split(":")
             if len(parts) == 2:
+                profit = float(parts[0])
+                sell_ratio = float(parts[1])
+                # 2026-08-06 HIGH#5: 容忍百分数/小数两种格式 (UI 默认 "6:30,15:30"
+                # 是百分数, 直调 API/yaml 可能传小数). >1 视为百分数 /100 归一化,
+                # 与 stop_config 期望的小数一致; sell_ratio 同理 (30→0.30)。
+                if profit > 1:
+                    profit /= 100
+                if sell_ratio > 1:
+                    sell_ratio /= 100
                 ladder_levels.append({
-                    "profit": float(parts[0]),
-                    "sell_ratio": float(parts[1]),
+                    "profit": profit,
+                    "sell_ratio": sell_ratio,
                 })
 
     # 选股始终用日线，回测层可用5m/1m
@@ -143,6 +153,8 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
                 "drawdown": cfg.get(
                     "trailing_drawdown", DEFAULT_TRAILING_DRAWDOWN
                 ),
+                # 2026-08-05: 确认方式透传 (intraday/low/close/simple/real)
+                "confirm": str(cfg.get("trailing_confirm", "intraday")),
             },
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},

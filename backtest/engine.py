@@ -53,7 +53,8 @@ ENGINE_VERSION = "v3.6-no-legacy-20260723"
 # 执行价格 (权威实现见 backtest/loop/strategies/, 此处仅注记):
 #   成本止损 → stop_price (ep*(1+threshold))
 #   阶梯止盈 → ladder_price (ep*(1+profit))
-#   移动止损/止盈 → Low 触及回撤线即触发, 按回撤线价 trail_line 成交 (trailing.py; 非 Close)
+#   移动止损/止盈 → 取决于 confirm 模式 (trailing.py): intraday=Low触线按线价;
+#     low/close=日频确认按收盘; simple=5M碰线按bar收盘 / 1D收盘判定按收盘 (无阶梯休息)
 #   其他     → Close
 # ═══════════════════════════════════════════════════════════════
 
@@ -371,6 +372,7 @@ class BacktestEngine:
             formula_exit_lag_bars=formula_exit_lag_bars,
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
+            trailing_confirm=str(trail.get("confirm", "intraday")),
             sell_cooldown_bars=self.sell_cooldown_days * bpday,
         )
         self._last_loop = loop

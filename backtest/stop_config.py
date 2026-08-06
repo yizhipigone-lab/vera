@@ -105,10 +105,15 @@ def get_stop_config_summary(stop_loss_config: dict) -> str:
         drawdown = trail.get("drawdown")
         if drawdown is None:
             drawdown = DEFAULT_TRAILING_DRAWDOWN
-        lines.append(
-            f"移动止盈: 盈利{activation:.1%}激活, "
-            f"盘中Low触及回撤{drawdown:.1%}线即按回撤线价成交"
-        )
+        confirm = trail.get("confirm", "intraday")
+        confirm_desc = {
+            "intraday": f"盘中Low触及回撤{drawdown:.1%}线即按回撤线价成交",
+            "low": f"当日最低触及回撤{drawdown:.1%}线, 按收盘价成交(阶梯值班日休息)",
+            "close": f"收盘价跌破回撤{drawdown:.1%}线, 按收盘价成交(阶梯值班日休息)",
+            "simple": f"5M碰回撤{drawdown:.1%}线按bar收盘价成交/1D收盘价确认(无阶梯休息)",
+            "real": f"条件单语义: 创新高bar不触发, 跳空按开盘价, 触回撤{drawdown:.1%}线按线价成交",
+        }.get(confirm, f"盘中Low触及回撤{drawdown:.1%}线即按回撤线价成交")
+        lines.append(f"移动止盈: 盈利{activation:.1%}激活, {confirm_desc}")
 
     time_s = stop_loss_config.get("time_stop", {})
     if time_s.get("enabled", True):
