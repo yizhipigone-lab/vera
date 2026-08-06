@@ -382,3 +382,63 @@ def test_sync_reports_heals_missing_trade_row(store, kill):
     assert notified == []                   # 不重复通知
     # 第二轮幂等: 行已补齐, 不再补写
     assert rec.sync_reports()["adopted"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-04 (600127 双记账急停事件): QMT 盘前/跨日查询会返回
+# 前一交易日的成交与委托, 同步两腿只认当日数据
+# ═══════════════════════════════════════════════════════════════
+
+def test_adopt_skips_cross_day_trades(store, kill):
+    """盘前 QMT 返回昨日成交 + known 只装当日 traded_id → 昨日成交被
+    当"新手工单"重复认领 (600127 实测 1700→3400 双扣急停)。
+    修复: 非当日 ts 的成交一律跳过, 不入账不落库, audit 留痕。"""
+    gw = _gw()
+    book = Book()
+    trade = gw.simulate_external_trade(CODE, DIRECTION_BUY, 5.67, 1700)
+    # 成交时间改成昨天 (模拟盘前 QMT 返回昨日数据的剧本)
+    gw._trades[trade["traded_id"]]["ts"] = time.time() - 86400
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    result = rec.sync_reports()
+    assert result["adopted"] == 0
+    assert CODE not in book.snapshot()["positions"]          # 没重复入账
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM trades").fetchone()[0] == 0    # 没落库
+    kinds = {r[0] for r in store._conn.execute("SELECT kind FROM audit")}
+    assert "sync_stale_skipped" in kinds
+    assert "manual_adopt" not in kinds
+
+
+def test_sync_orders_skips_cross_day_orders(store, kill):
+    """同日事件另一条腿: 昨日委托回写会把 orders.updated_ts 盖成今天,
+    昨日废单混进"当日委托" (api 按 updated_ts 过滤当日)。
+    修复: 非当日 ts 的委托一律跳过, 不回写 book/store。"""
+    gw = _gw()
+    book = Book()
+    oid = gw.order(CODE, DIRECTION_SELL, 14.57, 600, remark="V0803-036X")
+    gw._orders[oid] = dict(gw._orders[oid], status=56, filled_qty=600,
+                           ts=time.time() - 86400)
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    result = rec.sync_reports()
+    assert result["orders_updated"] == 0
+    assert oid not in book.snapshot()["orders"]
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE order_id=?",
+        (oid,)).fetchone()[0] == 0
+    kinds = {r[0] for r in store._conn.execute("SELECT kind FROM audit")}
+    assert "sync_stale_skipped" in kinds
+
+
+def test_c_side_same_day_eod_snapshot_not_double_counted(store, kill):
+    """C 方双算修复: 15:05 EOD 快照已含当日成交, 净额基准从"当日 0 点"
+    改为"快照时点"——成交先于快照归档时不再被加第二遍
+    (昨: 快照 1200 + 当日买 200 → C=1400, 与 B=1200 假 WARN)。"""
+    store.save_trade({"traded_id": "T-today", "order_id": "O-x", "code": CODE,
+                      "direction": DIRECTION_BUY, "price": 10.0, "qty": 200,
+                      "ts": time.time() - 10})
+    # EOD 快照在成交之后归档, 已含这 200 股
+    store.save_position_snapshot(
+        {CODE: {"volume": 1200, "can_use": 1200, "avg_cost": 10.0}})
+    rec = _reconciler(store, kill, _book_with(1200), 1200)
+    report = rec.reconcile(now_ts=time.time())
+    assert report.level == LEVEL_NONE

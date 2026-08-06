@@ -225,7 +225,7 @@ class Reconciler:
         except Exception:
             _logger.exception("成交补记失败 (本轮跳过, 下轮重试)")
         try:
-            orders_updated = self._sync_orders()
+            orders_updated = self._sync_orders(now)
         except Exception:
             _logger.exception("委托状态回写失败 (本轮跳过, 下轮重试)")
         if adopted or orders_updated:
@@ -258,9 +258,19 @@ class Reconciler:
         known = self._store.load_today_trade_ids(today)
         local_orders = self._book.snapshot()["orders"]
         adopted = 0
+        stale = 0
         for t in self._gateway.query_trades():
             tid = str(t.get("traded_id", ""))
             if not tid or tid in known:
+                continue
+            # 2026-08-04 (600127 双记账急停事件): QMT 盘前/跨日查询会
+            # 返回前一交易日的成交, 而 known 只装当日 traded_id —— 昨天
+            # 的成交会被当成"新手工单"再记一遍账 (1700→3400 双扣)。
+            # 认领只认当日成交, 跨日的一律跳过 (无 ts 无法验证才放行,
+            # 保 QMT "只回当日" 契约下的旧行为)。
+            ts = t.get("ts")
+            if ts and datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
+                stale += 1
                 continue
             order_id = str(t.get("order_id", ""))
             local_order = local_orders.get(order_id)
@@ -341,18 +351,35 @@ class Reconciler:
                 except Exception:
                     pass  # 通知失败不影响对账/补记
             adopted += 1
+        if stale:
+            # 跨日成交被拦是重要信号 (QMT 查询窗口越界), 不能静默
+            _logger.warning("跳过 %d 笔非当日成交 (QMT 返回了历史数据)", stale)
+            self._store.write_audit(
+                "sync_stale_skipped",
+                f"增量同步拦截 {stale} 笔非当日成交, 未重复入账",
+                {"stale_trades": stale})
         return adopted
 
-    def _sync_orders(self) -> int:
+    def _sync_orders(self, now: float) -> int:
         """委托状态回写 (2026-07-30): 拉 QMT 当日委托, 与本地订单簿比对,
         状态/已成交量有变化的经状态机校验后回写 book + orders 表。
         本地是终态而 QMT 返回非终态 (查询滞后) 时状态机拒绝, 保本地 —
-        成交硬事实优先于查询快照。返回回写笔数。"""
+        成交硬事实优先于查询快照。返回回写笔数。
+
+        2026-08-04 (600127 事件): QMT 跨日查询同样会返回昨日委托,
+        回写会把 orders 表 updated_ts 盖成今天, 昨日废单混进"当日委托"
+        (api 按 updated_ts 过滤当日)。与成交认领同口径: 只认当日委托。"""
+        today = datetime.fromtimestamp(now).strftime("%Y%m%d")
         local_orders = self._book.snapshot()["orders"]
         updated = 0
+        stale = 0
         for o in self._gateway.query_orders():
             oid = str(o.get("order_id", ""))
             if not oid:
+                continue
+            ts = o.get("ts")
+            if ts and datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
+                stale += 1
                 continue
             local = local_orders.get(oid)
             status = int(o.get("status", 0))
@@ -381,6 +408,12 @@ class Reconciler:
                 "qty": int(o.get("qty", 0)), "filled_qty": filled,
                 "status": status})
             updated += 1
+        if stale:
+            _logger.warning("跳过 %d 笔非当日委托 (QMT 返回了历史数据)", stale)
+            self._store.write_audit(
+                "sync_stale_skipped",
+                f"增量同步拦截 {stale} 笔非当日委托, 未回写",
+                {"stale_orders": stale})
         return updated
 
     def _query_positions_with_retry(self, book_pos) -> list[dict] | None:
@@ -401,13 +434,17 @@ class Reconciler:
         return None
 
     def _restore_positions(self, now: float) -> dict[str, int]:
-        """C 方: 昨仓快照 + 当日成交净额。无快照的票不出现在 C 方
-        (缺基准不猜, 由 A vs B 主比对兜底)。"""
+        """C 方: 昨仓快照 + 快照时点之后的成交净额。无快照的票不出现在
+        C 方 (缺基准不猜, 由 A vs B 主比对兜底)。
+
+        2026-08-04: 净额基准从"当日 0 点"改为"快照时点" —— 15:05 EOD
+        快照已含当日全部成交, 再按日初加一遍当日净额会双算 (601699
+        还原出 -600 之类的假 WARN); 按快照时点加, 昨日快照 + 今日成交
+        与当日快照 + 空净额两种形态都对。"""
         snapshot = self._store.load_position_snapshot()
         if not snapshot:
             return {}
-        day_start = datetime.fromtimestamp(now).replace(
-            hour=0, minute=0, second=0, microsecond=0).timestamp()
-        net = self._store.net_trades_since(day_start)
+        snap_ts = max(p.get("ts", 0.0) for p in snapshot.values())
+        net = self._store.net_trades_since(snap_ts)
         return {code: snap["volume"] + net.get(code, 0)
                 for code, snap in snapshot.items()}

@@ -125,8 +125,9 @@ def _m_trigger(store, cfg, code, cost, last, high, days, book=None,
         for i in range(len(cfg.stop.ladder_tp.levels)):
             book.mark_tier(code, i, today)
     mon = _monitor(store, cfg, days, book)
-    reason = mon._evaluate(code, cost, {"last": last, "high": high,
+    result = mon._evaluate(code, cost, {"last": last, "high": high,
                                         "bid1": last})
+    reason = result[0] if result else None
     return reason.split(":")[0] if reason else None
 
 

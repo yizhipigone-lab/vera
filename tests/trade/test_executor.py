@@ -242,6 +242,38 @@ def test_place_ladder_no_prev_close_fail_closed(store, kill):
     assert ex.place_ladder("20260726") == []
 
 
+def test_place_ladder_syncs_can_use_before_place(store, kill):
+    """2026-08-06 002155.SZ 事件: 昨日尾盘买入 book.can_use=0 (T+1),
+    预埋 (09:15) 早于首次对账 (09:35) —— 预埋前须先从 QMT 全量刷新,
+    否则 t1_sellable 闸误拒全部预埋档, 阶梯止盈退化为监控兜底。"""
+    book = Book()
+    _seed_book(book, CODE, 1000, can_use=0)          # 本地账本: T+1 不可卖
+    gw = _gw_with(volume=1000, can_use=1000)          # 券商端: 隔夜后已可卖
+    ex = _make_executor(store, kill, book, gw, prev_closes={CODE: 10.0})
+    placed = ex.place_ladder("20260806")
+    assert len(placed) == 2                           # 主板 15% 档超涨停跳过
+    assert book.snapshot()["positions"][CODE].can_use == 1000
+
+
+def test_place_ladder_sync_fail_falls_back_to_stale(store, kill):
+    """预埋前刷新失败 (断线) → fail-closed: 留痕 + 沿用本地旧值,
+    本地 can_use=0 时风控拒挂 (宁可漏挂不可错挂)。"""
+    book = Book()
+    _seed_book(book, CODE, 1000, can_use=0)
+    gw = _gw_with(volume=1000, can_use=1000)
+
+    def _boom():
+        raise RuntimeError("断线")
+
+    gw.query_positions = _boom
+    ex = _make_executor(store, kill, book, gw, prev_closes={CODE: 10.0})
+    assert ex.place_ladder("20260806") == []
+    assert gw.query_orders() == []
+    kinds = [r[0] for r in store._conn.execute(
+        "SELECT kind FROM audit WHERE kind='ladder_sync_fail'")]
+    assert kinds == ["ladder_sync_fail"]
+
+
 # ═══════════════════════════════════════════════════════════════
 # 撤单流水线
 # ═══════════════════════════════════════════════════════════════

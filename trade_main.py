@@ -310,9 +310,71 @@ class TradeApp:
             except Exception:
                 return 0
 
+        # 2026-08-06 P2 落地: 移动止盈峰值 = 持仓期最高价 (不再当日重置)。
+        # 首笔买入日 → gateway 拉不复权日线 high 取 max; 按 (code, 当日)
+        # 缓存 (历史日高日内不变, 当日高由 tick 流补充), 失败回退 None。
+        _peak_cache: dict = {}
+
+        def _episode_entry_ts(code: str):
+            """当轮持仓的首笔买入 ts (2026-08-06 审计 P1 修复)。
+
+            旧口径 MIN(ts) 取的是"有史以来"第一笔买入: 同票上一轮清仓后
+            再次买入时, 历史峰值会包含空仓期间的高点, 可能导致买入后
+            立刻误触发移动止盈。现按当前持仓量从最新成交往回推:
+            卖单加回、买单扣减, 持仓量归零处的那笔买入即本轮起点。
+            数据不全 (倒推不完) 时回退最早一笔买入 (保守: 峰值取大不取小,
+            保护更紧)。hold_days 仍用旧口径 —— 多算天数只会让时间止损
+            提前, 方向安全, 不动。"""
+            try:
+                ro = self.store.open_readonly()
+                cur = ro.execute(
+                    "SELECT ts, direction, qty FROM trades WHERE code=? "
+                    "ORDER BY ts DESC", (code,))
+                rows = cur.fetchall()
+                ro.close()
+            except Exception:
+                return None
+            if not rows:
+                return None
+            pos = self.book.snapshot()["positions"].get(code)
+            remaining = float(pos.volume) if pos is not None else 0.0
+            for ts, direction, qty in rows:
+                qty = float(qty or 0)
+                if direction == DIRECTION_BUY:
+                    remaining -= qty
+                    if remaining <= 0.0:
+                        return ts
+                else:
+                    remaining += qty
+            return rows[-1][0]  # 倒推不完, 回退最早一笔买入
+
+        def _peak_for_code(code: str):
+            today = time.strftime("%Y%m%d", time.localtime(clock()))
+            key = (code, today)
+            ent = _peak_cache.get(key)
+            if ent is not None:
+                val, fail_ts = ent
+                # 2026-08-06 审计 P2: 失败结果只缓存 60s (防瞬时故障让
+                # 历史峰值保护整天缺席), 成功值按天缓存 (历史日高日内不变)
+                if val is not None or (clock() - fail_ts) < 60.0:
+                    return val
+            val = None
+            try:
+                entry_ts = _episode_entry_ts(code)
+                if entry_ts:
+                    start = time.strftime("%Y%m%d", time.localtime(entry_ts))
+                    highs = self.gateway.query_daily_highs(code, start, today)
+                    if highs:
+                        val = max(highs)
+            except Exception:
+                val = None
+            _peak_cache[key] = (val, None if val is not None else clock())
+            return val
+
         self.monitor = Monitor(
             self.gateway, self.book, self.executor, self.store, config,
             hold_days=_hold_days_for_code,
+            peak_px=_peak_for_code,
             clock=clock,
         )
         # 2026-08-01 P0-3 (H1): executor pending 终态废单/已撤时,
@@ -512,6 +574,24 @@ class TradeApp:
         # 回收点: _on_trade 订单满量后 + reconciler._sync_orders 同步腿。
 
     def _on_trade(self, rec: dict) -> None:
+        # H2 (2026-08-06 审计 HIGH#1): 跨日成交拦截 — xtquant 断线重连会把
+        # 昨日成交回报重推, traded_id 不在今日幂等集 (store WHERE ts>=day_start)
+        # 会重复入账污染账本 (600127 双记账急停事件同类根因)。与 reconciler
+        # 同口径: ts 非今日 → 记 warning 后 return; ts 缺失(None) 无法验证,
+        # 放行但留 debug 痕 (不沿用 reconciler "if ts and" 隐式放行盲区写法,
+        # 显式分支便于审计追溯)。
+        ts = rec.get("ts")
+        if ts is not None:
+            today = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y%m%d")
+            if _dt.datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
+                _logger.warning(
+                    "跨日成交拦截 (HIGH#1): %s ts=%s 非今日(%s), 疑断线重连重推,"
+                    " 已拦 apply_trade 防重复入账; traded_id=%s",
+                    rec.get("code"), ts, today, rec.get("traded_id"))
+                return
+        else:
+            _logger.debug("成交缺 ts 按无法验证放行 (HIGH#1): traded_id=%s",
+                          rec.get("traded_id"))
         # H1 (2026-07-31 审计): apply_trade 清仓会把 avg_cost 清零,
         # 盈亏% 必须在 apply 前取成本快照, 传给 _notify_fill。
         pre_pos = self.book.snapshot()["positions"].get(rec["code"])

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from trade.book import DIRECTION_BUY, Book
 from trade.config import (
     CostStopConfig,
+    LadderTpConfig,
     StopConfig,
     TradeConfig,
     TrailingStopConfig,
@@ -38,11 +39,13 @@ class StubExecutor:
 
     def __init__(self, succeed=True):
         self.exits: list[tuple[str, str]] = []
+        self.qtys: list[int | None] = []
         self.pending_calls = 0
         self.succeed = succeed
 
-    def execute_exit(self, code, reason):
+    def execute_exit(self, code, reason, qty=None):
         self.exits.append((code, reason))
+        self.qtys.append(qty)
         return self.succeed
 
     def pending_check(self, now_hhmm=None):
@@ -307,3 +310,63 @@ def test_full_chain_trigger_to_fake_gateway_fill(store, tmp_path):
     # Fake 侧持仓清零, 回款到账
     assert gw.query_positions() == []
     assert gw.query_asset()["cash"] == 1_000_000.0 + 8.7 * 1000
+
+
+# ═══════════════════════════════════════════════════════════════
+# 阶梯兜底部分卖 (2026-08-06 002155.SZ 事件: 兜底不再一锅端)
+# ═══════════════════════════════════════════════════════════════
+
+def _ladder_cfg(levels):
+    return TradeConfig(
+        account_id="TEST", tick_heartbeat_sec=15,
+        stop=StopConfig(ladder_tp=LadderTpConfig(levels=levels)))
+
+
+def test_ladder_fallback_partial_sell_marks_tier_not_armed(store):
+    """未预埋档兜底 = 按档位比例部分卖: 乐观标档但不武装 _triggered,
+    剩余仓位继续受其余规则保护; 清仓档兜底仍全卖+武装。"""
+    t = [_T0]
+    stub = StubExecutor()
+    book = _book_with(volume=400)
+    cfg = _ladder_cfg(((0.05, 0.5), (0.10, 1.0)))
+    mon, _ = _make_monitor(store, book, stub, t, cfg=cfg)
+    today = time.strftime("%Y%m%d", time.localtime(_T0))
+    # 档1 (+5% = 10.50) 涨破 → 卖一半 200 股, 标档0, 不武装
+    mon.on_quote(CODE, {"last": 10.4, "bid1": 10.4, "high": 10.5})
+    triggers = mon.scan_once()
+    assert len(triggers) == 1 and "ladder_tp" in triggers[0][1]
+    assert stub.qtys == [200]
+    assert book.tier_done(CODE, today) == frozenset({0})
+    assert CODE not in mon._triggered
+    # 档2 (+10% = 11.00) 涨破 → 清仓档 qty=None (卖全部), 武装
+    mon.on_quote(CODE, {"last": 10.9, "bid1": 10.9, "high": 11.0})
+    triggers = mon.scan_once()
+    assert len(triggers) == 1
+    assert stub.qtys == [200, None]
+    assert CODE in mon._triggered
+
+
+def test_ladder_fallback_qty_lot_rounding(store):
+    """250 股 × 50% = 1.25 手 → 1 手 100 股 (对齐 place_ladder 口径)。"""
+    t = [_T0]
+    stub = StubExecutor()
+    book = _book_with(volume=250)
+    mon, _ = _make_monitor(store, book, stub, t,
+                           cfg=_ladder_cfg(((0.05, 0.5),)))
+    mon.on_quote(CODE, {"last": 10.5, "bid1": 10.5, "high": 10.5})
+    assert len(mon.scan_once()) == 1
+    assert stub.qtys == [100]
+
+
+def test_ladder_fallback_tiny_position_sells_all(store):
+    """比例档算不出整手 (50 股 × 50% = 0 手) → qty=None 卖全部,
+    兜底语义宁可全卖不漏卖。"""
+    t = [_T0]
+    stub = StubExecutor()
+    book = _book_with(volume=50)
+    mon, _ = _make_monitor(store, book, stub, t,
+                           cfg=_ladder_cfg(((0.05, 0.5),)))
+    mon.on_quote(CODE, {"last": 10.5, "bid1": 10.5, "high": 10.5})
+    assert len(mon.scan_once()) == 1
+    assert stub.qtys == [None]
+    assert CODE in mon._triggered

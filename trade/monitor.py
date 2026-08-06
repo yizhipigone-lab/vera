@@ -49,6 +49,20 @@ def is_trading_day_cached(d: _dt.date | None = None) -> bool:
     return v
 
 
+def _ladder_tier_qty(volume: int, ratio: float) -> int | None:
+    """阶梯兜底档的卖出数量, 口径对齐 executor.place_ladder:
+    ratio<1 → 比例手数四舍五入 (0.5 边界向上); ratio≥1 → 清仓档。
+    返回 None = 卖全部可用 (execute_exit 的 qty=None 语义) —— 用于
+    清仓档、比例档算不出整手、或 volume 未知 (<=0): 兜底语义宁可
+    全卖不漏卖, 与 2026-08-06 前的旧行为一致。"""
+    if ratio >= 1.0 or volume <= 0:
+        return None
+    lots = min(int(volume * ratio / 100 + 0.5), int(volume / 100))
+    if lots <= 0:
+        return None
+    return lots * 100
+
+
 def trading_session(now: float | None = None) -> str:
     """A 股交易时段判定 (2026-07-27 ETF 误卖事件裁决①):
     自动规则只在连续竞价跑, 人工命令任何时段放行。
@@ -88,6 +102,7 @@ class Monitor:
         store,
         config,
         hold_days: Callable[[str], int] | None = None,
+        peak_px: Callable[[str], "float | None"] | None = None,
         clock: Callable[[], float] = time.time,
     ):
         self._gw = gateway
@@ -97,6 +112,8 @@ class Monitor:
         self._cfg = config
         # 持有天数来源 (MVP 由 root 注入, 实盘来自 EOD 归档的建仓日)
         self._hold_days = hold_days or (lambda code: 0)
+        # 持仓期历史峰值来源 (2026-08-06): None=取不到, 回退当日口径
+        self._peak_px = peak_px or (lambda code: None)
         self._clock = clock
         self._quotes: dict[str, dict] = {}   # code -> {last, bid1, high, ts}
         self._last_tick_ts: float | None = None
@@ -262,14 +279,23 @@ class Monitor:
                     f"{code} 行情快照陈旧 (>{self._cfg.quote_stale_sec}s), 本轮跳过",
                     {"code": code, "quote_ts": quote["ts"]})
                 continue
-            reason = self._evaluate(code, pos.avg_cost, quote)
-            if reason is None:
+            result = self._evaluate(code, pos.avg_cost, quote, pos.volume)
+            if result is None:
                 continue
+            reason, qty, tier = result
             # 审计H1修复: 执行成功才标记"已触发"。execute_exit 有大量
             # 合法 fail-closed 返回路径 (无买一价/可用为0/风控拒绝),
             # 先标记等于"一跳行情延迟换一整天无保护"
-            if self._executor.execute_exit(code, reason):
-                self._triggered.add(code)
+            if self._executor.execute_exit(code, reason, qty=qty):
+                if tier is not None and qty is not None:
+                    # 2026-08-06 阶梯兜底部分卖: 乐观标记该档 (对齐
+                    # place_ladder "提交成功即标记, 废单也不重复卖"),
+                    # 但不入 _triggered —— 剩余仓位继续受 trailing/
+                    # cost_stop/高档位兜底保护 (预埋单世界的分工复原:
+                    # 档已卖 = 已标记, 其余腿照常评估)
+                    self._book.mark_tier(code, tier, today)
+                else:
+                    self._triggered.add(code)
                 triggers.append((code, reason))
             else:
                 self._store.write_audit(
@@ -287,17 +313,21 @@ class Monitor:
             return
         self._executor.pending_check(now_hhmm=now_hhmm)
 
-    def _evaluate(self, code: str, avg_cost: float, quote: dict) -> str | None:
+    def _evaluate(self, code: str, avg_cost: float, quote: dict,
+                  volume: int = 0) -> tuple[str, int | None, int | None] | None:
         """全规则评估, 复刻回测 ExitDispatcher 优先级语义
         [backtest/loop/exit_engine.py:46-53/99-139]。
         每条规则对齐回测单 bar 版本 (出处逐条标注), 数据缺失维持
-        fail-closed。返回触发原因或 None。
+        fail-closed。返回 (原因, 指定卖出数量, 阶梯档位) 或 None;
+        数量/档位仅阶梯兜底部分卖时非 None, 其余规则恒 (reason, None, None)
+        (None 数量 = 卖全部可用, execute_exit 口径)。
 
         与回测的已知口径差 (parity 测试头注同款):
         - bar low/close ≡ tick last; hi_pp 用当日行情 high;
         - trailing_first 的双触发 (ladder 部分卖 + trailing 全卖剩余)
           在实盘由 executor 预埋单承担部分卖 —— 本腿只对"未预埋档"
-          兜底, 首触发即返回, 无双触发路径。
+          兜底。2026-08-06 起兜底按档位比例部分卖 (不再一锅端):
+          卖完标档不武装, 剩余仓位由其余规则继续保护。
         """
         stop = self._cfg.stop
         # 2026-07-27 ETF 误卖事件裁决③: ETF 不纳入自动管理,
@@ -307,9 +337,14 @@ class Monitor:
         last = quote["last"]
         high = quote["high"]
         days = self._hold_days(code)
-        # 峰值 = max(成本, 当日最高)。历史峰值 MVP 用成本价兜底 ——
-        # TODO P2 接 K 线缓存取历史日高
-        peak = max(avg_cost, high)
+        # 峰值 = max(成本, 持仓期历史最高, 当日最高)。
+        # 2026-08-06 P2 落地: 历史日高经 gateway 拉不复权日线 (与成本同口径),
+        # 取不到时回退当日口径 (旧 MVP 行为), 与回测 peak-since-entry 对齐。
+        try:
+            hist_peak = self._peak_px(code) or 0.0
+        except Exception:
+            hist_peak = 0.0
+        peak = max(avg_cost, high, hist_peak)
         today = time.strftime("%Y%m%d", time.localtime(self._clock()))
 
         def hit_cost_stop():
@@ -386,7 +421,7 @@ class Monitor:
             "trailing": (hit_trailing,
                          f"trailing: 最高 {peak:.2f} (峰值涨幅 {peak_pct:+.1%}, "
                          f"过激活线 {stop.trailing_stop.activation:.0%}), "
-                         f"现价 {last:.2f} 回撤 {dd_now:.1%} 触发 "
+                         f"现价 {last:.2f} 回撤 {dd_now:.2%} 触发 "
                          f"(阈值 {stop.trailing_stop.drawdown:.0%})"),
             "time_stop": (hit_time_stop, f"time_stop: 持有 {days} 天达上限 "
                           f"{stop.time_stop.max_hold_days} 天"),
@@ -402,12 +437,13 @@ class Monitor:
             if name == "ladder_tp":
                 tier = hit_ladder()
                 if tier is not None:
-                    profit = stop.ladder_tp.levels[tier][0]
+                    profit, ratio = stop.ladder_tp.levels[tier]
                     return (f"ladder_tp: 最高 {high:.2f} 涨破档{tier + 1}线 "
                             f"{avg_cost * (1.0 + profit):.2f} "
-                            f"(成本 {avg_cost:.2f} {profit:+.0%}, 未预埋兜底)")
+                            f"(成本 {avg_cost:.2f} {profit:+.0%}, 未预埋兜底)",
+                            _ladder_tier_qty(volume, ratio), tier)
                 continue
             hit, reason = checks[name]
             if hit():
-                return reason
+                return reason, None, None
         return None

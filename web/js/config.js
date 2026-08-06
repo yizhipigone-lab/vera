@@ -133,6 +133,7 @@ export function collectConfigFromForm(_selectedSectors, collectFactorFilter, esc
     min_lots: safeInt('cfgMinLots'),
     cost_stop_enabled: document.getElementById('cfgCostStopEn').checked, cost_stop_threshold: -Math.abs(pct('cfgCostStopVal')),
     trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
+    trailing_confirm: (document.getElementById('cfgTrailingConfirm') || {}).value || 'simple',
     ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
     time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: safeInt('cfgTimeVal'),
     cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
@@ -170,6 +171,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     cfgCostStopVal: cfg.stop_loss?.cost_stop?.threshold != null ? String(cleanNum(Math.abs(cfg.stop_loss.cost_stop.threshold * 100))) : null,
     cfgTrailingAct: cfg.stop_loss?.trailing_stop?.activation != null ? String(cleanNum(cfg.stop_loss.trailing_stop.activation * 100)) : null,
     cfgTrailingDD: cfg.stop_loss?.trailing_stop?.drawdown != null ? String(cleanNum(cfg.stop_loss.trailing_stop.drawdown * 100)) : null,
+    cfgTrailingConfirm: cfg.stop_loss?.trailing_stop?.confirm || 'intraday',
     cfgLadderVal: cfg.stop_loss?.ladder_tp?.levels?.map(l => cleanNum(l.profit * 100) + ':' + cleanNum(l.sell_ratio * 100)).join(','),
     cfgTimeVal: cfg.stop_loss?.time_stop?.max_hold_days,
     cfgCondTimeDays: cfg.stop_loss?.cond_time_stop?.days,
@@ -277,7 +279,16 @@ export function refreshAllSummaries(escFn) {
   document.getElementById('sumCostStop').innerHTML = '成本止损：亏损达到 <b>' + cs + '%</b> 全仓卖出 <span class="saved-badge saved">已保存</span>';
   const ta = esc(document.getElementById('cfgTrailingAct').value);
   const td = esc(document.getElementById('cfgTrailingDD').value);
-  document.getElementById('sumTrailing').innerHTML = '移动止盈：盈利 <b>' + ta + '%</b> 激活后，盘中 Low 触及回撤 <b>' + td + '%</b> 线即按回撤线价全仓卖出 <span class="saved-badge saved">已保存</span>';
+  const confirmEl = document.getElementById('cfgTrailingConfirm');
+  const confirmMap = {
+    simple: '5M碰线按bar收盘价成交 / 1D收盘价确认',
+    real: '条件单语义：创新高bar不触发，跳空按开盘价，触线按线价',
+    intraday: '盘中 Low 触及线即按线价卖出',
+    low: '当日最低价碰线，按收盘价卖出',
+    close: '收盘价跌破线才按收盘价卖出',
+  };
+  const confirmLabel = confirmMap[(confirmEl || {}).value] || confirmMap.intraday;
+  document.getElementById('sumTrailing').innerHTML = '移动止盈：盈利 <b>' + ta + '%</b> 激活后，回撤 <b>' + td + '%</b> 触发全仓卖出（' + confirmLabel + '） <span class="saved-badge saved">已保存</span>';
   const lv = esc(document.getElementById('cfgLadderVal').value.replace(/,/g, ', '));
   document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>' + lv + '</b> <span class="saved-badge saved">已保存</span>';
   const priChecked = document.querySelector('input[name="cfgPriority"]:checked');

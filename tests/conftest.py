@@ -122,6 +122,52 @@ def _isolate_caches(tmp_path):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _stop_trade_apps(monkeypatch):
+    """每个测试结束后停掉所有 TradeApp / FeishuNotifier (2026-08-04 飞书骚扰事件)。
+
+    事件: 多个测试 (test_e2e_trade / test_auto_buy 等) 起了真实 TradeApp
+    却从不调 stop(), 引擎/通知 worker 等 daemon 线程活到 pytest 会话结束,
+    期间及之后持续向 .env 里的真实飞书 webhook 投递测试成交卡片。
+
+    裁决: 测试期间该发发, 不拦网络; 但测试一停必须收尾干净 ——
+    所有 TradeApp.stop() (含 notifier 线程 join) 全部补调, 保证后续零投递。
+    对已自行 stop 的 app 再 stop 一次无副作用 (各 stop 均幂等/可重入)。
+    """
+    try:
+        import trade_main
+        from trade.notifier import FeishuNotifier
+    except Exception:
+        yield
+        return
+    apps: list = []
+    notifiers: list = []
+    orig_app_init = trade_main.TradeApp.__init__
+    orig_notifier_init = FeishuNotifier.__init__
+
+    def _app_init(self, *a, **k):
+        orig_app_init(self, *a, **k)
+        apps.append(self)
+
+    def _notifier_init(self, *a, **k):
+        orig_notifier_init(self, *a, **k)
+        notifiers.append(self)
+
+    monkeypatch.setattr(trade_main.TradeApp, "__init__", _app_init)
+    monkeypatch.setattr(FeishuNotifier, "__init__", _notifier_init)
+    yield
+    for app in apps:
+        try:
+            app.stop()
+        except Exception:
+            pass
+    for n in notifiers:
+        try:
+            n.stop()
+        except Exception:
+            pass
+
+
 class FakeLoop:
     """Mock BacktestLoop for monkeypatch tests. Captures run() args, returns stub equity/trades."""
     def __init__(self, equity=None, trades=None):

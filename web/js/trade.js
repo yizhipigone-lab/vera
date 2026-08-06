@@ -456,7 +456,9 @@ function refresh() {
 window.tradePageEnter = function () {
   refresh();
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(refresh, 5000);
+  // 2026-08-06 (用户要求): 5s → 1s 准实时。后端 positions 读 tick 内存
+  // 缓存 (微秒级), 5 接口 × 1Hz 对本地 uvicorn 无感; 在途保护照旧
+  pollTimer = setInterval(refresh, 1000);
 };
 window.tradePageLeave = function () {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }

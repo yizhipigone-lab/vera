@@ -88,6 +88,11 @@ class BaseGateway(ABC):
         """主动查询行情快照 —— 订阅不健康时的轮询兜底 (计划书 §5.2)。"""
         ...
 
+    def query_daily_highs(self, code: str, start: str, end: str = "") -> list[float]:
+        """日线最高价序列 (不复权, YYYYMMDD 区间)。默认空 —— 仿真网关无历史源,
+        调用方按"取不到就回退当日口径"处理 (2026-08-06, 移动止盈历史峰值用)。"""
+        return []
+
 
 def _call_with_timeout(fn: Callable, timeout_sec: float, *args: Any, **kwargs: Any) -> Any:
     """同步调用包超时。QMT 同步接口偶发卡死, 不能让唯一写者线程陪葬。
@@ -344,6 +349,22 @@ class RealGateway(BaseGateway):
         raw = _call_with_timeout(xtdata.get_full_tick, self._timeout, codes)
         return {code: self._tick_to_quote(t) for code, t in (raw or {}).items()}
 
+    def query_daily_highs(self, code: str, start: str, end: str = "") -> list[float]:
+        """不复权日线 high 序列 (2026-08-06, 移动止盈持仓期峰值用)。
+
+        不复权口径与实盘成交价/成本价同维度 —— 前复权历史价在除权日
+        之后与真实成本不可比。"""
+        xtdata = self._xtdata()
+        raw = _call_with_timeout(
+            xtdata.get_market_data_ex, self._timeout,
+            ["high"], [code], "1d", start, end, -1, "none", False)
+        df = (raw or {}).get(code)
+        if df is None or df.empty:
+            return []
+        # 2026-08-06 审计 P2: 过滤 NaN/非正数 —— NaN 是 truthy,
+        # 流入 monitor 会让当日移动止盈静默失效 (last <= NaN 恒 False)
+        return [float(x) for x in df["high"].tolist() if x == x and x > 0]
+
     @staticmethod
     def _order_to_dict(o: Any) -> dict:
         return {
@@ -351,6 +372,9 @@ class RealGateway(BaseGateway):
             "code": o.stock_code, "direction": o.order_type,
             "price": o.price, "qty": o.order_volume,
             "filled_qty": o.traded_volume, "status": o.order_status,
+            # 2026-08-04: 委托下单时间 (epoch 秒), 供 reconciler 拦截
+            # QMT 跨日查询返回的历史委托; 字段缺失/为 0 给 None (不伪装)
+            "ts": getattr(o, "order_time", 0) or None,
         }
 
     @staticmethod

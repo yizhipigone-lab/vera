@@ -563,6 +563,16 @@ input:focus-visible,select:focus-visible{outline:none}
               <div class="form-group"><label>激活盈利 (%)</label><input id="cfgTrailingAct" value="3.5" type="number"></div>
               <div class="form-group"><label>回撤触发 (%)</label><input id="cfgTrailingDD" value="1" type="number"></div>
             </div>
+            <div class="form-group"><label>确认方式</label>
+              <select id="cfgTrailingConfirm">
+                <option value="simple" selected>实盘简化：5M碰线按bar收盘价成交 / 1D收盘价确认 (推荐)</option>
+                <option value="real">条件单语义：本bar创新高不触发，跳空按开盘价，触线按线价成交 (1D/5M同规则)</option>
+                <option value="intraday">盘中触发：每根bar最低价碰线，按线价成交 (旧行为，偏乐观)</option>
+                <option value="low">尾盘最低价确认：当日最低价碰线，按收盘价成交 (阶梯值班日休息)</option>
+                <option value="close">尾盘收盘价确认：收盘价跌破线才卖，按收盘价成交 (阶梯值班日休息)</option>
+              </select>
+              <div class="input-hint">确认方式只影响回测；实盘为 tick 级即时监控（现价触线即卖，买一价成交），不受此选项影响。</div>
+            </div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>

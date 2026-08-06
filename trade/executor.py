@@ -201,9 +201,10 @@ class Executor:
         返回挂出的 order_id 列表。date_str 格式 YYYYMMDD (tier 日期维度用)。
 
         T+1 衔接确认 (2026-07-27 尾盘自动买入): 昨日尾盘买入的票,
-        can_use 由今早 QMT 对账回填 (book 买入当日为 0), 成本口径 =
-        book.avg_cost (自成交加权自算) —— 本函数按 book 持仓全量扫描,
-        新票明日 09:15 自动纳入预埋, 无需任何特判。"""
+        can_use 由本函数开头的 QMT 全量刷新回填 (book 买入当日为 0),
+        成本口径 = book.avg_cost (自成交加权自算) —— 本函数按 book 持仓
+        全量扫描, 新票明日 09:15 自动纳入预埋, 无需任何特判。"""
+        self._sync_can_use()
         placed: list[str] = []
         for code, pos in sorted(self._book.snapshot()["positions"].items()):
             if pos.volume <= 0:
@@ -530,6 +531,33 @@ class Executor:
                 self._book.set_can_use(code, p["can_use"])
                 return p["can_use"]
         return 0
+
+    def _sync_can_use(self) -> None:
+        """预埋前全量刷新可用数量 (2026-08-06 002155.SZ 事件)。
+
+        昨日尾盘买入的票 book.can_use=0 (T+1), 而首次定时对账 (09:35)
+        晚于预埋 (09:15), 不刷新则 t1_sellable 闸误拒全部预埋档,
+        阶梯止盈退化为监控兜底 (一锅端市价卖, 无档位分批)。
+        QMT 是可用数量唯一真相源, 这里只做 book 镜像刷新。
+        查询失败/返回空 (P0-4: 断线时 QMT 静默返空) fail-closed:
+        留痕后沿用本地旧值 —— 风控宁可拒挂, 方向安全。"""
+        try:
+            qmt = {p["code"]: p for p in self._gw.query_positions()}
+        except Exception as e:
+            self._store.write_audit(
+                "ladder_sync_fail", f"预埋前刷新可用失败, 沿用本地旧值: {e}",
+                {})
+            return
+        book_codes = list(self._book.snapshot()["positions"])
+        if not qmt and book_codes:
+            self._store.write_audit(
+                "ladder_sync_fail",
+                "预埋前刷新可用返回空 (查询不可用), 沿用本地旧值", {})
+            return
+        for code in book_codes:
+            p = qmt.get(code)
+            if p is not None:
+                self._book.set_can_use(code, p["can_use"])
 
     def next_remark(self, rule_code: str) -> str:
         """策略侧单号发号器 (审计M1修复): V{mmdd}-{seq}{规则码} ≤24 字符。
