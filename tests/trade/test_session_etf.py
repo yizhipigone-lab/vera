@@ -130,7 +130,9 @@ class StubExecutor:
         self.exits = []
         self.pending_calls = 0
 
-    def execute_exit(self, code, reason):
+    def execute_exit(self, code, reason, manual=False, qty=None):
+        # 对齐真实签名 trade/executor.py:304 (manual + qty), 防 scan 非空时
+        # 调用方传参 TypeError (审计 2026-08-06 HIGH#6/0.1)
         self.exits.append((code, reason))
         return True
 
