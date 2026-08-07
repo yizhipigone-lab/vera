@@ -37,6 +37,7 @@ export function getColors() {
   return {
     up: s.getPropertyValue('--up').trim(), down: s.getPropertyValue('--down').trim(),
     accent: s.getPropertyValue('--accent').trim(), accent2: s.getPropertyValue('--accent2').trim(),
+    warn: s.getPropertyValue('--warn').trim(),   // 2026-08-07: 补读 --warn (CSS 有定义, 原 getColors 漏读导致 reasonColorMap 引用 c.warn 为 undefined)
     text: s.getPropertyValue('--text').trim(), text2: s.getPropertyValue('--text2').trim(),
     bg: s.getPropertyValue('--bg').trim(), border: s.getPropertyValue('--border').trim(),
     bm1: s.getPropertyValue('--bm-1').trim(), bm2: s.getPropertyValue('--bm-2').trim(),
@@ -644,6 +645,7 @@ export function renderAllCharts(data) {
     const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
     const reasonColorMap = {
       '成本止损': c.up,
+      '移动止损': hexToRgba(c.up, 0.6),
       '移动止盈': c.down,
       '阶梯止盈': c.accent,
       '时间止损': c.accent2,
@@ -652,6 +654,7 @@ export function renderAllCharts(data) {
       '换股卖出': 'color-mix(in srgb, ' + c.up + ' 50%, ' + c.accent2 + ')',
       '首日未达标': 'color-mix(in srgb, ' + c.warn + ' 50%, ' + c.text + ')',
       '公式止损': 'color-mix(in srgb, ' + c.accent + ' 50%, ' + c.up + ')',
+      'ATR止损': hexToRgba(c.up, 0.45),
       '退市': c.text2,
     };
     chart2.setOption({

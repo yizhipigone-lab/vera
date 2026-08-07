@@ -324,24 +324,63 @@ function renderExitPie(deals) {
   const c = getColors();
   const chart = echartsInit('chartAnalysisExit');
   if (!chart) return;
-  const reasonMap = {
-    '成本止损': c.up, '移动止盈': c.down, '阶梯止盈': c.accent,
-    '时间止损': c.accent2, '换股卖出': hexToRgba(c.up, 0.6),
-    '公式止损': hexToRgba(c.accent, 0.6), '退市': c.text2,
+  // 2026-08-07: 卖出原因上色修复。
+  // 病根: 实盘 trades.reason 是带数字描述的长句子 (trade_main._reason_from_ctx),
+  // 如 "移动止盈: 最高 12.00 (峰值涨幅 +20%...) 触发" / "阶梯止盈·档1" / "硬止损: ...",
+  // 旧代码用"精确相等查表" + slice(0,12) 截断, 几乎每笔都对不上 reasonMap 的纯净词,
+  // 全部 fallback 到 c.text2 (灰) → 所有扇区都灰。
+  // 修法: 先按分隔符取策略名前缀归一成类目, 再按类目聚合计数与上色;
+  // 类目表对齐实盘真实用词 (executor._REASON_LABELS), 表外新类目走调色板兜底, 绝不再灰。
+  const reasonColor = {
+    '硬止损': c.up,                      // 旧词"成本止损"已按术语规范改"硬止损" (executor.py:40)
+    '移动止盈': c.down,
+    '阶梯止盈': c.accent,
+    '时间止损': c.accent2,
+    '条件时间止盈': hexToRgba(c.accent2, 0.55),
+    '首日不达标': hexToRgba(c.down, 0.5),
+    '换股卖出': hexToRgba(c.up, 0.55),
+    '公式止损': hexToRgba(c.accent, 0.55),
+    '退市': hexToRgba(c.text2, 0.6),
+    '人工卖出': hexToRgba(c.accent, 0.4),
+    '未标注': hexToRgba(c.text2, 0.35),
+    '系统卖出': hexToRgba(c.text2, 0.5),
+  };
+  // 表外全新类目的兜底调色板 (确保任何 reason 都能上色, 不再退回灰)
+  const fallbackPalette = [
+    c.accent, c.down, c.up, c.accent2,
+    hexToRgba(c.accent, 0.6), hexToRgba(c.down, 0.6),
+    hexToRgba(c.up, 0.6), hexToRgba(c.accent2, 0.6),
+  ];
+  // 实盘成交原因 → 策略类目 (图例名 = 上色 key)。
+  // 取冒号/中文冒号/中点 之前的策略名; 空串按来源兜底 (与旧逻辑一致)。
+  const bucketReason = (t) => {
+    const raw = t.reason || '';
+    if (!raw) return t.source === 'manual' ? '人工卖出' : '未标注';
+    const head = raw.split(/[:：·]/)[0].trim();
+    return head || (t.source === 'manual' ? '人工卖出' : '未标注');
   };
   const reasonCount = {};
   deals.filter(t => t.direction === DIR_SELL).forEach(t => {
-    const reason = t.reason || (t.source === 'manual' ? '人工卖出' : '未标注');
-    const label = reason.length > 12 ? reason.slice(0, 12) + '…' : reason;
+    const label = bucketReason(t);
     reasonCount[label] = (reasonCount[label] || 0) + 1;
   });
-  const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
+  // 按笔数降序 (多的扇区在前, 图例更聚焦)
+  const pieData = Object.entries(reasonCount)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+  let fbIdx = 0;
   chart.setOption({
     tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
     legend: { bottom: 0, textStyle: { color: c.text, fontSize: 9 } },
     series: [{
       type: 'pie', radius: ['30%', '55%'], center: ['50%', '45%'],
-      data: pieData.map(d => ({ ...d, itemStyle: { color: reasonMap[d.name] || c.text2, borderColor: c.bg, borderWidth: 1 } })),
+      data: pieData.map(d => ({
+        ...d,
+        itemStyle: {
+          color: reasonColor[d.name] || fallbackPalette[fbIdx++ % fallbackPalette.length],
+          borderColor: c.bg, borderWidth: 1,
+        },
+      })),
       label: { color: c.text, fontSize: 9, formatter: '{b}\n{d}%' }
     }],
   }, true);
