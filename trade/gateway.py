@@ -41,11 +41,18 @@ class BaseGateway(ABC):
         on_trade: Callable[[dict], None] | None = None,
         on_quote: Callable[[str, dict], None] | None = None,
         on_disconnected: Callable[[str], None] | None = None,
+        on_order_error: Callable[[dict], None] | None = None,
+        on_cancel_error: Callable[[dict], None] | None = None,
     ) -> None:
         self._on_order = on_order
         self._on_trade = on_trade
         self._on_quote = on_quote
         self._on_disconnected = on_disconnected
+        # 2026-08-07: 下单失败回报 (拒单原因原文) —— order_stock 只回本地
+        # 序号, 未达柜台的单唯一可见渠道 (0807 事件: 10 笔限价单查无此单)
+        self._on_order_error = on_order_error
+        # 撤单失败回报 (XtCancelError: order_id/error_id/error_msg)
+        self._on_cancel_error = on_cancel_error
 
     @abstractmethod
     def connect(self) -> bool: ...
@@ -108,6 +115,57 @@ def _call_with_timeout(fn: Callable, timeout_sec: float, *args: Any, **kwargs: A
         pool.shutdown(wait=False)
 
 
+def _build_trader_callback(gw, base):
+    """构造 XtQuantTraderCallback 子类实例 (base 由 lazy import 传入;
+    测试传 object 即可, 不依赖 xtquant 环境)。
+
+    2026-08-07 重大修复: 回调名必须用 xtquant 官方名 —— 原实现写成
+    on_order_status/on_deal_status (XtQuantTraderCallback 查无此方法,
+    dir() 实证), 上线以来委托/成交回报从未到达, 全部状态靠对账轮询补。
+    正确名: on_stock_order / on_stock_trade; 并新增 on_order_error
+    (下单未达柜台的拒单原因, 0807 事件 10 笔限价单死因的唯一可见渠道)。
+    回调线程只许转发给注入的 callable, 禁止调任何 xtquant 同步接口
+    —— 官方死锁坑。
+    """
+
+    class _Cb(base):
+        def on_stock_order(self, order):  # noqa: N802
+            if gw._on_order:
+                gw._on_order(gw._order_to_dict(order))
+
+        def on_stock_trade(self, trade):  # noqa: N802
+            if gw._on_trade:
+                gw._on_trade(gw._trade_to_dict(trade))
+
+        def on_order_error(self, order_error):  # noqa: N802
+            if gw._on_order_error:
+                gw._on_order_error({
+                    "order_id": str(getattr(order_error, "order_id", "")),
+                    "error_id": getattr(order_error, "error_id", 0),
+                    "error_msg": getattr(order_error, "error_msg", ""),
+                })
+
+        def on_cancel_error(self, cancel_error):  # noqa: N802
+            if gw._on_cancel_error:
+                gw._on_cancel_error({
+                    "order_id": str(getattr(cancel_error, "order_id", "")),
+                    "error_id": getattr(cancel_error, "error_id", 0),
+                    "error_msg": getattr(cancel_error, "error_msg", ""),
+                })
+
+        def on_disconnected(self):  # noqa: N802
+            if gw._on_disconnected:
+                gw._on_disconnected("xtquant 回调通知断线")
+
+    return _Cb()
+
+
+# 2026-08-07 订阅治理: 官方建议单股订阅 ≤50 ("订阅数较多建议直接用全推"),
+# 0807 实盘 54 持仓 + 18 信号票 = 72 超建议, 当日出现订阅心跳超时降级。
+_WHOLE_QUOTE_THRESHOLD = 50
+_WHOLE_QUOTE_MARKETS = ["SH", "SZ"]
+
+
 class RealGateway(BaseGateway):
     """真网关。所有 xtquant import 都在方法内 lazy。
 
@@ -132,6 +190,10 @@ class RealGateway(BaseGateway):
         self._quote_seqs: dict[str, int] = {}
         self._quote_lock = threading.Lock()
         self._xtdata_run_started = False
+        # 2026-08-07 订阅治理: _watch = 关注的代码集合 (全推模式过滤用);
+        # _whole_seq = 全推订阅号, None=逐票模式
+        self._watch: set = set()
+        self._whole_seq = None
 
     @staticmethod
     def _xt():
@@ -156,25 +218,8 @@ class RealGateway(BaseGateway):
         见 _note_connect_failure —— 旧会话半死占着 session 时,
         "成功才关旧"会把重连锁死成永久 -1。"""
         XtQuantTrader, XtQuantTraderCallback, StockAccount = self._xt()
-        gw = self
-
-        class _Cb(XtQuantTraderCallback):
-            """回调线程只许转发给注入的 callable (由 root 接线成 put 事件),
-            禁止在这里调任何 xtquant 同步接口 —— 官方死锁坑。"""
-
-            def on_order_status(self, order):  # noqa: N802
-                if gw._on_order:
-                    gw._on_order(gw._order_to_dict(order))
-
-            def on_deal_status(self, deal):  # noqa: N802
-                if gw._on_trade:
-                    gw._on_trade(gw._trade_to_dict(deal))
-
-            def on_disconnected(self):  # noqa: N802
-                if gw._on_disconnected:
-                    gw._on_disconnected("xtquant 回调通知断线")
-
-        trader = XtQuantTrader(self._path, self._session_id, _Cb())
+        trader = XtQuantTrader(self._path, self._session_id,
+                               _build_trader_callback(self, XtQuantTraderCallback))
         trader.start()
         try:
             rc = _call_with_timeout(trader.connect, self._timeout)
@@ -187,6 +232,10 @@ class RealGateway(BaseGateway):
             self._note_connect_failure()
             raise RuntimeError(f"QMT 连接失败, 返回码 {rc}")
         self._connect_failures = 0
+        # 2026-08-07 订阅治理: 全推订阅随旧连接失效 —— 置 None, 重连后的
+        # subscribe_quotes (_try_reconnect) 会重建; 逐票序号由重订阅覆盖
+        with self._quote_lock:
+            self._whole_seq = None
         # 新连接成功 —— 此刻才关旧连接 (§5.5), 断线期旧连接是最后的信息源
         old = self._trader
         self._trader = trader
@@ -305,8 +354,29 @@ class RealGateway(BaseGateway):
     def subscribe_quotes(self, codes: list[str]) -> bool:
         """审计H5修复: 订阅腿接线 —— 每票 subscribe_quote 挂回调,
         回调把最新一条 tick 转标准 quote 转发 self._on_quote。
-        回调线程只做转换+转发 (铁律 2: 不调 xtquant 同步接口, 不写 DB)。"""
+        回调线程只做转换+转发 (铁律 2: 不调 xtquant 同步接口, 不写 DB)。
+
+        2026-08-07 订阅治理: 关注集合 >50 (官方建议上限) 时切全推
+        subscribe_whole_quote(SH/SZ) —— 一次性订阅全市场, 回调按 _watch
+        过滤, 只转发关注票 (0807 实盘 72 个逐票订阅超官方建议, 当日
+        心跳超时降级); 切换时退订全部逐票序号, 防双通道重复推送。"""
         xtdata = self._xtdata()
+        with self._quote_lock:
+            self._watch.update(codes)
+            over = len(self._watch) > _WHOLE_QUOTE_THRESHOLD
+            whole_active = self._whole_seq is not None
+        if over:
+            if not whole_active:
+                seq = xtdata.subscribe_whole_quote(
+                    list(_WHOLE_QUOTE_MARKETS), callback=self._on_tick)
+                with self._quote_lock:
+                    self._whole_seq = seq
+                    seqs = list(self._quote_seqs.values())
+                    self._quote_seqs.clear()
+                for s in seqs:
+                    xtdata.unsubscribe_quote(s)
+            self._ensure_xtdata_run()
+            return True
         for code in codes:
             seq = xtdata.subscribe_quote(
                 code, period="tick", count=0, callback=self._on_tick)
@@ -318,10 +388,19 @@ class RealGateway(BaseGateway):
         return True
 
     def _on_tick(self, datas: dict) -> None:
-        """xtdata 推送回调: datas = {code: [tick, ...]} 可能多条,
-        只取最新一条 (监控只要最新价, 历史 tick 没有重放价值)。"""
+        """xtdata 推送回调。两种形状归一: 逐票订阅 {code: [tick, ...]},
+        全推 {code: tick} (单条 dict); 只取最新一条 (监控只要最新价,
+        历史 tick 没有重放价值)。全推模式按 _watch 过滤 —— 全市场
+        几千只里只转发关注票, 不进事件队列。"""
         for code, ticks in (datas or {}).items():
-            if ticks and self._on_quote:
+            if isinstance(ticks, dict):
+                ticks = [ticks]
+            if not ticks:
+                continue
+            with self._quote_lock:
+                if self._whole_seq is not None and code not in self._watch:
+                    continue
+            if self._on_quote:
                 self._on_quote(code, self._tick_to_quote(ticks[-1]))
 
     def _ensure_xtdata_run(self) -> None:
@@ -335,13 +414,17 @@ class RealGateway(BaseGateway):
                          name="xtdata-push-loop", daemon=True).start()
 
     def unsubscribe_all(self) -> None:
-        """逐票退订 (保存的订阅序号)。"""
+        """逐票退订 (保存的订阅序号) + 全推退订 (若在全推模式)。"""
         xtdata = self._xtdata()
         with self._quote_lock:
             seqs = list(self._quote_seqs.values())
             self._quote_seqs.clear()
+            whole = self._whole_seq
+            self._whole_seq = None
         for seq in seqs:
             xtdata.unsubscribe_quote(seq)
+        if whole is not None:
+            xtdata.unsubscribe_quote(whole)
 
     def query_quotes(self, codes: list[str]) -> dict[str, dict]:
         """轮询兜底: get_full_tick 与订阅推送同一字段口径 (同一转换函数)。"""
@@ -372,6 +455,9 @@ class RealGateway(BaseGateway):
             "code": o.stock_code, "direction": o.order_type,
             "price": o.price, "qty": o.order_volume,
             "filled_qty": o.traded_volume, "status": o.order_status,
+            # 2026-08-07: 委托状态描述 (废单原因, 0807 事件) —— 查询/回报
+            # 双通道都带, 不依赖 on_order_error 也能看到拒单原因
+            "status_msg": getattr(o, "status_msg", "") or "",
             # 2026-08-04: 委托下单时间 (epoch 秒), 供 reconciler 拦截
             # QMT 跨日查询返回的历史委托; 字段缺失/为 0 给 None (不伪装)
             "ts": getattr(o, "order_time", 0) or None,

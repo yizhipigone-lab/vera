@@ -134,6 +134,47 @@ def test_buy_happy_path_ask1_limit(cfg):
     assert last["dispositions"][0]["action"] == "buy"
 
 
+def test_new_codes_subscribed_before_pricing(cfg):
+    """2026-08-07 (实盘 0807 废单事件): 信号票定价前先补订阅 ——
+    裸快照缺盘口会走"对手最优"市价兜底, 券商通道拒单 (4/4 全灭)。"""
+    clock = [_ts("14:54")]
+    app = _start(_make_app(cfg, clock))
+    calls = []
+    orig = app.gateway.subscribe_quotes
+
+    def spy(codes):
+        calls.append(list(codes))
+        return orig(codes)
+    app.gateway.subscribe_quotes = spy
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+    _run_signals(app, [{"code": CODE, "select_date": "20260807"}])
+    assert [CODE] in calls
+    assert app._auto_buy.last["bought"] == 1
+
+
+def test_missing_ask1_refetched_before_pricing(cfg):
+    """首轮快照缺 ask1 → 定向补查补上 → 按卖一价限价, 不走对手最优。"""
+    clock = [_ts("14:54")]
+    app = _start(_make_app(cfg, clock))
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+    real_q = app.gateway.query_quotes
+    state = {"n": 0}
+
+    def flaky(codes):
+        state["n"] += 1
+        out = real_q(codes)
+        if state["n"] == 1:               # 首轮掐掉 ask1, 模拟快照缺盘口
+            return {c: dict(q, ask1=0.0) for c, q in out.items()}
+        return out
+    app.gateway.query_quotes = flaky
+    _run_signals(app, [{"code": CODE, "select_date": "20260807"}])
+    assert state["n"] == 2                # 首轮 + 定向补查各一次
+    o = app.gateway.query_orders()[0]
+    assert o["price"] == 25.51            # 卖一价限价, 非市价单 0.0
+    d = app._auto_buy.last["dispositions"][0]
+    assert d["action"] == "buy" and d["reason"] == "卖一价"
+
+
 def test_skip_matrix(cfg):
     """过滤矩阵: 已持仓 / ETF / 涨停 / 现金不足一手 / 达每日上限。"""
     clock = [_ts("14:52")]

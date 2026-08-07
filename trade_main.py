@@ -41,6 +41,8 @@ from trade.events import (  # noqa: E402
     EVENT_COMMAND,
     EVENT_CONNECTION_LOST,
     EVENT_EOD,
+    EVENT_CANCEL_ERROR,
+    EVENT_ORDER_ERROR,
     EVENT_ORDER_UPDATE,
     EVENT_QUOTE_SNAPSHOT,
     EVENT_RECONCILE,
@@ -242,6 +244,8 @@ class TradeApp:
                 # 批次4 接线①: 选股结果直接转发特性 (不在组合根落地逻辑)
                 EVENT_SIGNALS: lambda e: self._auto_buy.on_signals(e.data or {}),
                 EVENT_CONNECTION_LOST: lambda e: self._on_connection_lost(e.data),
+                EVENT_ORDER_ERROR: lambda e: self._on_order_error(e.data),
+                EVENT_CANCEL_ERROR: lambda e: self._on_cancel_error(e.data),
             },
             audit_sink=self.store.write_audit,  # 审计M4: 队列满丢弃要留痕
         )
@@ -264,6 +268,8 @@ class TradeApp:
             on_trade=_wire(self._engine, EVENT_TRADE_FILL),
             on_quote=lambda code, q: tick_wire({"code": code, **q}),
             on_disconnected=_wire(self._engine, EVENT_CONNECTION_LOST),
+            on_order_error=_wire(self._engine, EVENT_ORDER_ERROR),
+            on_cancel_error=_wire(self._engine, EVENT_CANCEL_ERROR),
             **gw_kwargs,
         )
 
@@ -804,6 +810,26 @@ class TradeApp:
             "day_pnl": day_pnl, "day_pnl_pct": day_pnl_pct,
             "position_count": pos_count, "ts": self._clock(),
         })
+
+    def _on_order_error(self, rec: dict) -> None:
+        """下单失败回报 (2026-08-07 接线, 0807 事件): xtquant order_stock
+        只回本地请求序号, 不代表券商柜台受理; 未送达/被拒的真实原因
+        (无权限/流量控制/参数错误) 只经 on_order_error 下发 —— 原文落
+        audit, 不再黑盒 (10 笔限价单"查无此单"事件的教训)。"""
+        self.store.write_audit(
+            "order_error",
+            f"下单失败: {rec.get('error_msg', '')} "
+            f"(order_id={rec.get('order_id')}, error_id={rec.get('error_id')})",
+            dict(rec))
+
+    def _on_cancel_error(self, rec: dict) -> None:
+        """撤单失败回报 (2026-08-07 接线): 撤单流水线 "锁→撤→ack" 的
+        失败分支原文落 audit (受理≠撤成, 失败原因不再黑盒)。"""
+        self.store.write_audit(
+            "cancel_error",
+            f"撤单失败: {rec.get('error_msg', '')} "
+            f"(order_id={rec.get('order_id')}, error_id={rec.get('error_id')})",
+            dict(rec))
 
     def _on_connection_lost(self, reason) -> None:
         """断线守护 (2026-07-31 方案C 重构): 不再 while True 阻塞消费者线程。

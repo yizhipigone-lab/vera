@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS orders (
     qty         INTEGER NOT NULL,
     filled_qty  INTEGER NOT NULL DEFAULT 0,
     status      INTEGER NOT NULL,
+    status_msg  TEXT NOT NULL DEFAULT '', -- 2026-08-07: 委托状态描述 (废单原因, XtOrder.status_msg)
     created_ts  REAL NOT NULL,
     updated_ts  REAL NOT NULL
 );
@@ -228,6 +229,7 @@ class TradeStore:
         self._migrate_tier_state()
         self._migrate_trades_source()
         self._migrate_trades_reason()
+        self._migrate_orders_status_msg()
         self._lock = threading.Lock()
 
         raw_path = Path(raw_log_path)
@@ -249,8 +251,8 @@ class TradeStore:
             self._conn.execute(
                 """INSERT INTO orders
                    (order_id, remark, code, direction, price, qty,
-                    filled_qty, status, created_ts, updated_ts)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                    filled_qty, status, status_msg, created_ts, updated_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(order_id) DO UPDATE SET
                     remark=excluded.remark,
                     code=excluded.code,
@@ -259,12 +261,13 @@ class TradeStore:
                     qty=excluded.qty,
                     filled_qty=excluded.filled_qty,
                     status=excluded.status,
+                    status_msg=excluded.status_msg,
                     updated_ts=excluded.updated_ts""",
                 (
                     record["order_id"], record.get("remark", ""),
                     record["code"], record["direction"], record["price"],
                     record["qty"], record.get("filled_qty", 0),
-                    record["status"],
+                    record["status"], record.get("status_msg", ""),
                     record.get("created_ts", now), now,
                 ),
             )
@@ -394,6 +397,15 @@ class TradeStore:
             with self._conn:
                 self._conn.execute(
                     "ALTER TABLE trades ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_orders_status_msg(self) -> None:
+        """2026-08-07: orders 表加 status_msg 列 (委托状态描述/废单原因,
+        XtOrder.status_msg, 0807 废单事件)。幂等演进, 历史行空串留白。"""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(orders)")]
+        if cols and "status_msg" not in cols:
+            with self._conn:
+                self._conn.execute(
+                    "ALTER TABLE orders ADD COLUMN status_msg TEXT NOT NULL DEFAULT ''")
 
     def write_audit(self, kind: str, message: str, detail: dict | None = None) -> None:
         """审计流水 (风控拒绝/对账告警等)。只增不改。"""

@@ -270,3 +270,27 @@ def test_reason_from_ctx():
     assert _reason_from_ctx({"label": "阶梯止盈", "tier": 2}) == "阶梯止盈·档3"
     assert _reason_from_ctx({"label": "移动止盈"}) == "移动止盈"
     assert _reason_from_ctx({}) == ""
+
+
+def test_orders_status_msg_migration_and_roundtrip(tmp_path):
+    """2026-08-07 (0807 废单事件): orders 表 status_msg 列 —— 老库 (无该列)
+    打开即自动迁移; 废单原因写入/读出一致。"""
+    import sqlite3 as _sq
+    db = tmp_path / "old.db"
+    conn = _sq.connect(str(db))
+    conn.execute("""CREATE TABLE orders (
+        order_id TEXT PRIMARY KEY, remark TEXT NOT NULL DEFAULT '',
+        code TEXT NOT NULL, direction INTEGER NOT NULL, price REAL NOT NULL,
+        qty INTEGER NOT NULL, filled_qty INTEGER NOT NULL DEFAULT 0,
+        status INTEGER NOT NULL, created_ts REAL NOT NULL,
+        updated_ts REAL NOT NULL)""")
+    conn.commit()
+    conn.close()
+    s = TradeStore(db, tmp_path / "raw.jsonl")      # 打开即触发迁移
+    s.save_order({"order_id": "O1", "code": "600519.SH", "direction": 23,
+                  "price": 10.0, "qty": 100, "status": 57,
+                  "status_msg": "无科创板交易权限"})
+    row = s._conn.execute(
+        "SELECT status, status_msg FROM orders WHERE order_id='O1'").fetchone()
+    s.close()
+    assert row == (57, "无科创板交易权限")

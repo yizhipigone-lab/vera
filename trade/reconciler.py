@@ -209,10 +209,11 @@ class Reconciler:
     def sync_reports(self, now: float | None = None) -> dict:
         """增量同步 (2026-07-30): QMT → 本地单向补记成交 + 回写委托状态。
 
-        背景: QMT 回调链实测不可靠 (on_order_status/on_deal_status 可能
-        缺失), 纯事件驱动会让本地记录永久停在陈旧状态。本方法是回调的
-        主动补偿网 —— 定时 (config.sync_interval_sec) / 对账 / 重连后
-        各跑一轮, traded_id/order_id 幂等, 重复跑无副作用。
+        背景: 回调通道曾因方法名写错 (on_order_status/on_deal_status,
+        xtquant 查无此方法) 从未送达 —— 2026-08-07 已修正为官方名
+        on_stock_order/on_stock_trade。本方法仍是回调的主动补偿网 —
+        定时 (config.sync_interval_sec) / 对账 / 重连后各跑一轮,
+        traded_id/order_id 幂等, 重复跑无副作用。
         两腿各自容错: 一路查询失败不影响另一路, 异常记日志不上抛
         (对账主流程不能被同步腿拖死)。
         返回 {"adopted": 补记成交笔数, "orders_updated": 回写委托笔数}。
@@ -406,7 +407,9 @@ class Reconciler:
                 "direction": int(o.get("direction", 0)),
                 "price": float(o.get("price", 0.0)),
                 "qty": int(o.get("qty", 0)), "filled_qty": filled,
-                "status": status})
+                "status": status,
+                # 2026-08-07: 废单原因随回写落库 (XtOrder.status_msg)
+                "status_msg": str(o.get("status_msg", "") or "")})
             updated += 1
         if stale:
             _logger.warning("跳过 %d 笔非当日委托 (QMT 返回了历史数据)", stale)

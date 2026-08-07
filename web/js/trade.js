@@ -151,7 +151,7 @@ function renderPositions(d) {
     + _sortTh('pnl_pct', '盈亏%')
     + _sortTh('entry_ts', '入场时间')
     + _sortTh('hold_days', '持仓天数')
-    + '<th>已触发档</th><th></th></tr>';
+    + '<th>已挂阶梯档</th><th></th></tr>';
   // 2026-08-03: 应用排序后再渲染
   var positions = _applySort(window._lastPositions);
   positions.forEach(function (p) {
@@ -225,6 +225,23 @@ function renderPositions(d) {
   });
 }
 
+// 订单状态码 → 中文说明 (对齐 trade/book.py:26-37, xtquant xtconstant)。
+// 废单标红 (要关注: 超涨停/验资失败等), 在途 (已报/待撤/部成) 标 pending 色。
+var ORDER_STATUS_TEXT = {
+  48: '未报', 49: '待报', 50: '已报', 51: '已报待撤', 52: '部成待撤',
+  53: '部撤', 54: '已撤', 55: '部成', 56: '已成', 57: '废单', 255: '未知'
+};
+function orderStatusHtml(st, msg) {
+  var txt = ORDER_STATUS_TEXT[st] || ('未知(' + st + ')');
+  var html;
+  if (st === 57) html = '<span style="color:var(--up);font-weight:700">' + txt + '</span>';
+  else if (st === 50 || st === 51 || st === 55) html = '<span style="color:var(--pending)">' + txt + '</span>';
+  else html = txt;
+  // 2026-08-07: 废单/已撤原因 (XtOrder.status_msg, 券商原话) 挂在状态下方
+  if (msg) html += '<br><span style="color:var(--text2);font-size:11px">' + esc(msg) + '</span>';
+  return html;
+}
+
 function renderOrders(d) {
   var box = document.getElementById('tdOrders');
   clearStale('tdOrders');
@@ -232,8 +249,9 @@ function renderOrders(d) {
     box.innerHTML = '<div style="color:var(--text2);font-size:12px">当日无委托</div>'; return;
   }
   // 2026-07-30: 委托表加撤单按钮 (用户要求) — 终态 (部撤53/已撤/已成/废单) 不可撤
+  // 2026-08-07 (用户要求): 状态说明列 —— 原始代码是 xtquant 状态码, 小白看不懂
   var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
-    + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th></th></tr>';
+    + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th>状态说明</th><th></th></tr>';
   d.orders.forEach(function (o) {
     // 审计L12修复: qty/filled_qty/status 统一 Number() 强转 ——
     // 其他字段走 esc, 这三个直插 innerHTML 是纵深防御缺口
@@ -244,7 +262,7 @@ function renderOrders(d) {
     html += '<tr><td>' + fmtTs(o.updated_ts || o.created_ts) + '</td><td>' + remark + '</td><td>'
       + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
-      + Number(o.filled_qty) + '</td><td>' + st + '</td><td>'
+      + Number(o.filled_qty) + '</td><td>' + st + '</td><td>' + orderStatusHtml(st, o.status_msg || '') + '</td><td>'
       + (canCancel
         ? '<button class="trade-sell-btn trade-cancel-btn" data-oid="' + esc(o.order_id) + '">撤单</button>'
         : '')
@@ -337,13 +355,14 @@ function renderHistoryOrders(d) {
   }
   // 历史台账只读 — 撤单按钮只在交易页"当日委托"卡片 (操作区)
   var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
-    + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th></tr>';
+    + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th>状态说明</th></tr>';
   d.orders.forEach(function (o) {
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
     html += '<tr><td>' + fmtTs(o.updated_ts || o.created_ts) + '</td><td>' + remark + '</td><td>'
       + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
-      + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td></tr>';
+      + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td><td>'
+      + orderStatusHtml(Number(o.status), o.status_msg || '') + '</td></tr>';
   });
   box.innerHTML = html + '</table>';
 }
@@ -409,13 +428,19 @@ function renderAsset(a) {
   document.getElementById('tdCash').textContent = fmt(a.cash);
   document.getElementById('tdMarketValue').textContent = fmt(a.market_value);
   document.getElementById('tdFrozenCash').textContent = fmt(a.frozen_cash);
-  // 当日盈亏 = total - 今日首次基准 (localStorage; 首次拉存基准, 后续算差)
-  var today = new Date().toDateString();
-  var baseKey = 'vera_asset_base_' + today;
-  var base = localStorage.getItem(baseKey);
-  if (!base && a.total_asset != null) {
-    localStorage.setItem(baseKey, a.total_asset);
-    base = a.total_asset;
+  // 当日盈亏基准: 优先昨日日终资产快照 (后端 prev_day_asset, 与
+  // 分析板块日历同口径, 2026-08-07); 取不到回退 localStorage 首拉基准。
+  var base = null;
+  if (a.prev_day_asset != null && a.prev_day_asset > 0) {
+    base = String(a.prev_day_asset);
+  } else {
+    var today = new Date().toDateString();
+    var baseKey = 'vera_asset_base_' + today;
+    base = localStorage.getItem(baseKey);
+    if (!base && a.total_asset != null) {
+      localStorage.setItem(baseKey, a.total_asset);
+      base = a.total_asset;
+    }
   }
   var pnlEl = document.getElementById('tdDayPnl');
   var pctEl = document.getElementById('tdDayPnlPct');

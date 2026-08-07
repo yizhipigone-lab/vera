@@ -152,14 +152,32 @@ class AutoBuyFeature:
         # 2026-07-27 首次实跑修复: 候选票批量取行情。
         # monitor 缓存只覆盖持仓/订阅票, 信号票从未查过 → 61/61 全"无行情"。
         # 批量查一次注入, 缓存兜底(持仓票)。
+        # 2026-08-07 (用户拍板): 取快照前先补订阅 —— 信号票不在订阅集,
+        # 裸快照可能缺盘口 (ask1=0 → "对手最优"市价兜底 → 券商通道拒单,
+        # 0807 实盘实测 4/4 全灭: 深市回 54 / 沪市回 57); 订阅后盘口 tick
+        # 进 monitor 缓存, 定价时 monitor.quote_of 兜底才有盘口可用。
         quotes: dict = {}
         codes = [s["code"] for s in signals]
+        try:
+            self._gateway.subscribe_quotes(codes)
+        except Exception as e:
+            _logger.warning("尾盘买入补订阅失败 (继续, 快照仍可用): %s", e)
         try:
             quotes = self._gateway.query_quotes(codes) or {}
         except Exception:
             self._store.write_audit(
                 "auto_buy_error", f"批量查询行情失败({len(codes)}只), 本轮自动买入中止", {})
             return
+        # 首轮缺 ask1 的票定向补查一次 (瞬时空盘口/快照残缺给第二次机会)
+        missing_ask = [c for c in codes if not (quotes.get(c) or {}).get("ask1")]
+        if missing_ask:
+            try:
+                for c, q in (self._gateway.query_quotes(missing_ask) or {}).items():
+                    if q.get("ask1"):
+                        quotes[c] = q
+            except Exception:
+                _logger.warning("尾盘买入盘口补查失败 (%d只), 维持原快照",
+                                len(missing_ask))
         dispositions: list[dict] = []
         bought = 0
 
