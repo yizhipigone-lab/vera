@@ -383,7 +383,9 @@ class RealGateway(BaseGateway):
             "traded_id": str(t.traded_id), "order_id": str(t.order_id),
             "code": t.stock_code, "direction": t.order_type,
             "price": t.traded_price, "qty": t.traded_volume,
-            "amount": t.traded_amount, "ts": t.traded_time,
+            # 2026-08-06: traded_time 缺失/为 0 给 None (与 _order_to_dict
+            # 同口径) —— _on_trade 跨日 guard 把 0 当 1970 年会误拦合法成交
+            "amount": t.traded_amount, "ts": t.traded_time or None,
         }
 
 
