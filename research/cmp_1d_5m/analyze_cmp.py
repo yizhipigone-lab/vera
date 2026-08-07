@@ -17,6 +17,18 @@ for tag, d in [("1D", d1), ("5M", d5)]:
     print(f"{tag}: 笔数={len(d)} 总盈亏={d['pnl'].sum():>12.0f} 均盈亏%={d['profit_pct'].mean()*100:+.2f} "
           f"胜率={(d['pnl']>0).mean()*100:.1f}% 均持仓={d['hold_days'].mean():.1f}天")
 
+# 2026-08-04: 日频确认模式对比 (若报告存在)
+import os
+for mode, pat in [("5M日频Low", "CMP_5M日频Low确认"), ("5M日频Close", "CMP_5M日频Close确认")]:
+    fs = sorted(glob.glob(f"output/reports/{pat}_*_trades.csv"))
+    if not fs:
+        continue
+    dm = pd.read_csv(fs[-1], encoding="utf-8")
+    tr = dm[dm["exit_reason"].str.contains("移动")]
+    print(f"{mode}: 笔数={len(dm)} 总盈亏={dm['pnl'].sum():>12.0f} "
+          f"均盈亏%={dm['profit_pct'].mean()*100:+.2f} 胜率={(dm['pnl']>0).mean()*100:.1f}% "
+          f"均持仓={dm['hold_days'].mean():.1f}天 | 移动止盈 {len(tr)}笔 均{tr['profit_pct'].mean()*100:+.1f}%")
+
 print("\n=== 退出原因分布 (笔数 / 平均盈亏% / 总盈亏) ===")
 for tag, d in [("1D", d1), ("5M", d5)]:
     g = d.groupby("exit_reason").agg(
