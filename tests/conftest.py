@@ -168,6 +168,61 @@ def _stop_trade_apps(monkeypatch):
             pass
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _block_network_egress():
+    """session 级无条件焊死 urllib.request.urlopen (2026-08-07 飞书泄漏根治)。
+
+    事件: 8-04 / 8-07 两次测试期间向 .env 里真实飞书 webhook 投递测试成交卡片。
+    根因不在 FeishuNotifier 本身, 而在测试治理层只拦了"线程"没拦"网络":
+      - _stop_trade_apps (上) 只在测试结束后调 app.stop() / notifier.stop();
+      - 但 stop() 是 drain 语义 (worker 把队列剩余消息发完才返回, 见
+        notifier.py:99-108), 且 worker 走的是真 urllib.request.urlopen;
+      - 于是"收尾"这一下反而把测试消息真发了出去 —— 必须拦发送才能根治。
+
+    裁决: session 级把 urllib.request.urlopen 无条件换成假响应, 整个 pytest
+    进程零真实网络出口 (与 test_policy_sources "零网络零外部依赖" 哲学一致):
+      - 不依赖 fixture teardown 顺序 —— 焊死是 session 级永久的, 不像 function
+        scope monkeypatch 会在测试间复原, 留下 "stop drain 时恰好没被 mock"
+        的窗口 (那正是两次泄漏的窗口);
+      - function-scope monkeypatch 仍能覆盖做精确断言 —— test_notifier 的
+        captured fixture (monkeypatch.setattr urlopen) 在其生效的测试内照常
+        捕获 req.data, teardown 后回落到本 session 假, 链条不断;
+      - gov_cn 测试 mock 的是上游 _http_get, 根本不触 urlopen, 不受影响。
+
+    与 _stop_trade_apps 分工: 那个管"线程生命周期收尾", 这个管"网络出口焊死",
+    双保险 —— 线程即便泄漏到会话外也发不出去。teardown 时若拦截数 >0 打印
+    一行摘要, 方便定位"哪个测试还在试图触网"。
+    """
+    import urllib.request as _urlreq
+
+    _orig = _urlreq.urlopen
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"code":0}'
+
+    blocked = {"n": 0}
+
+    def _fake_urlopen(url_or_req, timeout=None, *args, **kwargs):
+        blocked["n"] += 1
+        return _FakeResp()
+
+    _urlreq.urlopen = _fake_urlopen
+    try:
+        yield
+    finally:
+        _urlreq.urlopen = _orig
+        if blocked["n"]:
+            print(f"\n[conftest] session 焊死拦截 urllib.request.urlopen "
+                  f"{blocked['n']} 次 (全部吞掉未触网)")
+
+
 class FakeLoop:
     """Mock BacktestLoop for monkeypatch tests. Captures run() args, returns stub equity/trades."""
     def __init__(self, equity=None, trades=None):

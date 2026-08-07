@@ -444,6 +444,16 @@ def test_feishu_config_validation_and_roundtrip():
         trade_config_from_dict({"feishu": {"enabled": "yes"}})      # 非 bool
     cfg = trade_config_from_dict({"feishu": {"enabled": False}})
     assert trade_config_to_dict(cfg)["feishu"]["enabled"] is False  # 往返
+    # 2026-08-07: daily_report_level 校验 + 往返
+    assert trade_config_from_dict({}).feishu.daily_report_level == "full"  # 缺省
+    cfg_lvl = trade_config_from_dict(
+        {"feishu": {"daily_report_level": "summary"}})
+    assert cfg_lvl.feishu.daily_report_level == "summary"
+    assert (trade_config_to_dict(cfg_lvl)["feishu"]["daily_report_level"]
+            == "summary")
+    with pytest.raises(ValueError):
+        trade_config_from_dict(
+            {"feishu": {"daily_report_level": "verbose"}})  # 非法档
 
 
 def test_e2e_eod_daily_has_numbers(cfg, clock, captured, monkeypatch):
@@ -482,3 +492,135 @@ def test_enabled_toggle_is_hot(captured):
         assert len(captured) == 1           # 第二条被 no-op 拦下
     finally:
         n.stop()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-07 盘后日报全明细增强
+# (卡片多 section + 仓位变动时序 CRITICAL + 落库 + 交易摘要)
+# ═══════════════════════════════════════════════════════════════
+
+def _daily_full_payload():
+    return {
+        "total_asset": 1_010_000.0, "cash": 1_000_000.0, "market_value": 10_000.0,
+        "day_pnl": 500.0, "day_pnl_pct": 0.05, "position_count": 1,
+        "floating_pnl": 200.0, "ts": 1750865391.0,
+        "buy_count": 1, "sell_count": 1, "turnover": 20_000.0,
+        "realized_pnl": 300.0, "win_rate": 1.0,
+        "position_changes": {"new": [{"code": "300750.SZ", "delta": 1000}]},
+        "sell_details": [{"code": "600519.SH", "pnl_amount": 300.0,
+                          "pnl_pct": 5.0, "reason": "移动止盈", "ts": 1.0}],
+    }
+
+
+def test_daily_card_full_has_four_sections():
+    """full 档: 资产/交易摘要/仓位变动/卖出明细 四 section (hr 分隔)。"""
+    n = FeishuNotifier(lambda: True, lambda: "http://x")
+    card = n._build_daily_card(_daily_full_payload(), level="full")
+    divs = [e for e in card["card"]["elements"] if e.get("tag") == "div"]
+    assert len(divs) == 4, [e.get("tag") for e in card["card"]["elements"]]
+    assert "仓位变动" in divs[2]["text"]["content"]
+    assert "新进" in divs[2]["text"]["content"] and "300750.SZ" in divs[2]["text"]["content"]
+    sell_body = divs[3]["text"]["content"]
+    assert "卖出明细" in sell_body and "600519.SH" in sell_body
+    assert "+300.00" in sell_body and "(+5.00%)" in sell_body  # 金额 + 比例
+
+
+def test_daily_card_partial_fallback_only_asset():
+    """缺字段 fail-soft: 只有 total_asset → 只出资产 section, 不抛。"""
+    n = FeishuNotifier(lambda: True, lambda: "http://x")
+    card = n._build_daily_card({"total_asset": 100_000.0, "ts": 1750865391.0})
+    divs = [e for e in card["card"]["elements"] if e.get("tag") == "div"]
+    assert len(divs) == 1
+    assert "100,000.00" in divs[0]["text"]["content"]
+
+
+def test_daily_card_summary_level_omits_detail_sections():
+    """summary 档: 只资产+交易摘要, 不出仓位变动/卖出明细 (即使有数据)。"""
+    n = FeishuNotifier(lambda: True, lambda: "http://x")
+    card = n._build_daily_card(_daily_full_payload(), level="summary")
+    divs = [e for e in card["card"]["elements"] if e.get("tag") == "div"]
+    assert len(divs) == 2
+    bodies = "\n".join(d["text"]["content"] for d in divs)
+    assert "仓位变动" not in bodies and "卖出明细" not in bodies
+
+
+def test_daily_card_sell_details_fold():
+    """>8 笔卖出: 留前 8 + 折叠汇总行 (另 N 笔合计 X)。"""
+    n = FeishuNotifier(lambda: True, lambda: "http://x")
+    sells = [{"code": f"00000{i}.SZ", "pnl_amount": float(i),
+              "pnl_pct": float(i), "reason": "", "ts": float(i)}
+             for i in range(10)]
+    card = n._build_daily_card({
+        "total_asset": 1e6, "ts": 1750865391.0, "sell_details": sells,
+        "sell_details_folded": {"count": 2, "sum_pnl_amount": 9.0}})
+    body = [e for e in card["card"]["elements"] if e.get("tag") == "div"][-1]["text"]["content"]
+    assert "另 2 笔合计 +9.00" in body
+
+
+def test_build_trade_summary_win_rate_and_sort(cfg):
+    """sell_count=0 → win_rate=None (不除零); 有卖出按 ts 升序 + 胜率。"""
+    app = TradeApp(cfg, fake=True,
+                   fake_gateway_kwargs={"cash": 1e6, "positions": {}})
+    try:
+        assert app.start(start_timers=False)
+        # 无卖出: win_rate=None
+        s0 = app._build_trade_summary([
+            {"code": "A", "direction": 23, "amount": 1000.0, "pnl_amount": 0.0}])
+        assert s0["sell_count"] == 0 and s0["win_rate"] is None
+        assert s0["buy_count"] == 1 and s0["turnover"] == 1000.0
+        # 两笔卖出 (一盈一亏): 胜率 0.5, realized=+20, ts 升序
+        s1 = app._build_trade_summary([
+            {"code": "B", "direction": 24, "amount": 100.0,
+             "pnl_amount": 50.0, "pnl_pct": 5.0, "ts": 2.0},
+            {"code": "C", "direction": 24, "amount": 100.0,
+             "pnl_amount": -30.0, "pnl_pct": -3.0, "ts": 1.0}])
+        assert s1["sell_count"] == 2 and s1["win_rate"] == 0.5
+        assert s1["realized_pnl"] == 20.0
+        assert s1["sell_details"][0]["code"] == "C"   # ts=1 在前
+    finally:
+        app.stop()
+
+
+def test_e2e_eod_position_changes_uses_prev_snapshot(cfg, clock, captured, monkeypatch):
+    """CRITICAL 回归 (2026-08-07): _on_eod 必须在覆盖 position_snapshot 前读昨仓,
+    否则仓位变动恒空。手存昨仓={SH}, 今仓(FakeGateway)={CYB} → 新进 CYB + 清仓 SH。
+    若 _on_eod 错成"先覆盖再读", prev=今仓, diff 全空, 此测试失败。"""
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "http://hook")
+    app = TradeApp(cfg, fake=True, clock=lambda: clock[0],
+                   fake_gateway_kwargs={"cash": 1_000_000.0,
+                                        "positions": _positions_seed()})
+    try:
+        assert app.start(start_timers=False)
+        # 手动存"昨仓": 只有 SH, 没有 CYB (FakeGateway 今仓是 CYB)
+        app.store.save_position_snapshot(
+            {"600519.SH": {"volume": 500, "can_use": 500, "avg_cost": 10.0}})
+        app._engine.put(Event(type=EVENT_EOD, data={}))
+        assert _wait(lambda: any(
+            "日报" in m["card"]["header"]["title"]["content"] for m in captured))
+        daily = [m for m in captured
+                 if "日报" in m["card"]["header"]["title"]["content"]][-1]
+        body = "\n".join(e.get("text", {}).get("content", "")
+                         for e in daily["card"]["elements"] if e.get("tag") == "div")
+        assert "仓位变动" in body
+        assert "新进" in body and CYB in body          # CYB 昨无今有
+        assert "清仓" in body and "600519.SH" in body  # SH 昨有今无
+    finally:
+        app.stop()
+
+
+def test_e2e_eod_daily_saves_report_for_web(cfg, clock, captured, monkeypatch):
+    """盘后日报 payload 同时落 daily_report 表 (web /analysis/daily_report 同源)。"""
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "http://hook")
+    app = TradeApp(cfg, fake=True, clock=lambda: clock[0],
+                   fake_gateway_kwargs={"cash": 1_000_000.0,
+                                        "positions": _positions_seed()})
+    try:
+        assert app.start(start_timers=False)
+        app._engine.put(Event(type=EVENT_EOD, data={}))
+        date_str = time.strftime("%Y-%m-%d", time.localtime(clock[0]))
+        assert _wait(lambda: app.store.load_daily_report(date_str) is not None)
+        rep = app.store.load_daily_report(date_str)
+        assert rep["total_asset"] == 1_010_000.0
+        assert "buy_count" in rep and "sell_count" in rep  # 交易摘要已拼
+    finally:
+        app.stop()

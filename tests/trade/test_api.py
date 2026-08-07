@@ -308,3 +308,45 @@ def test_orders_default_limit_within_bounds(client):
     assert len(r["orders"]) == 2
     r2 = c.get("/api/trade/orders?limit=2&offset=2").json()
     assert len(r2["orders"]) == 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-07 盘后日报增强 (/deals 读 pnl 列 + /analysis/daily_report)
+# ═══════════════════════════════════════════════════════════════
+
+def test_deals_reads_pnl_column(client):
+    """2026-08-07: /deals 卖出盈亏改读 trades.pnl_amount/pnl_pct 列 (book 成本法),
+    不再 SQL 现算。"""
+    c, app = client
+    app.store.save_trade({"traded_id": "T-S", "order_id": "O-S", "code": SH,
+                          "direction": 24, "price": 11.0, "qty": 100,
+                          "amount": 1100.0, "ts": time.time(),
+                          "pnl_amount": 123.45, "pnl_pct": 10.0})
+    d = c.get("/api/trade/deals").json()
+    row = [r for r in d["deals"] if r["traded_id"] == "T-S"][0]
+    assert row["pnl_amount"] == 123.45 and row["pnl_pct"] == 10.0
+
+
+def test_deals_sell_without_pnl_column_returns_none(client):
+    """卖出但 pnl 列=0 (上线前历史行) → pnl_amount/pnl_pct = None
+    (不回溯 SQL 现算, 保持单一 book 口径)。"""
+    c, app = client
+    app.store.save_trade({"traded_id": "T-N", "order_id": "O-N", "code": SH,
+                          "direction": 24, "price": 11.0, "qty": 100,
+                          "amount": 1100.0, "ts": time.time()})  # 无 pnl → 默认 0
+    d = c.get("/api/trade/deals").json()
+    row = [r for r in d["deals"] if r["traded_id"] == "T-N"][0]
+    assert row["pnl_amount"] is None and row["pnl_pct"] is None
+
+
+def test_daily_report_endpoint_roundtrip(client):
+    """2026-08-07: /analysis/daily_report?date= 读 daily_report 表;
+    缺省取最新; 无记录 → null; 非法日期 422。"""
+    c, app = client
+    today = time.strftime("%Y-%m-%d")
+    payload = {"total_asset": 1e6, "day_pnl": 500.0, "buy_count": 1}
+    app.store.save_daily_report(today, payload)
+    assert c.get(f"/api/trade/analysis/daily_report?date={today}").json()["report"] == payload
+    assert c.get("/api/trade/analysis/daily_report").json()["report"] == payload  # 缺省=最新
+    assert c.get("/api/trade/analysis/daily_report?date=2099-12-31").json()["report"] is None
+    assert c.get("/api/trade/analysis/daily_report?date=bad").status_code == 422

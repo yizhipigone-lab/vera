@@ -120,8 +120,11 @@ class AutoBuyConfig:
 class FeishuConfig:
     """飞书 webhook 通知 (2026-07-31): enabled=总开关 (设置面板可热关)。
     webhook URL 走环境变量 FEISHU_WEBHOOK_URL, 不入 yaml (半密钥);
-    URL 缺失时通知器为 no-op (启动告警一次), 交易照常。"""
+    URL 缺失时通知器为 no-op (启动告警一次), 交易照常。
+    daily_report_level (2026-08-07): 盘后日报详尽档, full=全明细 / summary=
+    简报 (只资产+交易摘要, 不出仓位变动/卖出明细), 设置面板可热切。"""
     enabled: bool = True
+    daily_report_level: str = "full"
 
 
 @dataclass(frozen=True)
@@ -379,18 +382,28 @@ def _coerce_auto_buy(data: dict) -> AutoBuyConfig:
     return AutoBuyConfig(**kwargs)
 
 
+_FEISHU_LEVELS = ("full", "summary")
+
+
 def _coerce_feishu(data: dict) -> FeishuConfig:
-    """飞书通知段校验。仅 enabled 一个布尔字段; webhook URL 不入配置。"""
+    """飞书通知段校验。enabled 布尔 + daily_report_level 详尽档;
+    webhook URL 不入配置。"""
     if not isinstance(data, dict):
         raise TypeError(f"trade feishu 必须是映射, 实际 {data!r}")
-    unknown = set(data) - {"enabled"}
+    unknown = set(data) - {"enabled", "daily_report_level"}
     if unknown:
         _fail(f"trade feishu 存在未知字段: {sorted(unknown)}")
+    kwargs: dict = {}
     if "enabled" in data:
         if not isinstance(data["enabled"], bool):
             raise TypeError("feishu.enabled 必须是 bool")
-        return FeishuConfig(enabled=data["enabled"])
-    return FeishuConfig()
+        kwargs["enabled"] = data["enabled"]
+    if "daily_report_level" in data:
+        lvl = data["daily_report_level"]
+        if not isinstance(lvl, str) or lvl not in _FEISHU_LEVELS:
+            _fail(f"feishu.daily_report_level 只能是 {list(_FEISHU_LEVELS)}, 实际 {lvl!r}")
+        kwargs["daily_report_level"] = lvl
+    return FeishuConfig(**kwargs)
 
 
 def _coerce(key: str, value: Any) -> Any:
@@ -500,7 +513,8 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
             "max_buys_per_day": cfg.auto_buy.max_buys_per_day,
             "universe": dict(cfg.auto_buy.universe),
         },
-        "feishu": {"enabled": cfg.feishu.enabled},
+        "feishu": {"enabled": cfg.feishu.enabled,
+                   "daily_report_level": cfg.feishu.daily_report_level},
         "monitor_scan_interval_sec": cfg.monitor_scan_interval_sec,
         "sync_interval_sec": cfg.sync_interval_sec,
         "tick_heartbeat_sec": cfg.tick_heartbeat_sec,

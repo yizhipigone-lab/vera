@@ -853,6 +853,14 @@ input:focus-visible,select:focus-visible{outline:none}
         <div class="calendar-grid" id="analysisCalendarGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
       </div>
     </div>
+    <!-- 盘后日报 (2026-08-07): 点击日历有数据格子展开当日详情 -->
+    <div class="chart-box full" id="analysisDailyReportBox" style="display:none;margin-bottom:12px">
+      <div class="chart-box-header">
+        <span id="analysisDailyReportTitle">盘后日报</span>
+        <button class="btn btn-sm" id="analysisDailyReportClose" title="收起" style="font-size:11px;padding:2px 10px">收起</button>
+      </div>
+      <div class="chart-box-body" id="analysisDailyReport" style="padding:14px"></div>
+    </div>
     <!-- 权益曲线 -->
     <div class="chart-box full" style="margin-bottom:12px">
       <div class="chart-box-header"><span>权益曲线 & 基准对比</span></div>
@@ -1124,7 +1132,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_chat.js?v=20260731a"></script>
-<script type="module" src="/web/js/analysis.js?v=20260803a"></script>
+<script type="module" src="/web/js/analysis.js?v=20260807b"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260730a"></script>
 </body>
 </html>

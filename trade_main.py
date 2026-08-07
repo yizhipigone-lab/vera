@@ -623,6 +623,13 @@ class TradeApp:
         # _notify_fill 共用 —— 必须在 save_trade 前取。
         ctx = self.executor.peek_fill_context(rec["order_id"]) or {}
         rec["reason"] = _reason_from_ctx(ctx)
+        # 2026-08-07: 卖出成交落盈亏金额 (盘后日报 realized_pnl/sell_details
+        # 数据源, book 成本法, 与 _notify_fill 同口径)。买入不塞 (默认 0)。
+        if rec["direction"] != DIRECTION_BUY:
+            _pnl_amt, _pnl_pct = self._sell_pnl(
+                float(rec["price"]), int(rec["qty"]), pre_avg_cost)
+            rec["pnl_amount"] = _pnl_amt if _pnl_amt is not None else 0.0
+            rec["pnl_pct"] = _pnl_pct if _pnl_pct is not None else 0.0
         try:
             self.store.save_trade(rec)
         except Exception as e:
@@ -677,15 +684,28 @@ class TradeApp:
             # H1: 优先用调用方传的 apply 前成本; 没传才回退 book (清仓时已 0)
             cost = avg_cost if avg_cost is not None else (
                 pos.avg_cost if pos else 0.0)
-            if cost > 0:
-                payload["pnl_pct"] = round((price / cost - 1) * 100, 2)
-                payload["pnl_amount"] = round((price - cost) * qty, 2)
+            _amt, _pct = self._sell_pnl(price, qty, cost)
+            if _pct is not None:
+                payload["pnl_pct"] = _pct
+                payload["pnl_amount"] = _amt
             payload["tier"] = ctx.get("tier")
             payload["sell_ratio"] = ctx.get("sell_ratio")
             remaining_vol = pos.volume if pos else 0
             payload["remaining_vol"] = remaining_vol
             payload["remaining_value"] = round(price * remaining_vol, 2)
         self._notifier.notify_fill(payload)
+
+    @staticmethod
+    def _sell_pnl(price: float, qty: int,
+                  avg_cost: float) -> tuple[float | None, float | None]:
+        """卖出盈亏 (2026-08-07 抽公共, _notify_fill 与 _on_trade 落库同口径)。
+        返回 (pnl_amount, pnl_pct); avg_cost<=0 → (None, None) (成本无效不算)。
+        口径 = book.apply_trade 前快照成本 (移动加权, 部分卖不清零/清仓清零),
+        与成交通知卡同源; 比 deals 接口旧 SQL 现算 (不扣已卖部分) 更准。"""
+        if avg_cost <= 0:
+            return (None, None)
+        return (round((price - avg_cost) * qty, 2),
+                round((price / avg_cost - 1) * 100, 2))
 
     def _on_adopted_trade(self, trade_dict: dict, ctx: dict,
                           avg_cost: float | None = None) -> None:
@@ -759,6 +779,14 @@ class TradeApp:
         # 不把"空"当成"零持仓"写入 C 方基准。
         # 飞书盘后日报独立: 它查的是 asset (与持仓查询不同 API),
         # 持仓查不到不意味着资产查不到 —— 照常推送。
+        # 2026-08-07 盘后日报全明细: 覆盖前读昨仓 (CRITICAL: 覆盖后 load 返
+        # 今仓, 仓位变动恒空) + sync_reports 补齐当日成交 (绕过 _on_sync_reports
+        # 时段守卫, 15:05 后非盘中会被守卫拦) 供日报 realized_pnl/sell_details 读。fail-soft。
+        prev_snapshot = self.store.load_position_snapshot()
+        try:
+            self.reconciler.sync_reports()
+        except Exception:
+            _logger.debug("EOD sync_reports 失败 (日报用本地已有成交)")
         positions = self.gateway.query_positions()
         if positions:
             self.store.save_position_snapshot(positions)
@@ -784,17 +812,23 @@ class TradeApp:
         if not notify_daily:
             return
         try:
-            self._notify_daily()
+            self._notify_daily(prev_snapshot=prev_snapshot)
         except Exception:
             _logger.debug("盘后日报组装异常 (不影响交易)")
 
-    def _notify_daily(self) -> None:
-        """盘后日报: QMT 资产 + 盘前基准算当日盈亏。查不到资产不推。"""
+    def _notify_daily(self, prev_snapshot: dict | None = None) -> None:
+        """盘后日报 (2026-08-07 全明细增强): 资产 + 盘前基准盈亏 + 当日交易摘要
+        + 仓位变动 + 浮盈 + 卖出明细。查不到资产不推 (fail-soft)。
+        prev_snapshot: _on_eod 在覆盖 position_snapshot 前读的昨仓 (CRITICAL:
+        覆盖后 load 返今仓, 仓位变动恒空); None 时不出仓位变动。payload 同时落
+        daily_report 表 (web 回看同源)。name 不入 payload —— 展示层 (飞书/web) 自解析。"""
         try:
             asset = self.gateway.query_asset()
         except Exception:
             return
         total_asset = float(asset.get("total_asset", 0.0) or 0.0)
+        if total_asset <= 0:
+            return
         cash = float(asset.get("cash", 0.0) or 0.0)
         market_value = float(asset.get("market_value", 0.0) or 0.0)
         day_pnl = None
@@ -802,14 +836,102 @@ class TradeApp:
         if self._day_baseline:
             day_pnl = round(total_asset - self._day_baseline, 2)
             day_pnl_pct = round((total_asset / self._day_baseline - 1) * 100, 2)
-        pos_count = sum(1 for p in self.book.snapshot()["positions"].values()
-                        if p.volume > 0)
-        self._notifier.notify_daily({
+        positions = self.book.snapshot()["positions"]
+        pos_count = sum(1 for p in positions.values() if p.volume > 0)
+        payload: dict = {
             "total_asset": total_asset, "cash": cash,
             "market_value": market_value,
             "day_pnl": day_pnl, "day_pnl_pct": day_pnl_pct,
             "position_count": pos_count, "ts": self._clock(),
-        })
+        }
+        # 当日交易摘要 + 卖出明细 (数据源 trades 表, 已含 pnl_amount)
+        date_str = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+        try:
+            trades_detail = self.store.load_today_trades_detail(date_str)
+        except Exception:
+            trades_detail = []
+            _logger.debug("load_today_trades_detail 异常 (日报交易段留空)")
+        payload.update(self._build_trade_summary(trades_detail))
+        # 浮盈 = 市值 − 持仓成本 (不含税费/已实现盈亏, 与 realized_pnl 分开)
+        cost_basis = sum(p.volume * p.avg_cost for p in positions.values()
+                         if p.volume > 0)
+        payload["floating_pnl"] = round(market_value - cost_basis, 2)
+        # 仓位变动 (仅当有昨仓基准且有变化)
+        if prev_snapshot is not None:
+            changes = self._diff_positions(prev_snapshot, positions)
+            if any(changes.values()):
+                payload["position_changes"] = changes
+        # 飞书 + 落库 (两路 fail-soft 互不影响, 不影响交易)
+        level = getattr(self._cfg.feishu, "daily_report_level", "full")
+        try:
+            self._notifier.notify_daily(payload, level=level)
+        except Exception:
+            _logger.debug("盘后日报推送异常 (不影响交易)")
+        try:
+            self.store.save_daily_report(date_str, payload)
+        except Exception:
+            _logger.debug("盘后日报落库异常 (web 回看该日将缺, 不影响交易)")
+
+    def _build_trade_summary(self, trades_detail: list[dict]) -> dict:
+        """从当日成交明细算交易摘要 + 卖出明细 (2026-08-07)。
+        sell_count=0 → win_rate=None (卡片省略, 不除零); 卖出明细按 ts 升序,
+        超 8 笔留前 8 + 折叠汇总 (sell_details_folded)。"""
+        buy_count = sell_count = 0
+        turnover = 0.0
+        realized_pnl = 0.0
+        wins = 0
+        sells: list[dict] = []
+        for t in trades_detail:
+            turnover += abs(float(t.get("amount", 0.0) or 0.0))
+            if t.get("direction") == DIRECTION_BUY:
+                buy_count += 1
+                continue
+            sell_count += 1
+            pnl = float(t.get("pnl_amount", 0.0) or 0.0)
+            realized_pnl += pnl
+            if pnl > 0:
+                wins += 1
+            sells.append({"code": t["code"], "reason": t.get("reason", ""),
+                          "pnl_amount": pnl, "pnl_pct": t.get("pnl_pct"),
+                          "ts": t.get("ts", 0.0)})
+        out: dict = {
+            "buy_count": buy_count, "sell_count": sell_count,
+            "turnover": round(turnover, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "win_rate": round(wins / sell_count, 4) if sell_count > 0 else None,
+        }
+        if sells:
+            sells.sort(key=lambda s: s["ts"])
+            if len(sells) > 8:
+                folded = sells[8:]
+                out["sell_details"] = sells[:8]
+                out["sell_details_folded"] = {
+                    "count": len(folded),
+                    "sum_pnl_amount": round(sum(s["pnl_amount"] for s in folded), 2),
+                }
+            else:
+                out["sell_details"] = sells
+        return out
+
+    def _diff_positions(self, prev: dict, curr: dict) -> dict:
+        """仓位变动 (2026-08-07): 按 (今 curr vs 昨 prev) 净 volume diff 分类。
+        delta = curr_volume − prev_volume。prev={code:{volume,..}} (store 快照),
+        curr={code:PositionView} (book)。return {new,closed,added,reduced}。"""
+        prev_vols = {c: int(p.get("volume", 0)) for c, p in prev.items()}
+        curr_vols = {c: int(getattr(p, "volume", 0)) for c, p in curr.items()}
+        new, closed, added, reduced = [], [], [], []
+        for code in set(prev_vols) | set(curr_vols):
+            pv, cv = prev_vols.get(code, 0), curr_vols.get(code, 0)
+            delta = cv - pv
+            if pv == 0 and cv > 0:
+                new.append({"code": code, "delta": cv})
+            elif cv == 0 and pv > 0:
+                closed.append({"code": code, "delta": -pv})
+            elif delta > 0:
+                added.append({"code": code, "delta": delta})
+            elif delta < 0:
+                reduced.append({"code": code, "delta": delta})
+        return {"new": new, "closed": closed, "added": added, "reduced": reduced}
 
     def _on_order_error(self, rec: dict) -> None:
         """下单失败回报 (2026-08-07 接线, 0807 事件): xtquant order_stock

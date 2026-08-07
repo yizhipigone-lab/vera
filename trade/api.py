@@ -258,11 +258,23 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
 
     @app.get("/api/trade/asset")
     def asset():
-        """QMT 资产实时查询 (铁律1: QMT 是资产唯一真相源). 失败返 503."""
+        """QMT 资产实时查询 (铁律1: QMT 是资产唯一真相源). 失败返 503.
+
+        2026-08-07: 附 prev_day_asset (最近一个非当日的日终资产快照),
+        前端当日盈亏基准统一用它 (此前用 localStorage 首拉基准,
+        换浏览器/晚开页面即漂移, 与分析板块日历对不上)。"""
         try:
-            return trade_app.gateway.query_asset()
+            a = trade_app.gateway.query_asset()
         except Exception as e:
             raise HTTPException(503, f"QMT 资产查询失败: {e}")
+        try:
+            today = time.strftime("%Y-%m-%d")
+            rows = trade_app.store.get_daily_assets(end=today)
+            prev = [r for r in rows if r["date"] < today]
+            a["prev_day_asset"] = prev[-1]["total_asset"] if prev else None
+        except Exception:
+            a["prev_day_asset"] = None  # 取不到不阻断, 前端回退旧逻辑
+        return a
 
     @app.get("/api/trade/positions")
     def positions():
@@ -340,8 +352,9 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         """成交记录 (2026-07-30 交易记录 TAB)。date=YYYYMMDD 查历史
         (缺省当日); limit/offset 翻页。数据源 trades 表
         (成交回调 + sync_reports 双向补记, traded_id 幂等)。
-        2026-08-03: 卖出记录附加盈亏金额/盈亏比例
-        (成本 = 该代码该笔卖出前所有买入的加权均价)。"""
+        2026-08-07: 卖出盈亏改读 trades.pnl_amount/pnl_pct 列 (book 成本法,
+        与飞书成交卡/_on_trade 同源); 历史行 (上线前) 列=0 → 显示 None
+        (不回溯 SQL 现算 —— 旧口径不扣已卖部分会错位)。"""
         try:
             start, end = _day_range(date) if date else _today_range()
         except ValueError as e:
@@ -353,22 +366,18 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 "ORDER BY ts DESC, traded_id DESC LIMIT ? OFFSET ?",
                 (start, end, limit, offset))
             rows = _rows_to_dicts(cur)
-            from trade.book import DIRECTION_BUY, DIRECTION_SELL
+            from trade.book import DIRECTION_SELL
             for r in rows:
                 r["name"] = _name_of(r["code"])
-                r["pnl_amount"] = None
-                r["pnl_pct"] = None
-                if r["direction"] == DIRECTION_SELL:
-                    buy = ro.execute(
-                        "SELECT SUM(amount), SUM(qty) FROM trades "
-                        "WHERE code = ? AND direction = ? AND ts < ?",
-                        (r["code"], DIRECTION_BUY, r["ts"])).fetchone()
-                    if buy and buy[0] and buy[1]:
-                        avg_cost = buy[0] / buy[1]
-                        r["pnl_amount"] = round(
-                            (r["price"] - avg_cost) * r["qty"], 2)
-                        r["pnl_pct"] = round(
-                            (r["price"] - avg_cost) / avg_cost * 100, 2)
+                # pnl 改读列 (单一 book 口径, 与飞书日报同源); 历史/买入行 → None
+                col_amt = r.get("pnl_amount") or 0
+                col_pct = r.get("pnl_pct") or 0
+                if r["direction"] == DIRECTION_SELL and col_amt:
+                    r["pnl_amount"] = round(float(col_amt), 2)
+                    r["pnl_pct"] = round(float(col_pct), 2) if col_pct else None
+                else:
+                    r["pnl_amount"] = None
+                    r["pnl_pct"] = None
             return {"deals": rows}
         finally:
             ro.close()
@@ -591,6 +600,21 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 "sell_count": len(tinfo["sell"]),
             }
         return result
+
+    @app.get("/api/trade/analysis/daily_report")
+    def analysis_daily_report(date: str = Query(default="")):
+        """盘后日报全明细 (2026-08-07 日历点击回看)。date=YYYY-MM-DD;
+        缺省取最近一份。源 daily_report 表 (发飞书时同时落盘, 与卡片同源)。
+        无记录 → {"report": null}。"""
+        if date:
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+            except ValueError as e:
+                raise HTTPException(422, f"date 需为 YYYY-MM-DD: {e}") from e
+            rep = trade_app.store.load_daily_report(date)
+        else:
+            rep = trade_app.store.load_latest_daily_report()
+        return {"report": rep}
 
     @app.get("/api/trade/analysis/summary")
     def analysis_summary():

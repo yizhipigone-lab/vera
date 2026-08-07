@@ -294,3 +294,36 @@ def test_orders_status_msg_migration_and_roundtrip(tmp_path):
         "SELECT status, status_msg FROM orders WHERE order_id='O1'").fetchone()
     s.close()
     assert row == (57, "无科创板交易权限")
+
+
+def test_load_today_trades_detail_with_pnl(store):
+    """2026-08-07: 当日成交明细含 pnl_amount/pnl_pct (日报数据源), ts 升序, 跨日不返。"""
+    import datetime as _dt
+    today = _dt.datetime.now().strftime("%Y-%m-%d")
+    base = time.time()
+    store.save_trade({"traded_id": "T-B", "order_id": "O-B", "code": "300750.SZ",
+                      "direction": 23, "price": 10.0, "qty": 100, "amount": 1000.0,
+                      "ts": base, "source": "system"})
+    store.save_trade({"traded_id": "T-S", "order_id": "O-S", "code": "300750.SZ",
+                      "direction": 24, "price": 11.0, "qty": 100, "amount": 1100.0,
+                      "ts": base + 1, "source": "system", "reason": "移动止盈",
+                      "pnl_amount": 100.0, "pnl_pct": 10.0})
+    det = store.load_today_trades_detail(today)
+    assert len(det) == 2
+    assert det[0]["traded_id"] == "T-B"          # ts 升序
+    assert det[1]["pnl_amount"] == 100.0 and det[1]["pnl_pct"] == 10.0
+    assert det[0]["pnl_amount"] == 0.0           # 买入默认 0
+    yest = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    assert store.load_today_trades_detail(yest) == []   # 跨日不返
+
+
+def test_daily_report_upsert_and_latest(store):
+    """daily_report 表 UPSERT + load_latest 取最近日期 (2026-08-07)。"""
+    store.save_daily_report("2026-08-01", {"day_pnl": 100.0})
+    store.save_daily_report("2026-08-07", {"day_pnl": 200.0})
+    store.save_daily_report("2026-08-03", {"day_pnl": 150.0})
+    assert store.load_daily_report("2026-08-07") == {"day_pnl": 200.0}
+    assert store.load_latest_daily_report() == {"day_pnl": 200.0}   # 最新日期
+    store.save_daily_report("2026-08-07", {"day_pnl": 999.0})       # UPSERT
+    assert store.load_daily_report("2026-08-07") == {"day_pnl": 999.0}
+    assert store.load_daily_report("2099-01-01") is None

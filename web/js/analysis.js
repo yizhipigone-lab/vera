@@ -173,16 +173,151 @@ function renderCalendar(calData, dailyPnl) {
   }
   grid.innerHTML = cells.join('');
 
-  // Click handlers
+  // Click handlers (2026-08-07: 选中日 → 拉盘后日报详情; 再点同一格取消)
   grid.querySelectorAll('.cal-clickable').forEach(el => {
     el.addEventListener('click', function() {
       const ds = this.dataset.date;
-      if (_selectedDate === ds) { _selectedDate = ''; }
-      else { _selectedDate = ds; }
+      if (_selectedDate === ds) { _selectedDate = ''; hideDailyReport(); }
+      else { _selectedDate = ds; showDailyReport(ds); }
       renderCalendar(calData, dailyPnl);
       filterDealsByDate(_selectedDate);
     });
   });
+}
+
+// ── 盘后日报详情 (2026-08-07): 点击日历格子展示当日全明细 ──
+// 独立 HTML 渲染, 不复用飞书 lark_md; 字段对齐 trade_main._notify_daily payload
+function _fmtMoney(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return (n < 0 ? '-' : '') + '¥' + Math.abs(n).toLocaleString('zh-CN', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+}
+function _fmtSigned(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return (n >= 0 ? '+' : '') + n.toLocaleString('zh-CN', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+}
+function _pnlColor(v) { return 'var(--' + (Number(v) >= 0 ? 'up' : 'down') + ')'; }
+
+// 单个 section 卡片 (label-value 两列)
+function _drSection(title, rows) {
+  const rowsHtml = rows.map(r =>
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:3px 0;font-size:12px">' +
+    '<span style="color:var(--text2)">' + r[0] + '</span>' +
+    '<span style="color:var(--text);text-align:right">' + r[1] + '</span></div>'
+  ).join('');
+  return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px">' +
+    '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:6px;letter-spacing:0.5px">' + title + '</div>' +
+    rowsHtml + '</div>';
+}
+
+function renderDailyReport(payload, dateStr) {
+  const box = document.getElementById('analysisDailyReportBox');
+  const body = document.getElementById('analysisDailyReport');
+  const title = document.getElementById('analysisDailyReportTitle');
+  if (!box || !body || !title) return;
+
+  // header: 日期 + 当日盈亏 (红绿)
+  let pnlHtml = '';
+  if (payload && payload.day_pnl != null) {
+    const dp = payload.day_pnl;
+    pnlHtml = ' <span style="color:' + _pnlColor(dp) + ';font-weight:600">' + _fmtSigned(dp) +
+      (payload.day_pnl_pct != null ? ' (' + _fmtSigned(payload.day_pnl_pct) + '%)' : '') + '</span>';
+  }
+  title.innerHTML = '盘后日报 · ' + esc(dateStr) + pnlHtml;
+
+  if (!payload) {
+    body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">该日无盘后日报记录</div>';
+    box.style.display = '';
+    return;
+  }
+
+  const d = payload;
+  const totalAsset = Number(d.total_asset || 0);
+  const cash = Number(d.cash || 0);
+  const marketValue = (d.market_value != null ? Number(d.market_value) : totalAsset - cash);
+  const sections = [];
+
+  // 资产
+  const assetRows = [
+    ['总资产', _fmtMoney(totalAsset)],
+    ['市值', _fmtMoney(marketValue)],
+    ['现金', _fmtMoney(cash)],
+  ];
+  if (d.position_count != null) assetRows.push(['持仓', d.position_count + ' 只']);
+  if (d.floating_pnl != null) assetRows.push(['浮盈', '<span style="color:' + _pnlColor(d.floating_pnl) + '">' + _fmtSigned(d.floating_pnl) + '</span>']);
+  sections.push(_drSection('资产', assetRows));
+
+  // 交易摘要
+  if (d.buy_count != null || d.sell_count != null) {
+    const sumRows = [['买卖', '买 ' + (d.buy_count || 0) + ' · 卖 ' + (d.sell_count || 0)]];
+    if (d.turnover != null) sumRows.push(['成交额', _fmtMoney(d.turnover)]);
+    if (d.realized_pnl != null) {
+      let cell = '<span style="color:' + _pnlColor(d.realized_pnl) + '">' + _fmtSigned(d.realized_pnl) + '</span>';
+      if (d.win_rate != null) cell += ' <span style="color:var(--text2);font-size:11px">胜率 ' + (Number(d.win_rate) * 100).toFixed(0) + '%</span>';
+      sumRows.push(['已实现盈亏', cell]);
+    }
+    sections.push(_drSection('交易摘要', sumRows));
+  }
+
+  // 仓位变动
+  const changes = d.position_changes || {};
+  const changeRows = [];
+  for (const [key, label] of [['new', '新进'], ['closed', '清仓'], ['added', '加仓'], ['reduced', '减仓']]) {
+    const items = changes[key] || [];
+    if (items.length) {
+      const txt = items.map(it => {
+        const delta = Number(it.delta || 0);
+        return esc(it.code || '') + '(<span style="color:' + _pnlColor(delta) + '">' + (delta >= 0 ? '+' : '') + delta + '</span>)';
+      }).join(' · ');
+      changeRows.push([label, txt]);
+    }
+  }
+  if (changeRows.length) sections.push(_drSection('仓位变动', changeRows));
+
+  // 卖出明细
+  const sells = d.sell_details || [];
+  if (sells.length) {
+    const sellRows = sells.map(s => {
+      const pa = Number(s.pnl_amount || 0);
+      let cell = '<span style="color:' + _pnlColor(pa) + '">' + _fmtSigned(pa) + '</span>';
+      if (s.pnl_pct) {
+        const pp = Number(s.pnl_pct);
+        cell += ' <span style="color:var(--text2);font-size:11px">(' + (pp >= 0 ? '+' : '') + pp.toFixed(2) + '%)</span>';
+      }
+      if (s.reason) cell += ' <span style="color:var(--text2);font-size:11px">· ' + esc(s.reason) + '</span>';
+      return [esc(s.code || ''), cell];
+    });
+    if (d.sell_details_folded) {
+      const fc = Number(d.sell_details_folded.count || 0);
+      const fs = Number(d.sell_details_folded.sum_pnl_amount || 0);
+      sellRows.push(['另 ' + fc + ' 笔', '<span style="color:' + _pnlColor(fs) + '">合计 ' + _fmtSigned(fs) + '</span>']);
+    }
+    sections.push(_drSection('卖出明细', sellRows));
+  }
+
+  body.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">' + sections.join('') + '</div>';
+  box.style.display = '';
+}
+
+async function showDailyReport(dateStr) {
+  const box = document.getElementById('analysisDailyReportBox');
+  const title = document.getElementById('analysisDailyReportTitle');
+  const body = document.getElementById('analysisDailyReport');
+  if (title) title.textContent = '盘后日报 · ' + dateStr;
+  if (body) body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">加载中...</div>';
+  if (box) box.style.display = '';
+  try {
+    const resp = await fetch(API_BASE + '/daily_report?date=' + dateStr).then(r => r.json());
+    renderDailyReport(resp.report, dateStr);
+  } catch (e) {
+    if (body) body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">加载失败, 请确认 trade 服务运行中</div>';
+  }
+}
+
+function hideDailyReport() {
+  const box = document.getElementById('analysisDailyReportBox');
+  if (box) box.style.display = 'none';
 }
 
 function wireCalendarNav() {
@@ -195,9 +330,25 @@ function wireCalendarNav() {
     _selectedDate = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
     refreshCalendarMonth();
   };
+  // 2026-08-07: 日报详情"收起"按钮 — 隐藏卡片 + 清选中 + 去日历高亮 + 还原全量成交
+  const drClose = document.getElementById('analysisDailyReportClose');
+  if (drClose) drClose.onclick = () => {
+    _selectedDate = '';
+    hideDailyReport();
+    refreshCalendarMonth();
+    filterDealsByDate('');
+  };
 }
 
 async function refreshCalendarMonth() {
+  // 2026-08-07 自检: 切月后若选中日不在新视图月份, 清选中 + 隐藏日报卡片,
+  // 防止 8 月选 8/7 看完日报切到 9 月时, 卡片仍停留 8/7 陈旧数据误导用户。
+  // "今天"按钮(选中日=当月)与"收起"按钮(已清空)不受误伤。
+  const _viewingMonth = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0');
+  if (_selectedDate && _selectedDate.slice(0, 7) !== _viewingMonth) {
+    _selectedDate = '';
+    hideDailyReport();
+  }
   const calData = await fetch(SVR_BASE + '/api/calendar?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
   const dailyPnl = await fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
   renderCalendar(calData, dailyPnl);

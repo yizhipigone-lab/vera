@@ -69,15 +69,17 @@ class FeishuNotifier:
             _logger.warning("飞书通知队列满 (%d), 丢弃一笔成交通知",
                             self._queue.maxsize)
 
-    def notify_daily(self, payload: dict) -> None:
-        """盘后日报。同 notify_fill, 只入队。"""
+    def notify_daily(self, payload: dict, level: str = "full") -> None:
+        """盘后日报。同 notify_fill, 只入队。level: full=全明细/summary=简报
+        (2026-08-07), 透传给 worker 的 _build_daily_card。"""
         if not self._enabled_getter():
             return
         if not self._webhook_getter():
             self._warn_no_url_once()
             return
         try:
-            self._queue.put_nowait({"kind": "daily", "data": payload})
+            self._queue.put_nowait(
+                {"kind": "daily", "data": payload, "level": level})
         except queue.Full:
             _logger.warning("飞书通知队列满 (%d), 丢弃日报", self._queue.maxsize)
 
@@ -131,7 +133,7 @@ class FeishuNotifier:
         if kind == "fill":
             card = self._build_fill_card(data)
         elif kind == "daily":
-            card = self._build_daily_card(data)
+            card = self._build_daily_card(data, level=job.get("level", "full"))
         else:
             return
         self._post(webhook, card)
@@ -231,8 +233,10 @@ class FeishuNotifier:
             },
         }
 
-    def _build_daily_card(self, d: dict) -> dict:
-        """盘后日报卡: 盈亏红绿。"""
+    def _build_daily_card(self, d: dict, level: str = "full") -> dict:
+        """盘后日报卡 (2026-08-07 全明细): 多 section, header 盈亏红绿。
+        level: full=全明细 / summary=只资产+交易摘要 (不出变动/明细)。
+        缺字段 fail-soft (该 section 省略, 不抛)。"""
         total_asset = float(d.get("total_asset", 0.0) or 0.0)
         cash = float(d.get("cash", 0.0) or 0.0)
         market_value = d.get("market_value")
@@ -241,9 +245,11 @@ class FeishuNotifier:
         day_pnl = d.get("day_pnl")
         day_pnl_pct = d.get("day_pnl_pct")
         pos_count = d.get("position_count")
+        floating_pnl = d.get("floating_pnl")
         ts = d.get("ts")
         date_str = time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else ""
 
+        # ── 资产 section ──
         if day_pnl is None:
             pnl_line = "—"
         else:
@@ -251,24 +257,83 @@ class FeishuNotifier:
             pnl_line = f"{sign}{float(day_pnl):,.2f}"
             if day_pnl_pct is not None:
                 pnl_line += f" ({sign}{float(day_pnl_pct):.2f}%)"
-        template = "green" if (day_pnl is not None and day_pnl >= 0) else "red"
-
-        lines = [f"总资产 **{total_asset:,.2f}**",
-                 f"市值 {float(market_value):,.2f} · 现金 {cash:,.2f}",
-                 f"当日盈亏 **{pnl_line}**"]
+        asset_lines = [f"总资产 **{total_asset:,.2f}**",
+                       f"市值 {float(market_value):,.2f} · 现金 {cash:,.2f}",
+                       f"当日盈亏 **{pnl_line}**"]
         if pos_count is not None:
-            lines.append(f"持仓 {int(pos_count)} 只")
+            asset_lines.append(f"持仓 {int(pos_count)} 只")
+        if floating_pnl is not None:
+            fp = float(floating_pnl)
+            asset_lines.append(f"浮盈 {('+' if fp >= 0 else '')}{fp:,.2f}")
+        template = "green" if (day_pnl is not None and day_pnl >= 0) else "red"
+        elements: list = [
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": "\n".join(asset_lines)}}]
+
+        # ── 交易摘要 section (有买卖笔数才出) ──
+        buy_count = d.get("buy_count")
+        sell_count = d.get("sell_count")
+        if buy_count is not None or sell_count is not None:
+            tlines = [f"买 {int(buy_count or 0)} · 卖 {int(sell_count or 0)}"]
+            turnover = d.get("turnover")
+            if turnover is not None:
+                tlines.append(f"成交额 {float(turnover):,.2f}")
+            realized = d.get("realized_pnl")
+            if realized is not None:
+                r = float(realized)
+                win_rate = d.get("win_rate")
+                wr = f" 胜率 {float(win_rate) * 100:.0f}%" if win_rate is not None else ""
+                tlines.append(f"已实现盈亏 {('+' if r >= 0 else '')}{r:,.2f}{wr}")
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "div", "text": {"tag": "lark_md",
+                                                    "content": " · ".join(tlines)}})
+
+        # ── 仓位变动 section (summary 档省略; 有变化才出) ──
+        if level != "summary":
+            changes = d.get("position_changes") or {}
+            clines = []
+            for key, label in (("new", "新进"), ("closed", "清仓"),
+                               ("added", "加仓"), ("reduced", "减仓")):
+                items = changes.get(key) or []
+                if items:
+                    codes = ", ".join(
+                        f"{it.get('code')}({('+' if it.get('delta', 0) >= 0 else '')}"
+                        f"{int(it.get('delta', 0))})" for it in items)
+                    clines.append(f"{label}: {codes}")
+            if clines:
+                elements.append({"tag": "hr"})
+                elements.append({"tag": "div", "text": {"tag": "lark_md",
+                                                        "content": "**仓位变动**\n" + "\n".join(clines)}})
+
+        # ── 卖出明细 section (summary 档省略; 有卖出才出) ──
+        if level != "summary":
+            sells = d.get("sell_details") or []
+            if sells:
+                slines = ["**卖出明细**"]
+                for s in sells:
+                    pa = float(s.get("pnl_amount", 0.0) or 0.0)
+                    pp = s.get("pnl_pct")
+                    pp_str = (f" ({('+' if float(pp) >= 0 else '')}{float(pp):.2f}%)"
+                              if pp else "")
+                    reason = s.get("reason") or ""
+                    rstr = f" · {reason}" if reason else ""
+                    slines.append(
+                        f"{s.get('code')} {('+' if pa >= 0 else '')}{pa:,.2f}{pp_str}{rstr}")
+                folded = d.get("sell_details_folded")
+                if folded:
+                    fc, fs = int(folded.get("count", 0)), float(folded.get("sum_pnl_amount", 0.0) or 0.0)
+                    slines.append(f"另 {fc} 笔合计 {('+' if fs >= 0 else '')}{fs:,.2f}")
+                elements.append({"tag": "hr"})
+                elements.append({"tag": "div", "text": {"tag": "lark_md",
+                                                        "content": "\n".join(slines)}})
 
         return {
             "msg_type": "interactive",
             "card": {
                 "config": {"wide_screen_mode": True},
                 "header": {"title": {"tag": "plain_text",
-                                     "content": f"收盘资产日报 · {date_str}"},
+                                     "content": f"收盘日报 · {date_str}"},
                            "template": template},
-                "elements": [
-                    {"tag": "div",
-                     "text": {"tag": "lark_md",
-                              "content": "\n".join(lines)}}],
+                "elements": elements,
             },
         }

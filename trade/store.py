@@ -177,9 +177,12 @@ CREATE TABLE IF NOT EXISTS trades (
     ts          REAL NOT NULL,
     source      TEXT NOT NULL DEFAULT '', -- 2026-07-30: system=系统单 / manual=手工单
                                           -- (券商端/手机端, 对账认领); 历史行空=未知
-    reason      TEXT NOT NULL DEFAULT ''  -- 2026-07-31: 成交原因 (阶梯止盈·档1/移动止盈/
+    reason      TEXT NOT NULL DEFAULT '', -- 2026-07-31: 成交原因 (阶梯止盈·档1/移动止盈/
                                           -- 硬止损/人工卖出...), 来自下单侧 fill context;
                                           -- 无 ctx (部成第二笔/手工单/买入) 空串
+    pnl_amount  REAL NOT NULL DEFAULT 0,  -- 2026-08-07: 卖出盈亏金额 (book 成本法, 见计划书
+                                          -- §四-9); 买入/历史行默认 0 = 不计盈亏 (上线日起算)
+    pnl_pct     REAL NOT NULL DEFAULT 0   -- 卖出盈亏% (×100); 买入/历史行默认 0
 );
 CREATE TABLE IF NOT EXISTS audit (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,6 +215,13 @@ CREATE TABLE IF NOT EXISTS position_snapshot (
     avg_cost    REAL NOT NULL,
     ts          REAL NOT NULL
 );
+-- 盘后日报全明细 payload (2026-08-07, 飞书/web 同源): date 主键幂等,
+-- payload_json 存组装好的全明细 (资产/交易/仓位变动/卖出明细)
+CREATE TABLE IF NOT EXISTS daily_report (
+    date         TEXT PRIMARY KEY,       -- YYYY-MM-DD (与 daily_asset 同口径, 前端直传)
+    payload_json TEXT NOT NULL,
+    ts           REAL NOT NULL
+);
 """
 
 
@@ -230,6 +240,7 @@ class TradeStore:
         self._migrate_trades_source()
         self._migrate_trades_reason()
         self._migrate_orders_status_msg()
+        self._migrate_trades_pnl()
         self._lock = threading.Lock()
 
         raw_path = Path(raw_log_path)
@@ -323,8 +334,8 @@ class TradeStore:
             self._conn.execute(
                 """INSERT INTO trades
                    (traded_id, order_id, code, direction, price, qty, amount, ts,
-                    source, reason)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    source, reason, pnl_amount, pnl_pct)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record["traded_id"], record["order_id"], record["code"],
                     record["direction"], record["price"], record["qty"],
@@ -332,6 +343,8 @@ class TradeStore:
                     record.get("ts", time.time()),
                     record.get("source", "system"),
                     record.get("reason", ""),
+                    record.get("pnl_amount", 0.0),
+                    record.get("pnl_pct", 0.0),
                 ),
             )
 
@@ -368,6 +381,24 @@ class TradeStore:
             ).fetchall()
         return {r[0] for r in rows}
 
+    def load_today_trades_detail(self, date_str: str) -> list[dict]:
+        """当日成交明细 (2026-08-07 盘后日报全明细数据源)。
+        date_str=YYYY-MM-DD (与 daily_asset 同口径, 前端/web 直传不转换)。
+        返回 [{traded_id,code,direction,price,qty,amount,reason,pnl_amount,ts}, ...]
+        按 ts 升序 (与成交记录页一致; 卖出明细折叠也按此序)。"""
+        start = time.mktime(time.strptime(date_str, "%Y-%m-%d"))
+        end = start + 86400.0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT traded_id, code, direction, price, qty, amount, "
+                "reason, pnl_amount, pnl_pct, ts FROM trades "
+                "WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+                (start, end),
+            ).fetchall()
+        return [{"traded_id": r[0], "code": r[1], "direction": r[2],
+                 "price": r[3], "qty": r[4], "amount": r[5], "reason": r[6],
+                 "pnl_amount": r[7], "pnl_pct": r[8], "ts": r[9]} for r in rows]
+
     def _migrate_tier_state(self) -> None:
         """审计C1修复: 旧表 (无 trade_date 列) 直接重建。
         data/trade/ 下是开发库, 旧标记可弃 —— 重建丢的是"已预埋记录",
@@ -397,6 +428,19 @@ class TradeStore:
             with self._conn:
                 self._conn.execute(
                     "ALTER TABLE trades ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_trades_pnl(self) -> None:
+        """2026-08-07: trades 表加 pnl_amount/pnl_pct 列 (卖出盈亏, book 成本法)。
+        幂等演进, 历史行默认 0 = 不计盈亏 (pnl 依赖当时成本快照, 事后无从回填,
+        从本功能上线日起算)。"""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(trades)")]
+        with self._conn:
+            if cols and "pnl_amount" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE trades ADD COLUMN pnl_amount REAL NOT NULL DEFAULT 0")
+            if cols and "pnl_pct" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE trades ADD COLUMN pnl_pct REAL NOT NULL DEFAULT 0")
 
     def _migrate_orders_status_msg(self) -> None:
         """2026-08-07: orders 表加 status_msg 列 (委托状态描述/废单原因,
@@ -535,6 +579,40 @@ class TradeStore:
                     ts=excluded.ts""",
                 (date, total_asset, available, market_value, time.time()),
             )
+
+    # ── 盘后日报 (飞书/web 同源 payload) ─────────────────────
+
+    def save_daily_report(self, date: str, payload: dict) -> None:
+        """盘后日报全明细 payload 落库 (2026-08-07, web 回看 + 飞书同源)。
+        date=YYYY-MM-DD。幂等 (UPSERT, 当日重跑覆盖)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO daily_report (date, payload_json, ts)
+                   VALUES (?,?,?)
+                   ON CONFLICT(date) DO UPDATE SET
+                    payload_json=excluded.payload_json, ts=excluded.ts""",
+                (date, json.dumps(payload, ensure_ascii=False), time.time()),
+            )
+
+    def load_daily_report(self, date: str) -> dict | None:
+        """读某日日报 payload, 无记录返 None。date=YYYY-MM-DD。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM daily_report WHERE date = ?", (date,)
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def load_latest_daily_report(self) -> dict | None:
+        """最近一份日报 payload (date DESC 首行)。无记录返 None。
+        日历缺省查询 / 日报接口缺省日期时用。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM daily_report ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+        try:
+            return json.loads(row[0]) if row else None
+        except (ValueError, TypeError):
+            return None
 
     def get_daily_assets(self, start: str = "", end: str = "") -> list[dict]:
         """读日终资产序列 (YYYY-MM-DD)。缺省 start/end = 全部。"""
