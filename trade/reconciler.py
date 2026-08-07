@@ -303,6 +303,13 @@ class Reconciler:
                 "source": "system" if local_order is not None else "manual",
                 "reason": (self._reason_of(ctx)
                            if local_order is not None else "")}
+            # 2026-08-07 审计 HIGH#1: 补记卖出也落 pnl (与 TradeApp._sell_pnl 同口径),
+            # 否则日报 realized_pnl / /deals 在回调丢失兜底场景静默欠算,
+            # 且与同笔飞书成交卡 (_on_adopted_trade → _sell_pnl) 不一致 → 违反"单源"
+            if t["direction"] != DIRECTION_BUY and pre_avg_cost > 0:
+                _price, _qty = float(t["price"]), int(t["qty"])
+                record["pnl_amount"] = round((_price - pre_avg_cost) * _qty, 2)
+                record["pnl_pct"] = round((_price / pre_avg_cost - 1) * 100, 2)
             # 落库一次, 两条路径共用 (唯一约束兜底: 已落库视为已认领);
             # A3 补写分支视落库成败决定是否留痕计数
             saved = True

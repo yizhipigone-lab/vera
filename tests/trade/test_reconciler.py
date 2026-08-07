@@ -442,3 +442,34 @@ def test_c_side_same_day_eod_snapshot_not_double_counted(store, kill):
     rec = _reconciler(store, kill, _book_with(1200), 1200)
     report = rec.reconcile(now_ts=time.time())
     assert report.level == LEVEL_NONE
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-07 审计 HIGH#1: 补记卖出也落 pnl (单源)
+# ═══════════════════════════════════════════════════════════════
+
+def test_backfill_sell_records_pnl_high1(store, kill):
+    """审计 HIGH#1: 成交回调丢失走 sync_reports 补记时, 卖出成交同样
+    落 pnl_amount/pnl_pct (与实时 _on_trade 路径、飞书成交卡
+    _on_adopted_trade → _sell_pnl 同口径)。修复前 record 字典不含 pnl
+    → save_trade 默认 0 → 日报 realized_pnl 在补记场景静默欠算、/deals
+    盈亏列空, 且与同笔飞书卡不一致 (违反"单源 book 成本法")。"""
+    gw = _gw()
+    book = Book()
+    # 建仓 100 股 @ 成本 10 (补记路径 pre_avg_cost 取自 book 持仓快照)
+    book.apply_trade("T-seed", "O-seed", CODE, DIRECTION_BUY, 10.0, 100)
+    # 卖出回调丢失剧本: 网关已成交, book 没见过成交回报
+    oid = gw.order(CODE, DIRECTION_SELL, 12.0, 100, remark="V0807-H1X")
+    book.apply_order_update(oid, 50, code=CODE, direction=DIRECTION_SELL,
+                            price=12.0, qty=100, remark="V0807-H1X")
+    store.save_order({"order_id": oid, "remark": "V0807-H1X", "code": CODE,
+                      "direction": DIRECTION_SELL, "price": 12.0, "qty": 100,
+                      "status": 50})
+    gw.simulate_fill(oid)
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    assert rec.sync_reports()["adopted"] == 1
+    row = store._conn.execute(
+        "SELECT pnl_amount, pnl_pct FROM trades WHERE order_id=?", (oid,)
+    ).fetchone()
+    assert row[0] == 200.0   # (12 - 10) * 100
+    assert row[1] == 20.0    # (12/10 - 1) * 100

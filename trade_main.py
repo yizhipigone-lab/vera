@@ -857,7 +857,9 @@ class TradeApp:
                          if p.volume > 0)
         payload["floating_pnl"] = round(market_value - cost_basis, 2)
         # 仓位变动 (仅当有昨仓基准且有变化)
-        if prev_snapshot is not None:
+        # 2026-08-07 审计 MEDIUM#1: truthy 检查 — 空 dict {} 也跳过 (load_position_snapshot
+        # 表空时返 {},is not None 会误进 diff → 首次 EOD 把全部既有持仓报成"新进")
+        if prev_snapshot:
             changes = self._diff_positions(prev_snapshot, positions)
             if any(changes.values()):
                 payload["position_changes"] = changes

@@ -595,12 +595,17 @@ class TradeStore:
             )
 
     def load_daily_report(self, date: str) -> dict | None:
-        """读某日日报 payload, 无记录返 None。date=YYYY-MM-DD。"""
+        """读某日日报 payload, 无记录返 None。date=YYYY-MM-DD。
+        2026-08-07 审计 MEDIUM#2: payload_json 损坏返 None (与 load_latest 同 fail-soft,
+        不让 /daily_report 端点因坏数据 500)。"""
         with self._lock:
             row = self._conn.execute(
                 "SELECT payload_json FROM daily_report WHERE date = ?", (date,)
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        try:
+            return json.loads(row[0]) if row else None
+        except (ValueError, TypeError):
+            return None
 
     def load_latest_daily_report(self) -> dict | None:
         """最近一份日报 payload (date DESC 首行)。无记录返 None。

@@ -1,5 +1,6 @@
 // ====== VERA Analysis Tab — 交易日历 + 实盘图表 ======
 import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc } from './charts.js';
+import { bucketReason, isKnownReason } from './reason_util.mjs';
 
 const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
 const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
@@ -8,6 +9,7 @@ const DIR_BUY = 23, DIR_SELL = 24;
 
 let _calendarYear, _calendarMonth;
 let _selectedDate = '';
+let _dailyReportSeq = 0;  // 2026-08-07 审计 HIGH#2: showDailyReport 请求序号, 防快连点慢响应覆盖快响应
 let _allDeals = [];
 let _dealPage = 0;
 const DEAL_PAGE_SIZE = 200;
@@ -301,6 +303,7 @@ function renderDailyReport(payload, dateStr) {
 }
 
 async function showDailyReport(dateStr) {
+  const seq = ++_dailyReportSeq;  // 序号守卫: 丢弃被更新点击取代的旧响应
   const box = document.getElementById('analysisDailyReportBox');
   const title = document.getElementById('analysisDailyReportTitle');
   const body = document.getElementById('analysisDailyReport');
@@ -309,9 +312,10 @@ async function showDailyReport(dateStr) {
   if (box) box.style.display = '';
   try {
     const resp = await fetch(API_BASE + '/daily_report?date=' + dateStr).then(r => r.json());
+    if (seq !== _dailyReportSeq) return;  // 已被更新的点击取代, 丢弃陈旧响应
     renderDailyReport(resp.report, dateStr);
   } catch (e) {
-    if (body) body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">加载失败, 请确认 trade 服务运行中</div>';
+    if (seq === _dailyReportSeq && body) body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">加载失败, 请确认 trade 服务运行中</div>';
   }
 }
 
@@ -502,36 +506,47 @@ function renderExitPie(deals) {
     hexToRgba(c.accent, 0.6), hexToRgba(c.down, 0.6),
     hexToRgba(c.up, 0.6), hexToRgba(c.accent2, 0.6),
   ];
-  // 实盘成交原因 → 策略类目 (图例名 = 上色 key)。
-  // 取冒号/中文冒号/中点 之前的策略名; 空串按来源兜底 (与旧逻辑一致)。
-  const bucketReason = (t) => {
-    const raw = t.reason || '';
-    if (!raw) return t.source === 'manual' ? '人工卖出' : '未标注';
-    const head = raw.split(/[:：·]/)[0].trim();
-    return head || (t.source === 'manual' ? '人工卖出' : '未标注');
-  };
+  // 实盘成交原因 → 策略类目 (图例名 = 上色 key)。bucketReason 已提纯到 reason_util.js (可 node 测试)。
   const reasonCount = {};
+  const reasonSample = {};  // 类目 → 首条原始 reason 全文 (供 tooltip 显示 detail, 补回归一丢失的数字)
   deals.filter(t => t.direction === DIR_SELL).forEach(t => {
-    const label = bucketReason(t);
+    const label = bucketReason(t.reason, t.source);
     reasonCount[label] = (reasonCount[label] || 0) + 1;
+    if (!reasonSample[label] && t.reason) reasonSample[label] = t.reason;
   });
   // 按笔数降序 (多的扇区在前, 图例更聚焦)
   const pieData = Object.entries(reasonCount)
-    .map(([name, value]) => ({ name, value }))
+    .map(([name, value]) => ({ name, value, detail: reasonSample[name] || '' }))
     .sort((a, b) => b.value - a.value);
   let fbIdx = 0;
   chart.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} 次 ({d}%)' },
+    // tooltip 除"类目: N 次 (P%)"外, 附该类目首条原始 reason 全文 (截断 60 字, esc 转义防注入)
+    tooltip: {
+      trigger: 'item',
+      formatter: (p) => {
+        const d = p.data;
+        let s = `${d.name}: ${d.value} 次 (${p.percent}%)`;
+        if (d.detail) {
+          const dtl = d.detail.length > 60 ? d.detail.slice(0, 60) + '…' : d.detail;
+          s += `<br/><span style="color:${c.text2};font-size:11px">${esc(dtl)}</span>`;
+        }
+        return s;
+      },
+    },
     legend: { bottom: 0, textStyle: { color: c.text, fontSize: 9 } },
     series: [{
       type: 'pie', radius: ['30%', '55%'], center: ['50%', '45%'],
-      data: pieData.map(d => ({
-        ...d,
-        itemStyle: {
-          color: reasonColor[d.name] || fallbackPalette[fbIdx++ % fallbackPalette.length],
-          borderColor: c.bg, borderWidth: 1,
-        },
-      })),
+      data: pieData.map(d => {
+        // 表外新类目走调色板兜底 (可观测性: 便于排查再次掉灰)
+        if (!isKnownReason(d.name)) console.debug('[renderExitPie] 表外类目走调色板兜底:', d.name);
+        return {
+          ...d,
+          itemStyle: {
+            color: reasonColor[d.name] || fallbackPalette[fbIdx++ % fallbackPalette.length],
+            borderColor: c.bg, borderWidth: 1,
+          },
+        };
+      }),
       label: { color: c.text, fontSize: 9, formatter: '{b}\n{d}%' }
     }],
   }, true);
