@@ -1,15 +1,18 @@
 """trade/store.py — SQLite (WAL) 持久化 + JSONL 原始回报落盘。
 
 设计意图:
-    两类存储各管一段: JSONL 是 append-only 原始回报, 先落盘再处理,
-    崩溃可重放 (计划书 §5.4); SQLite 是结构化状态, WAL 模式下
-    写连接 (消费者线程专用) 与只读连接 (Web 读快照) 互不阻塞。
+    两类存储各管一段: JSONL 是 append-only 原始回报留痕 (2026-08-06
+    审计 HIGH#3 起异步落盘 —— 回调线程只入队, 专职 writer 线程批量写盘;
+    M10 定位: 审计/复盘用, 不是崩溃重放机制, 恢复走 QMT 全量对账);
+    SQLite 是结构化状态, WAL 模式下写连接 (消费者线程专用) 与只读连接
+    (Web 读快照) 互不阻塞。
     替代 QP 的自研 WAL 叠 DuckDB —— 那是过度设计。
 """
 
 from __future__ import annotations
 
 import json
+import queue
 import sqlite3
 import threading
 import time
@@ -19,6 +22,115 @@ from trade.book import DIRECTION_BUY
 from utils.logger import get_logger
 
 _logger = get_logger("trade.store")
+
+
+class _RawLogWriter:
+    """JSONL 异步写盘 (2026-08-06 审计 HIGH#3)。
+
+    回调线程只 put_nowait (微秒级, 无锁无磁盘 IO) —— 修掉"回调线程持
+    store._lock 同步 write+flush"的铁律 2 违反: tick 暴雨或磁盘抖动
+    (Windows 杀软扫盘) 不再堵住网关回调与消费者记账。
+
+    语义边界 (与 M10 定位一致, JSONL 仅审计留痕):
+    - 崩溃丢失窗口 ≤ flush_interval 的尾部未落盘批次, 可接受
+    - 正常退出经 shutdown() drain: 队列清空 + 终 flush, 一条不丢
+    - 队列满 (磁盘卡死) → 丢弃 + dropped 计数 + 节流告警, 绝不阻塞回调
+    - writer 线程死亡 → put 时探活, error 告警一次 (不降级回同步写,
+      避免把磁盘 IO 引回回调线程)
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, fp, flush_interval: float = 0.5, maxsize: int = 100_000):
+        self._fp = fp
+        self._q: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._flush_interval = flush_interval
+        self.dropped = 0   # 队列满丢弃计数
+        self.errors = 0    # 写盘/flush 异常计数
+        self._dead_warned = False
+        self._t = threading.Thread(
+            target=self._loop, name="raw-log-writer", daemon=True)
+        self._t.start()
+
+    def put(self, line: str) -> None:
+        if not self._t.is_alive() and not self._dead_warned:
+            self._dead_warned = True
+            _logger.error("raw writer 线程未存活, 审计日志中断 (不影响交易)")
+        try:
+            self._q.put_nowait(line)
+        except queue.Full:
+            self.dropped += 1
+            if self.dropped == 1 or self.dropped % 10000 == 0:
+                _logger.warning(
+                    "raw 日志队列满 (磁盘卡住?), 累计丢弃 %d 条", self.dropped)
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """阻塞至队列清空且已落盘 (测试接缝 / close 前 drain)。True=完成。"""
+        ev = threading.Event()
+        try:
+            self._q.put(ev, timeout=timeout)
+        except queue.Full:
+            return False
+        return ev.wait(timeout)
+
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """sentinel 停线程 + drain + 终 flush; 队列满则重试至超时。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self._q.put(self._SENTINEL, timeout=0.1)
+                break
+            except queue.Full:
+                if time.monotonic() >= deadline:
+                    break
+        self._t.join(max(0.0, deadline - time.monotonic()) + 1.0)
+
+    def _write_safe(self, line: str) -> None:
+        try:
+            self._fp.write(line)
+        except Exception as e:
+            self.errors += 1
+            if self.errors == 1 or self.errors % 100 == 0:
+                _logger.error("raw 日志写盘异常 (累计 %d): %s", self.errors, e)
+
+    def _flush_safe(self) -> None:
+        try:
+            self._fp.flush()
+        except Exception as e:
+            self.errors += 1
+            _logger.error("raw 日志 flush 异常: %s", e)
+
+    def _handle(self, item) -> bool:
+        """处理一个队列项, 返回 True = 收到关闭信号。"""
+        if item is self._SENTINEL:
+            return True
+        if isinstance(item, threading.Event):
+            self._flush_safe()   # flush 请求: 落盘已完成批次后放行
+            item.set()
+        else:
+            self._write_safe(item)
+        return False
+
+    def _loop(self) -> None:
+        stopping = False
+        while True:
+            try:
+                item = self._q.get(timeout=self._flush_interval)
+            except queue.Empty:
+                self._flush_safe()   # 空闲兜底: 崩溃丢失窗口 ≤ flush_interval
+                continue
+            stopping = self._handle(item)
+            # 批量 drain: 积攒的一波一次写完, 只做一次 flush
+            while True:
+                try:
+                    item = self._q.get_nowait()
+                except queue.Empty:
+                    break
+                if self._handle(item):
+                    stopping = True
+            self._flush_safe()
+            if stopping:
+                return
 
 # 审计C1修复: tier_state 加日期维度 (主键 (code, trade_date))。
 # 预埋跳过只认当日标记, 昨日标记不阻碍今日重挂 (计划书 §5.1 "日终自动
@@ -121,6 +233,9 @@ class TradeStore:
         raw_path = Path(raw_log_path)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
         self._raw_fp = open(raw_path, "a", encoding="utf-8")
+        # 2026-08-06 审计 HIGH#3: 异步写盘 —— fp 由 writer 线程独占,
+        # append_raw 不再持 _lock 做磁盘 IO (铁律 2)
+        self._raw_writer = _RawLogWriter(self._raw_fp)
 
     # ── 写接口 (消费者线程) ─────────────────────────────────────
 
@@ -378,15 +493,19 @@ class TradeStore:
     # ── 原始回报 ────────────────────────────────────────────────
 
     def append_raw(self, payload: dict) -> None:
-        """JSONL append-only 落盘 + flush。
-        审计M10修复(定位改写): 这是"先落盘再处理"的审计/复盘留痕,
-        不是崩溃重放机制 —— 恢复走 QMT 全量对账 + 当日成交回填幂等集合,
-        JSONL 不提供 replay。"""
-        with self._lock:
-            self._raw_fp.write(
-                json.dumps(payload, ensure_ascii=False, default=str) + "\n"
-            )
-            self._raw_fp.flush()
+        """JSONL append-only 异步落盘 (2026-08-06 审计 HIGH#3): 调用线程
+        (网关回调) 只 dumps + 入队, 微秒级无锁无 IO; 专职 writer 线程
+        批量写盘 + 批量 flush。
+        审计M10修复(定位改写): 这是审计/复盘留痕, 不是崩溃重放机制 ——
+        恢复走 QMT 全量对账 + 当日成交回填幂等集合, JSONL 不提供 replay。
+        崩溃丢失窗口 ≤0.5s 尾部批次, 可接受; 正常退出经 close() drain。"""
+        self._raw_writer.put(
+            json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+        )
+
+    def flush_raw(self, timeout: float = 5.0) -> bool:
+        """阻塞至 raw 日志队列清空且落盘 (测试接缝 / 关事前 drain)。"""
+        return self._raw_writer.flush(timeout)
 
     # ── 每日资产快照 (分析 Tab 净值曲线数据源) ──────────────
 
@@ -441,6 +560,8 @@ class TradeStore:
                 "SELECT COUNT(*) FROM daily_asset").fetchone()[0]
 
     def close(self) -> None:
+        # 先停 raw writer (drain 队列 + 终 flush), 再关 fp —— 正常退出不丢日志
+        self._raw_writer.shutdown()
         with self._lock:
             try:
                 self._conn.close()

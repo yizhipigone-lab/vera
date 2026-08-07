@@ -46,3 +46,41 @@ def test_explicit_zero_values_are_preserved():
     )
     assert actual["activation"] == 0.0
     assert actual["drawdown"] == 0.0
+
+
+# ── ladder_levels 单位归一化 (2026-08-06 审计 HIGH#5) ──
+# 默认值 "6:30,15:30" 是百分数, engine 期望小数 (stop_config.py:52);
+# 修复前解析成 profit=6.0 (=600%) 永远达不到 → 阶梯止盈静默失效。
+import pytest
+
+
+def _ladder_levels(**overrides):
+    cfg = StrategyConfig(**overrides)
+    return _config_to_yaml_dict(cfg)["stop_loss"]["ladder_tp"]["levels"]
+
+
+def test_ladder_default_percent_normalized():
+    """默认百分数字符串 "6:30,15:30" → 小数 0.06/0.30, 0.15/0.30。"""
+    levels = _ladder_levels()
+    assert len(levels) == 2
+    assert levels[0]["profit"] == pytest.approx(0.06)
+    assert levels[0]["sell_ratio"] == pytest.approx(0.30)
+    assert levels[1]["profit"] == pytest.approx(0.15)
+
+
+def test_ladder_decimal_passthrough():
+    """直调 API/yaml 传小数格式 → 原样保留, 不被误 /100。"""
+    levels = _ladder_levels(ladder_levels="0.08:0.5,0.20:0.5")
+    assert levels[0]["profit"] == pytest.approx(0.08)
+    assert levels[0]["sell_ratio"] == pytest.approx(0.5)
+
+
+def test_ladder_boundary_one_stays_decimal():
+    """边界: profit/ratio 恰为 1 (=100%) 视为小数不 /100;
+    百分数 100 → 1.0。ratio=1.0 即清仓档语义, 不得破坏。"""
+    levels = _ladder_levels(ladder_levels="1:1")
+    assert levels[0]["profit"] == pytest.approx(1.0)
+    assert levels[0]["sell_ratio"] == pytest.approx(1.0)
+    levels = _ladder_levels(ladder_levels="100:100")
+    assert levels[0]["profit"] == pytest.approx(1.0)
+    assert levels[0]["sell_ratio"] == pytest.approx(1.0)

@@ -120,7 +120,9 @@ def test_e2e_full_day(app, cfg, clock):
     # ── 3. 第一档成交: JSONL 先落盘 + book 递减 + tier 标记 + store 一致 ──
     tier0 = cyb_orders[0]
     trade = gw.simulate_fill(tier0["order_id"])
-    # append_raw 在回调里同步发生 (先落盘再入队), 不等消费者即可见
+    # 2026-08-06 异步化 (HIGH#3): append_raw 只入队 (回调不再同步写盘),
+    # flush_raw 等到落盘后读文件 —— 不等消费者, 但要等 writer 线程
+    assert app.store.flush_raw()
     raw_lines = Path(cfg.raw_log_path).read_text(encoding="utf-8").splitlines()
     kinds = [json.loads(l)["kind"] for l in raw_lines]
     assert "trade_fill" in kinds and "order_update" in kinds

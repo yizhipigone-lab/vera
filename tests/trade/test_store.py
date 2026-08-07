@@ -146,9 +146,11 @@ def test_audit_written(store):
 
 
 def test_append_raw_jsonl(store, tmp_path):
-    """JSONL append-only: 每行一个合法 JSON, 内容即 payload。"""
+    """JSONL append-only: 每行一个合法 JSON, 内容即 payload。
+    2026-08-06 异步化 (HIGH#3): append 只入队, flush_raw 后文件可见。"""
     store.append_raw({"kind": "order", "order_id": "O1"})
     store.append_raw({"kind": "trade", "traded_id": "T1"})
+    assert store.flush_raw()
     lines = (tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0]) == {"kind": "order", "order_id": "O1"}
