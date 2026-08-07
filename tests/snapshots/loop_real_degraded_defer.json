@@ -1,20 +1,24 @@
 {
  "meta": {
-  "name": "loop_trailing_first_dual_trigger",
+  "name": "loop_real_degraded_defer",
   "generator": "tools/gen_snapshot_parity.py",
   "generated_at": "2026-08-07T07:41:59",
   "engine_version": "v3.6-no-legacy-20260723",
   "note": "批次3a A5 快照基线; 修改策略逻辑会致测试失败, 确认变更合法后运行生成器重建基线",
   "level": "loop",
-  "priority": "trailing_first",
-  "data": "crafted_dual_trigger",
+  "data": "crafted_degraded_6bar",
+  "extras": [
+   "degraded_np",
+   "confirm_real"
+  ],
   "param_overrides": {
-   "first_day_enabled": false,
+   "bpday": 2,
+   "trailing_confirm": "real",
+   "cost_stop_enabled": false,
+   "ladder_enabled": false,
+   "time_enabled": false,
    "cond_time_enabled": false,
-   "ladder_profits": [
-    0.06,
-    0.25
-   ]
+   "first_day_enabled": false
   },
   "params": {
    "initial_capital": 1000000.0,
@@ -53,13 +57,11 @@
  },
  "equity": [
   999739.9400000001,
-  999739.9400000001,
-  1020549.2248000001,
-  1009761.3883200001,
-  1009761.3883200001,
-  1009761.3883200001,
-  1009761.3883200001,
-  1009761.3883200001
+  1009739.9400000001,
+  997383.6984000001,
+  997383.6984000001,
+  997383.6984000001,
+  997383.6984000001
  ],
  "trades": [
   [
@@ -67,22 +69,11 @@
    0,
    2,
    10.0,
-   10.600000000000001,
-   10000,
-   5809.284800000023,
-   0.06,
-   5
-  ],
-  [
-   0,
-   0,
-   3,
-   10.0,
-   10.44,
-   10000,
-   4212.163520000002,
-   0.04399999999999995,
-   8
+   9.9,
+   20000,
+   -2356.2415999999794,
+   -0.009999999999999964,
+   4
   ]
  ]
 }

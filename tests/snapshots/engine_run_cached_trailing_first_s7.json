@@ -2,7 +2,7 @@
  "meta": {
   "name": "engine_run_cached_trailing_first_s7",
   "generator": "tools/gen_snapshot_parity.py",
-  "generated_at": "2026-08-01T14:23:54",
+  "generated_at": "2026-08-07T07:41:59",
   "engine_version": "v3.6-no-legacy-20260723",
   "note": "批次3a A5 快照基线; 修改策略逻辑会致测试失败, 确认变更合法后运行生成器重建基线",
   "level": "engine_run_cached",

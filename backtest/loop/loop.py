@@ -69,11 +69,19 @@ class BacktestLoop:
             open_np: Optional[np.ndarray],
             tradable_np: Optional[np.ndarray],
             last_tradable_idx: Optional[np.ndarray],
-            formula_exit_np: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+            formula_exit_np: Optional[np.ndarray],
+            degraded_np: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
         """跑完整回测, 返回 (equity_arr, raw_trades)。
 
         formula_exit_np: 信号已存于 FormulaSellStrategy(absolutes), 此参数保留作
         显式传递/未来扩展, run 内不直接引用（LOW-2）。
+
+        degraded_np (2026-08-06, 审计 HIGH#2): 5m 降级 bar 标记 (bar 级布尔,
+        degrade_5m 产物, 仅 run() 路径有)。降级 bar 不刷新移动止盈峰值 ——
+        降级天 48 根 bar 广播同一 1d OHLC, 当日 high 盘中何时出现不可知,
+        新回撤线推迟到次日生效 (等同 1D "峰值日多观察一天" 的既有代价)。
+        否则首根 bar 峰值即被刷成当日 1d high, real 模式
+        peak_hi==bar.high 对全天成立 (trailing.py 创峰值跳过), 峰顶日漏判。
 
         2026-07-18 审计 F2: 单实例不可复用 — PositionBook 与 entry skip 计数
         不重置, 二次 run 会带上一轮持仓/计数, 资金数字静默错乱。fail-fast。
@@ -114,7 +122,8 @@ class BacktestLoop:
                                  f"{i}/{n_dates} bar", i, n_dates)
             # ── 1. 卖出 ──
             cash = self._sell_bar(i, cash, book, trade_buf, price_np, high_np,
-                                  low_np, open_np, tradable_np, last_tradable_idx)
+                                  low_np, open_np, tradable_np, last_tradable_idx,
+                                  degraded_np=degraded_np)
             # ── 2. 买入 ──
             prev_eq = equity.equity_arr[i - 1] if i > 0 else float(p.initial_capital)
             cash = self.entry_engine.run_bar(i, cash, book, trade_buf, price_np,
@@ -154,8 +163,13 @@ class BacktestLoop:
 
     # ─────────────────────────────────────────────────────────
     def _sell_bar(self, i, cash, book, trade_buf, price_np, high_np,
-                  low_np, open_np, tradable_np, last_tradable_idx) -> float:
-        """_simulate_core_v3_legacy 卖出段的移植。返回更新后的 cash。"""
+                  low_np, open_np, tradable_np, last_tradable_idx,
+                  degraded_np=None) -> float:
+        """_simulate_core_v3_legacy 卖出段的移植。返回更新后的 cash。
+
+        degraded_np (2026-08-06 HIGH#2): 5m 降级 bar 标记, 降级 bar 不刷新
+        移动止盈峰值 (推迟到次日, 详见 run() docstring)。None = 无降级信息,
+        全部照常 (run_cached/直调路径)。"""
         p = self.params
         bpday = p.bpday
         slippage = p.slippage
@@ -215,9 +229,14 @@ class BacktestLoop:
             lo_t = low_np[i, ci] if low_np is not None else xp
             if lo_t < day_lo_arr[pp]:
                 day_lo_arr[pp] = lo_t
+            # 2026-08-06 (审计 HIGH#2, 用户拍板"推迟峰值"): 降级 bar (5m 缺失,
+            # 48 根广播同一 1d OHLC) 不刷新峰值 high_hi —— 当日 high 盘中何时
+            # 出现不可知, 新回撤线次日才生效。注意 high_px (收盘价轨迹, 值为
+            # 真实 1d 收盘) 不受影响, 照常更新。
+            deg = degraded_np is not None and bool(degraded_np[i, ci])
             # ── T+1: 当日买入不可当日卖 ──
             if (i // bpday) == (entry_idx_arr[pp] // bpday):
-                if high_np is not None:
+                if high_np is not None and not deg:
                     hi_t = high_np[i, ci]
                     if hi_t > high_hi_arr[pp]:
                         high_hi_arr[pp] = hi_t
@@ -235,7 +254,7 @@ class BacktestLoop:
             lo = low_np[i, ci] if low_np is not None else xp
             hi_pp = (hi - ep) / ep if ep > 0.0 else 0.0
             lo_pp = (lo - ep) / ep if ep > 0.0 else 0.0
-            if high_np is not None and hi > high_hi_arr[pp]:
+            if high_np is not None and not deg and hi > high_hi_arr[pp]:
                 high_hi_arr[pp] = hi
             peak_hi = high_hi_arr[pp] if high_hi_arr[pp] > 0 else ep
             peak_hi_profit = (peak_hi - ep) / ep if ep > 0.0 else 0.0

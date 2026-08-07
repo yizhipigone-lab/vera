@@ -297,7 +297,8 @@ class BacktestEngine:
                                      tradable_np, last_tradable_idx,
                                      ladder_profits, ladder_ratios, n_ladder,
                                      formula_exit_np, formula_exit_ratio,
-                                     formula_exit_lag_bars=1):
+                                     formula_exit_lag_bars=1,
+                                     degraded_np=None):
         """run()/run_cached() 共享段 (2026-08-01 批次 3b C2 合并)。
 
         priority 校验 → trailing 缺省 → 时间参数 ×bpday 缩放 → ATR →
@@ -381,6 +382,7 @@ class BacktestEngine:
             high_np=high_np, low_np=low_np, open_np=open_np,
             tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
             formula_exit_np=formula_exit_np,
+            degraded_np=degraded_np,
         )
         resolved = {
             "trailing_activation": float(trailing_activation),
@@ -554,6 +556,7 @@ class BacktestEngine:
             tradable_np, last_tradable_idx,
             ladder_profits, ladder_ratios, len(lv),
             formula_exit_np, formula_exit_ratio,
+            degraded_np=degraded_np,
         )
         # ENGINE_DEBUG 日志的缩放值仅作展示, 从 resolved 读 (2026-08-01 批次 3b C2;
         # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化)。
