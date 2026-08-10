@@ -203,7 +203,18 @@ class Executor:
         T+1 衔接确认 (2026-07-27 尾盘自动买入): 昨日尾盘买入的票,
         can_use 由本函数开头的 QMT 全量刷新回填 (book 买入当日为 0),
         成本口径 = book.avg_cost (自成交加权自算) —— 本函数按 book 持仓
-        全量扫描, 新票明日 09:15 自动纳入预埋, 无需任何特判。"""
+        全量扫描, 新票明日 09:15 自动纳入预埋, 无需任何特判。
+
+        2026-08-10: 阶梯止盈总开关 enabled=false 时直接返回不挂 ——
+        与盘中兜底 (monitor._evaluate.hit_ladder 同判 stop.ladder_tp.enabled)
+        两端同步, 关闭即彻底不触发该规则。三条调用路径: 09:15 定时器与
+        手动命令均经 EVENT_COMMAND → _dispatch_cmd 直调本函数, 仅靠此入口
+        guard 拦; 启动补偿 (_startup_catchup) 另有 enabled 前置判断, 本
+        guard 是其兜底。"""
+        if not self._cfg.stop.ladder_tp.enabled:
+            self._store.write_audit(
+                "ladder_skip_disabled", "阶梯止盈已关闭, 不挂预埋单", {})
+            return []
         self._sync_can_use()
         placed: list[str] = []
         for code, pos in sorted(self._book.snapshot()["positions"].items()):

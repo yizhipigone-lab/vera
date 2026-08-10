@@ -467,9 +467,14 @@ class TradeApp:
         """
         hhmm = _hhmm(self._clock())
         tiers_today = self.store.load_tier_states(today)
-        if "09:25" <= hhmm <= "15:00" and not tiers_today:
+        # 2026-08-10: enabled=false 不补预埋 (与 place_ladder / 盘中兜底同步关);
+        # 时间窗下限 09:25→09:15 —— 覆盖"9:15 后启动错过 09:15 定时器"场景,
+        # 9:15-09:25 挂的限价单参与开盘集合竞价撮合, 无副作用。
+        if ("09:15" <= hhmm <= "15:00"
+                and not tiers_today
+                and self._cfg.stop.ladder_tp.enabled):
             self.store.write_audit(
-                "ladder_catchup", f"启动已过 09:25 ({hhmm}) 且当日未预埋, 补偿预埋",
+                "ladder_catchup", f"启动已过 09:15 ({hhmm}) 且当日未预埋, 补偿预埋",
                 {"hhmm": hhmm})
             self.executor.place_ladder(today)
         if hhmm >= "15:05":

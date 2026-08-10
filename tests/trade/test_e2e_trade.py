@@ -257,6 +257,37 @@ def test_startup_catchup_ladder_after_0925(cfg):
         app.stop()
 
 
+def test_startup_catchup_ladder_disabled_skips(tmp_path):
+    """2026-08-10: enabled=false → 启动补偿不预埋 (与 place_ladder 入口 guard /
+    盘中兜底三端同步关)。即使 10:00 启动 + 当日未预埋, 也不写 ladder_catchup、
+    不挂任何预埋单。"""
+    disabled_cfg = TradeConfig(
+        account_id="E2E", fake_sdk=True,
+        db_path=str(tmp_path / "trade.db"),
+        raw_log_path=str(tmp_path / "raw.jsonl"),
+        kill_flag_path=str(tmp_path / "KILL"),
+        stop=StopConfig(ladder_tp=LadderTpConfig(enabled=False, levels=_E2E_LADDER)),
+    )
+    clock = _clock_last_trading_day(10, 0)
+    app = TradeApp(disabled_cfg, fake=True, clock=lambda: clock[0],
+                   fake_gateway_kwargs={
+                       "cash": 1_000_000.0,
+                       "positions": {SH: {"volume": 1000, "can_use": 1000,
+                                          "avg_cost": 10.0}}})
+    try:
+        app.gateway.push_quote(SH, {"last": 10.2, "bid1": 10.2,
+                                    "high": 10.3, "prev_close": 10.0})
+        assert app.start(start_timers=False)
+        rows = app.store._conn.execute(
+            "SELECT kind FROM audit WHERE kind='ladder_catchup'").fetchall()
+        assert rows == []                              # 不进入补偿分支
+        ladder = [o for o in app.gateway.query_orders()
+                  if o["remark"].startswith("V")]
+        assert ladder == []                            # 一张预埋单都不挂
+    finally:
+        app.stop()
+
+
 def test_startup_catchup_eod_after_1505(cfg):
     """15:05 后启动且当日无 EOD 快照 → 补 EOD 归档 (对账 C 方次日基准)。"""
     clock = _clock_at(15, 10)

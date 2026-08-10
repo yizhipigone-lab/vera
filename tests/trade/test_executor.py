@@ -242,6 +242,23 @@ def test_place_ladder_no_prev_close_fail_closed(store, kill):
     assert ex.place_ladder("20260726") == []
 
 
+def test_place_ladder_disabled_no_order(store, kill):
+    """2026-08-10: 阶梯止盈 enabled=false → 不挂预埋单 (与盘中兜底同步关)。
+    函数入口 guard: 返回 [] + 写一条 ladder_skip_disabled audit + 网关零订单。
+    覆盖 09:15 定时器 / 手动命令 / 启动补偿三条调用路径的最后一道兜底。"""
+    book = Book()
+    _seed_book(book, CODE, 1000)
+    cfg = TradeConfig(account_id="TEST", stop=StopConfig(
+        ladder_tp=LadderTpConfig(enabled=False, levels=_TEST_LADDER)))
+    ex = _make_executor(store, kill, book, _gw_with(), config=cfg,
+                        prev_closes={CODE: 10.0})
+    assert ex.place_ladder("20260810") == []
+    assert ex._gw.query_orders() == []
+    rows = store._conn.execute(
+        "SELECT kind FROM audit WHERE kind='ladder_skip_disabled'").fetchall()
+    assert rows == [("ladder_skip_disabled",)]
+
+
 def test_place_ladder_syncs_can_use_before_place(store, kill):
     """2026-08-06 002155.SZ 事件: 昨日尾盘买入 book.can_use=0 (T+1),
     预埋 (09:15) 早于首次对账 (09:35) —— 预埋前须先从 QMT 全量刷新,
