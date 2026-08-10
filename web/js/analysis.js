@@ -592,6 +592,12 @@ function renderDealTable(forceDate) {
   }
   if (dirFilter === 'buy') rows = rows.filter(t => t.direction === DIR_BUY);
   if (dirFilter === 'sell') rows = rows.filter(t => t.direction === DIR_SELL);
+  // 盈亏筛选 (analysisTradeFilter): 依据后端 trades.pnl_amount (卖出盈亏,
+  // book 成本法; 买入行/历史行 = null)。选盈利/亏损时买入行自然排除
+  // (买入本无盈亏, 混入会干扰)。2026-08-10 修复: 原代码读了 pnlFilter
+  // 变量却从未用于过滤, 下拉"动而无效"。
+  if (pnlFilter === 'win') rows = rows.filter(t => t.pnl_amount != null && t.pnl_amount > 0);
+  if (pnlFilter === 'loss') rows = rows.filter(t => t.pnl_amount != null && t.pnl_amount < 0);
   // Paginate
   const total = rows.length;
   const nPages = Math.max(1, Math.ceil(total / DEAL_PAGE_SIZE));
