@@ -280,8 +280,12 @@ class RealGateway(BaseGateway):
     def order(self, code: str, direction: int, price: float, qty: int,
               price_type: Any = PRICE_TYPE_LIMIT, remark: str = "") -> str:
         from xtquant import xtconstant  # lazy
-        pt = (xtconstant.MARKET_PEER_PRICE_FIRST
-              if price_type == "MARKET_PEER_FIRST" else int(price_type))
+        if price_type == "MARKET_PEER_FIRST":
+            pt = xtconstant.MARKET_PEER_PRICE_FIRST
+        elif price_type == "SZ_5LEVEL_CANCEL":
+            pt = xtconstant.MARKET_SZ_CONVERT_5_CANCEL
+        else:
+            pt = int(price_type)
         seq = _call_with_timeout(
             self._trader.order_stock, self._timeout,
             self._account, code, direction, int(qty), pt, float(price),

@@ -48,6 +48,10 @@ PRICE_TYPE_LATEST = 5       # 最新价
 # 对手最优 (逃生通道): 真网关在方法内映射到 xtconstant,
 # 这里用名字占位 —— 顶层 import xtquant 是铁律禁止的
 PRICE_TYPE_MARKET_PEER_FIRST = "MARKET_PEER_FIRST"
+# 深市最优五档即成剩余撤销 (2026-08-12): 盘中超时逃生通道。
+# 对手最优是单档 FOK (盘口量不够整单撤), 五档 IOC 扫买1-买5尽量成交
+# 剩余才撤, 成交概率更高。真网关映射到 xtconstant.MARKET_SZ_CONVERT_5_CANCEL。
+PRICE_TYPE_SZ_5LEVEL_CANCEL = "SZ_5LEVEL_CANCEL"
 
 
 def is_etf(code: str) -> bool:
@@ -279,3 +283,46 @@ class Book:
                     price=o["price"], qty=o["qty"],
                     filled_qty=int(o.get("filled_qty", 0)), status=o["status"],
                     remark=o.get("remark", ""))
+
+
+def compute_remaining_map(
+    trades_rows: list[dict], target_tids: set
+) -> dict:
+    """重放空 Book, 算 target_tids 里每笔成交交易后的剩余股数/剩余市值/卖出比例。
+
+    盘后日报用 (2026-08-08): trades 表只存成交不存剩余持仓, 这里按 ts 升序重放
+    全历史成交拿到每笔时点的剩余。同股多笔卖出能看到递减过程。
+
+    - trades_rows: [{traded_id, order_id, code, direction, price, qty}, ...],
+      必须**已按 ts 升序** (调用方负责排序)。
+    - target_tids: 只对这些 traded_id 记录结果 (通常是当日成交), 其余只参与
+      重放构建基数。返回 {traded_id: {remaining_vol, remaining_value, [sell_ratio]}}。
+
+    remaining_vol = apply 后该股 volume; remaining_value = remaining_vol × 本笔
+    成交价 (现价近似); sell_ratio (仅卖出) = 本笔卖出 qty ÷ 该股累计买入 qty
+    (用户口径"当初买入总股数", 2026-08-08)。累计买入为 0 → sell_ratio=None。
+    """
+    book = Book()
+    cum_buy: dict[str, int] = {}
+    out: dict[str, dict] = {}
+    for r in trades_rows:
+        code = r["code"]
+        qty = int(r["qty"])
+        direction = r["direction"]
+        tid = str(r["traded_id"])
+        price = float(r["price"])
+        if direction == DIRECTION_BUY:
+            cum_buy[code] = cum_buy.get(code, 0) + qty
+        book.apply_trade(tid, str(r.get("order_id", "")), code, direction, price, qty)
+        if tid in target_tids:
+            pos = book.snapshot()["positions"].get(code)
+            rem = int(getattr(pos, "volume", 0)) if pos else 0
+            entry: dict = {
+                "remaining_vol": rem,
+                "remaining_value": round(rem * price, 2),
+            }
+            if direction != DIRECTION_BUY:
+                cb = cum_buy.get(code, 0)
+                entry["sell_ratio"] = round(qty / cb, 4) if cb > 0 else None
+            out[tid] = entry
+    return out

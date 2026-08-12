@@ -17,6 +17,7 @@ from trade.book import (
     DIRECTION_SELL,
     OS_CANCELED,
     PRICE_TYPE_MARKET_PEER_FIRST,
+    PRICE_TYPE_SZ_5LEVEL_CANCEL,
     Book,
 )
 from trade.config import LadderTpConfig, StopConfig, TradeConfig
@@ -411,6 +412,29 @@ def test_pending_escalation_sz_uses_limit_down(store, kill):
     sh_orders = {o["order_id"]: o for o in ex2._gw.query_orders()}
     sh_new = sh_orders[ex2._pending[CODE]["order_id"]]
     assert sh_new["price_type"] == PRICE_TYPE_MARKET_PEER_FIRST
+
+
+def test_pending_timeout_sz_uses_5level_cancel(store, kill):
+    """2026-08-11 002253 + 2026-08-12 复盘: 盘中 5s 超时升级时, 深市不得
+    走跌停价 (撞价格笼子 88009 废单, 历史深市升级单全废), 也不走对手最优
+    (单档 FOK 盘口量不够整单撤) —— 改走五档即成剩余撤销 (扫买1-买5 IOC,
+    成交概率最高)。跌停价逃生通道只在尾盘 force (收盘集合竞价 14:57+) 时用。
+    注: SZ_5LEVEL_CANCEL 实盘未实测, 待小单验证。"""
+    SZ = "000001.SZ"
+    book = Book()
+    _seed_book(book, SZ, 1000)
+    gw = FakeGateway(positions={SZ: {"volume": 1000, "can_use": 1000,
+                                     "avg_cost": 10.0}})
+    gw.connect()
+    ex = _make_executor(store, kill, book, gw,
+                        quotes={SZ: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        prev_closes={SZ: 10.0})
+    ex.execute_exit(SZ, "hard_stop")              # 第一笔挂买一价 10.8, ts=1000
+    ex.pending_check(now_ts=1006.5)               # 盘中 (无 now_hhmm→非 force) 超时 6.5s
+    orders = {o["order_id"]: o for o in gw.query_orders()}
+    new_oid = ex._pending[SZ]["order_id"]
+    assert orders[new_oid]["price_type"] == PRICE_TYPE_SZ_5LEVEL_CANCEL
+    assert orders[new_oid]["price"] == 0.0
 
 
 def test_in_flight_sells_for_reconciler(store, kill):

@@ -18,6 +18,7 @@ from trade.book import (
     OS_SUCCEEDED,
     PRICE_TYPE_LIMIT,
     PRICE_TYPE_MARKET_PEER_FIRST,
+    PRICE_TYPE_SZ_5LEVEL_CANCEL,
     TERMINAL_STATUSES,
     is_etf,
 )
@@ -294,7 +295,10 @@ class Executor:
                 self._store.save_order({
                     "order_id": order_id, "remark": remark, "code": code,
                     "direction": DIRECTION_SELL, "price": price, "qty": qty,
-                    "status": OS_REPORTED})
+                    "status": OS_REPORTED,
+                    # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
+                    # 新单不继承旧 created_ts (泰山石油事件)
+                    "created_ts": self._clock()})
                 self._store.write_audit(
                     "ladder_place", f"{code} 档{tier} 预埋 {qty}@{price}",
                     {"code": code, "tier": tier, "order_id": order_id,
@@ -406,13 +410,19 @@ class Executor:
                 "exit_escalate", f"{code} 卖单未成交 ({why}), 升级逃生通道",
                 {"code": code, "old_order_id": p["order_id"], "qty": can_use})
             del self._pending[code]  # 旧登记先销, _sell 成功会重建 + rebind 锁
-            # 市场感知逃生通道 (2026-07-27 实测: 深市 14:57-15:00 收盘
-            # 集合竞价只收限价单, 市价"对手最优"必废单):
-            #   .SZ → 限价@跌停价 (单一价格撮合, 挂跌停=最大成交优先权,
-            #         成交价仍是收盘价, 不吃亏); .SH → 对手最优 (连续竞价
-            #         到 15:00)。深市无昨收仍发对手最优 —— 逃生通道,
-            #         试一下 (沪市能成/深市废单也是明确答案) 比不发强
-            if _is_sz(code):
+            # 市场感知逃生通道 (三象限):
+            #   尾盘 force + .SZ (收盘集合竞价 14:57+): 限价@跌停价。单一价格
+            #         撮合, 挂跌停=最大成交优先权, 成交价仍是收盘价, 不吃亏。
+            #         无昨收算不出跌停 → fallback 对手最优 (试一下比不发强)。
+            #   盘中超时 + .SZ (2026-08-11 002253 事件): 五档即成剩余撤销。
+            #         跌停价撞价格笼子 88009 废单 (002253 当天 9.86 买一未成交,
+            #         升级挂跌停 8.91 被毙, 历史深市升级单全是跌停价废单);
+            #         对手最优是单档 FOK, 盘口量不够整单撤; 五档 IOC 扫买1-买5
+            #         尽量成交剩余才撤, 成交概率最高。注: SZ_5LEVEL_CANCEL 实盘
+            #         未实测, 上线需小单验证柜台表现。
+            #   .SH (盘中+尾盘): 对手最优。实盘已验证成交 (603689.SH 全成),
+            #         沪市连续竞价到 15:00 接受市价类申报。
+            if force and _is_sz(code):
                 prev_close = self._prev_close(code)
                 if prev_close:
                     limit_down = round_price(
@@ -426,8 +436,11 @@ class Executor:
                     ok = self._sell(code, can_use, 0.0,
                                     PRICE_TYPE_MARKET_PEER_FIRST,
                                     p["reason"], "exit_sell_market")
+            elif (not force) and _is_sz(code):
+                ok = self._sell(code, can_use, 0.0, PRICE_TYPE_SZ_5LEVEL_CANCEL,
+                                p["reason"], "exit_sell_market")
             else:
-                # 对手最优是市价类申报, 价格字段无意义传 0
+                # 沪市对手最优, 市价类申报价格字段无意义传 0
                 ok = self._sell(code, can_use, 0.0, PRICE_TYPE_MARKET_PEER_FIRST,
                                 p["reason"], "exit_sell_market")
             if not ok:
@@ -487,7 +500,10 @@ class Executor:
         self._store.save_order({
             "order_id": order_id, "remark": remark, "code": code,
             "direction": DIRECTION_SELL, "price": price, "qty": qty,
-            "status": OS_REPORTED})
+            "status": OS_REPORTED,
+            # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
+            # 新单不继承旧 created_ts (泰山石油事件)
+            "created_ts": self._clock()})
         self._pending[code] = {"order_id": order_id, "ts": self._clock(),
                                "qty": qty, "reason": reason}
         self.lock.rebind_order_id(code, order_id)
