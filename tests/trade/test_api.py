@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from fastapi.testclient import TestClient
 
 from trade.api import create_api_app
+from trade.book import DIRECTION_BUY, DIRECTION_SELL
 from trade.config import TradeConfig
 from trade_main import TradeApp
 
@@ -84,6 +85,75 @@ def test_positions_day_change(client):
     p = d["positions"][0]
     assert p["day_chg_pct"] == 10.0
     assert p["day_chg_amt"] == (11.0 - 10.0) * p["volume"]
+
+
+def test_positions_day_pnl_today_only(client):
+    """2026-08-12 (300119 事件): 尾盘新建仓的票, 当日盈亏按买入价算。
+    现价11/买入@11/昨收10 → 当日盈亏=0 (旧逻辑会错误地得 (11-10)*vol)。"""
+    c, app = client
+    SZ = "300119.SZ"
+    app.store.save_trade({"traded_id": "tb_r", "order_id": "ob_r", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 11.0, "qty": 1000,
+        "amount": 11000.0, "ts": time.time()})
+    app.book.apply_trade("tb_r", "ob_r", SZ, DIRECTION_BUY, 11.0, 1000, strategy="测试")
+    app.monitor.on_quote(SZ, {"last": 11.0, "bid1": 10.9, "prev_close": 10.0})
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[SZ]
+    assert p["day_chg_amt"] == 0.0     # 全今仓: 买入价=现价 → 0 (不是 +1000)
+    assert p["day_chg_pct"] == 0.0
+
+
+def test_positions_day_pnl_mixed(client):
+    """2026-08-12: 混合仓精确化。昨仓500@9 + 今买500@11, 现价11/昨收10。
+    当日盈亏 = 昨仓(11-10)*500 + 今买(11-11)*500 = 500。"""
+    c, app = client
+    SZ = "300120.SZ"
+    app.store.save_trade({"traded_id": "tb_y", "order_id": "ob_y", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 9.0, "qty": 500,
+        "amount": 4500.0, "ts": time.time() - 86400})
+    app.store.save_trade({"traded_id": "tb_t", "order_id": "ob_t", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 11.0, "qty": 500,
+        "amount": 5500.0, "ts": time.time()})
+    app.book.apply_trade("tb_y", "ob_y", SZ, DIRECTION_BUY, 9.0, 500, strategy="测试")
+    app.book.apply_trade("tb_t", "ob_t", SZ, DIRECTION_BUY, 11.0, 500, strategy="测试")
+    app.monitor.on_quote(SZ, {"last": 11.0, "bid1": 10.9, "prev_close": 10.0})
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[SZ]
+    assert p["day_chg_amt"] == 500.0
+    assert p["day_chg_pct"] == round(500 / 10500 * 100, 2)
+
+
+def test_positions_closed_realized_pnl(client):
+    """2026-08-11: volume=0 的已平仓票 (幽灵持仓) 应展示真实已实现盈亏,
+    不是一堆 0。后端从 trades 算买入均价/卖出均价/已实现盈亏/出场时间,
+    标 closed=True 供前端灰显+徽标。"""
+    c, app = client
+    SZ = "000001.SZ"
+    # 灌买卖记录: 买 1000@10 (10000), 卖 1000@11 (11000) —— 整周期闭环
+    app.store.save_trade({"traded_id": "tb1", "order_id": "ob1", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 10.0, "qty": 1000,
+        "amount": 10000.0, "ts": time.time() - 86400})
+    app.store.save_trade({"traded_id": "ts1", "order_id": "os1", "code": SZ,
+        "direction": DIRECTION_SELL, "price": 11.0, "qty": 1000,
+        "amount": 11000.0, "pnl_amount": 1000.0, "pnl_pct": 10.0,
+        "ts": time.time() - 3600})
+    # book 里造幽灵: 买入再卖出 → volume 归零但 key 保留 (模拟卖光后未清的持仓)
+    app.book.apply_trade("tb1", "ob1", SZ, DIRECTION_BUY, 10.0, 1000, strategy="测试")
+    app.book.apply_trade("ts1", "os1", SZ, DIRECTION_SELL, 11.0, 1000)
+    assert app.book.snapshot()["positions"][SZ].volume == 0
+
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[SZ]
+    assert p["closed"] is True
+    assert p["volume"] == 0
+    assert p["avg_cost"] == 10.0          # 买入均价 (不再是 0)
+    assert p["sell_avg"] == 11.0          # 卖出均价
+    assert p["buy_qty"] == 1000
+    assert p["pnl"] == 1000.0             # 已实现盈亏 (不再是 0)
+    assert p["pnl_pct"] == 10.0           # 已实现%
+    assert p["exit_ts"] is not None
+    assert p["market_value"] is None      # 平仓 → 无市值/当日
+    assert p["day_chg_pct"] is None
 
 
 def test_read_endpoints_200(client):

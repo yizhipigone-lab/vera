@@ -135,42 +135,73 @@ def _name_of(code: str) -> str:
     return _NAME_MAP.get(code, "")
 
 
-def _entry_and_closed(trade_app) -> tuple[dict, list]:
-    """从 trades 表算: 各代码首笔买入时间 (entry) + 已平仓列表 (entry/exit/已实现盈亏)。
+def _entry_and_closed(trade_app) -> tuple[dict, list, dict]:
+    """从 trades 表算各代码的买卖汇总, 派生 entry_map / closed / summary 三件:
 
-    已平仓 = 该代码累计买入量 == 累计卖出量 且卖出量 > 0;
-    已实现盈亏 = Σ卖出金额 - Σ买入金额 (整周期闭环, 税费未计入 — 与 book 口径一致)。
+    - entry_map: 首笔买入时间 (持仓票入场时间用)
+    - closed: 已平仓列表 (前 20, 供已平仓区; 用户 2026-08-11 裁决改为持仓表灰显,
+      此列表保留兼容, 前端暂不单独分区)
+    - summary: {code: 买卖汇总} —— 平仓票展示真实盈亏/买卖均价/出场时间用
+
+    is_closed = 累计卖出量 > 0 且 >= 累计买入量 (整周期闭环)。
+    realized_pnl = Σ 卖方 pnl_amount (账本成本法, 与 deals/飞书成交卡同源;
+                2026-08-11 统一口径, 不再用卖金额-买金额的毛口径)。
     """
     entry_map: dict = {}
-    closed: list = []
+    summary: dict = {}
     try:
         ro = trade_app.store.open_readonly()
     except Exception:
-        return entry_map, closed
+        return entry_map, [], summary
     try:
         cur = ro.execute(
-            "SELECT code, direction, MIN(ts), MAX(ts), SUM(qty), SUM(amount) "
-            "FROM trades GROUP BY code, direction")
+            "SELECT code, direction, MIN(ts), MAX(ts), SUM(qty), SUM(amount), "
+            "SUM(pnl_amount) FROM trades GROUP BY code, direction")
         per_code: dict = {}
-        for code, direction, min_ts, max_ts, qty, amount in cur.fetchall():
+        for code, direction, min_ts, max_ts, qty, amount, pnl_amt in cur.fetchall():
             d = per_code.setdefault(code, {})
             d[direction] = {"min_ts": min_ts, "max_ts": max_ts,
-                            "qty": qty or 0, "amount": amount or 0.0}
-        from trade.book import DIRECTION_BUY, DIRECTION_SELL
+                            "qty": qty or 0, "amount": amount or 0.0,
+                            "pnl": pnl_amt or 0.0}
         for code, d in per_code.items():
             buy = d.get(DIRECTION_BUY)
             sell = d.get(DIRECTION_SELL)
+            buy_qty = buy["qty"] if buy else 0
+            buy_amount = buy["amount"] if buy else 0.0
+            sell_qty = sell["qty"] if sell else 0
+            sell_amount = sell["amount"] if sell else 0.0
+            is_closed = bool(sell and sell_qty > 0 and sell_qty >= buy_qty)
+            entry_ts = buy["min_ts"] if buy else None
             if buy:
-                entry_map[code] = buy["min_ts"]
-            if buy and sell and sell["qty"] > 0 and sell["qty"] >= buy["qty"]:
-                closed.append({
-                    "code": code, "name": _name_of(code),
-                    "entry_ts": buy["min_ts"], "exit_ts": sell["max_ts"],
-                    "qty": buy["qty"],
-                    "realized_pnl": round(sell["amount"] - buy["amount"], 2),
-                })
+                entry_map[code] = entry_ts
+            summary[code] = {
+                "buy_qty": buy_qty,
+                "buy_avg": (buy_amount / buy_qty) if buy_qty > 0 else None,
+                "sell_qty": sell_qty,
+                "sell_avg": (sell_amount / sell_qty) if sell_qty > 0 else None,
+                "entry_ts": entry_ts,
+                "exit_ts": sell["max_ts"] if sell else None,
+                "realized_pnl": (round(sell["pnl"], 2)
+                                 if is_closed else None),
+                "realized_pnl_pct": (round(sell["pnl"] / buy_amount * 100, 2)
+                                     if is_closed and buy_amount > 0 and sell["pnl"]
+                                     else None),
+                "is_closed": is_closed,
+            }
+        closed = [{
+            "code": code, "name": _name_of(code),
+            "entry_ts": summary[code]["entry_ts"],
+            "exit_ts": summary[code]["exit_ts"],
+            "qty": summary[code]["buy_qty"],
+            "buy_avg": summary[code]["buy_avg"],
+            "sell_avg": summary[code]["sell_avg"],
+            "realized_pnl": summary[code]["realized_pnl"],
+            "realized_pnl_pct": summary[code]["realized_pnl_pct"],
+            "hold_days": _hold_days(summary[code]["entry_ts"],
+                                    summary[code]["exit_ts"]),
+        } for code in summary if summary[code]["is_closed"]]
         closed.sort(key=lambda x: x["exit_ts"] or 0, reverse=True)
-        return entry_map, closed[:20]
+        return entry_map, closed[:20], summary
     finally:
         ro.close()
 
@@ -195,14 +226,16 @@ def _trading_days() -> list:
     return _TRADING_DAYS
 
 
-def _hold_days(entry_ts: float | None):
+def _hold_days(entry_ts: float | None, end_ts: float | None = None):
     """持仓天数: T+1 起算 (买入日不计, 之后第一个交易日为第 1 天)。
-    日历滞后 (trading_days.parquet 未覆盖到今天) 时尾部按工作日近似;
-    日历整体缺失时全段工作日近似。无 entry_ts (QMT 恢复的老仓) 给 None。"""
+    end_ts 缺省=今天 (在持仓票); 传 exit_ts → 算到出场日 (已平仓票的
+    整段持有天数, 2026-08-11)。日历滞后时尾部按工作日近似; 日历整体
+    缺失时全段工作日近似。无 entry_ts (QMT 恢复的老仓) 给 None。"""
     if not entry_ts:
         return None
     ed = time.strftime("%Y%m%d", time.localtime(entry_ts))
-    today = time.strftime("%Y%m%d")
+    today = (time.strftime("%Y%m%d", time.localtime(end_ts))
+             if end_ts else time.strftime("%Y%m%d"))
     days = _trading_days()
     n = sum(1 for d in days if ed < d <= today)
 
@@ -281,34 +314,99 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         snap = trade_app.book.snapshot()
         # 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例/已平仓。
         # 名称表惰性加载一次 (DataFetcher.get_name_map, 失败回退空 → 前端显示代码)。
-        entry_map, closed = _entry_and_closed(trade_app)
+        # 2026-08-11: 数量=0 的幽灵持仓 (已卖光但 book key 未删) 改用真实已实现
+        # 盈亏展示 —— 留在持仓表灰显 + "已平仓"徽标, 不再显示一堆 0, 也不另开
+        # 分区 (用户裁决)。平仓票的 avg_cost/pnl/pnl_pct 由 summary 覆盖。
+        entry_map, closed, summary = _entry_and_closed(trade_app)
+        # 2026-08-12: 当日盈亏精确化 — 昨仓按昨收、今买按买入均价。
+        # 先汇总今日买入 (尾盘新买的票不该把买入前今天的涨幅算成盈利)。
+        today_buys: dict = {}
+        try:
+            ro = trade_app.store.open_readonly()
+            try:
+                lo, hi = _today_range()
+                for code_, qty, amount in ro.execute(
+                    "SELECT code, SUM(qty), SUM(amount) FROM trades "
+                    "WHERE direction=? AND ts>=? AND ts<? GROUP BY code",
+                    (DIRECTION_BUY, lo, hi)):
+                    today_buys[code_] = {"qty": qty or 0, "amount": amount or 0.0}
+            finally:
+                ro.close()
+        except Exception:
+            today_buys = {}
         result = []
         for code, p in sorted(snap["positions"].items()):
             quote = trade_app.monitor.quote_of(code)
             last = quote["last"] if quote else None
-            # 2026-07-31: 当日涨跌 (昨收来自 monitor quote 缓存的 prev_close,
-            # 即网关 tick 的 lastClose)。幅度按价格, 金额按持仓市值口径
-            # ((现价-昨收)×数量, 即当日浮动盈亏额)。无价/无昨收 → None。
             prev_close = (quote.get("prev_close") or None) if quote else None
-            day_chg_pct = (round((last / prev_close - 1) * 100, 2)
-                           if last and prev_close else None)
-            day_chg_amt = (round((last - prev_close) * p.volume, 2)
-                           if last and prev_close else None)
+            s = summary.get(code)
+            # 平仓票: volume=0 且 trades 证明确已整周期闭环
+            is_closed_pos = (p.volume == 0 and s is not None and s["is_closed"])
             etf = is_etf(code)
+            if is_closed_pos:
+                # 成本→买入均价; 浮盈→已实现盈亏; 盈亏%→已实现%; 当日/市值无意义→None
+                day_chg_pct = None
+                day_chg_amt = None
+                market_value = None
+                avg_cost = s["buy_avg"]
+                pnl = s["realized_pnl"]
+                pnl_pct = s["realized_pnl_pct"]
+                entry_ts = s["entry_ts"]
+                exit_ts = s["exit_ts"]
+                hold = _hold_days(s["entry_ts"], s["exit_ts"])
+                buy_qty = s["buy_qty"]
+                sell_avg = s["sell_avg"]
+            else:
+                # 2026-08-12: 当日盈亏精确化 — 昨仓部分按昨收, 今日买入部分
+                # 按今日买入均价 (尾盘新买的票不该把买入前今天的涨幅算成盈利;
+                # 300119 事件)。今买量从 trades 今日买入汇总取, 与持仓量取小
+                # (今日卖了部分则剩余额按买入均价近似)。
+                tb = today_buys.get(code, {})
+                tb_qty = min(tb.get("qty", 0), p.volume)
+                tb_avg = (tb["amount"] / tb["qty"]
+                          if tb.get("qty") and tb["qty"] > 0 else None)
+                yest_qty = max(0, p.volume - tb_qty)
+                if last:
+                    yest_amt = ((last - prev_close) * yest_qty
+                                if yest_qty > 0 and prev_close else 0.0)
+                    tb_amt = ((last - tb_avg) * tb_qty
+                              if tb_qty > 0 and tb_avg else 0.0)
+                    base = ((prev_close or 0.0) * yest_qty
+                            + (tb_avg or 0.0) * tb_qty)
+                    day_chg_amt = round(yest_amt + tb_amt, 2) if base else None
+                    day_chg_pct = (round((yest_amt + tb_amt) / base * 100, 2)
+                                   if base > 0 else None)
+                else:
+                    day_chg_amt = None
+                    day_chg_pct = None
+                market_value = round(last * p.volume, 2) if last else None
+                avg_cost = p.avg_cost
+                pnl = round((last - p.avg_cost) * p.volume, 2) if last else None
+                pnl_pct = (round((last / p.avg_cost - 1) * 100, 2)
+                           if last and p.avg_cost > 0 else None)
+                entry_ts = entry_map.get(code)
+                exit_ts = None
+                hold = _hold_days(entry_ts)
+                buy_qty = None
+                sell_avg = None
             result.append({
                 "code": code, "name": _name_of(code),
                 "volume": p.volume, "can_use": p.can_use,
-                "avg_cost": p.avg_cost, "strategy": p.strategy,
+                "avg_cost": round(avg_cost, 2) if avg_cost is not None else None,
+                "strategy": p.strategy,
                 "last": last,
                 "day_chg_pct": day_chg_pct,
                 "day_chg_amt": day_chg_amt,
-                "market_value": round(last * p.volume, 2) if last else None,
-                "pnl": round((last - p.avg_cost) * p.volume, 2)
-                if last else None,
-                "pnl_pct": round((last / p.avg_cost - 1) * 100, 2)
-                if last and p.avg_cost > 0 else None,
-                "entry_ts": entry_map.get(code),
-                "hold_days": _hold_days(entry_map.get(code)),
+                "market_value": market_value,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "entry_ts": entry_ts,
+                "exit_ts": exit_ts,
+                "hold_days": hold,
+                # 2026-08-11: 平仓票的买入量与卖出均价 (持仓票为 None)
+                "buy_qty": buy_qty,
+                "sell_avg": round(sell_avg, 2) if sell_avg is not None else None,
+                "closed": is_closed_pos,
                 "tiers_done": sorted(snap["tiers"].get(code, {}).get(
                     time.strftime("%Y%m%d"), ())),
                 # 2026-07-27 裁决③: ETF 明示不纳入自动管理
