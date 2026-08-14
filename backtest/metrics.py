@@ -78,6 +78,56 @@ class MetricsCalculator:
         return metrics
 
     @staticmethod
+    def rolling_metrics(
+        equity_curve: pd.DataFrame,
+        window: int = 60,
+        risk_free: float = 0.015,
+    ) -> dict:
+        """滚动指标 (图表分析深挖包 Phase 2, 2026-08-13): 滚动夏普/年化收益/年化波动。
+
+        equity_curve 是 date/equity/drawdown 三列 DataFrame; 5m/1m 回测为 bar 级
+        (一日多行), 先按 date 前 10 字符分组取每日末值聚合成日频, 再算日收益与
+        滚动窗口。年化基数固定 252 (聚合后就是日频, 不用 bar 级基数)。
+        窗口内: rolling_return = mean(r)*252, rolling_vol = std(r, ddof=1)*sqrt(252),
+        rolling_sharpe = (mean(r) - rf/252)/std(r)*sqrt(252) (std=0 除零未定义 → None)。
+        窗口不足的点为 None (绝不输出 NaN/inf — FastAPI allow_nan=False, NaN 直接 500)。
+        空输入/缺列 → 返回空序列, 不抛。
+        """
+        out = {"window": int(window), "dates": [], "rolling_sharpe": [],
+               "rolling_return": [], "rolling_vol": []}
+        if equity_curve is None or len(equity_curve) == 0:
+            return out
+        if "date" not in equity_curve.columns or "equity" not in equity_curve.columns:
+            return out
+
+        df = equity_curve[["date", "equity"]].copy()
+        df["date"] = df["date"].astype(str).str[:10]
+        df["equity"] = pd.to_numeric(df["equity"], errors="coerce")
+        daily = df.dropna(subset=["equity"]).groupby("date", sort=True)["equity"].last()
+        out["dates"] = daily.index.tolist()
+
+        n = len(daily)
+        if n < 2 or window < 2:
+            out["rolling_sharpe"] = [None] * n
+            out["rolling_return"] = [None] * n
+            out["rolling_vol"] = [None] * n
+            return out
+
+        ret = daily.pct_change()
+        roll_mean = ret.rolling(window).mean()
+        roll_std = ret.rolling(window).std()  # ddof=1
+        sharpe = ((roll_mean - risk_free / 252) / roll_std * np.sqrt(252))
+        sharpe = sharpe.where(roll_std > 0)  # std=0 → NaN → None (除零未定义)
+
+        def _to_list(s: pd.Series) -> list:
+            return [float(v) if pd.notna(v) and np.isfinite(v) else None for v in s]
+
+        out["rolling_return"] = _to_list(roll_mean * 252)
+        out["rolling_vol"] = _to_list(roll_std * np.sqrt(252))
+        out["rolling_sharpe"] = _to_list(sharpe)
+        return out
+
+    @staticmethod
     def _sharpe(equity: pd.Series, risk_free: float = 0.015, periods_per_year: int = 252) -> float:
         returns = equity.pct_change().dropna()
         if len(returns) < 2 or returns.std() == 0:

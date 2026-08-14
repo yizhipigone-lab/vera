@@ -305,8 +305,8 @@ input.invalid~.input-error{display:block}
 .cal-pnl.cal-up{color:var(--up)} .cal-pnl.cal-down{color:var(--down)}
 .cal-amt{font-size:10px;font-family:var(--mono);color:var(--text2)}
 .cal-trades{font-size:9px;color:var(--text2);margin-top:2px}
-#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
-#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active{display:block}
+#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
+#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
 .lab-card h3{margin:0 0 12px;font-size:13px;color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px dashed var(--border);font-size:12px}
@@ -372,6 +372,7 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn" id="tabBtnAnalysis">分析</button>
   <button class="tab-btn" id="tabBtnRecords">交易记录</button>
   <button class="tab-btn" id="tabBtnResearch">研究</button>
+  <button class="tab-btn" id="tabBtnData">数据准备</button>
 </div>
 <!-- 2026-07-24: 内置边界口径页首声明 — 改代码口径时必须同步此块
      (selection/selector.py, core/stock_filter.py, backtest/engine.py
@@ -565,8 +566,8 @@ input:focus-visible,select:focus-visible{outline:none}
             </div>
             <div class="form-group"><label>确认方式</label>
               <select id="cfgTrailingConfirm">
-                <option value="simple" selected>实盘简化：5M碰线按bar收盘价成交 / 1D收盘价确认 (推荐)</option>
-                <option value="real">条件单语义：本bar创新高不触发，跳空按开盘价，触线按线价成交 (1D/5M同规则)</option>
+                <option value="simple">实盘简化：5M碰线按bar收盘价成交 / 1D收盘价确认</option>
+                <option value="real" selected>条件单语义：本bar创新高不触发，跳空按开盘价，触线按线价成交 (1D/5M同规则) (推荐)</option>
                 <option value="intraday">盘中触发：每根bar最低价碰线，按线价成交 (旧行为，偏乐观)</option>
                 <option value="low">尾盘最低价确认：当日最低价碰线，按收盘价成交 (阶梯值班日休息)</option>
                 <option value="close">尾盘收盘价确认：收盘价跌破线才卖，按收盘价成交 (阶梯值班日休息)</option>
@@ -700,6 +701,32 @@ input:focus-visible,select:focus-visible{outline:none}
     <div class="chart-box full">
       <div class="chart-box-header" id="equityChartHeader">权益曲线 &amp; 基准对比</div>
       <div class="chart-box-body xtall" id="chartEquity"></div>
+    </div>
+
+    <!-- 深挖包 Phase 1: 水下曲线 + 蒙特卡洛扇面 (charts_deep.js 渲染, 数据不足自动隐藏) -->
+    <div class="chart-box full">
+      <div class="chart-box-header">水下曲线（回撤：套了多深、套了多久）</div>
+      <div class="chart-box-body tall" id="chartUnderwater"></div>
+    </div>
+    <div class="chart-box full">
+      <div class="chart-box-header">蒙特卡洛收益扇面（重做同样笔数交易的收益分布范围）</div>
+      <div class="chart-box-body tall" id="chartMonteCarlo"></div>
+    </div>
+
+    <!-- 深挖包 Phase 2: 滚动指标 + 业绩归因 (charts_deep.js 渲染, key 不存在自动隐藏) -->
+    <div class="chart-box full">
+      <div class="chart-box-header">滚动指标（60 日窗口：夏普/收益/波动率——策略状态稳不稳）</div>
+      <div class="chart-box-body tall" id="chartRolling"></div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box">
+        <div class="chart-box-header">业绩归因 · 板块（钱主要是哪些行业赚/亏的）</div>
+        <div class="chart-box-body" id="chartAttrSector"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-header">业绩归因 · 个股 Top10（哪几只票贡献最大）</div>
+        <div class="chart-box-body" id="chartAttrStock"></div>
+      </div>
     </div>
 
     <!-- 图表行 -->
@@ -866,6 +893,27 @@ input:focus-visible,select:focus-visible{outline:none}
       <div class="chart-box-header"><span>权益曲线 & 基准对比</span></div>
       <div class="chart-box-body tall" id="chartAnalysisEquity"></div>
     </div>
+    <!-- 水下曲线 (深挖包 Phase 1, charts_deep.js 渲染, 数据不足自动隐藏) -->
+    <div class="chart-box full" style="margin-bottom:12px">
+      <div class="chart-box-header"><span>水下曲线（回撤：套了多深、套了多久）</span></div>
+      <div class="chart-box-body tall" id="chartAnalysisUnderwater"></div>
+    </div>
+    <!-- 滚动指标 (深挖包 Phase 2, equity 响应的 rolling key, key 不存在自动隐藏) -->
+    <div class="chart-box full" style="margin-bottom:12px">
+      <div class="chart-box-header"><span>滚动指标（60 日窗口：夏普/收益/波动率——策略状态稳不稳）</span></div>
+      <div class="chart-box-body tall" id="chartAnalysisRolling"></div>
+    </div>
+    <!-- 业绩归因 (深挖包 Phase 2, /api/trade/analysis/attribution, 失败自动隐藏) -->
+    <div class="chart-row" style="margin-bottom:12px">
+      <div class="chart-box">
+        <div class="chart-box-header"><span>业绩归因 · 板块（钱主要是哪些行业赚/亏的）</span></div>
+        <div class="chart-box-body" id="chartAnalysisAttrSector"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-header"><span>业绩归因 · 个股 Top10（哪几只票贡献最大）</span></div>
+        <div class="chart-box-body" id="chartAnalysisAttrStock"></div>
+      </div>
+    </div>
     <!-- 月度收益热力图 -->
     <div class="chart-box full" style="margin-bottom:12px">
       <div class="chart-box-header"><span>月度收益热力图</span></div>
@@ -1025,6 +1073,11 @@ input:focus-visible,select:focus-visible{outline:none}
             <input type="number" id="tdsHbSec" step="1" min="1"> 秒
             <label style="min-width:0">陈旧阈值</label>
             <input type="number" id="tdsStaleSec" step="1" min="1"> 秒</div>
+          <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-top:2px">
+            扫描间隔 · 多久评估一次该不该卖（卖出灵敏度，非轮询专用）<br>
+            心跳 · 超过此秒数没收到行情 → 判订阅断线，自动降级轮询并重连<br>
+            陈旧阈值 · 单只票行情超此秒数没刷新 → 本轮跳过该票，不用陈旧价卖出
+          </div>
         </div>
         <div class="tds-sec">
           <div class="tds-sec-title">尾盘自动买入</div>
@@ -1122,17 +1175,74 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
+<!-- 2026-08-14: 数据准备 TAB — K线缓存管理台 (5M 回测取数超时事故后设立)。
+     状态监控 + 手动补拉 + 补拉日志; 后端 data_cache_api.py, JS web/js/data_cache.js -->
+<div id="pageData">
+  <div class="lab-card">
+    <h3>K线缓存状态
+      <button class="btn" id="dcRefreshBtn" style="padding:2px 10px;font-size:11px;margin-left:8px">刷新</button>
+      <span class="trade-hint" id="dcRefreshHint"></span></h3>
+    <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
+      缓存新鲜回测就快 (分钟级)；过期则回测时逐只走网络补数据 (小时级)。
+      每天 15:30 调度器自动补尾段 + 服务启动自检, 此处可手动管理。
+    </div>
+    <div class="trade-table-wrap" style="max-height:none">
+      <table class="trade-table" id="dcStatusTable">
+        <thead><tr><th>周期</th><th>股票数</th><th>数据起点</th><th>最新数据日</th><th>应有数据日</th><th>状态</th><th>不完整只数</th></tr></thead>
+        <tbody id="dcStatusBody"><tr><td colspan="7" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div id="dcRunningHint" style="display:none;margin-top:8px;font-size:12px;color:var(--accent)">⏳ 补拉进行中（见下方日志）…</div>
+  </div>
+
+  <div class="lab-card">
+    <h3>手动补拉</h3>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="dcPeriod" class="lab-input" style="width:110px">
+        <option value="5m" selected>5 分钟线</option>
+        <option value="1d">日线</option>
+        <option value="1m">1 分钟线</option>
+      </select>
+      <input class="lab-input" id="dcStart" placeholder="开始 YYYYMMDD" style="width:130px;font-family:var(--mono)">
+      <input class="lab-input" id="dcEnd" placeholder="结束 YYYYMMDD (空=今天)" style="width:170px;font-family:var(--mono)">
+      <select id="dcUniverse" class="lab-input" style="width:150px">
+        <option value="50" selected>沪深A股 (默认)</option>
+        <option value="5">全部A股 (含北交所)</option>
+        <option value="23">沪深300</option>
+        <option value="24">中证500</option>
+        <option value="25">中证1000</option>
+        <option value="28">中证A500</option>
+        <option value="51">创业板</option>
+        <option value="52">科创板</option>
+        <option value="53">北交所</option>
+      </select>
+      <input class="lab-input" id="dcLimit" placeholder="限量 (0=不限)" style="width:110px;font-family:var(--mono)">
+      <button class="btn btn-primary" id="dcBackfillBtn" style="padding:5px 16px;font-size:12px">开始补拉</button>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:6px">已缓存的部分零重拉，只补缺段；重复执行无害。全池 5m 补尾段约 1-2 小时，限量可先试 20 只。</div>
+    <div id="dcBackfillMsg" style="margin-top:6px;font-size:12px"></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>补拉日志
+      <button class="btn" id="dcLogBtn" style="padding:2px 10px;font-size:11px;margin-left:8px">刷新</button>
+      <span class="trade-hint" id="dcLogHint"></span></h3>
+    <div class="lab-pre" id="dcLog" style="max-height:320px;overflow-y:auto">暂无日志</div>
+  </div>
+</div>
+
 <!-- P1-4: Toast 容器 -->
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script src="/web/js/trade.js?v=20260730e"></script>
+<script src="/web/js/trade.js?v=20260813a"></script>
 <script src="/web/js/research.js?v=20260728a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_chat.js?v=20260731a"></script>
-<script type="module" src="/web/js/analysis.js?v=20260807c"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260730a"></script>
+<script src="/web/js/data_cache.js?v=20260814b"></script>
+<script type="module" src="/web/js/analysis.js?v=20260814a"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260814c"></script>
 </body>
 </html>

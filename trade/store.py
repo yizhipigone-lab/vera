@@ -256,8 +256,15 @@ class TradeStore:
         """按 order_id upsert 委托记录 (回报乱序/重复都以最新状态覆盖)。
         2026-08-03 修复: QMT order_id 跨会话复用 (同 order_id 可能先分配给
         000721, 下次分配给 300158), ON CONFLICT 必须更新全部业务字段,
-        否则新订单静默合并进旧记录的 code/price/qty。"""
+        否则新订单静默合并进旧记录的 code/price/qty。
+
+        2026-08-10 (泰山石油事件): order_id 复用时 created_ts 也不能留旧值
+        —— 672137218 今天的新单继承了 07-27 旧单的创建时间, 页面时间列
+        显示成 07-27 01:14:42。规则: 冲突时仅当调用方**显式提供**
+        created_ts (下单路径的本地时刻 / reconciler 的 QMT order_time)
+        才覆盖; 纯状态回写 (_on_order_error 等不传) 不动原值。"""
         now = time.time()
+        created = record.get("created_ts")
         with self._lock, self._conn:
             self._conn.execute(
                 """INSERT INTO orders
@@ -273,13 +280,16 @@ class TradeStore:
                     filled_qty=excluded.filled_qty,
                     status=excluded.status,
                     status_msg=excluded.status_msg,
+                    created_ts=CASE WHEN ? THEN excluded.created_ts
+                                    ELSE orders.created_ts END,
                     updated_ts=excluded.updated_ts""",
                 (
                     record["order_id"], record.get("remark", ""),
                     record["code"], record["direction"], record["price"],
                     record["qty"], record.get("filled_qty", 0),
                     record["status"], record.get("status_msg", ""),
-                    record.get("created_ts", now), now,
+                    created or now, now,
+                    1 if created else 0,
                 ),
             )
 
@@ -398,6 +408,18 @@ class TradeStore:
         return [{"traded_id": r[0], "code": r[1], "direction": r[2],
                  "price": r[3], "qty": r[4], "amount": r[5], "reason": r[6],
                  "pnl_amount": r[7], "pnl_pct": r[8], "ts": r[9]} for r in rows]
+
+    def load_all_trades(self) -> list[dict]:
+        """全历史成交 (按 ts 升序), 盘后日报重放算每笔剩余/卖出比例的基数
+        (2026-08-08)。返回 [{traded_id, order_id, code, direction, price, qty, ts}]。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT traded_id, order_id, code, direction, price, qty, ts "
+                "FROM trades ORDER BY ts ASC"
+            ).fetchall()
+        return [{"traded_id": r[0], "order_id": r[1], "code": r[2],
+                 "direction": r[3], "price": r[4], "qty": r[5], "ts": r[6]}
+                for r in rows]
 
     def _migrate_tier_state(self) -> None:
         """审计C1修复: 旧表 (无 trade_date 列) 直接重建。
@@ -653,6 +675,20 @@ class TradeStore:
         with self._lock:
             return self._conn.execute(
                 "SELECT COUNT(*) FROM daily_asset").fetchone()[0]
+
+    def load_prev_daily_asset(self, before_date: str) -> dict | None:
+        """before_date 之前最近一日的日终资产 (当日盈亏的基准)。
+        date 是 YYYY-MM-DD 文本, 字典序即日期序。无历史行 / total_asset 非正
+        → None (首日运行等情况, 调用方走启动快照兜底)。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT date, total_asset FROM daily_asset "
+                "WHERE date < ? AND total_asset > 0 "
+                "ORDER BY date DESC LIMIT 1", (before_date,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"date": row[0], "total_asset": float(row[1])}
 
     def close(self) -> None:
         # 先停 raw writer (drain 队列 + 终 flush), 再关 fp —— 正常退出不丢日志

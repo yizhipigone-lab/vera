@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from collections import deque
 from pathlib import Path
@@ -31,7 +32,16 @@ logger = get_logger(__name__)
 
 VERA_ROOT = project_root()
 
-ALLOWED_TOOLS = "Read,Grep,Glob,Bash"  # C 裸奔：Bash 放行（计划书 §5.1 诚实声明）
+ALLOWED_TOOLS = "Read,Grep,Glob,Bash,Write,Edit"  # C 裸奔：Bash 放行（计划书 §5.1 诚实声明）;
+# 2026-08-12 用户拍板放开写文件（简报产物落 docs/brief/）：+Write,Edit
+
+# 2026-08-14 冷启动提速（实测驱动）：claude CLI 每次 -p 起进程会做遥测/更新检查
+# 等非必要网络，实测拖慢冷启动 ~30%（每次 ~3-5s）。此 env 关掉非必要流量——
+# 不影响 provider 调用 / Bash 工具 / --resume 会话，只砍 CLI 自己的遥测与更新检查。
+CLI_ENV = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+
+# provider 软告警每 channel 只报一次（2026-08-12：原来每条回答都弹，太吵）
+_PROVIDER_WARNED: set[str] = set()
 DEFAULT_TIMEOUT = 300  # v2: 120→300 (简报任务需要)
 DEFAULT_MAX_TURNS = 20  # v2: 8→20
 
@@ -110,14 +120,15 @@ async def ask_brain(question: str, session_id: str | None = None,
                     max_turns: int = DEFAULT_MAX_TURNS,
                     channel: str = "default",
                     archive: bool = True,
-                    on_line=None) -> dict:
+                    on_line=None, system: str | None = None) -> dict:
     """问大脑一个问题 + 归档进 vault「对话沉淀」（archive=False 豁免, 如 eval）。
 
     归档松耦合: 写盘失败不影响回答 (见 brain/archive.py)。
     on_line: async callable(line:str)->None, SSE 流式回调（逐行推 stdout）; None=同步原路径。
+    system: 自定义 system prompt；None=用默认完整 SYSTEM_PROMPT（快路径传瘦身版）。
     """
     result = await _ask_brain_impl(question, session_id, timeout, max_turns, channel,
-                                   on_line=on_line)
+                                   on_line=on_line, system=system)
     if archive:
         archive_exchange(channel, question, result)
     return result
@@ -127,7 +138,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                           timeout: int = DEFAULT_TIMEOUT,
                           max_turns: int = DEFAULT_MAX_TURNS,
                           channel: str = "default",
-                          on_line=None) -> dict:
+                          on_line=None, system: str | None = None) -> dict:
     """问大脑一个问题。返 {answer, success, low_confidence, warnings, session_id}。
 
     session_id 为 None 时按 channel 取/建持久 session（多轮 --resume）。
@@ -139,8 +150,9 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
         result["answer"] = "claude CLI 未安装（npm i -g @anthropic-ai/claude-code），大脑不可用"
         return result
     warn = _check_provider()
-    if warn:
+    if warn and channel not in _PROVIDER_WARNED:
         result["warnings"].append(warn)
+        _PROVIDER_WARNED.add(channel)
 
     if session_id:
         sid, existed = session_id, True      # 显式指定 = 续既有会话
@@ -158,7 +170,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
     # 实测 claude 2.x: 新 session 用 --session-id 建档, 既有才用 --resume;
     # 对不存在的 sid 用 --resume 直接报错（首次提问必失败的坑）
     cmd = base_cmd + (["--resume", sid] if existed else ["--session-id", sid])
-    prompt_bytes = prompts.build_prompt(question).encode("utf-8")
+    prompt_bytes = (prompts.build_prompt(question) if system is None
+                    else prompts.build_with_system(system, question)).encode("utf-8")
 
     async def _run_once(command: list[str], prompt: bytes = prompt_bytes):
         """跑一次 CLI。返 (returncode, stdout, stderr)；异常返 (None, b"", 错误文案)。"""
@@ -169,6 +182,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(VERA_ROOT),
+                env=CLI_ENV,
             )
         except FileNotFoundError:
             return None, b"", "claude CLI 启动失败（找不到可执行文件）"
@@ -182,6 +196,11 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
             return None, b"", f"大脑超时（>{timeout}s），已终止"
         return proc.returncode, out, serr
 
+    # 2026-08-12: 流式回答全文收集器（归档用）。原流式分支 answer 返回空串,
+    # 研究 TAB 对话沉淀因此断流 (research_api 一度被迫 archive=False)。
+    # 优先取 stream-json 收尾 result 事件的全文 (权威), 增量 text 块拼接兜底。
+    stream_collect: dict = {"parts": [], "final": None}
+
     # ★v2 SSE 流式路径：逐行读 stdout → on_line 回调（H-1/H-2/H-3 计划书 §3.1）
     async def _run_once_stream(command: list[str], prompt: bytes = prompt_bytes):
         """流式跑 CLI: 逐行读 stdout → on_line, 累积 stderr + stdout 尾部,
@@ -194,7 +213,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
             sproc = await asyncio.create_subprocess_exec(
                 *command, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                cwd=str(VERA_ROOT))
+                cwd=str(VERA_ROOT), env=CLI_ENV)
         except FileNotFoundError:
             await on_line("[系统] claude CLI 启动失败（找不到可执行文件）")
             return None, b"", ""
@@ -229,9 +248,14 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                     if evt.get("type") == "assistant":
                         for block in (evt.get("message", {}).get("content") or []):
                             if block.get("type") == "text" and block.get("text"):
+                                stream_collect["parts"].append(block["text"])
                                 await on_line(block["text"])
                             elif block.get("type") == "tool_use":
                                 await on_line("[工具] " + block.get("name", "?"))
+                    elif evt.get("type") == "result":
+                        # 收尾事件带全文 (权威快照, 优先于增量块拼接)
+                        stream_collect["final"] = (
+                            evt.get("result") or stream_collect["final"])
                 except (json.JSONDecodeError, KeyError, TypeError):
                     await on_line(raw)  # 非 JSON 行直接推
 
@@ -302,8 +326,17 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                     "utf-8", "replace")).strip()[:300]
                 result["warnings"].append(
                     f"大脑非零退出 (rc={rc_s})" + (f": {detail}" if detail else ""))
-        return {"answer": "", "success": rc_s == 0,
-                "low_confidence": False, "warnings": result["warnings"],
+        # 2026-08-12: 流式回答也回填 answer + 跑质量校验 (反证/引用) ——
+        # 这是研究 TAB 对话沉淀恢复归档的前提 (归档写的是 result["answer"])。
+        answer = (stream_collect["final"] or "\n".join(
+            p for p in stream_collect["parts"] if p)).strip()
+        low = False
+        if rc_s == 0 and answer:
+            answer, ok_counter = counter.ensure_counter_evidence(answer, question)
+            answer, ok_evidence = evidence.ensure_citation(answer)
+            low = not (ok_counter and ok_evidence)
+        return {"answer": answer, "success": rc_s == 0,
+                "low_confidence": low, "warnings": result["warnings"],
                 "session_id": sid}
 
     rc, stdout, stderr = await _run_once(cmd)
@@ -375,7 +408,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
         return result
 
     # 回答质量三件套之硬校验两件（反证 + 引用），缺失标低置信不拦截
-    raw, ok_counter = counter.ensure_counter_evidence(raw)
+    # 2026-08-12: 反证校验传入 question 做意图分类 (非判断类不强制反证)
+    raw, ok_counter = counter.ensure_counter_evidence(raw, question)
     raw, ok_evidence = evidence.ensure_citation(raw)
     result.update({
         "answer": raw,

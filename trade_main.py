@@ -32,9 +32,11 @@ from core.stock_filter import get_cached_info  # noqa: E402
 from trade.auto_buy import AutoBuyFeature  # noqa: E402
 from trade.book import (  # noqa: E402
     DIRECTION_BUY,
+    OS_JUNK,
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
     Book,
+    compute_remaining_map,
 )
 from trade.config import TradeConfig, load_trade_config  # noqa: E402
 from trade.events import (  # noqa: E402
@@ -777,6 +779,11 @@ class TradeApp:
         self.reconciler.sync_reports()
 
     def _on_eod(self, notify_daily: bool = True) -> None:
+        # 2026-08-08: 非交易日(周末/节假日)不做 EOD —— 此前周六 15:05 也归档
+        # daily_asset + 推日报, 非交易日快照混进权益曲线/日历 (用户发现)
+        if not is_trading_day_cached():
+            self.store.write_audit("eod_skip", "非交易日, 跳过 EOD 归档与日报", {})
+            return
         # 持仓快照归档 = 对账 C 方的明日基准; tier_state 在乐观标记时
         # 已逐笔落库 (executor.place_ladder), 此处无需重复归档
         # 2026-08-01 P0-4 (H4): query_positions 空列表 = 查询不可用
@@ -803,7 +810,9 @@ class TradeApp:
         try:
             asset = self.gateway.query_asset()
             total_asset = float(asset.get("total_asset", 0.0) or 0.0)
-            available = float(asset.get("available", 0.0) or 0.0)
+            # 2026-08-13 修复: 键名是 cash 不是 available —— 原写法恒读到默认 0,
+            # daily_asset.available 全表为 0 (当日排查总资产异常时抓出)
+            available = float(asset.get("cash", 0.0) or 0.0)
             market_value = float(asset.get("market_value", 0.0) or 0.0)
             if total_asset > 0:
                 from datetime import datetime
@@ -836,11 +845,25 @@ class TradeApp:
             return
         cash = float(asset.get("cash", 0.0) or 0.0)
         market_value = float(asset.get("market_value", 0.0) or 0.0)
+        # 当日盈亏基准 = 昨日日终资产 (2026-08-13 修复: 原用 _day_baseline 即
+        # 进程启动快照, 盘中/午后重启过一次基准就含当日涨跌 → 差值≈0,
+        # 08-11/12/13 三天日报当日盈亏全错)。昨日日终缺行 (首日运行) 才回落
+        # 启动快照; 两者都无 → None (卡片显示 "—")。查询 fail-soft 同样回落。
+        date_str = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
         day_pnl = None
         day_pnl_pct = None
-        if self._day_baseline:
-            day_pnl = round(total_asset - self._day_baseline, 2)
-            day_pnl_pct = round((total_asset / self._day_baseline - 1) * 100, 2)
+        baseline = None
+        try:
+            prev = self.store.load_prev_daily_asset(date_str)
+            if prev:
+                baseline = float(prev["total_asset"])
+        except Exception:
+            _logger.debug("昨日日终资产读取异常 (回落启动快照)")
+        if baseline is None and self._day_baseline:
+            baseline = float(self._day_baseline)
+        if baseline:
+            day_pnl = round(total_asset - baseline, 2)
+            day_pnl_pct = round((total_asset / baseline - 1) * 100, 2)
         positions = self.book.snapshot()["positions"]
         pos_count = sum(1 for p in positions.values() if p.volume > 0)
         payload: dict = {
@@ -850,7 +873,6 @@ class TradeApp:
             "position_count": pos_count, "ts": self._clock(),
         }
         # 当日交易摘要 + 卖出明细 (数据源 trades 表, 已含 pnl_amount)
-        date_str = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
         try:
             trades_detail = self.store.load_today_trades_detail(date_str)
         except Exception:
@@ -880,27 +902,53 @@ class TradeApp:
             _logger.debug("盘后日报落库异常 (web 回看该日将缺, 不影响交易)")
 
     def _build_trade_summary(self, trades_detail: list[dict]) -> dict:
-        """从当日成交明细算交易摘要 + 卖出明细 (2026-08-07)。
-        sell_count=0 → win_rate=None (卡片省略, 不除零); 卖出明细按 ts 升序,
-        超 8 笔留前 8 + 折叠汇总 (sell_details_folded)。"""
+        """从当日成交明细算交易摘要 + 卖出明细 + 交易明细混排。
+        2026-08-08: 重放全历史 Book (compute_remaining_map) 给每笔补
+        剩余股数/剩余市值/卖出比例(=本次卖出÷累计买入, 用户口径)。
+        sell_count=0 → win_rate=None (卡片省略, 不除零); sell_details (web 回看用,
+        不动) 按 ts 升序超 8 笔折叠; trade_details (飞书单列每条一块, 买卖混排)
+        按 ts 升序超 12 笔折叠 (trade_details_folded 只汇总卖出盈亏)。"""
         buy_count = sell_count = 0
         turnover = 0.0
         realized_pnl = 0.0
         wins = 0
         sells: list[dict] = []
+        details: list[dict] = []   # 买卖混排 (飞书交易明细单列每条一块; 2026-08-07)
+        # 重放全历史 Book 算每笔剩余/卖出比例 (trades 表不存剩余, 2026-08-08)
+        tgt_tids = {str(t.get("traded_id")) for t in trades_detail
+                    if t.get("traded_id")}
+        remain_map = (compute_remaining_map(self.store.load_all_trades(), tgt_tids)
+                      if tgt_tids else {})
         for t in trades_detail:
             turnover += abs(float(t.get("amount", 0.0) or 0.0))
+            tid = str(t.get("traded_id", ""))
+            rm = remain_map.get(tid, {})
+            rec: dict = {
+                "code": t["code"], "direction": t.get("direction"),
+                "price": float(t.get("price", 0.0) or 0.0),
+                "qty": int(t.get("qty", 0) or 0),
+                "amount": float(t.get("amount", 0.0) or 0.0),
+                "reason": t.get("reason", ""), "ts": t.get("ts", 0.0),
+                "remaining_vol": rm.get("remaining_vol"),
+                "remaining_value": rm.get("remaining_value"),
+            }
             if t.get("direction") == DIRECTION_BUY:
                 buy_count += 1
-                continue
-            sell_count += 1
-            pnl = float(t.get("pnl_amount", 0.0) or 0.0)
-            realized_pnl += pnl
-            if pnl > 0:
-                wins += 1
-            sells.append({"code": t["code"], "reason": t.get("reason", ""),
-                          "pnl_amount": pnl, "pnl_pct": t.get("pnl_pct"),
-                          "ts": t.get("ts", 0.0)})
+                rec["pnl_amount"] = None
+                rec["pnl_pct"] = None
+            else:
+                sell_count += 1
+                pnl = float(t.get("pnl_amount", 0.0) or 0.0)
+                realized_pnl += pnl
+                if pnl > 0:
+                    wins += 1
+                rec["pnl_amount"] = pnl
+                rec["pnl_pct"] = t.get("pnl_pct")
+                rec["sell_ratio"] = rm.get("sell_ratio")
+                sells.append({"code": t["code"], "reason": t.get("reason", ""),
+                              "pnl_amount": pnl, "pnl_pct": t.get("pnl_pct"),
+                              "ts": t.get("ts", 0.0)})
+            details.append(rec)
         out: dict = {
             "buy_count": buy_count, "sell_count": sell_count,
             "turnover": round(turnover, 2),
@@ -918,6 +966,21 @@ class TradeApp:
                 }
             else:
                 out["sell_details"] = sells
+        # 交易明细混排 (飞书双列; 买卖按 ts 升序, 超 12 笔折叠, 折叠只汇总卖出盈亏)
+        if details:
+            details.sort(key=lambda x: x["ts"])
+            cap = 12
+            if len(details) > cap:
+                folded_d = details[cap:]
+                out["trade_details"] = details[:cap]
+                out["trade_details_folded"] = {
+                    "count": len(folded_d),
+                    "sum_sell_pnl": round(
+                        sum(d["pnl_amount"] for d in folded_d
+                            if d["pnl_amount"] is not None), 2),
+                }
+            else:
+                out["trade_details"] = details
         return out
 
     def _diff_positions(self, prev: dict, curr: dict) -> dict:
@@ -944,12 +1007,34 @@ class TradeApp:
         """下单失败回报 (2026-08-07 接线, 0807 事件): xtquant order_stock
         只回本地请求序号, 不代表券商柜台受理; 未送达/被拒的真实原因
         (无权限/流量控制/参数错误) 只经 on_order_error 下发 —— 原文落
-        audit, 不再黑盒 (10 笔限价单"查无此单"事件的教训)。"""
+        audit, 不再黑盒 (10 笔限价单"查无此单"事件的教训)。
+
+        2026-08-10 (0810 事件): 拒单回报同时把订单推进废单终态并回写
+        orders 表 —— 此前只落 audit 不改状态, 未达柜台的单页面永远停
+        "已报" (收盘后 15 笔买入 QMT 查无此单, 前端却全显示已报,
+        废单原因只能翻 audit)。拒单原因原文进 status_msg, 页面
+        "状态说明"列直接可见。"""
         self.store.write_audit(
             "order_error",
             f"下单失败: {rec.get('error_msg', '')} "
             f"(order_id={rec.get('order_id')}, error_id={rec.get('error_id')})",
             dict(rec))
+        oid = str(rec.get("order_id") or "")
+        if not oid:
+            return
+        old = self.book.snapshot()["orders"].get(oid)
+        if old is None:
+            return  # 非本系统订单的拒单回报 (如券商端手工单), 只留 audit
+        if old.status in TERMINAL_STATUSES:
+            return  # 终态不可逆 (状态回报已先到的竞态), 不盖棺
+        ok = self.book.apply_order_update(oid, OS_JUNK)
+        if ok:
+            self.store.save_order({
+                "order_id": oid, "remark": old.remark, "code": old.code,
+                "direction": old.direction, "price": old.price,
+                "qty": old.qty, "filled_qty": old.filled_qty,
+                "status": OS_JUNK,
+                "status_msg": str(rec.get("error_msg", "") or "")})
 
     def _on_cancel_error(self, rec: dict) -> None:
         """撤单失败回报 (2026-08-07 接线): 撤单流水线 "锁→撤→ack" 的
@@ -1019,7 +1104,7 @@ class TradeApp:
                 return
             price = quote["last"]
         intent = OrderIntent(code=code, direction=DIRECTION_BUY,
-                             price=float(price), qty=qty)
+                             price=float(price), qty=qty, manual=True)
         ok, reason = self.risk.check(intent, self._build_risk_ctx())
         if not ok:
             _logger.warning("人工买入被风控拒绝: %s %s", code, reason)

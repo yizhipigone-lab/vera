@@ -1,5 +1,6 @@
 // ====== VERA Analysis Tab — 交易日历 + 实盘图表 ======
 import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc } from './charts.js';
+import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260814';
 import { bucketReason, isKnownReason } from './reason_util.mjs';
 
 const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
@@ -69,6 +70,27 @@ async function loadAnalysisData() {
         }
       }
       renderEquityCurve('chartAnalysisEquity', eqData, '实盘', getColors());
+      // 深挖包 Phase 1: 水下曲线 (回撤)。eqData.equity 为日级 {date, equity, drawdown} 数组;
+      // 独立 try/catch, 失败只隐藏该图, 不拖垮整个分析 Tab (外层 catch 会隐藏 analysisContent)
+      try { renderUnderwater('chartAnalysisUnderwater', eqData.equity, getColors()); }
+      catch (e) { console.warn('renderUnderwater(实盘) 失败:', e); }
+    }
+
+    // 深挖包 Phase 2: 滚动指标 (equity 响应追加的 rolling key, 形状同回测 rolling_metrics)。
+    // key 不存在 (后端未就绪/老数据) → renderRolling 内部静默隐藏容器; 独立 try/catch 不拖垮其他图
+    try { renderRolling('chartAnalysisRolling', equity && equity.rolling, getColors()); }
+    catch (e) { console.warn('renderRolling(实盘) 失败:', e); }
+
+    // 深挖包 Phase 2: 实盘业绩归因 (板块 + 个股 Top10)。
+    // 端点未就绪/失败 → 隐藏两个容器; meta.skipped_no_pnl > 0 由渲染层出副标题提示
+    try {
+      const attr = await fetch(API_BASE + '/attribution').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      renderAttribution('chartAnalysisAttrSector', attr, getColors());
+      renderAttributionStocks('chartAnalysisAttrStock', attr, getColors());
+    } catch (e) {
+      console.warn('实盘归因加载失败:', e);
+      try { renderAttribution('chartAnalysisAttrSector', null, getColors()); } catch (_) { /* 忽略 */ }
+      try { renderAttributionStocks('chartAnalysisAttrStock', null, getColors()); } catch (_) { /* 忽略 */ }
     }
 
     // Render heatmap from equity data
@@ -100,24 +122,38 @@ function renderKpiCards(s) {
   const fmtPct = v => v != null ? (v * 100).toFixed(2) + '%' : '--';
   const fmtNum = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) : '--';
   const fmtInt = v => v != null ? Math.round(v) : '--';
+  // 2026-08-13 (用户要求): 每个指标带大白话说明 (悬停 ? 图标可见, 含好坏参照线)
   const cards = [
-    { label: '累计收益', id: 'akpi1', val: s.cumulative_return, fmt: v => fmtPct(v), cls: s.cumulative_return > 0 ? 'pos' : 'neg' },
-    { label: '年化收益', id: 'akpi2', val: s.annualized_return, fmt: v => fmtPct(v), cls: s.annualized_return > 0 ? 'pos' : 'neg' },
-    { label: '最大回撤', id: 'akpi3', val: s.max_drawdown, fmt: v => fmtPct(v), cls: s.max_drawdown < 0 ? 'pos' : 'neg' },
-    { label: '夏普比率', id: 'akpi4', val: s.sharpe_ratio, fmt: v => fmtNum(v), cls: '' },
-    { label: '胜率', id: 'akpi5', val: s.win_rate, fmt: v => v != null ? (v * 100).toFixed(1) + '%' : '--', cls: '' },
-    { label: '盈亏比', id: 'akpi6', val: s.profit_loss_ratio, fmt: v => fmtNum(v), cls: '' },
-    { label: '交易笔数', id: 'akpi7', val: s.total_trades, fmt: v => fmtInt(v), cls: '' },
-    { label: '卡玛比率', id: 'akpi8', val: s.calmar_ratio, fmt: v => fmtNum(v), cls: '' },
-    { label: 'Sortino', id: 'akpi9', val: s.sortino_ratio, fmt: v => fmtNum(v), cls: '' },
-    { label: '盈利因子', id: 'akpi10', val: s.profit_factor, fmt: v => fmtNum(v), cls: '' },
+    { label: '累计收益', id: 'akpi1', val: s.cumulative_return, fmt: v => fmtPct(v), cls: s.cumulative_return > 0 ? 'pos' : 'neg',
+      tip: '从期初到现在总共赚/亏的百分比。正数=赚钱, 负数=亏钱。' },
+    { label: '年化收益', id: 'akpi2', val: s.annualized_return, fmt: v => fmtPct(v), cls: s.annualized_return > 0 ? 'pos' : 'neg',
+      tip: '把收益折算成一年的速度, 方便和理财/指数比较。例: 年化 10% ≈ 每 100 元一年赚 10 元。参照: 银行定存约 1.5-2%, 沪深300长期约 5-8%。' },
+    { label: '最大回撤', id: 'akpi3', val: s.max_drawdown, fmt: v => fmtPct(v), cls: s.max_drawdown < 0 ? 'pos' : 'neg',
+      tip: '净值从最高点跌到最低点的最大幅度, 即"最惨的时候账面亏多少"。越小越好; 超过 -20% 说明波动很煎熬。' },
+    { label: '夏普比率', id: 'akpi4', val: s.sharpe_ratio, fmt: v => fmtNum(v), cls: '',
+      tip: '每承担一份上下波动, 换来多少收益 (已扣无风险利率)。>1 算不错, >2 优秀, <0 说明波动白挨了。' },
+    { label: '胜率', id: 'akpi5', val: s.win_rate, fmt: v => v != null ? (v * 100).toFixed(1) + '%' : '--', cls: '',
+      tip: '赚钱的交易占总交易的比例。注意: 胜率高≠赚钱 —— 常赚小钱亏一次大的照样亏, 要结合盈亏比看。' },
+    { label: '盈亏比', id: 'akpi6', val: s.profit_loss_ratio, fmt: v => fmtNum(v), cls: '',
+      tip: '平均每笔盈利 ÷ 平均每笔亏损。>1 表示赚的时候比亏的时候多; 胜率×盈亏比 联立才决定长期赚不赚钱。' },
+    { label: '交易笔数', id: 'akpi7', val: s.total_trades, fmt: v => fmtInt(v), cls: '',
+      tip: '统计期内完成的买卖笔数。笔数太少 (如 <30) 时, 其他指标偶然性大, 别太当真。' },
+    { label: '卡玛比率', id: 'akpi8', val: s.calmar_ratio, fmt: v => fmtNum(v), cls: '',
+      tip: '年化收益 ÷ 最大回撤, 衡量"用多大痛苦换收益"。>1 不错, >3 优秀; <1 说明受的苦比赚的还多。' },
+    { label: 'Sortino', id: 'akpi9', val: s.sortino_ratio, fmt: v => fmtNum(v), cls: '',
+      tip: '索提诺比率: 类似夏普, 但只把"下跌"算作风险 (上涨不惩罚)。>1 不错, >2 优秀。一般比夏普略高。' },
+    { label: '盈利因子', id: 'akpi10', val: s.profit_factor, fmt: v => fmtNum(v), cls: '',
+      tip: '总盈利 ÷ 总亏损。<1 必亏, 1.0-1.5 勉强, >1.5 较好, >2 优秀。' },
   ];
   const warnHtml = s.reconciliation_warning
     ? '<span style="color:var(--warn);font-size:11px;margin-left:4px" title="净值推算与QMT资产偏差>1%">⚠</span>' : '';
+  const labelHtml = c => c.tip
+    ? c.label + ' <span style="cursor:help;color:var(--text2);font-size:10px" title="' + c.tip + '">?</span>'
+    : c.label;
   grid.innerHTML = '<div class="kpi-row-primary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">' +
-    cards.slice(0, 5).map(c => '<div class="kpi-card"><div class="kpi-label">' + c.label + warnHtml + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '">' + c.fmt(c.val) + '</div></div>').join('') +
+    cards.slice(0, 5).map(c => '<div class="kpi-card"><div class="kpi-label">' + labelHtml(c) + warnHtml + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '">' + c.fmt(c.val) + '</div></div>').join('') +
     '</div><div class="kpi-row-secondary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px">' +
-    cards.slice(5).map(c => '<div class="kpi-card"><div class="kpi-label">' + c.label + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '" style="font-size:18px">' + c.fmt(c.val) + '</div></div>').join('') +
+    cards.slice(5).map(c => '<div class="kpi-card"><div class="kpi-label">' + labelHtml(c) + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '" style="font-size:18px">' + c.fmt(c.val) + '</div></div>').join('') +
     '</div>';
 }
 
@@ -392,7 +428,9 @@ function renderHeatmap(equity) {
       const rets = monthly[key];
       if (rets && rets.length > 0) {
         const product = rets.reduce((acc, r) => acc * (1 + r), 1);
-        data.push([yLabels.indexOf(String(y)), m - 1, Number(((product - 1) * 100).toFixed(2))]);
+        // 2026-08-13 修复: echarts heatmap 数据格式是 [x下标, y下标, 值],
+        // 旧代码写成 [年, 月] 把格子画到不存在的行, 热力图永远空白
+        data.push([m - 1, yLabels.indexOf(String(y)), Number(((product - 1) * 100).toFixed(2))]);
       }
     });
   });
@@ -400,7 +438,7 @@ function renderHeatmap(equity) {
   chart.setOption({
     tooltip: {
       formatter: p => p.value[0] !== undefined
-        ? years[p.value[0]] + '年' + months[p.value[1]] + '月: <b>' + (p.value[2] >= 0 ? '+' : '') + p.value[2].toFixed(2) + '%</b>'
+        ? years[p.value[1]] + '年' + months[p.value[0]] + '月: <b>' + (p.value[2] >= 0 ? '+' : '') + p.value[2].toFixed(2) + '%</b>'
         : ''
     },
     grid: { left: 50, right: 30, top: 10, bottom: 30 },
@@ -555,10 +593,12 @@ function renderExitPie(deals) {
 // ── Deals table ──
 async function loadDeals() {
   try {
-    const start = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-01';
-    const end = _calendarYear + '-' + String(_calendarMonth).padStart(2, '0') + '-31';
-    // Use the trade API deals endpoint
-    const resp = await fetch(TRADE_API + '/deals?limit=5000').then(r => r.json()).catch(() => null);
+    // 2026-08-13 修复: 旧调用不带日期 → 后端只给当日成交, 盈亏分布/卖出原因
+    // 永远凑不出完整买卖对。改为拉全量历史 (2020 起, 上限 5000 笔),
+    // 表格的日期过滤仍由 filterDealsByDate 在前端做。
+    const today = new Date();
+    const end = today.getFullYear() + String(today.getMonth() + 1).padStart(2, '0') + String(today.getDate()).padStart(2, '0');
+    const resp = await fetch(TRADE_API + '/deals?start=20200101&end=' + end + '&limit=5000').then(r => r.json()).catch(() => null);
     _allDeals = (resp && resp.deals) ? resp.deals : [];
     renderDealTable();
   } catch (e) {

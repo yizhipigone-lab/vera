@@ -167,6 +167,19 @@ def test_sizing_rejects_above_max_amount(sizing_gate):
     assert not ok and "高于上限" in reason
 
 
+def test_sizing_manual_buy_skips_max_amount(sizing_gate):
+    """2026-08-13 用户裁决: 人工买入 (manual=True) 跳过单笔金额上限,
+    但金额下限/整手等其他 sizing 闸仍然生效。"""
+    big = OrderIntent(code="600519.SH", direction=DIRECTION_BUY,
+                      price=10.0, qty=3000, manual=True)
+    ok, _ = sizing_gate.check(big, _ctx())  # 30000 > 上限 20000, 人工放行
+    assert ok
+    small = OrderIntent(code="600519.SH", direction=DIRECTION_BUY,
+                        price=10.0, qty=100, manual=True)
+    ok, reason = sizing_gate.check(small, _ctx())  # 1000 < 下限 2000, 仍拒
+    assert not ok and "低于下限" in reason
+
+
 def test_sizing_rejects_max_positions(sizing_gate):
     """sizing: 新票持仓数达上限, 拒; 加仓已有票不受限。"""
     ctx = _ctx(positions={

@@ -110,7 +110,8 @@ class TestAutoLinks:
 
 class TestAskBrainIntegration:
     def test_ask_brain_archives_and_optout(self, tmp_path, monkeypatch):
-        async def fake_impl(question, session_id, timeout, max_turns, channel, on_line=None):
+        async def fake_impl(question, session_id, timeout, max_turns, channel,
+                            on_line=None, system=None):
             return dict(_OK)
         monkeypatch.setattr(cli, "_ask_brain_impl", fake_impl)
 

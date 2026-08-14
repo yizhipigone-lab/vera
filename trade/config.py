@@ -131,7 +131,8 @@ class FeishuConfig:
 class TradeConfig:
     """实盘交易配置。所有字段都有默认值, yaml 只覆写关心的部分。
 
-    force_market_after: 该时刻后未成交的必卖单改对手最优 (逃生通道)。
+    force_market_after: 该时刻后未成交的必卖单改逃生通道 (尾盘限价@跌停/
+    盘中笼内限价, 市价类已被柜台禁用 63596)。
     reconcile_times: 每日定时对账时点 (启动/收盘对账另算)。
     """
 

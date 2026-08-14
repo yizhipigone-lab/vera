@@ -328,7 +328,8 @@ export function renderTradeTable(trades, allTradesCount) {
     const holdDays = t.hold_days != null ? t.hold_days : '';
     const reasonShort = esc(fmtReasonShort(t.exit_reason));
     const reasonFull = esc((t.exit_reason || '').split('+').map(s => reasonDetail[s] || s).join('；'));
-    return '<tr>' +
+    const tidx = totalTrades - 1 - (start + i);   // Phase 3: 行在传入 trades 数组中的索引 (pageRows 经过倒序+分页), 回放点击定位用
+    return '<tr data-tidx="' + tidx + '" style="cursor:pointer" title="点击查看 K 线回放">' +
       '<td style="color:var(--text2);font-size:10px">' + (totalTrades - (start + i)) + '</td>' +
       '<td style="font-family:var(--mono);font-size:10px">' + code + '</td>' +
       '<td title="' + code + '">' + name + '</td>' +
@@ -465,13 +466,14 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
       });
       return s;
     }},
-    legend: { top: 0, textStyle: { color: c.text, fontSize: 10 } },
+    legend: { top: 0, left: 0, right: 90,  // 右侧留 90px 给 toolbox 图标, 防与图例叠在一起
+              textStyle: { color: c.text, fontSize: 10 } },
     dataZoom: [
       { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20,
         borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
         textStyle: { color: c.text2, fontSize: 9 } },
     ],
-    grid: { left: 60, right: 50, top: 35, bottom: 60 },
+    grid: { left: 60, right: 50, top: 55, bottom: 60 },  // top 55: 图例行(0-20)与Y轴标题行分开, 防叠压 (2026-08-08)
     xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
     yAxis: [
       { type: 'value', name: '累计收益 %', nameTextStyle: { color: c.text2, fontSize: 10 },
@@ -479,7 +481,7 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
       { type: 'value', name: '回撤 %', nameTextStyle: { color: c.text2, fontSize: 10 },
         axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
     ],
-    toolbox: { right: 800, top: 0, feature: {
+    toolbox: { right: 10, top: 0, feature: {
       saveAsImage: { title: '保存图片', pixelRatio: 2 },
       dataZoom: { title: { zoom: '区域缩放', back: '还原' } },
       restore: { title: '刷新' },

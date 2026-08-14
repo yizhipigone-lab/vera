@@ -53,6 +53,15 @@ class BacktestParams:
     # 全清仓后 cooldown bar 内禁止同票重新买入; 仅约束"空仓后的新买",
     # 持仓中的换股 (reason=1 卖旧买新) 不受影响。
     sell_cooldown_bars: int = 0
+    # 2026-08-08: 总仓位上限 — 持仓市值/当前总权益 >= 此值则停开新仓 (换股照常),
+    # 1.0=不约束 (默认零行为变化)。总权益 = cash + 持仓市值 (当日收盘价)。
+    max_total_exposure: float = 1.0
+    # 2026-08-08: 全局连亏冷却 — 连续 N 笔亏损平仓触发停开新仓 (换股/持仓照常),
+    # 0=关闭 (默认)。任一笔盈利清零重数。仅统计正常出场 (止损/止盈/时间/退市),
+    # 换股 (reason=1) 不计入。
+    loss_streak_halt_n: int = 0
+    # 连亏触发后停止开新仓的 bar 数 (0=关闭, 默认)。engine 传交易日×bpday。
+    loss_streak_halt_bars: int = 0
 
     def __post_init__(self):
         # M2: 启动期 fail-fast, 防 bpday=0 除零

@@ -2,7 +2,8 @@
 
 不依赖 QMT。覆盖任务书 8 步: 组装启动对账 → 预埋 (超涨停跳过 +
 remark 格式) → 第一档成交 (JSONL 先落盘 / book 递减 / tier 标记 /
-store 一致) → 移动止盈触发撤单流水线 + 5s 升级逃生通道 (深市限价@跌停)
+store 一致) → 移动止盈触发撤单流水线 + 5s 升级逃生通道 (盘中深市五档即成剩余
+撤销 / 沪市笼内限价, 尾盘 force 两市限价@跌停)
 → 对账偏差
 急停 + 买入被拒 → 人工 unkill 恢复 → EOD 归档 → 重启恢复档位与持仓。
 附: 断线重连 (退避→重订阅→全量对账) 独立用例。
@@ -16,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from trade.book import PRICE_TYPE_SZ_5LEVEL_CANCEL
 from trade.config import LadderTpConfig, StopConfig, TradeConfig
 from trade.events import EVENT_EOD, EVENT_RECONCILE, EVENT_TIMER_SCAN, Event
 from trade_main import TradeApp
@@ -147,17 +149,22 @@ def test_e2e_full_day(app, cfg, clock):
     canceled = [o for o in gw.query_orders()
                 if o["code"] == CYB and o["status"] == 54]
     assert len(canceled) == 2
-    # ── 5. 5s 未成交 → 升级逃生通道: 深市限价@跌停价 ──
-    # 2026-07-31: monitor 缓存昨收后, 深市逃生通道按设计走限价@跌停
-    # (prev_close 10.0 × (1-20%) = 8.0); 此前 tick 丢昨收才落对手最优
+    # ── 5. 5s 未成交 → 升级逃生通道 ──
+    # 2026-08-11 002253 + 2026-08-12 复盘: 盘中超时深市不得挂跌停价 (撞价格
+    # 笼子 88009 废单, 历史深市升级单全废), 改走五档即成剩余撤销 (扫买1-买5
+    # IOC, 比对手最优单档 FOK 成交率高)。跌停价逃生通道只在尾盘 force
+    # (14:57+ 收盘集合竞价) 时用, 见 test_pending_escalation_sz_uses_limit_down。
+    # 本场景 hhmm=10:31 < 14:57 非 force → 五档即成 (SZ_5LEVEL_CANCEL)。
+    # 注: SZ_5LEVEL_CANCEL 实盘未实测, 待小单验证。
     clock[0] += 6
     _put_scan(app, "10:31")
     assert _wait(lambda: any(
-        o["code"] == CYB and o["remark"].endswith("X") and o["price"] == 8.0
+        o["code"] == CYB and o["remark"].endswith("X")
+        and o["price_type"] == PRICE_TYPE_SZ_5LEVEL_CANCEL
         for o in gw.query_orders()))
     market = [o for o in gw.query_orders()
               if o["code"] == CYB and o["remark"].endswith("X")
-              and o["price"] == 8.0][0]
+              and o["price_type"] == PRICE_TYPE_SZ_5LEVEL_CANCEL][0]
     # 升级单成交, 清空在途 (为对账 CRITICAL 让路: 在途差异会降级 WARN)
     gw.simulate_fill(market["order_id"])
     assert _wait(lambda: app.book.snapshot()["positions"][CYB].volume == 0)

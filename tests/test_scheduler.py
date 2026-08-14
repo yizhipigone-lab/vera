@@ -163,6 +163,85 @@ class TestStartStop:
         assert sched._thread is None
 
 
+class TestIntervalJob:
+    """add_interval: 盘中按固定间隔触发, 首次立即触发, 仅交易日+交易时段。"""
+
+    _WIN = ("09:30-11:30", "13:00-15:00")  # 与 sentiment_pipeline.TRADING_HOURS 一致
+
+    def test_first_fire_immediate_in_window(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 10:00 在上午窗口内, 首次启动立即触发
+        assert sched.run_pending(_at(2026, 6, 1, 10, 0)) == 1
+        assert calls == [1]
+
+    def test_not_due_before_window(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 09:00 盘前 (窗口外) → 不触发
+        assert sched.run_pending(_at(2026, 6, 1, 9, 0)) == 0
+        assert calls == []
+
+    def test_not_due_in_lunch_break(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 12:00 午间休市 (两窗口之间) → 不触发
+        assert sched.run_pending(_at(2026, 6, 1, 12, 0)) == 0
+
+    def test_afternoon_window_fires(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 14:00 下午窗口 → 首次触发
+        assert sched.run_pending(_at(2026, 6, 1, 14, 0)) == 1
+
+    def test_respects_interval(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        assert sched.run_pending(_at(2026, 6, 1, 9, 30)) == 1   # 首次触发
+        assert sched.run_pending(_at(2026, 6, 1, 9, 35)) == 0   # 5min < 10min 间隔
+        assert sched.run_pending(_at(2026, 6, 1, 9, 40)) == 1   # 10min 到点再触发
+        assert len(calls) == 2
+
+    def test_weekend_does_not_fire(self, fake_weekday_calendar):
+        """周末即便时刻在窗口内也不触发 (盘中只在交易日存在)。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 2026-06-06 周六 10:00 (窗口内但非交易日)
+        assert sched.run_pending(_at(2026, 6, 6, 10, 0)) == 0
+        assert calls == []
+
+    def test_no_window_all_day(self, fake_weekday_calendar):
+        """trading_hours=() 空 → 不受时段/交易日约束 (每日按间隔)。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=())
+        # 周六 08:00, 无窗口约束 → 首次触发
+        assert sched.run_pending(_at(2026, 6, 6, 8, 0)) == 1
+
+    def test_interval_min_zero_raises(self):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_interval("tick", lambda: None, interval_min=0)
+
+    def test_interval_min_negative_raises(self):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_interval("tick", lambda: None, interval_min=-5)
+
+
 # ── 优雅停机 ─────────────────────────────────────────────────
 
 class TestGracefulShutdown:

@@ -34,6 +34,9 @@ class EntryEngine:
         self.skipped_signal_count = 0
         # 2026-07-23: 卖出冷却跳过的买入信号计数 (loop 结束汇总)
         self.cooldown_skip_count = 0
+        # 2026-08-08: 总仓位上限/连亏冷却 跳过的新仓信号计数 (loop 结束汇总)
+        self.exposure_skip_count = 0
+        self.halt_skip_count = 0
 
     def _record_skip(self):
         self.skipped_signal_count += 1
@@ -44,7 +47,10 @@ class EntryEngine:
                 tradable_np: Optional[np.ndarray],
                 prev_equity: float,
                 sig_cis: Optional[np.ndarray] = None,
-                last_exit_bar: Optional[np.ndarray] = None) -> float:
+                last_exit_bar: Optional[np.ndarray] = None,
+                cur_mkt_value: float = 0.0,
+                total_equity: float = 0.0,
+                halt_until_bar: Optional[int] = None) -> float:
         """_simulate_core_v3_legacy 买入块的移植。返回更新后的 cash。
 
         sig_cis: 本 bar 有信号的股票列索引(升序)。None 时按旧路径全列扫描
@@ -89,6 +95,17 @@ class EntryEngine:
                     and i - int(last_exit_bar[ci]) < p.sell_cooldown_bars):
                 self.cooldown_skip_count += 1
                 continue
+            # ── 2026-08-08 新仓门槛 (仅约束净新仓 old_p<0; 换股 old_p>=0 不拦) ──
+            if old_p < 0:
+                # 全局连亏冷却期内禁开新仓 (持仓照常止损止盈)
+                if halt_until_bar is not None and i < halt_until_bar:
+                    self.halt_skip_count += 1
+                    continue
+                # 总仓位上限: 持仓市值/总权益 >= 上限禁开新仓
+                if (p.max_total_exposure < 1.0 and total_equity > 0.0
+                        and cur_mkt_value / total_equity >= p.max_total_exposure):
+                    self.exposure_skip_count += 1
+                    continue
             # ── 买入新仓 ──
             buy_amount = min(cash, p.max_buy_amount)
             if p.max_position_pct < 1.0:

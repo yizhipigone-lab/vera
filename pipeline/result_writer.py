@@ -248,6 +248,44 @@ class ResultWriter:
         # 2026-07-28 P1.5 B层: 票→概念标签 (有才加 key, 不动 policy_priority; H-3 _FIELDS 已同步)
         if result.policy_enriched:
             resp["policy_enriched"] = safe_serialize(result.policy_enriched)
+        # 2026-08-13 图表分析深挖包 Phase 2: 滚动指标 + 业绩归因。
+        # 有才加 key (同 degradation 先例), 每个 key 独立 try/except,
+        # 失败 logger.warning + 跳过该 key, 绝不拖垮主结果; 产出必须过 safe_serialize。
+        try:
+            if not equity_curve.empty:
+                from backtest.metrics import MetricsCalculator
+                resp["rolling_metrics"] = safe_serialize(
+                    MetricsCalculator.rolling_metrics(equity_curve))
+        except Exception:
+            logger.warning("rolling_metrics 计算失败, 跳过该 key", exc_info=True)
+        try:
+            if not trades.empty and {"stock_code", "pnl"} <= set(trades.columns):
+                items = [
+                    {"code": str(c), "pnl": float(p)}
+                    for c, p in zip(trades["stock_code"], trades["pnl"])
+                    if pd.notna(p)
+                ]
+                if items:
+                    from backtest.attribution import attribute_returns
+                    from core.data_fetcher import DataFetcher
+                    from policy_kb.build_sector_index import build_stock_sector_index
+                    sector_index = build_stock_sector_index()
+                    try:
+                        sector_names = {s.get("code", ""): s.get("name", "")
+                                        for s in DataFetcher.get_sector_list()}
+                    except Exception:
+                        logger.warning("get_sector_list 失败, 行业名回退为行业代码", exc_info=True)
+                        sector_names = {}
+                    try:
+                        stock_names = DataFetcher.get_name_map() or {}
+                    except Exception:
+                        stock_names = {}
+                    resp["attribution"] = safe_serialize(
+                        attribute_returns(items, sector_index,
+                                          sector_names=sector_names,
+                                          stock_names=stock_names))
+        except Exception:
+            logger.warning("attribution 计算失败, 跳过该 key", exc_info=True)
         return resp
 
     def persist(self, response: dict, *, results_dir: Path, last_result_path: Path,

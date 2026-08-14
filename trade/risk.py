@@ -80,12 +80,17 @@ class KillSwitch:
 
 @dataclass(frozen=True)
 class OrderIntent:
-    """一道下单意图。风控看到的最小事实集。"""
+    """一道下单意图。风控看到的最小事实集。
+
+    manual=True 表示人工指令 (Web/CLI 手动买卖): 2026-08-13 用户裁决 ——
+    人工买入不受单笔金额上限约束 (用户对自己的当下意图负全责),
+    整手/下限/持仓数等其他闸保持生效。"""
 
     code: str
     direction: int
     price: float
     qty: int
+    manual: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,7 +176,8 @@ class RiskGate:
         amount = intent.price * intent.qty
         if amount < s.min_buy_amount:
             return False, f"买入金额 {amount:.0f} 低于下限 {s.min_buy_amount:.0f}"
-        if amount > s.max_buy_amount:
+        # 2026-08-13 用户裁决: 人工买入 (manual=True) 跳过单笔金额上限
+        if not intent.manual and amount > s.max_buy_amount:
             return False, f"买入金额 {amount:.0f} 高于上限 {s.max_buy_amount:.0f}"
         held = {c for c, p in ctx.positions.items() if p.volume > 0}
         if intent.code not in held and len(held) >= s.max_positions:

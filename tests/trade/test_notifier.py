@@ -124,10 +124,10 @@ def test_label_from_reason_mapping():
 def test_detail_from_reason_full_text():
     """2026-07-31: 成交原因全文 = 中文策略名 + monitor 正文 (带数字)。"""
     assert _detail_from_reason(
-        "trailing: 最高 12.00 (峰值涨幅 +20.0%, 过激活线 5%), "
-        "现价 11.30 回撤 5.8% 触发 (阈值 1%)") == (
-        "移动止盈: 最高 12.00 (峰值涨幅 +20.0%, 过激活线 5%), "
-        "现价 11.30 回撤 5.8% 触发 (阈值 1%)")
+        "trailing: 最高 12.00 (峰值涨幅 +20.0%, 过激活线 5.0%), "
+        "现价 11.30 回撤 5.8% 触发 (阈值 1.0%)") == (
+        "移动止盈: 最高 12.00 (峰值涨幅 +20.0%, 过激活线 5.0%), "
+        "现价 11.30 回撤 5.8% 触发 (阈值 1.0%)")
     assert _detail_from_reason("manual_sell: 人工卖出") == "人工卖出: 人工卖出"
     assert _detail_from_reason("") == "系统卖出"      # 无正文不拼冒号
 
@@ -509,20 +509,62 @@ def _daily_full_payload():
         "position_changes": {"new": [{"code": "300750.SZ", "delta": 1000}]},
         "sell_details": [{"code": "600519.SH", "pnl_amount": 300.0,
                           "pnl_pct": 5.0, "reason": "移动止盈", "ts": 1.0}],
+        # 2026-08-07 交易明细双列 (买卖混排, notifier 优先此字段; 按 ts 升序)
+        "trade_details": [
+            {"code": "300750.SZ", "direction": 23, "price": 10.0, "qty": 1000,
+             "amount": 10000.0, "pnl_amount": None, "pnl_pct": None,
+             "reason": "", "ts": 1.0},
+            {"code": "600519.SH", "direction": 24, "price": 10.5, "qty": 1000,
+             "amount": 10500.0, "pnl_amount": 300.0, "pnl_pct": 5.0,
+             "reason": "移动止盈", "ts": 2.0},
+        ],
     }
 
 
-def test_daily_card_full_has_four_sections():
-    """full 档: 资产/交易摘要/仓位变动/卖出明细 四 section (hr 分隔)。"""
+def test_daily_card_full_has_trade_blocks(monkeypatch):
+    """full 档: 资产/交易摘要/仓位变动 + 交易明细每条一块 (买卖混排, 简称, 盈亏着色)。
+    2026-08-08: 双列 column_set → 单列每条一块 (信息更全: 股数/金额/原因/剩余/比例)。"""
     n = FeishuNotifier(lambda: True, lambda: "http://x")
+    names = {"600519.SH": "贵州茅台", "300750.SZ": "宁德时代"}
+    monkeypatch.setattr(n, "_name_of", lambda c: names.get(c, ""))
     card = n._build_daily_card(_daily_full_payload(), level="full")
-    divs = [e for e in card["card"]["elements"] if e.get("tag") == "div"]
-    assert len(divs) == 4, [e.get("tag") for e in card["card"]["elements"]]
-    assert "仓位变动" in divs[2]["text"]["content"]
-    assert "新进" in divs[2]["text"]["content"] and "300750.SZ" in divs[2]["text"]["content"]
-    sell_body = divs[3]["text"]["content"]
-    assert "卖出明细" in sell_body and "600519.SH" in sell_body
-    assert "+300.00" in sell_body and "(+5.00%)" in sell_body  # 金额 + 比例
+    elems = card["card"]["elements"]
+    body_all = "\n".join(e.get("text", {}).get("content", "")
+                         for e in elems if e.get("tag") == "div")
+    # 仓位变动段仍在
+    assert "仓位变动" in body_all and "新进" in body_all and "300750.SZ" in body_all
+    # 交易明细标题在, 不再用 column_set
+    assert "交易明细" in body_all
+    assert not any(e.get("tag") == "column_set" for e in elems)
+    # 买入块: 简称 + 代码 + 买入 + 股数×单价=金额
+    assert "宁德时代" in body_all and "300750.SZ" in body_all and "买入" in body_all
+    assert "1000股 × 10.00 = **10,000.00**" in body_all
+    # 卖出块: 简称 + 卖出 + 盈亏(着色+比例) + 原因
+    assert "贵州茅台" in body_all and "600519.SH" in body_all and "卖出" in body_all
+    assert "+300.00" in body_all and "+5.00%" in body_all and "green" in body_all
+    assert "原因 移动止盈" in body_all
+
+
+def test_daily_card_trade_block_has_remaining_and_ratio(monkeypatch):
+    """2026-08-08: 交易明细每条一块含 卖出比例/剩余股数/剩余市值 (用户口径)。"""
+    n = FeishuNotifier(lambda: True, lambda: "http://x")
+    monkeypatch.setattr(n, "_name_of", lambda c: "示例股")
+    card = n._build_daily_card({
+        "total_asset": 1e6, "ts": 1750865391.0,
+        "trade_details": [
+            {"code": "000001.SZ", "direction": 24, "price": 10.0, "qty": 300,
+             "amount": 3000.0, "pnl_amount": 248.0, "pnl_pct": 2.5,
+             "reason": "移动止盈", "ts": 1.0,
+             "sell_ratio": 0.3, "remaining_vol": 700, "remaining_value": 7000.0},
+        ],
+    })
+    body = "\n".join(e.get("text", {}).get("content", "")
+                     for e in card["card"]["elements"] if e.get("tag") == "div")
+    assert "300股 × 10.00 = **3,000.00**" in body
+    assert "+248.00" in body and "green" in body
+    assert "原因 移动止盈" in body
+    assert "卖出比例 30%" in body               # sell_ratio 0.3 → 30%
+    assert "剩余 700股" in body and "市值 7,000.00" in body
 
 
 def test_daily_card_partial_fallback_only_asset():
@@ -535,13 +577,15 @@ def test_daily_card_partial_fallback_only_asset():
 
 
 def test_daily_card_summary_level_omits_detail_sections():
-    """summary 档: 只资产+交易摘要, 不出仓位变动/卖出明细 (即使有数据)。"""
+    """summary 档: 只资产+交易摘要, 不出仓位变动/交易明细 (即使有数据)。"""
     n = FeishuNotifier(lambda: True, lambda: "http://x")
     card = n._build_daily_card(_daily_full_payload(), level="summary")
-    divs = [e for e in card["card"]["elements"] if e.get("tag") == "div"]
+    elems = card["card"]["elements"]
+    divs = [e for e in elems if e.get("tag") == "div"]
     assert len(divs) == 2
     bodies = "\n".join(d["text"]["content"] for d in divs)
-    assert "仓位变动" not in bodies and "卖出明细" not in bodies
+    assert "仓位变动" not in bodies and "交易明细" not in bodies
+    assert not any(e.get("tag") == "column_set" for e in elems)   # 双列也不出
 
 
 def test_daily_card_sell_details_fold():
@@ -555,6 +599,40 @@ def test_daily_card_sell_details_fold():
         "sell_details_folded": {"count": 2, "sum_pnl_amount": 9.0}})
     body = [e for e in card["card"]["elements"] if e.get("tag") == "div"][-1]["text"]["content"]
     assert "另 2 笔合计 +9.00" in body
+
+
+def test_daily_card_trade_details_fold(monkeypatch):
+    """>12 笔交易明细 (新双列路径): 留前 12 + 折叠汇总 (另 N 笔 · 卖出合计 X)。"""
+    n = FeishuNotifier(lambda: True, lambda: "http://x")
+    monkeypatch.setattr(n, "_name_of", lambda c: "")
+    details = [{"code": f"00000{i}.SZ", "direction": 24, "price": 10.0,
+                "qty": 100, "amount": 1000.0, "pnl_amount": float(i),
+                "pnl_pct": float(i), "reason": "", "ts": float(i)}
+               for i in range(14)]
+    card = n._build_daily_card({
+        "total_asset": 1e6, "ts": 1750865391.0, "trade_details": details,
+        "trade_details_folded": {"count": 2, "sum_sell_pnl": 27.0}})
+    body = "\n".join(e.get("text", {}).get("content", "")
+                     for e in card["card"]["elements"] if e.get("tag") == "div")
+    assert "另 2 笔" in body and "卖出合计" in body and "+27.00" in body
+
+
+def test_build_trade_summary_trade_details_cap(cfg):
+    """>12 笔 trade_details: 前 12 + trade_details_folded (count + sum_sell_pnl)。"""
+    app = TradeApp(cfg, fake=True,
+                   fake_gateway_kwargs={"cash": 1e6, "positions": {}})
+    try:
+        assert app.start(start_timers=False)
+        td = [{"code": f"C{i}", "direction": 24, "amount": 100.0,
+               "price": 10.0, "qty": 10, "pnl_amount": float(i),
+               "pnl_pct": float(i), "reason": "", "ts": float(i)}
+              for i in range(14)]
+        s = app._build_trade_summary(td)
+        assert len(s["trade_details"]) == 12
+        assert s["trade_details_folded"]["count"] == 2
+        assert s["trade_details_folded"]["sum_sell_pnl"] == 25.0  # ts12+13
+    finally:
+        app.stop()
 
 
 def test_build_trade_summary_win_rate_and_sort(cfg):
@@ -577,8 +655,63 @@ def test_build_trade_summary_win_rate_and_sort(cfg):
         assert s1["sell_count"] == 2 and s1["win_rate"] == 0.5
         assert s1["realized_pnl"] == 20.0
         assert s1["sell_details"][0]["code"] == "C"   # ts=1 在前
+        # 2026-08-07 trade_details (买卖混排, 按 ts 升序, 买 pnl=None)
+        assert len(s0["trade_details"]) == 1
+        assert s0["trade_details"][0]["direction"] == 23
+        assert s0["trade_details"][0]["pnl_amount"] is None
+        assert len(s1["trade_details"]) == 2
+        assert s1["trade_details"][0]["code"] == "C"   # 混排也按 ts 升序
     finally:
         app.stop()
+
+
+def test_build_trade_summary_with_remaining(cfg, monkeypatch):
+    """2026-08-08: _build_trade_summary 重放全历史 Book 算每笔剩余/卖出比例
+    (卖出比例=本次卖出÷累计买入, 用户口径)。"""
+    app = TradeApp(cfg, fake=True,
+                   fake_gateway_kwargs={"cash": 1e6, "positions": {}})
+    try:
+        assert app.start(start_timers=False)
+        # 全历史: 买 1000 股 → 卖 300 (剩 700, 卖出比例 30%)
+        monkeypatch.setattr(app.store, "load_all_trades", lambda: [
+            {"traded_id": "T1", "order_id": "O1", "code": "X", "direction": 23,
+             "price": 10.0, "qty": 1000, "ts": 1.0},
+            {"traded_id": "T2", "order_id": "O2", "code": "X", "direction": 24,
+             "price": 11.0, "qty": 300, "ts": 2.0},
+        ])
+        s = app._build_trade_summary([
+            {"traded_id": "T2", "code": "X", "direction": 24, "price": 11.0,
+             "qty": 300, "amount": 3300.0, "pnl_amount": 300.0, "pnl_pct": 10.0,
+             "reason": "移动止盈", "ts": 2.0},
+        ])
+        d = s["trade_details"][0]
+        assert d["remaining_vol"] == 700
+        assert d["remaining_value"] == 7700.0      # 700 × 11.0 (成交价近似现价)
+        assert d["sell_ratio"] == 0.3              # 300 / 1000
+    finally:
+        app.stop()
+
+
+def test_compute_remaining_map_robustness():
+    """2026-08-08: compute_remaining_map 对异常输入 fail-soft (锁 _notify_daily 兜底路径,
+    回应安全审计 NOTE: 缺异常输入测试)。"""
+    from trade.book import compute_remaining_map
+    # 空 trades → 空 out
+    assert compute_remaining_map([], {"T1"}) == {}
+    # target_tids 含不存在 tid → 该 tid 不在 out, 命中的正常算
+    out = compute_remaining_map([
+        {"traded_id": "T1", "order_id": "O1", "code": "X", "direction": 23,
+         "price": 10.0, "qty": 100, "ts": 1.0},
+    ], {"T1", "T_MISSING"})
+    assert "T1" in out and "T_MISSING" not in out
+    assert out["T1"]["remaining_vol"] == 100
+    # 卖出但无历史买入 (cum_buy=0) → sell_ratio=None 不除零, 剩余 0
+    out2 = compute_remaining_map([
+        {"traded_id": "T2", "order_id": "O2", "code": "Y", "direction": 24,
+         "price": 5.0, "qty": 50, "ts": 1.0},
+    ], {"T2"})
+    assert out2["T2"]["sell_ratio"] is None       # cb=0 → None, 不除零
+    assert out2["T2"]["remaining_vol"] == 0       # 卖空仓 → max(0, 0-50)=0
 
 
 def test_e2e_eod_position_changes_uses_prev_snapshot(cfg, clock, captured, monkeypatch):
@@ -622,5 +755,69 @@ def test_e2e_eod_daily_saves_report_for_web(cfg, clock, captured, monkeypatch):
         rep = app.store.load_daily_report(date_str)
         assert rep["total_asset"] == 1_010_000.0
         assert "buy_count" in rep and "sell_count" in rep  # 交易摘要已拼
+    finally:
+        app.stop()
+
+
+def test_e2e_eod_day_pnl_uses_prev_daily_asset(cfg, clock, captured, monkeypatch):
+    """2026-08-13 回归: 当日盈亏基准=昨日日终资产 (daily_asset 表),
+    不是进程启动快照 _day_baseline。线上 bug 现场: 盘中重启后
+    _day_baseline=当前资产 → 差值≈0, 日报当日盈亏恒 +0.00 (08-11/12/13 三天全错)。
+    昨日日终 1,090,409.44 → 今日 1,084,551.39 必须报 -5,858.05 (-0.54%)。"""
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "http://hook")
+    app = TradeApp(cfg, fake=True, clock=lambda: clock[0],
+                   fake_gateway_kwargs={"cash": 1_000_000.0, "positions": {}})
+    try:
+        assert app.start(start_timers=False)
+        from datetime import datetime, timedelta
+        yday = (datetime.fromtimestamp(clock[0]) - timedelta(days=1)
+                ).strftime("%Y-%m-%d")
+        app.store.save_daily_asset(yday, 1_090_409.44, 0.0, 0.0)
+        # 复现 bug: 模拟盘中重启后基准被刷成当前资产
+        app._day_baseline = 1_084_551.39
+        monkeypatch.setattr(app.gateway, "query_asset", lambda: {
+            "total_asset": 1_084_551.39, "cash": 512_574.69,
+            "market_value": 571_876.70})
+        app._engine.put(Event(type=EVENT_EOD, data={}))
+        assert _wait(lambda: any(
+            "日报" in m["card"]["header"]["title"]["content"] for m in captured))
+        daily = [m for m in captured
+                 if "日报" in m["card"]["header"]["title"]["content"]][-1]
+        body = "\n".join(e.get("text", {}).get("content", "")
+                         for e in daily["card"]["elements"] if e.get("tag") == "div")
+        assert "-5,858.05" in body and "-0.54%" in body
+        # 落库 payload 同源同值 (web 回看一致)
+        date_str = time.strftime("%Y-%m-%d", time.localtime(clock[0]))
+        rep = app.store.load_daily_report(date_str)
+        assert rep["day_pnl"] == -5_858.05 and rep["day_pnl_pct"] == -0.54
+    finally:
+        app.stop()
+
+
+def test_e2e_eod_day_pnl_fallback_to_startup_baseline(cfg, clock, captured,
+                                                      monkeypatch):
+    """首日运行 (daily_asset 无历史行) → 回落启动快照 _day_baseline;
+    两者都无 (盘前查询失败) → None, 卡片显示 "—" 不崩。"""
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "http://hook")
+    app = TradeApp(cfg, fake=True, clock=lambda: clock[0],
+                   fake_gateway_kwargs={"cash": 1_000_000.0, "positions": {}})
+    try:
+        assert app.start(start_timers=False)
+        app._day_baseline = 1_000_000.0        # 无历史行 → 用启动快照
+        monkeypatch.setattr(app.gateway, "query_asset", lambda: {
+            "total_asset": 995_000.0, "cash": 995_000.0, "market_value": 0.0})
+        app._engine.put(Event(type=EVENT_EOD, data={}))
+        date_str = time.strftime("%Y-%m-%d", time.localtime(clock[0]))
+        assert _wait(lambda: app.store.load_daily_report(date_str) is not None)
+        rep = app.store.load_daily_report(date_str)
+        assert rep["day_pnl"] == -5_000.0 and rep["day_pnl_pct"] == -0.5
+
+        app._day_baseline = None               # 两者都无 → None
+        app.store._conn.execute("DELETE FROM daily_report WHERE date=?",
+                                (date_str,))
+        app.store._conn.commit()
+        app._notify_daily()
+        rep2 = app.store.load_daily_report(date_str)
+        assert rep2["day_pnl"] is None and rep2["day_pnl_pct"] is None
     finally:
         app.stop()

@@ -3,6 +3,7 @@
 import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport } from './api.js';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
 import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js';
+import { renderDeepCharts } from './charts_deep.js?v=20260814';
 
 // ═══════════════════════════════════════════
 // Global State
@@ -31,7 +32,7 @@ R.deps.allTradesRef = { get value() { return allTrades; }, set value(v) { allTra
 const { tryRecoverAbortedResult, resetRunUI, setBtnStopMode, setBtnRunMode } = R;
 
 setChartsRef(charts);
-toggleTheme._onToggle = () => { if (lastResult) renderAllCharts(lastResult); };
+toggleTheme._onToggle = () => { if (lastResult) renderAllCharts(lastResult); if (lastResult) renderDeepCharts(lastResult); };
 toggleSidebar._onToggle = () => { setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300); };
 
 // ═══════════════════════════════════════════
@@ -151,7 +152,10 @@ function runPipeline() {
     } catch(e) {} }, 800);
 
   const controller = new AbortController(); runState.controller = controller;
-  const timeout = setTimeout(() => controller.abort(), 1800000);
+  // 2026-08-14: 30 分钟 → 2 小时。5M 回测取数（594 只 × 多窗口批）实测超 30 分钟，
+  // 超时 abort 后前端报错放弃但后端还在跑，用户白等（recover 探测只有 5×2 秒，
+  // 探到"还在跑"也只能报超时）。拉长到 2 小时覆盖 5M 大池场景。
+  const timeout = setTimeout(() => controller.abort(), 7200000);
   submitBacktest(config, controller.signal)
     .then(data => {
       clearTimeout(timeout); pollActive = false; clearInterval(poll);
@@ -164,7 +168,7 @@ function runPipeline() {
         lastResult = null; document.querySelectorAll('.kpi-value').forEach(el => el.textContent = '--'); return;
       }
       addLog('回测完成: '+data.trade_count+'笔交易 (耗时 '+_fmtDur((Date.now()-runT0)/1000)+')', 'ok'); lastResult = data; allTrades = data.trades || [];
-      renderAllCharts(data); checkEngineVersion(data);
+      renderAllCharts(data); renderDeepCharts(data); checkEngineVersion(data);
     }).catch(e => {
       clearTimeout(timeout); pollActive = false; clearInterval(poll); runState.running = false; runState.controller = null;
       if (runState.userStopped) { runState.userStopped = false; resetRunUI(btn, '已停止', 'on');
@@ -185,7 +189,7 @@ async function loadHistory(id) {
     if (data.success || data.trade_count != null) { lastResult = data; allTrades = data.trades || [];
       document.getElementById('tradeTableBox').style.display = '';
       document.getElementById('tradeCount').textContent = '(历史 '+data.trade_count+' 笔)';
-      renderAllCharts(data); checkEngineVersion(data); addLog('已加载历史回测 ('+data.trade_count+'笔)', 'ok'); }
+      renderAllCharts(data); renderDeepCharts(data); checkEngineVersion(data); addLog('已加载历史回测 ('+data.trade_count+'笔)', 'ok'); }
   } catch(e) { addLog('加载失败: '+e.message, 'error'); }
 }
 
@@ -309,7 +313,9 @@ document.getElementById('cfgFormula').addEventListener('change', loadFactorRules
 
 let _labPollTimer = null;
 function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade', isAnalysis = name==='analysis';
-  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab && !isTrade && !isAnalysis);
+  // 2026-08-14: backtest 激活条件从"非lab/trade/analysis"改为显式等值 —
+  // research/records/data 三个后加 TAB 会让旧判断把回测按钮也点亮 (cosmetic bug)
+  document.getElementById('tabBtnBacktest').classList.toggle('active', name==='backtest');
   document.getElementById('tabBtnLab').classList.toggle('active', isLab);
   document.getElementById('tabBtnTrade').classList.toggle('active', isTrade);
   var _tabA = document.getElementById('tabBtnAnalysis'); if (_tabA) _tabA.classList.toggle('active', isAnalysis);
@@ -321,6 +327,12 @@ function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade',
   var isResearch = name==='research';
   var _tabR = document.getElementById('tabBtnResearch'); if (_tabR) _tabR.classList.toggle('active', isResearch);
   var _pr = document.getElementById('pageResearch'); if (_pr) _pr.classList.toggle('active', isResearch);
+  // 2026-08-14: 数据准备 TAB (K线缓存管理台, 切入轮询/切出停止)
+  var isData = name==='data';
+  var _tabD = document.getElementById('tabBtnData'); if (_tabD) _tabD.classList.toggle('active', isData);
+  var _pD = document.getElementById('pageData'); if (_pD) _pD.classList.toggle('active', isData);
+  if (isData && window.dataPageEnter) window.dataPageEnter();
+  if (!isData && window.dataPageLeave) window.dataPageLeave();
   // 2026-07-30: 交易记录 TAB (台账/查询页, 不轮询, 切入时加载)
   var isRecords = name==='records';
   var _tabRec = document.getElementById('tabBtnRecords'); if (_tabRec) _tabRec.classList.toggle('active', isRecords);
@@ -401,6 +413,7 @@ document.getElementById('tabBtnTrade').addEventListener('click', () => switchTab
 document.getElementById('tabBtnAnalysis')?.addEventListener('click', () => switchTab('analysis'));
 document.getElementById('tabBtnResearch')?.addEventListener('click', () => switchTab('research'));
 document.getElementById('tabBtnRecords')?.addEventListener('click', () => switchTab('records'));
+document.getElementById('tabBtnData')?.addEventListener('click', () => switchTab('data'));
 document.querySelector('.theme-btn').addEventListener('click', toggleTheme);
 document.querySelector('.sidebar-toggle').addEventListener('click', toggleSidebar);
 document.getElementById('historySelect').addEventListener('change', function() { loadHistory(this.value); });

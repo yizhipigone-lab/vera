@@ -26,7 +26,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -51,6 +51,21 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8080", "http
 # 静态文件
 app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
 app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")
+
+
+@app.on_event("startup")
+def _startup_cache_check():
+    """启动自检: K线缓存不新鲜则后台补拉 (2026-08-14, 5M 回测超时事故)。
+
+    与 scheduler 每日 15:45 的定时补拉是双保险 —— 调度器没常驻/电脑关机/
+    周末启动回测时, 靠这个自检兜底。非阻塞 (检查毫秒级, 补拉在后台线程),
+    fail-soft (缓存问题永不挡服务启动)。
+    """
+    try:
+        from core.kline_cache_maintenance import ensure_cache_fresh
+        logger.info(f"K线缓存启动自检: {ensure_cache_fresh(trigger='server_startup')}")
+    except Exception as e:
+        logger.warning(f"K线缓存启动自检异常 (不影响服务): {e}")
 
 # ====== 数据模型 ======
 # StrategyConfig / _config_to_yaml_dict 已抽至 config_mapper.py (C4c), 上方 re-export。
@@ -87,6 +102,8 @@ lab_status = LabQueue(pipeline_busy=lambda: pipeline_status.running)
 # C4c: 抽出的路由模块 (路由注册语义不变, 路径/方法逐个平移)
 app.include_router(create_lab_router(lab_status, pipeline_status))
 app.include_router(research_router)
+from data_cache_api import router as data_cache_router  # 2026-08-14: 数据准备 TAB
+app.include_router(data_cache_router)
 
 
 # ====== 配置端点 ======
@@ -481,6 +498,10 @@ async def api_benchmark_history(
     """拉取基准指数日线 (分析 Tab 权益曲线基准对比)。
     indices: 逗号分隔的指数名; start/end: YYYY-MM-DD。"""
     from core.data_fetcher import DataFetcher
+    # 2026-08-08 修复: 前端传 YYYY-MM-DD, get_kline 只认 YYYYMMDD,
+    # 此前直接抛 ValueError 被静默吞掉 → 基准恒空 (权益曲线无对比线)
+    start = start.replace("-", "")
+    end = end.replace("-", "")
     index_names = [n.strip() for n in indices.split(",") if n.strip()]
     result: dict = {}
     for name in index_names:
@@ -508,6 +529,68 @@ async def api_benchmark_history(
         except Exception:
             result[name] = []
     return result
+
+
+@app.get("/api/stock/kline")
+def api_stock_kline(
+    code: str = Query(..., pattern=r"(?i)^\d{6}(\.(SH|SZ|BJ))?$"),
+    start: str = Query("", pattern=r"^(\d{8}|\d{4}-\d{2}-\d{2})?$"),
+    end: str = Query("", pattern=r"^(\d{8}|\d{4}-\d{2}-\d{2})?$"),
+):
+    """单笔交易 K 线回放日线 (图表分析深挖包 Phase 3, 2026-08-14)。
+
+    薄 adapter: 校验 → 归一 → get_kline → field-major 转 rows → 异常映射。
+    - code 正则白名单 (6位数字+可选 SH/SZ/BJ 后缀) 防注入 TDX 查询, 不匹配 → 422。
+    - start/end 同时接受 YYYYMMDD 和 YYYY-MM-DD, 归一成 YYYYMMDD 再调数据层
+      (照抄 /api/benchmark/history 2026-08-08 修复教训: 未归一直接抛错被静默吞)。
+    - 复权口径 dividend_type="front" (前复权): 与回测引擎一致
+      (backtest/engine.py:213 硬编码 "front", engine.run docstring 注明与
+      pipeline.assert_consistent 对齐), 保证买卖点 marker 和 K 线价格对得上;
+      benchmark 端点用 "none" 是指数口径, 不适用于个股回放。
+    - 任何字段 NaN/inf 的行整行丢弃 (FastAPI allow_nan=False, 漏一个就 500)。
+    - 无数据/缺列 → 200 空 rows; 数据层异常 → 502 {"detail": ...}。
+    """
+    import math
+    from core.data_fetcher import DataFetcher
+    from utils.code_normalizer import normalize as _normalize_code
+
+    code_in = code.strip().upper()
+    tdx_code = _normalize_code(code_in) or code_in  # 补默认后缀, 如 600000 → 600000.SH
+    start = start.replace("-", "")
+    end = end.replace("-", "")
+    try:
+        kline = DataFetcher.get_kline(
+            [tdx_code], start_time=start, end_time=end,
+            period="1d", dividend_type="front")
+    except Exception as e:
+        logger.error(f"/api/stock/kline 数据层异常 ({tdx_code}): {e}")
+        raise HTTPException(status_code=502, detail=f"K线数据获取失败: {e}")
+
+    rows = []
+    close_df = (kline or {}).get("Close")
+    if close_df is not None and not close_df.empty and tdx_code in close_df.columns:
+        series = {}
+        for f in ("Open", "High", "Low", "Close", "Volume"):
+            df = kline.get(f)
+            series[f] = df[tdx_code] if (df is not None and tdx_code in df.columns) else None
+        for idx in sorted(close_df.index):
+            vals = []
+            for f in ("Open", "High", "Low", "Close", "Volume"):
+                s = series[f]
+                v = s.get(idx) if s is not None else None
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    v = float("nan")
+                vals.append(v)
+            if not all(math.isfinite(v) for v in vals):
+                continue  # 含 NaN/inf/缺失的行整行丢弃
+            rows.append({
+                "date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10],
+                "open": vals[0], "high": vals[1], "low": vals[2],
+                "close": vals[3], "volume": vals[4],
+            })
+    return {"code": code_in, "period": "1d", "rows": rows}
 
 
 # ====== 启动 ======

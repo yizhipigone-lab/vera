@@ -169,8 +169,9 @@ class Monitor:
         self._quotes[code] = {
             "last": float(quote.get("last") or 0.0),
             "bid1": float(quote.get("bid1") or 0.0),
-            # ask1 也要缓存: 尾盘自动买入按卖一价定价 (2026-07-27 MVP),
-            # 丢了它买单会全走对手最优分支
+            # ask1 也要缓存: 尾盘自动买入按卖一价定价 (2026-07-27 MVP);
+            # 买单对手最优分支已于 2026-08-12 移除 (auto_buy.py), 丢了它
+            # 买单无价可定
             "ask1": float(quote.get("ask1") or 0.0),
             "high": high,
             "prev_close": prev_close,
@@ -420,9 +421,9 @@ class Monitor:
                           f"(成本 {avg_cost:.2f} {stop.cost_stop.threshold:+.0%})"),
             "trailing": (hit_trailing,
                          f"trailing: 最高 {peak:.2f} (峰值涨幅 {peak_pct:+.1%}, "
-                         f"过激活线 {stop.trailing_stop.activation:.0%}), "
+                         f"过激活线 {stop.trailing_stop.activation:.1%}), "
                          f"现价 {last:.2f} 回撤 {dd_now:.2%} 触发 "
-                         f"(阈值 {stop.trailing_stop.drawdown:.0%})"),
+                         f"(阈值 {stop.trailing_stop.drawdown:.1%})"),
             "time_stop": (hit_time_stop, f"time_stop: 持有 {days} 天达上限 "
                           f"{stop.time_stop.max_hold_days} 天"),
             "cond_time": (hit_cond_time,

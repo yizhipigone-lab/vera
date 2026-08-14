@@ -29,7 +29,6 @@ from trade.book import (
     OS_REPORTED,
     OS_SUCCEEDED,
     PRICE_TYPE_LIMIT,
-    PRICE_TYPE_MARKET_PEER_FIRST,
     TERMINAL_STATUSES,
     is_etf,
 )
@@ -251,9 +250,15 @@ class AutoBuyFeature:
                     order_price = round_price(limit_up)
                     price_kind = "涨停价限价(收盘竞价)"
             elif not quote.get("ask1"):
-                order_price = 0.0
-                order_type = PRICE_TYPE_MARKET_PEER_FIRST
-                price_kind = "对手最优"
+                # 2026-08-12 (用户拍板): 限价兜底替代"对手最优"市价单 ——
+                # 券商柜台禁市价类程序化报单 (63596 废单, 08-12 沪市 7/7 全废),
+                # 深市对手最优 IOC 性质剩余自动撤 (08-12 深市 4/4 已撤)。
+                # 无盘口时用 最新价+0.5% 限价 (08-12 用户拍板, 比 1% 买得便宜;
+                # 够不着的概率略升, 但挂单是"未成交"不是废单, 收盘自动失效),
+                # 涨停帽封顶防越界废单。
+                order_price = round_price(min(limit_up, quote["last"] * 1.005))
+                order_type = PRICE_TYPE_LIMIT
+                price_kind = "限价兜底(无盘口)"
             else:
                 order_price = price
                 order_type = PRICE_TYPE_LIMIT
@@ -271,7 +276,10 @@ class AutoBuyFeature:
             self._store.save_order({
                 "order_id": order_id, "remark": remark, "code": code,
                 "direction": DIRECTION_BUY, "price": order_price, "qty": qty,
-                "status": OS_REPORTED})
+                "status": OS_REPORTED,
+                # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
+                # 新单不继承旧 created_ts (泰山石油事件)
+                "created_ts": self._clock()})
             placed_codes.add(code)
             cash -= qty * price
             bought += 1

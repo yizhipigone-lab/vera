@@ -13,6 +13,9 @@ taskkill /FI "WINDOWTITLE eq VERA-Web-8080*" /T /F >nul 2>&1
 echo 停止 VERA-Trade-8081 ...
 taskkill /FI "WINDOWTITLE eq VERA-Trade-8081*" /T /F >nul 2>&1
 
+echo 停止 VERA-Scheduler ...
+taskkill /FI "WINDOWTITLE eq VERA-Scheduler*" /T /F >nul 2>&1
+
 rem ---- 兜底: 按端口找 PID(窗口标题被改过时仍有救, 只杀 python) ----
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":8080 .*LISTENING"') do (
     echo 端口 8080 被 PID=%%a 占用, 校验进程名 ...

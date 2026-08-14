@@ -27,7 +27,9 @@ logger = get_logger(__name__)
 load_dotenv()  # 读 .env (DEEPSEEK_API_KEY 等)
 
 _DEEPSEEK_BASE = "https://api.deepseek.com"
-_DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"  # 实测别名指向 deepseek-v4-flash
+# 2026-08-13 用户要求: 显式锁定 flash, 不用 deepseek-chat 别名
+# (别名指向由官方侧控制, 可能漂移; /models 实测可用: deepseek-v4-flash / deepseek-v4-pro)
+_DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 class LLMClient:

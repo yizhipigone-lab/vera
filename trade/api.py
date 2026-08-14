@@ -26,6 +26,9 @@ from trade.config import (
     trade_config_from_dict,
     trade_config_to_dict,
 )
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 审计L12修复: code 入参格式校验 —— 畸形代码在 HTTP 边界就拒掉,
 # 不进事件队列 (消费者线程不该为格式垃圾浪费一轮风控检查)
@@ -445,6 +448,8 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
 
     @app.get("/api/trade/deals")
     def deals(date: str = Query(default=""),
+              start: str = Query(default=""),
+              end: str = Query(default=""),
               limit: int = Query(default=200, ge=1, le=5000),
               offset: int = Query(default=0, ge=0)):
         """成交记录 (2026-07-30 交易记录 TAB)。date=YYYYMMDD 查历史
@@ -452,9 +457,17 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         (成交回调 + sync_reports 双向补记, traded_id 幂等)。
         2026-08-07: 卖出盈亏改读 trades.pnl_amount/pnl_pct 列 (book 成本法,
         与飞书成交卡/_on_trade 同源); 历史行 (上线前) 列=0 → 显示 None
-        (不回溯 SQL 现算 —— 旧口径不扣已卖部分会错位)。"""
+        (不回溯 SQL 现算 —— 旧口径不扣已卖部分会错位)。
+        2026-08-13: 新增 start/end=YYYYMMDD 闭区间范围查询 (分析页盈亏分布
+        需要全量历史; 此前缺省只给当日, 分布图永远凑不出买卖对)。"""
         try:
-            start, end = _day_range(date) if date else _today_range()
+            if start and end:
+                start_ts = _day_range(start)[0]
+                end_ts = _day_range(end)[1]  # end 当日 inclusive
+            elif date:
+                start_ts, end_ts = _day_range(date)
+            else:
+                start_ts, end_ts = _today_range()
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         ro = trade_app.store.open_readonly()
@@ -462,7 +475,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             cur = ro.execute(
                 "SELECT * FROM trades WHERE ts >= ? AND ts < ? "
                 "ORDER BY ts DESC, traded_id DESC LIMIT ? OFFSET ?",
-                (start, end, limit, offset))
+                (start_ts, end_ts, limit, offset))
             rows = _rows_to_dicts(cur)
             from trade.book import DIRECTION_SELL
             for r in rows:
@@ -625,17 +638,76 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
 
     @app.get("/api/trade/analysis/equity")
     def analysis_equity():
-        """逐日资产净值曲线 (分析 Tab 权益曲线数据源)。"""
+        """逐日资产净值曲线 (分析 Tab 权益曲线数据源)。
+        2026-08-13 Phase 2: 追加 "rolling" key (滚动指标, 形状同回测侧
+        rolling_metrics); 日级净值直接可算, 失败/空数据不加 key,
+        既有 "equity" 字段不动。"""
         rows = _daily_asset_rows()
         if not rows:
             return {"equity": []}
         equities = [r["total_asset"] for r in rows]
         dds = _calc_drawdowns(equities)
-        return {"equity": [
+        resp = {"equity": [
             {"date": rows[i]["date"], "equity": equities[i],
              "drawdown": dds[i]}
             for i in range(len(rows))
         ]}
+        try:
+            import pandas as pd
+            from backtest.metrics import MetricsCalculator
+            eq_df = pd.DataFrame({"date": [r["date"] for r in rows],
+                                  "equity": equities})
+            resp["rolling"] = MetricsCalculator.rolling_metrics(eq_df)
+        except Exception:
+            logger.warning("rolling 计算失败, 跳过该 key", exc_info=True)
+        return resp
+
+    @app.get("/api/trade/analysis/attribution")
+    def analysis_attribution():
+        """业绩归因 (2026-08-13 Phase 2): 全部历史卖出按行业/个股聚合。
+
+        归一口径: 只取 direction==SELL 且 pnl_amount 非空的行
+        (pnl 列=0 的历史行/盈亏恰为 0 的卖出视为无 pnl, 同 /deals 先例),
+        无 pnl 的卖出笔数计入 meta.skipped_no_pnl。
+        sector index 首次构建 ~17s, sync def 由 FastAPI 线程池跑, 不阻塞事件循环。
+        """
+        ro = trade_app.store.open_readonly()
+        try:
+            cur = ro.execute("SELECT code, direction, pnl_amount FROM trades")
+            rows = _rows_to_dicts(cur)
+        finally:
+            ro.close()
+        items = []
+        skipped = 0
+        for r in rows:
+            if r.get("direction") != DIRECTION_SELL:
+                continue
+            pnl = r.get("pnl_amount")
+            if pnl is None or float(pnl) == 0.0:
+                skipped += 1
+                continue
+            items.append({"code": str(r.get("code", "") or ""), "pnl": float(pnl)})
+        try:
+            from policy_kb.build_sector_index import build_stock_sector_index
+            sector_index = build_stock_sector_index()
+        except Exception:
+            logger.warning("build_stock_sector_index 失败, 全部归入未标", exc_info=True)
+            sector_index = {}
+        sector_names = {}
+        stock_names = {}
+        try:
+            from core.data_fetcher import DataFetcher
+            sector_names = {s.get("code", ""): s.get("name", "")
+                            for s in DataFetcher.get_sector_list()}
+            stock_names = DataFetcher.get_name_map() or {}
+        except Exception:
+            logger.warning("行业名/股票名加载失败, 名称兜底", exc_info=True)
+        from backtest.attribution import attribute_returns
+        result = attribute_returns(items, sector_index,
+                                   sector_names=sector_names,
+                                   stock_names=stock_names)
+        result["meta"] = {"skipped_no_pnl": skipped}
+        return result
 
     @app.get("/api/trade/analysis/daily_pnl")
     def analysis_daily_pnl(year: int = Query(default=0),

@@ -2,7 +2,7 @@
 
 锁住: 预埋全档位挂出 / 超涨停价档位跳过 / 数量取整与清仓档口径 /
 乐观标记 / 风控拒绝不预埋 / 撤单流水线 (锁→撤→ack→刷→卖) /
-买一价限价卖出 / 5s 未成交升级对手最优 / rebind_order_id 时序 / TTL 兜底。
+买一价限价卖出 / 5s 未成交升级逃生通道 (限价) / rebind_order_id 时序 / TTL 兜底。
 """
 import sys
 import time
@@ -16,7 +16,7 @@ from trade.book import (
     DIRECTION_BUY,
     DIRECTION_SELL,
     OS_CANCELED,
-    PRICE_TYPE_MARKET_PEER_FIRST,
+    PRICE_TYPE_LIMIT,
     PRICE_TYPE_SZ_5LEVEL_CANCEL,
     Book,
 )
@@ -347,8 +347,9 @@ def test_pending_fill_releases_lock(store, kill):
     assert not ex.lock.is_held(CODE)
 
 
-def test_pending_timeout_escalates_to_market(store, kill):
-    """5s 未成交 → 撤限价单, 升级对手最优。"""
+def test_pending_timeout_escalates_to_cage_limit(store, kill):
+    """5s 未成交 → 撤限价单, 沪市盘中升级笼内最凶限价 (买一×98%)。
+    2026-08-13: 沪市市价类报单被柜台禁用 (63596), 原对手最优分支移除。"""
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
@@ -361,7 +362,8 @@ def test_pending_timeout_escalates_to_market(store, kill):
     assert orders[first_oid]["status"] == OS_CANCELED
     new_oid = ex._pending[CODE]["order_id"]
     assert new_oid != first_oid
-    assert orders[new_oid]["price_type"] == PRICE_TYPE_MARKET_PEER_FIRST
+    assert orders[new_oid]["price_type"] == PRICE_TYPE_LIMIT
+    assert orders[new_oid]["price"] == 10.58  # 笼内最凶限价 10.8×0.98
     # audit 也留了升级痕迹
     kinds = {r[0] for r in store._conn.execute(
         "SELECT kind FROM audit").fetchall()}
@@ -369,7 +371,7 @@ def test_pending_timeout_escalates_to_market(store, kill):
 
 
 def test_pending_force_market_after(store, kill):
-    """≥14:57 未成交不等 5s, 直接升级 (沪市 → 对手最优)。"""
+    """≥14:57 未成交不等 5s, 直接升级 (沪市 → 限价@跌停)。"""
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
@@ -380,11 +382,16 @@ def test_pending_force_market_after(store, kill):
     kinds = {r[0] for r in store._conn.execute(
         "SELECT kind FROM audit").fetchall()}
     assert "exit_escalate" in kinds
+    orders = {o["order_id"]: o for o in ex._gw.query_orders()}
+    new_oid = ex._pending[CODE]["order_id"]
+    assert orders[new_oid]["price_type"] == PRICE_TYPE_LIMIT
+    assert orders[new_oid]["price"] == 9.0     # 跌停价 10×0.9
 
 
 def test_pending_escalation_sz_uses_limit_down(store, kill):
     """2026-07-27 实测修复: 深市逃生通道 → 限价@跌停价 (收盘竞价
-    只收限价单, 市价必废); 沪市对照组维持对手最优。"""
+    只收限价单, 市价必废); 沪市同口径限价@跌停 (2026-08-12 起,
+    市价类被柜台禁用)。"""
     SZ = "000001.SZ"
     book = Book()
     _seed_book(book, SZ, 1000)
@@ -400,7 +407,7 @@ def test_pending_escalation_sz_uses_limit_down(store, kill):
     new_oid = ex._pending[SZ]["order_id"]
     assert orders[new_oid]["price_type"] == 11      # LIMIT 非市价
     assert orders[new_oid]["price"] == 9.0          # 跌停价 10×0.9
-    # 沪市对照: 同流程 → 对手最优
+    # 沪市对照: 同流程 → 同口径限价@跌停 (市价类被柜台禁用 63596)
     book2 = Book()
     _seed_book(book2, CODE, 1000)
     ex2 = _make_executor(store, kill, book2, _gw_with(),
@@ -411,7 +418,8 @@ def test_pending_escalation_sz_uses_limit_down(store, kill):
     ex2.pending_check(now_ts=1001.0, now_hhmm="14:58")
     sh_orders = {o["order_id"]: o for o in ex2._gw.query_orders()}
     sh_new = sh_orders[ex2._pending[CODE]["order_id"]]
-    assert sh_new["price_type"] == PRICE_TYPE_MARKET_PEER_FIRST
+    assert sh_new["price_type"] == PRICE_TYPE_LIMIT
+    assert sh_new["price"] == 9.0              # 跌停价 10×0.9
 
 
 def test_pending_timeout_sz_uses_5level_cancel(store, kill):

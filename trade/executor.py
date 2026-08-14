@@ -3,7 +3,10 @@
 设计意图:
     静态价位规则 (阶梯止盈) → 预埋限价单: 排队时间优先、零监控延迟、
     程序崩溃照常在券商端成交。动态规则触发后走撤单流水线:
-    锁 → 撤 → 等 ack → 刷 → 买一价限价卖 → 5s 未成交/≥14:57 对手最优。
+    锁 → 撤 → 等 ack → 刷 → 买一价限价卖 → 5s 未成交/≥14:57 升级逃生
+    通道 (限价): 尾盘两市限价@跌停, 盘中深市五档即成剩余撤销、沪市
+    笼内最凶限价 (买一×98%); 市价类报单被柜台禁用 (63596), 对手最优
+    仅为无价格数据时的 fallback。
     买一锚定天然避开 2% 价格笼子;多级追价移 P3 (无滑点数据不猜)。
 """
 
@@ -31,7 +34,7 @@ _logger = get_logger("trade.executor")
 # 按实测分布重定为 5s (覆盖 ~95% 正常 ack 延迟)
 _CANCEL_ACK_TIMEOUT_SEC = 5.0
 _CANCEL_ACK_POLL_SEC = 0.1
-# 卖出单挂出后超过该秒数未成交 → 升级对手最优
+# 卖出单挂出后超过该秒数未成交 → 升级逃生通道 (限价)
 _PENDING_FILL_TIMEOUT_SEC = 5.0
 
 # 成交通知用: monitor _evaluate 的 reason 串前缀 → 中文策略名。
@@ -78,9 +81,10 @@ def round_price(x: float) -> float:
 
 
 def _is_sz(code: str) -> bool:
-    """深市判定 (2026-07-27 实测驱动): 深市 14:57-15:00 收盘集合竞价
-    **不接受市价单** (五张深市"对手最优"全废单), 沪市连续竞价到
-    15:00 可市价单 —— 尾盘价格类型必须市场感知。"""
+    """深市判定 (2026-07-27 实测驱动, 2026-08-01 审计纠正): 两市尾盘
+    14:57-15:00 都是收盘集合竞价, **都不接受市价单** (深市五张"对手
+    最优"全废单; 沪市 2018 年起尾盘也是集合竞价, 且市价类报单被柜台
+    禁用, 废单码 63596) —— 尾盘价格类型必须市场感知, 两市都走限价。"""
     return code.split(".")[-1].upper() == "SZ"
 
 
@@ -410,7 +414,7 @@ class Executor:
                 "exit_escalate", f"{code} 卖单未成交 ({why}), 升级逃生通道",
                 {"code": code, "old_order_id": p["order_id"], "qty": can_use})
             del self._pending[code]  # 旧登记先销, _sell 成功会重建 + rebind 锁
-            # 市场感知逃生通道 (三象限):
+            # 市场感知逃生通道 (四象限, 2026-08-13 起沪市也全限价):
             #   尾盘 force + .SZ (收盘集合竞价 14:57+): 限价@跌停价。单一价格
             #         撮合, 挂跌停=最大成交优先权, 成交价仍是收盘价, 不吃亏。
             #         无昨收算不出跌停 → fallback 对手最优 (试一下比不发强)。
@@ -420,8 +424,16 @@ class Executor:
             #         对手最优是单档 FOK, 盘口量不够整单撤; 五档 IOC 扫买1-买5
             #         尽量成交剩余才撤, 成交概率最高。注: SZ_5LEVEL_CANCEL 实盘
             #         未实测, 上线需小单验证柜台表现。
-            #   .SH (盘中+尾盘): 对手最优。实盘已验证成交 (603689.SH 全成),
-            #         沪市连续竞价到 15:00 接受市价类申报。
+            #   尾盘 force + .SH (2026-08-13 新增): 与深市完全同口径限价@跌停。
+            #         沪市 2018 年起尾盘也是收盘集合竞价 (14:57-15:00 只收
+            #         限价单), 且市价类报单被柜台禁用 (废单码 63596, 沪市 7/7
+            #         全废); 挂跌停=收盘竞价最大成交优先权, 成交价仍是收盘价,
+            #         不吃亏。无昨收 → fallback 对手最优 (同深市)。
+            #   盘中超时 + .SH (2026-08-13 新增): 笼子内最凶限价 = 买一价×98%
+            #         (主板 2% 价格笼子的卖出下限, 笼内最 aggressive 的合法价;
+            #         深市已实测盘中挂跌停撞笼子 88009 废单, 沪市同理不能挂
+            #         跌停)。无盘口 quote → fallback 对手最优。
+            #   fallback 对手最优仅为无价格数据时的最后手段。
             if force and _is_sz(code):
                 prev_close = self._prev_close(code)
                 if prev_close:
@@ -436,13 +448,40 @@ class Executor:
                     ok = self._sell(code, can_use, 0.0,
                                     PRICE_TYPE_MARKET_PEER_FIRST,
                                     p["reason"], "exit_sell_market")
-            elif (not force) and _is_sz(code):
+            elif force:
+                # 沪市尾盘: 与深市同口径限价@跌停 (沪市 2018 起尾盘也是
+                # 收盘集合竞价, 市价类报单被柜台禁用 63596)
+                prev_close = self._prev_close(code)
+                if prev_close:
+                    limit_down = round_price(
+                        prev_close * (1 - limit_ratio(code, self._st(code))))
+                    ok = self._sell(code, can_use, limit_down, PRICE_TYPE_LIMIT,
+                                    p["reason"], "exit_sell_market")
+                else:
+                    self._store.write_audit(
+                        "exit_escalate", f"{code} 沪市无昨收, 跌停价算不出,"
+                        " 仍发对手最优", {"code": code})
+                    ok = self._sell(code, can_use, 0.0,
+                                    PRICE_TYPE_MARKET_PEER_FIRST,
+                                    p["reason"], "exit_sell_market")
+            elif _is_sz(code):
                 ok = self._sell(code, can_use, 0.0, PRICE_TYPE_SZ_5LEVEL_CANCEL,
                                 p["reason"], "exit_sell_market")
             else:
-                # 沪市对手最优, 市价类申报价格字段无意义传 0
-                ok = self._sell(code, can_use, 0.0, PRICE_TYPE_MARKET_PEER_FIRST,
-                                p["reason"], "exit_sell_market")
+                # 沪市盘中超时: 笼子内最凶限价 (买一×98%), 不挂跌停 (撞 2%
+                # 价格笼子废单, 深市 88009 已实测)
+                quote = self._get_quote(code)
+                if quote and quote.get("bid1"):
+                    cage_floor = round_price(float(quote["bid1"]) * 0.98)
+                    ok = self._sell(code, can_use, cage_floor, PRICE_TYPE_LIMIT,
+                                    p["reason"], "exit_sell_market")
+                else:
+                    self._store.write_audit(
+                        "exit_escalate", f"{code} 沪市无盘口, 笼内限价算不出,"
+                        " 仍发对手最优", {"code": code})
+                    ok = self._sell(code, can_use, 0.0,
+                                    PRICE_TYPE_MARKET_PEER_FIRST,
+                                    p["reason"], "exit_sell_market")
             if not ok:
                 # 升级卖出失败 (如风控拒绝): 放锁, 由下一轮监控重新触发
                 self.lock.release(code)

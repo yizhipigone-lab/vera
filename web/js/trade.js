@@ -14,7 +14,25 @@ function post(u, body, signal) {
   return fetch(BASE + u, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}), signal: signal,
-  }).then(function (r) { return r.json(); });
+  }).then(function (r) {
+    // 2026-08-13 修复: 后端 4xx/5xx (如代码格式 422) 也返回 JSON,
+    // 旧实现不查 r.ok, 把校验失败静默显示成"命令已受理", 实际从未下单。
+    return r.json().then(function (d) {
+      if (!r.ok) {
+        var msg = 'HTTP ' + r.status;
+        if (d && d.detail) {
+          msg = (typeof d.detail === 'string') ? d.detail
+            : d.detail.map(function (e) {
+                return (e.loc ? e.loc.join('.') + ': ' : '') + e.msg;
+              }).join('; ');
+        }
+        var err = new Error(msg);
+        err.serverMsg = msg;
+        throw err;
+      }
+      return d;
+    });
+  });
 }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -164,38 +182,65 @@ function renderPositions(d) {
     var dayAmt = (p.day_chg_amt === null || p.day_chg_amt === undefined) ? '—'
       : (p.day_chg_amt > 0 ? '+' : '') + p.day_chg_amt.toLocaleString('zh-CN', {maximumFractionDigits: 0});
     // 2026-07-27 裁决③: ETF 行灰化 + "不管理"徽标, 无卖出按钮
-    var rowStyle = p.managed === false ? ' style="opacity:.5"' : '';
-    var etfTag = p.managed === false
-      ? ' <span class="trade-badge wait">ETF·不管理</span>' : '';
-    html += '<tr' + rowStyle + '><td>' + esc(p.code) + etfTag + '</td>'
+    // 2026-08-11: 已平仓 (volume=0) 行同样灰化 + "已平仓"徽标 —— 后端已把
+    //   avg_cost/pnl/pnl_pct/hold_days 覆盖成 买入均价/已实现盈亏/已实现%/持有天数,
+    //   数量列显示买入量, 现价列显示卖出均价, 入场时间追加出场时间 (用户裁决:
+    //   留在持仓表灰显展示真实盈亏, 不再是一堆 0)
+    var dim = p.managed === false || p.closed === true;
+    var rowStyle = dim ? ' style="opacity:.5"' : '';
+    var tag = p.managed === false
+      ? ' <span class="trade-badge wait">ETF·不管理</span>'
+      : (p.closed === true ? ' <span class="trade-badge wait">已平仓</span>' : '');
+    var qtyCell = p.closed === true
+      ? (p.buy_qty != null ? p.buy_qty + '<span style="color:var(--text2);font-size:10px"> 已平</span>' : '0')
+      : p.volume;
+    var priceCell = p.closed === true
+      ? (p.sell_avg != null ? p.sell_avg.toFixed(2) : '—')
+      : (p.last === null ? '—' : p.last.toFixed(2));
+    var entryCell = p.entry_ts ? fmtTs(p.entry_ts) : '—';
+    if (p.closed === true && p.exit_ts) {
+      entryCell += '<div style="color:var(--text2)">→ ' + fmtTs(p.exit_ts) + '</div>';
+    }
+    html += '<tr' + rowStyle + '><td>' + esc(p.code) + tag + '</td>'
       + '<td>' + esc(p.name || '—') + '</td>'
-      + '<td>' + p.volume + '</td><td>' + p.can_use
-      + '</td><td>' + p.avg_cost.toFixed(2) + '</td><td>' + (p.last === null ? '—' : p.last.toFixed(2))
+      + '<td>' + qtyCell + '</td><td>' + (p.closed === true ? '—' : p.can_use)
+      + '</td><td>' + (p.avg_cost === null ? '—' : p.avg_cost.toFixed(2))
+      + '</td><td>' + priceCell
       + '</td><td style="' + dayColor + '">' + dayPct
       + '</td><td style="' + dayColor + '">' + dayAmt
       + '</td><td>' + (p.market_value === null ? '—' : p.market_value.toLocaleString('zh-CN', {maximumFractionDigits: 0}))
       + '</td><td style="' + pnlColor + '">' + pnl
       + '</td><td style="' + pnlColor + '">' + (p.pnl_pct === null ? '—' : (p.pnl_pct > 0 ? '+' : '') + p.pnl_pct.toFixed(2) + '%')
-      + '</td><td style="font-size:10px">' + (p.entry_ts ? fmtTs(p.entry_ts) : '—')
+      + '</td><td style="font-size:10px">' + entryCell
       + '</td><td>' + (p.hold_days === null ? '—' : p.hold_days + ' 天')
       + '</td><td>'
       + (p.tiers_done.length ? p.tiers_done.join(',') : '—')
-      + '</td><td>' + (p.managed === false ? ''
+      + '</td><td>' + (dim ? ''
       : '<button class="trade-sell-btn" data-code="' + esc(p.code) + '">卖出</button>') + '</td></tr>';
   });
   html += '</table>';
   // 已平仓 (整周期闭环: 买入量=卖出量; 出场时间 = 最后一笔卖出)
-  if (d.closed && d.closed.length) {
-    html += '<div style="margin-top:8px;color:var(--text2);font-size:11px">已平仓</div>'
+  // 2026-08-11: 本进程卖光的票已在上方持仓表灰显行展示真实盈亏, 这里只兜底
+  // 已不在持仓表的历史平仓 (重启后 book 清空幽灵, 此区仍可看历史), 去重避免重复
+  var _posCodes = {};
+  (d.positions || []).forEach(function (p) { _posCodes[p.code] = 1; });
+  var _histClosed = (d.closed || []).filter(function (c) { return !_posCodes[c.code]; });
+  if (_histClosed.length) {
+    html += '<div style="margin-top:8px;color:var(--text2);font-size:11px">历史已平仓（已不在持仓）</div>'
       + '<table class="td-table"><tr><th>代码</th><th>简称</th><th>数量</th>'
-      + '<th>入场时间</th><th>出场时间</th><th>已实现盈亏</th></tr>';
-    d.closed.forEach(function (c) {
+      + '<th>买入均价</th><th>卖出均价</th><th>已实现盈亏</th><th>盈亏%</th>'
+      + '<th>持仓天数</th><th>入场时间</th><th>出场时间</th></tr>';
+    _histClosed.forEach(function (c) {
       var cColor = c.realized_pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
       html += '<tr><td>' + esc(c.code) + '</td><td>' + esc(c.name || '—') + '</td>'
         + '<td>' + c.qty + '</td>'
+        + '<td>' + (c.buy_avg != null ? c.buy_avg.toFixed(2) : '—') + '</td>'
+        + '<td>' + (c.sell_avg != null ? c.sell_avg.toFixed(2) : '—') + '</td>'
+        + '<td style="' + cColor + '">' + (c.realized_pnl >= 0 ? '+' : '') + c.realized_pnl.toFixed(2) + '</td>'
+        + '<td style="' + cColor + '">' + (c.realized_pnl_pct != null ? (c.realized_pnl_pct > 0 ? '+' : '') + c.realized_pnl_pct.toFixed(2) + '%' : '—') + '</td>'
+        + '<td>' + (c.hold_days != null ? c.hold_days + ' 天' : '—') + '</td>'
         + '<td style="font-size:10px">' + fmtTs(c.entry_ts) + '</td>'
-        + '<td style="font-size:10px">' + fmtTs(c.exit_ts) + '</td>'
-        + '<td style="' + cColor + '">' + (c.realized_pnl >= 0 ? '+' : '') + c.realized_pnl.toFixed(2) + '</td></tr>';
+        + '<td style="font-size:10px">' + fmtTs(c.exit_ts) + '</td></tr>';
     });
     html += '</table>';
   }
@@ -203,9 +248,12 @@ function renderPositions(d) {
   box.querySelectorAll('.trade-sell-btn').forEach(function (b) {
     b.addEventListener('click', function () {
       var code = b.getAttribute('data-code');
-      if (!confirm('确认卖出 ' + code + ' 全部可用持仓?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级对手最优)')) return;
+      if (!confirm('确认卖出 ' + code + ' 全部可用持仓?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级逃生通道 (限价))')) return;
       // 审计M12修复: 失败提示 + 防连点, 与买入路径一致
-      cmd(b, '/api/trade/sell', { code: code }, '卖出命令已受理, 结果见审计日志');
+      cmd(b, '/api/trade/sell', { code: code }, '卖出命令已受理, 等待执行结果…',
+        'tdBuyHint', function () {
+          watchCmdResult(code, document.getElementById('tdBuyHint'));
+        });
     });
   });
   // 2026-08-03: 可排序表头点击 —— 同列反转方向, 不同列切列且默认升序
@@ -250,6 +298,8 @@ function renderOrders(d) {
   }
   // 2026-07-30: 委托表加撤单按钮 (用户要求) — 终态 (部撤53/已撤/已成/废单) 不可撤
   // 2026-08-07 (用户要求): 状态说明列 —— 原始代码是 xtquant 状态码, 小白看不懂
+  // 2026-08-10 (用户要求): 时间列 = 下单时刻 created_ts (不再用 updated_ts ——
+  // 那是最后一次对账回写时刻, 已成单曾显示成 15:10 同步时间而非真实委托时间)
   var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
     + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th>状态说明</th><th></th></tr>';
   d.orders.forEach(function (o) {
@@ -259,7 +309,7 @@ function renderOrders(d) {
     var canCancel = (st === 50 || st === 51 || st === 55);   // 已报/待撤/部成 可撤
     // 2026-07-30: remark 为空 = 手工单 (券商端/手机端委托, 同步认领进表)
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
-    html += '<tr><td>' + fmtTs(o.updated_ts || o.created_ts) + '</td><td>' + remark + '</td><td>'
+    html += '<tr><td>' + fmtTs(o.created_ts || o.updated_ts) + '</td><td>' + remark + '</td><td>'
       + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + st + '</td><td>' + orderStatusHtml(st, o.status_msg || '') + '</td><td>'
@@ -358,7 +408,7 @@ function renderHistoryOrders(d) {
     + '<th>简称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th>状态说明</th></tr>';
   d.orders.forEach(function (o) {
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
-    html += '<tr><td>' + fmtTs(o.updated_ts || o.created_ts) + '</td><td>' + remark + '</td><td>'
+    html += '<tr><td>' + fmtTs(o.created_ts || o.updated_ts) + '</td><td>' + remark + '</td><td>'
       + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td><td>'
@@ -495,20 +545,65 @@ window.tradePageLeave = function () {
 // 请求期间按钮 disable 防连点, 4s 超时
 // 2026-08-01: hintId 可选 —— 反馈写就近 hint (买/卖/预埋 tdBuyHint),
 // 默认 tdHint (急停/尾盘选股); renderStatus 已改为不覆盖非急停期的 tdHint
-function cmd(btn, url, body, okMsg, hintId) {
+function cmd(btn, url, body, okMsg, hintId, onAccepted) {
   btn.disabled = true;
   var hintEl = document.getElementById(hintId || 'tdHint');
   var ctl = new AbortController();
   var timer = setTimeout(function () { ctl.abort(); }, 4000);
   post(url, body, ctl.signal).then(function () {
     hintEl.textContent = okMsg;
+    if (onAccepted) onAccepted();
     refresh();
-  }).catch(function () {
-    hintEl.textContent = '命令发送失败: 交易服务 (8081) 不可达';
+  }).catch(function (e) {
+    hintEl.textContent = (e && e.serverMsg)
+      ? ('后端拒绝: ' + e.serverMsg)
+      : '命令发送失败: 交易服务 (8081) 不可达';
   }).finally(function () {
     clearTimeout(timer);
     btn.disabled = false;
   });
+}
+
+// 2026-08-13 (用户要求): 委托结果回显 —— "已受理"只表示命令进了队列,
+// 过闸/下单是异步的。受理后轮询审计日志 (1s×10), 把该代码的真实结果
+// (下单成功/风控拒绝/无行情/下单报错) 直接显示在按钮旁, 不用翻审计 Tab。
+var CMD_RESULT_KINDS = {
+  manual_buy: '买入已下单',
+  buy_fail_closed: '买入被拒',
+  risk_reject: '风控拒绝',
+  exit_sell: '卖出已下单',
+  exit_risk_reject: '卖出被拒',
+  exit_skip: '卖出被拒',
+  exit_fail_closed: '卖出被拒',
+  exit_lock_fail: '卖出未执行',
+  order_error: '下单报错',
+};
+
+function watchCmdResult(code, hintEl) {
+  var since = Date.now() / 1000 - 3;  // 3s 余量吸收前后端时钟差
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    if (tries > 10) { clearInterval(timer); return; }
+    get('/api/trade/audits?limit=20').then(function (d) {
+      var list = (d && d.audits) || [];
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i];
+        if (!CMD_RESULT_KINDS[a.kind] || a.ts < since) continue;
+        var detail = {};
+        try { detail = JSON.parse(a.detail_json || '{}'); } catch (e) {}
+        if (detail.code && detail.code !== code) continue;
+        clearInterval(timer);
+        var msg = a.message;
+        if (a.kind === 'manual_buy' && detail.order_id) {
+          msg += ' (委托号 ' + detail.order_id + ')';
+        }
+        hintEl.textContent = CMD_RESULT_KINDS[a.kind] + ' — ' + msg;
+        refresh();
+        return;
+      }
+    }).catch(function () {});
+  }, 1000);
 }
 
 document.getElementById('tdKillBtn').addEventListener('click', function () {
@@ -523,25 +618,33 @@ document.getElementById('tdKillBtn').addEventListener('click', function () {
 });
 
 document.getElementById('tdBuyBtn').addEventListener('click', function () {
-  var code = document.getElementById('tdBuyCode').value.trim();
+  var code = document.getElementById('tdBuyCode').value.trim().toUpperCase();
   var qty = parseInt(document.getElementById('tdBuyQty').value, 10);
   var priceRaw = document.getElementById('tdBuyPrice').value.trim();
   var hint = document.getElementById('tdBuyHint');
   if (!code) { hint.textContent = '请填代码'; return; }
+  // 2026-08-13: 与后端 _CODE_PATTERN 一致, 提前拦截 (否则 422 被吞成"已受理")
+  if (!/^\d{6}\.(SH|SZ|BJ)$/.test(code)) {
+    hint.textContent = '代码格式应为 6位数字.SH/SZ/BJ, 如 600519.SH'; return;
+  }
   if (!qty || qty <= 0 || qty % 100 !== 0) { hint.textContent = '数量必须是 100 的整数倍'; return; }
   var body = { code: code, qty: qty };
   if (priceRaw) body.price = parseFloat(priceRaw);
   if (!confirm('待确认买入: ' + code + ' ' + qty + ' 股'
       + (body.price ? ' @' + body.price : ' (最新价)') + '\n将过风控闸门后下单, 确认?')) return;
-  cmd(this, '/api/trade/buy', body, '买入命令已受理 (过闸结果见审计日志)', 'tdBuyHint');
+  cmd(this, '/api/trade/buy', body, '买入命令已受理, 等待过闸结果…', 'tdBuyHint',
+    function () { watchCmdResult(code, hint); });
 });
 
 // 2026-07-30: 配套手工卖出 — 复用代码+数量输入框, 校验可用后走 /api/trade/sell
 document.getElementById('tdSellBtn').addEventListener('click', function () {
-  var code = document.getElementById('tdBuyCode').value.trim();
+  var code = document.getElementById('tdBuyCode').value.trim().toUpperCase();
   var qtyRaw = document.getElementById('tdBuyQty').value.trim();
   var hint = document.getElementById('tdBuyHint');
   if (!code) { hint.textContent = '请填代码'; return; }
+  if (!/^\d{6}\.(SH|SZ|BJ)$/.test(code)) {
+    hint.textContent = '代码格式应为 6位数字.SH/SZ/BJ, 如 600519.SH'; return;
+  }
   var pos = (window._lastPositions || []).find(function (p) { return p.code === code; });
   var canUse = pos ? pos.can_use : 0;
   var body = { code: code };
@@ -557,8 +660,9 @@ document.getElementById('tdSellBtn').addEventListener('click', function () {
     body.qty = qty;
     qtyText = qty + ' 股 (可用 ' + canUse + ' 股)';
   }
-  if (!confirm('确认卖出 ' + code + ' ' + qtyText + '?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级对手最优)')) return;
-  cmd(this, '/api/trade/sell', body, '卖出命令已受理, 结果见审计日志', 'tdBuyHint');
+  if (!confirm('确认卖出 ' + code + ' ' + qtyText + '?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级逃生通道 (限价))')) return;
+  cmd(this, '/api/trade/sell', body, '卖出命令已受理, 等待执行结果…', 'tdBuyHint',
+    function () { watchCmdResult(code, hint); });
 });
 
 document.getElementById('tdLadderBtn').addEventListener('click', function () {

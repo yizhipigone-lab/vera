@@ -92,7 +92,7 @@ async function tryRecoverAbortedResult(cfg, originalErr) {
     }
 
     var msg = originalErr && originalErr.name === 'AbortError'
-      ? '请求超时（30分钟），后端未在超时内落盘。请缩小回测区间或稍后到历史结果中查看。'
+      ? '请求超时（2小时），后端未在超时内落盘。请缩小回测区间或稍后到历史结果中查看。'
       : (originalErr && originalErr.message) || '未知错误';
     deps.addLog('网络错误: ' + msg, 'error');
     deps.showToast('网络错误: ' + msg, 'error');

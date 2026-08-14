@@ -63,10 +63,21 @@ async def research_chat(body: dict):
     (单用户, timeout 180s), 大脑崩了返 success=False 不影响其他页。
     """
     from brain.claude_cli import ask_brain
+    from brain import fastpath
     question, err = _extract_question(body)
     if err:
         return err
     try:
+        # 2026-08-13 提速: 个股诊断→大盘/盘面 依次走快路径（单次 LLM 成文），
+        # 返 None 回落原 agent loop
+        fast = await fastpath.try_stock_diagnosis(
+            question, channel=_channel_of(body), timeout=300)
+        if fast is not None:
+            return fast
+        fast = await fastpath.try_market_brief(
+            question, channel=_channel_of(body), timeout=300)
+        if fast is not None:
+            return fast
         return await ask_brain(question, timeout=300, max_turns=20,
                                channel=_channel_of(body))
     except Exception as e:  # 松耦合兜底: 大脑任何异常不炸 server
@@ -84,6 +95,7 @@ async def research_chat_stream(body: dict):
     from fastapi.responses import StreamingResponse
 
     from brain.claude_cli import ask_brain
+    from brain import fastpath
 
     question, err = _extract_question(body)
     if err:
@@ -93,10 +105,28 @@ async def research_chat_stream(body: dict):
         queue: _aio.Queue = _aio.Queue()
         async def on_line(line: str):
             await queue.put(line)
-        task = _aio.create_task(ask_brain(
-            question, timeout=480, max_turns=40,
-            channel=_channel_of(body),
-            on_line=on_line, archive=False))
+
+        async def _run():
+            # 2026-08-13 提速: 个股诊断→大盘/盘面 依次走快路径（流式同样生效），
+            # 返 None 回落原 agent loop
+            fast = await fastpath.try_stock_diagnosis(
+                question, channel=_channel_of(body),
+                on_line=on_line, timeout=480)
+            if fast is not None:
+                return fast
+            fast = await fastpath.try_market_brief(
+                question, channel=_channel_of(body),
+                on_line=on_line, timeout=480)
+            if fast is not None:
+                return fast
+            return await ask_brain(question, timeout=480, max_turns=40,
+                                   channel=_channel_of(body),
+                                   on_line=on_line)
+
+        task = _aio.create_task(_run())
+        # 2026-08-12: 归档恢复 (原 archive=False 导致研究 TAB 对话 08-01 起断流)。
+        # 流式分支现在会累积全文填进 result["answer"], 归档有内容可写
+        # (claude_cli.py 流式收尾: result 事件全文 / 增量块拼接兜底)。
         try:
             while True:
                 try:

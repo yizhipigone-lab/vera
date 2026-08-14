@@ -415,6 +415,11 @@ class Reconciler:
                 "price": float(o.get("price", 0.0)),
                 "qty": int(o.get("qty", 0)), "filled_qty": filled,
                 "status": status,
+                # 2026-08-10: QMT 柜台委托时间 (order_time) 作 created_ts —
+                # 新插入的行 (券商端手工单/重启后首见) 时间列显示真实
+                # 委托时刻而非同步时刻; 已存在的行 ON CONFLICT 不动
+                # created_ts (save_order upsert 语义), 本地原值保留
+                "created_ts": ts or None,
                 # 2026-08-07: 废单原因随回写落库 (XtOrder.status_msg)
                 "status_msg": str(o.get("status_msg", "") or "")})
             updated += 1

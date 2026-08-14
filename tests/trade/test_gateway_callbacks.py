@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from trade.book import DIRECTION_BUY
+from trade.book import DIRECTION_BUY, OS_JUNK, OS_REPORTED, OS_SUCCEEDED
 from trade.config import TradeConfig
 from trade.gateway import RealGateway, _build_trader_callback
 from trade_main import TradeApp
@@ -164,3 +164,56 @@ def test_order_error_event_lands_in_audit(app):
     assert len(rows) == 1
     assert "无科创板交易权限" in rows[0][1]
     assert "2014314579" in rows[0][1]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4. trade_main: EVENT_ORDER_ERROR → 订单推进废单终态 (2026-08-10,
+#    0810 事件: 收盘后 15 笔买入被柜台拒, 页面却永远停"已报")
+# ═══════════════════════════════════════════════════════════════
+
+def _place_order(app, oid: str, status: int = OS_REPORTED) -> None:
+    """在 book + orders 表登记一张在途单 (模拟下单路径已记的已报)。"""
+    app.book.apply_order_update(
+        oid, status, code=CODE, direction=DIRECTION_BUY,
+        price=10.0, qty=100, remark="V0810-001B")
+    app.store.save_order({
+        "order_id": oid, "remark": "V0810-001B", "code": CODE,
+        "direction": DIRECTION_BUY, "price": 10.0, "qty": 100,
+        "status": status})
+
+
+def test_order_error_marks_order_junk(app):
+    """在途单收到拒单回报 → book 与 orders 表都进废单 (57),
+    status_msg 带拒单原因原文 (页面状态说明列直接可见)。"""
+    _place_order(app, "672137227")
+    app._on_order_error({"order_id": "672137227", "error_id": -61,
+                         "error_msg": "当前时间不允许交易该证券业务"})
+    assert app.book.snapshot()["orders"]["672137227"].status == OS_JUNK
+    row = app.store._conn.execute(
+        "SELECT status, status_msg FROM orders WHERE order_id='672137227'"
+    ).fetchone()
+    assert row[0] == OS_JUNK
+    assert "当前时间不允许交易该证券业务" in row[1]
+
+
+def test_order_error_unknown_order_only_audits(app):
+    """非本系统订单 (券商端手工单) 的拒单回报: 只落 audit,
+    不得在 book/orders 表凭空造单。"""
+    app._on_order_error({"order_id": "999999999", "error_id": -61,
+                         "error_msg": "当前时间不允许交易该证券业务"})
+    assert "999999999" not in app.book.snapshot()["orders"]
+    assert app.store._conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE order_id='999999999'"
+    ).fetchone()[0] == 0
+
+
+def test_order_error_does_not_override_terminal(app):
+    """终态单 (状态回报已先到的竞态) 不被拒单回报盖回废单。"""
+    _place_order(app, "672137228", status=OS_SUCCEEDED)
+    app._on_order_error({"order_id": "672137228", "error_id": -61,
+                         "error_msg": "当前时间不允许交易该证券业务"})
+    assert app.book.snapshot()["orders"]["672137228"].status == OS_SUCCEEDED
+    row = app.store._conn.execute(
+        "SELECT status FROM orders WHERE order_id='672137228'"
+    ).fetchone()
+    assert row[0] == OS_SUCCEEDED

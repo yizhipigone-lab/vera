@@ -151,6 +151,12 @@ class BacktestEngine:
         # 2026-07-23: 卖出冷却 (交易日), 全清仓后 N 个交易日内禁止同票重新买入。
         # 默认 0=关闭 (零行为变化); run 时 × bpday 转 bar 数传给 loop。
         self.sell_cooldown_days = int(config.get("sell_cooldown_days", 0))
+        # 2026-08-08: 总仓位上限 (持仓市值/总权益 >= 此值停开新仓; 1.0=不约束, 默认零变化)
+        self.max_total_exposure = float(config.get("max_total_exposure", 1.0))
+        # 2026-08-08: 全局连亏冷却 — 连亏 n 笔停开新仓 days 交易日 (n<=0=关闭)
+        _ls = config.get("loss_streak_halt", {}) or {}
+        self.loss_streak_halt_n = int(_ls.get("n", 0))
+        self.loss_streak_halt_days = int(_ls.get("days", 0))
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -375,6 +381,9 @@ class BacktestEngine:
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
             trailing_confirm=str(trail.get("confirm", "intraday")),
             sell_cooldown_bars=self.sell_cooldown_days * bpday,
+            max_total_exposure=float(self.max_total_exposure),
+            loss_streak_halt_n=self.loss_streak_halt_n,
+            loss_streak_halt_bars=self.loss_streak_halt_days * bpday,
         )
         self._last_loop = loop
         equity_arr, raw_trades = loop.run(

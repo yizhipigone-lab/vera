@@ -78,6 +78,37 @@ def test_save_order_roundtrip_and_upsert(store):
     assert rows == [(56, 100, "V0726-1A")]
 
 
+def test_save_order_created_ts_conflict_rules(store):
+    """2026-08-10 (泰山石油事件): QMT 复用 order_id 时,
+    显式提供 created_ts (新单下单时刻/QMT order_time) 必须覆盖旧值;
+    纯状态回写 (不显式提供) 不得把 created_ts 盖成回写时刻。"""
+    old_ts = 1000.0
+    store.save_order({"order_id": "O9", "code": "000721.SZ", "direction": 23,
+                      "price": 5.0, "qty": 100, "status": 56,
+                      "created_ts": old_ts})
+    # 纯状态回写 (如 _on_order_error 不传 created_ts): 保留原创建时间
+    store.save_order({"order_id": "O9", "code": "000721.SZ", "direction": 23,
+                      "price": 5.0, "qty": 100, "status": 57})
+    row = store._conn.execute(
+        "SELECT created_ts FROM orders WHERE order_id='O9'").fetchone()
+    assert row[0] == old_ts
+    # order_id 复用: 新单显式带下单时刻 → 覆盖旧值
+    new_ts = 2000.0
+    store.save_order({"order_id": "O9", "code": "000554.SZ", "direction": 24,
+                      "price": 6.43, "qty": 1500, "status": 50,
+                      "created_ts": new_ts})
+    row = store._conn.execute(
+        "SELECT created_ts, code FROM orders WHERE order_id='O9'").fetchone()
+    assert row == (new_ts, "000554.SZ")
+    # 之后再来的纯状态回写: 不动新创建时间
+    store.save_order({"order_id": "O9", "code": "000554.SZ", "direction": 24,
+                      "price": 6.43, "qty": 1500, "status": 56,
+                      "filled_qty": 1500})
+    row = store._conn.execute(
+        "SELECT created_ts FROM orders WHERE order_id='O9'").fetchone()
+    assert row[0] == new_ts
+
+
 def test_save_trade_roundtrip(store):
     store.save_trade({"traded_id": "T1", "order_id": "O1", "code": "600519.SH",
                       "direction": 23, "price": 1700.0, "qty": 100, "ts": 1.0})

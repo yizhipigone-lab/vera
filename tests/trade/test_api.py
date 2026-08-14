@@ -321,6 +321,31 @@ def test_deals_invalid_date_422(client):
     assert c.get("/api/trade/deals?date=abc").status_code == 422
 
 
+def test_deals_start_end_range(client):
+    """2026-08-13: start/end=YYYYMMDD 闭区间范围查询 (分析页盈亏分布要全量历史);
+    只传一个落回当日; 非法格式 422。"""
+    import datetime as _dt
+    c, app = client
+    today = _dt.datetime.now()
+    old = (today - _dt.timedelta(days=5)).strftime("%Y%m%d")
+    old_ts = _dt.datetime.strptime(old, "%Y%m%d").timestamp() + 3600
+    app.store.save_trade({"traded_id": "T-OLD", "order_id": "O-OLD",
+                          "code": SH, "direction": 23, "price": 10.0,
+                          "qty": 100, "ts": old_ts})
+    app.store.save_trade({"traded_id": "T-NEW", "order_id": "O-NEW",
+                          "code": SH, "direction": 24, "price": 11.0,
+                          "qty": 100, "ts": time.time()})
+    today_s = today.strftime("%Y%m%d")
+    d = c.get(f"/api/trade/deals?start={old}&end={today_s}").json()
+    assert {r["traded_id"] for r in d["deals"]} == {"T-OLD", "T-NEW"}
+    # end 当日 inclusive: end=昨天 → 只有旧的那笔
+    yesterday = (today - _dt.timedelta(days=1)).strftime("%Y%m%d")
+    d2 = c.get(f"/api/trade/deals?start={old}&end={yesterday}").json()
+    assert [r["traded_id"] for r in d2["deals"]] == ["T-OLD"]
+    # 非法格式 422
+    assert c.get("/api/trade/deals?start=abc&end=20260813").status_code == 422
+
+
 def test_orders_history_date_param(client):
     """委托记录: date=YYYYMMDD 查历史; 非法日期 422。"""
     import datetime as _dt
