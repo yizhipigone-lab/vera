@@ -221,6 +221,12 @@ class Executor:
             self._store.write_audit(
                 "ladder_skip_disabled", "阶梯止盈已关闭, 不挂预埋单", {})
             return []
+        # 2026-08-16 卖出总开关: 关闭时不挂任何预埋单 (不新增卖出委托),
+        # 已挂出的预埋单不动。
+        if not self._cfg.auto_sell_enabled:
+            self._store.write_audit(
+                "ladder_skip_disabled", "卖出总开关已关闭, 不挂预埋单", {})
+            return []
         self._sync_can_use()
         placed: list[str] = []
         for code, pos in sorted(self._book.snapshot()["positions"].items()):

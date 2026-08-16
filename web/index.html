@@ -1032,12 +1032,24 @@ input:focus-visible,select:focus-visible{outline:none}
       <div style="margin-top:10px">
         <div class="tds-sec" style="border-top:none;margin-top:0">
           <div class="tds-sec-title">止盈止损 (结构与回测 stop_loss 同形)</div>
+          <div class="tds-row"><input type="checkbox" id="tdsSellEn"><label for="tdsSellEn">监控卖出总开关</label>
+            <span style="color:var(--text2);font-size:11px">(关闭=停止一切自动卖出, 不动已挂单子与持仓; 人工卖出不受限)</span></div>
+          <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-bottom:4px">
+            这些是「什么时候自动卖」的规则，每条可单独开/关：<br>
+            成本止损 · 亏损超过阈值就割（硬止损，兜底）<br>
+            移动止盈 · 涨过激活线后，从最高点回落 X% 就卖（放风筝，让利润奔跑）<br>
+            阶梯止盈 · 涨到档位价就卖一批，分批落袋<br>
+            时间止损 · 持有超过 N 天还没起色就卖<br>
+            条件时间止盈 · 持有 N 天且涨幅达标就卖<br>
+            首日规则 · 买入次日涨幅不达标就卖（打脸就走）
+          </div>
           <div class="tds-row"><label>优先级</label>
             <select id="tdsPriority">
-              <option value="trailing_first">trailing_first (移动止盈优先)</option>
-              <option value="ladder_tp_first">ladder_tp_first (阶梯止盈优先)</option>
-              <option value="stop_first">stop_first (止损优先)</option>
+              <option value="trailing_first">移动止盈优先</option>
+              <option value="ladder_tp_first">阶梯止盈优先</option>
+              <option value="stop_first">止损优先</option>
             </select>
+            <span style="color:var(--text2);font-size:11px">(同一时刻多条规则都命中时，谁先卖)</span>
           </div>
           <div class="tds-row"><input type="checkbox" id="tdsCostEn"><label for="tdsCostEn">成本止损</label>
             阈值 <input type="number" id="tdsCostThreshold" step="0.01" max="0" min="-1"> (负值, 如 -0.12)</div>
@@ -1081,6 +1093,9 @@ input:focus-visible,select:focus-visible{outline:none}
         </div>
         <div class="tds-sec">
           <div class="tds-sec-title">尾盘自动买入</div>
+          <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-bottom:4px">
+            每天尾盘用通达信公式选股，自动下单买入；次日 T+1 自动纳入止盈止损监控与预埋。
+          </div>
           <div class="tds-row"><input type="checkbox" id="tdsAbEn"><label for="tdsAbEn">启用</label>
             时间 <input type="text" id="tdsAbTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="14:52">
             <span style="color:var(--text2);font-size:11px">(HH:MM)</span></div>
@@ -1094,6 +1109,11 @@ input:focus-visible,select:focus-visible{outline:none}
         </div>
         <div class="tds-sec">
           <div class="tds-sec-title">ETF 轮动系统 (双池资金分配)</div>
+          <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-bottom:4px">
+            把账户分成两个池子：ETF 池（只买创业板50ETF / 黄金ETF，按信号来回切换）和股票池（现有选股系统）。
+            比例是「上限」不是「强制目标」，卖出回笼的钱自动流向低配的一边，不主动卖来凑比例。<br>
+            信号：创业板50指数 20 日均线向上且回撤&lt;20% → 满仓创业板；回撤&gt;20% → 半仓+黄金；均线向下 → 满仓黄金。
+          </div>
           <div class="tds-row"><input type="checkbox" id="tdsRotEn"><label for="tdsRotEn">启用轮动系统</label>
             <span style="color:var(--text2);font-size:11px">(启用时选股系统买入被股票池预算封顶)</span></div>
           <div class="tds-row">

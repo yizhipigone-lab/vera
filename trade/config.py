@@ -180,6 +180,9 @@ class TradeConfig:
     exclude_etf: bool = True               # ETF 不纳入自动管理 (2026-07-27
                                            # ETF 误卖事件裁决③, 口径见 book.is_etf)
     daily_loss_limit: float = 0.05         # 日亏软熔断阈值 (相对盘前基准)
+    auto_sell_enabled: bool = True         # 卖出总开关 (2026-08-16): False=停止
+                                           # 监控自动卖出 (不新触发/不新挂预埋),
+                                           # 不动已挂单子与持仓; 人工卖出不受限
     stop: StopConfig = field(default_factory=StopConfig)
     position_sizing: PositionSizingConfig = field(
         default_factory=PositionSizingConfig)
@@ -209,6 +212,7 @@ _FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "fake_sdk": (bool,),
     "exclude_etf": (bool,),
     "daily_loss_limit": (int, float),
+    "auto_sell_enabled": (bool,),
     "stop": (dict,),
     "position_sizing": (dict,),
     "auto_buy": (dict,),

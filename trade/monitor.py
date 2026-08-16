@@ -334,6 +334,11 @@ class Monitor:
           卖完标档不武装, 剩余仓位由其余规则继续保护。
         """
         stop = self._cfg.stop
+        # 2026-08-16 卖出总开关: 关闭时整个监控腿不再评估任何卖出规则 (不新触发),
+        # 已挂单子/持仓不动; 人工卖出走 dispatch_command → execute_exit(manual)
+        # 不经本函数, 不受此开关限制。
+        if not self._cfg.auto_sell_enabled:
+            return None
         # 2026-07-27 ETF 误卖事件裁决③: ETF 不纳入自动管理,
         # 规则评估直接跳过 (持仓仍照常对账, 那是 reconciler 的事)
         if self._cfg.exclude_etf and is_etf(code):

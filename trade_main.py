@@ -505,8 +505,10 @@ class TradeApp:
                 {"hhmm": hhmm})
             self.executor.place_ladder(today)
         # 2026-08-15 (审计 L4): 已过 execute_time 且当日未跑轮动 → 补一轮。
-        # 轮动 start 内部会再校验 enabled + 连续竞价时段 (fail-closed)。
-        if (self._cfg.rotation.execute_time <= hhmm <= "15:00"
+        # 2026-08-16 (审计): 补查 enabled —— 轮动关闭时不再写"补偿一轮"的假审计
+        # (start 内部虽会 no-op, 但审计已误报)。
+        if (self._cfg.rotation.enabled
+                and self._cfg.rotation.execute_time <= hhmm <= "15:00"
                 and not self._rotation_ran_today(today)):
             self.store.write_audit(
                 "rotation_catchup", f"启动已过 {self._cfg.rotation.execute_time} "

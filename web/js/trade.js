@@ -797,6 +797,7 @@ function _ladderRow(profit, ratio) {
 
 function fillSettings(cfg) {
   var s = cfg.stop;
+  _setc('tdsSellEn', cfg.auto_sell_enabled);
   _setv('tdsPriority', s.priority);
   _setc('tdsCostEn', s.cost_stop.enabled); _setv('tdsCostThreshold', s.cost_stop.threshold);
   _setc('tdsTrailEn', s.trailing_stop.enabled);
@@ -863,6 +864,7 @@ function gatherSettings() {
     position_sizing: { min_buy_amount: _num('tdsMinAmt'), max_buy_amount: _num('tdsMaxAmt'),
                        lot_size: _int('tdsLot'), max_positions: _int('tdsMaxPos') },
     daily_loss_limit: _num('tdsLossLimit'),
+    auto_sell_enabled: _chk('tdsSellEn'),
     monitor_scan_interval_sec: _int('tdsScanSec'),
     tick_heartbeat_sec: _int('tdsHbSec'),
     quote_stale_sec: _int('tdsStaleSec'),

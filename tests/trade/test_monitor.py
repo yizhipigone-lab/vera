@@ -187,6 +187,19 @@ def test_cost_stop_triggered(store):
     assert len(triggers) == 1 and "cost_stop" in triggers[0][1]
 
 
+def test_auto_sell_disabled_no_trigger(store):
+    """2026-08-16 卖出总开关关闭 → 监控腿不评估任何卖出规则 (不新触发)。"""
+    t = [_T0]
+    stub = StubExecutor()
+    cfg = TradeConfig(account_id="TEST", tick_heartbeat_sec=15,
+                      auto_sell_enabled=False,
+                      stop=StopConfig(cost_stop=CostStopConfig(threshold=-0.12)))
+    mon, _ = _make_monitor(store, _book_with(), stub, t, cfg=cfg)
+    # 现价 8.7 本应触发成本止损, 但总开关关 → 不触发
+    mon.on_quote(CODE, {"last": 8.7, "bid1": 8.6, "high": 8.7})
+    assert mon.scan_once() == []
+
+
 def test_time_stop_triggered(store):
     """持有 20 天到点即走 (裁决①后回测口径: 无收益门槛)。"""
     t = [_T0]
