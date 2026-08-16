@@ -1093,9 +1093,38 @@ input:focus-visible,select:focus-visible{outline:none}
             <input type="number" id="tdsAbMax" step="1" min="1" max="20"> 笔</div>
         </div>
         <div class="tds-sec">
+          <div class="tds-sec-title">ETF 轮动系统 (双池资金分配)</div>
+          <div class="tds-row"><input type="checkbox" id="tdsRotEn"><label for="tdsRotEn">启用轮动系统</label>
+            <span style="color:var(--text2);font-size:11px">(启用时选股系统买入被股票池预算封顶)</span></div>
+          <div class="tds-row">
+            <label>ETF 池占比</label>
+            <input type="range" id="tdsRotRatio" min="10" max="90" step="5" style="width:180px">
+            <span id="tdsRotRatioLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
+          </div>
+          <div class="tds-row"><label>执行时点</label>
+            <input type="text" id="tdsRotTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="09:30">
+            <span style="color:var(--text2);font-size:11px">(HH:MM, 每日算信号+调仓)</span></div>
+          <div class="tds-row"><label>指数</label>
+            <input type="text" id="tdsRotIndex" class="lab-input" style="width:110px;font-family:var(--mono)">
+            <label style="min-width:0">创业板ETF</label>
+            <input type="text" id="tdsRotCyb" class="lab-input" style="width:110px;font-family:var(--mono)">
+            <label style="min-width:0">黄金ETF</label>
+            <input type="text" id="tdsRotGold" class="lab-input" style="width:110px;font-family:var(--mono)"></div>
+        </div>
+        <div class="tds-sec">
+          <div class="tds-sec-title">弱市择时闸门 (指数跌破年线当日不买)</div>
+          <div class="tds-row"><input type="checkbox" id="tdsRfEn"><label for="tdsRfEn">启用弱市择时</label>
+            <span style="color:var(--text2);font-size:11px">(创业板指跌破年线时尾盘不买新仓, 已持仓照常管理)</span></div>
+          <div class="tds-row"><label>指数</label>
+            <input type="text" id="tdsRfIndex" class="lab-input" style="width:110px;font-family:var(--mono)">
+            <label style="min-width:0">均线窗口</label>
+            <input type="number" id="tdsRfMa" step="1" min="2" style="width:70px"> 日</div>
+        </div>
+        <div class="tds-sec">
           <div class="tds-sec-title">飞书通知</div>
           <div class="tds-row"><input type="checkbox" id="tdsFeishuEn"><label for="tdsFeishuEn">推送成交提醒与盘后日报</label></div>
-          <div class="tds-row"><span style="color:var(--text2);font-size:11px">webhook 地址走环境变量 FEISHU_WEBHOOK_URL (不在面板填写); 关闭后通知为 no-op, 交易照常</span></div>
+          <div class="tds-row"><input type="checkbox" id="tdsAiReview"><label for="tdsAiReview">盘后日报追加「AI 复盘」(LLM 人话总结)</label></div>
+          <div class="tds-row"><span style="color:var(--text2);font-size:11px">webhook 地址走环境变量 FEISHU_WEBHOOK_URL (不在面板填写); AI 复盘需 .env 配 DEEPSEEK_API_KEY, LLM 失败自动跳过</span></div>
         </div>
         <div class="tds-sec" style="display:flex;gap:10px;align-items:center">
           <button class="btn btn-primary" id="tdsSaveBtn">保存设置</button>
@@ -1112,6 +1141,15 @@ input:focus-visible,select:focus-visible{outline:none}
       <span class="trade-hint" id="tdAbHint">选股在工作线程跑 (约 1 分钟), 不阻塞交易; 今日买入 T+1, 明日 9:15 自动纳入预埋与监控</span>
     </div>
     <div id="tdAbLast" style="margin-top:8px"><div style="color:var(--text2);font-size:12px">今日尚未运行</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h3>ETF 轮动系统 <span style="font-weight:400;font-size:11px;color:var(--text2)" id="tdRotCfg">—</span></h3>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" id="tdRotRunBtn">立即算信号+调仓</button>
+      <span class="trade-hint" id="tdRotHint">每日 09:30 自动算信号并调仓; 盘中点=立即调仓, 收盘后点=预览今日信号</span>
+    </div>
+    <div id="tdRotLast" style="margin-top:8px"><div style="color:var(--text2);font-size:12px">尚未运行</div></div>
   </div>
 
   <div class="lab-card">
@@ -1236,7 +1274,7 @@ input:focus-visible,select:focus-visible{outline:none}
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script src="/web/js/trade.js?v=20260813a"></script>
+<script src="/web/js/trade.js?v=20260816a"></script>
 <script src="/web/js/research.js?v=20260728a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>

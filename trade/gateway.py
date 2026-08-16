@@ -100,6 +100,12 @@ class BaseGateway(ABC):
         调用方按"取不到就回退当日口径"处理 (2026-08-06, 移动止盈历史峰值用)。"""
         return []
 
+    def query_daily_closes(self, code: str, count: int = 500) -> list[float]:
+        """最近 count 根日线收盘价序列 (不复权, 升序)。默认空 —— 仿真网关无
+        历史源, ETF 轮动信号 (MA20/250日高点) 的数据源 (2026-08-14)。
+        用 count 取数而非日期区间 (对齐 qmt/qmt_portfolio_runner 的已验证口径)。"""
+        return []
+
 
 def _call_with_timeout(fn: Callable, timeout_sec: float, *args: Any, **kwargs: Any) -> Any:
     """同步调用包超时。QMT 同步接口偶发卡死, 不能让唯一写者线程陪葬。
@@ -452,6 +458,52 @@ class RealGateway(BaseGateway):
         # 流入 monitor 会让当日移动止盈静默失效 (last <= NaN 恒 False)
         return [float(x) for x in df["high"].tolist() if x == x and x > 0]
 
+    def query_daily_closes(self, code: str, count: int = 500) -> list[float]:
+        """最近 count 根不复权日线 close 序列 (2026-08-14, ETF 轮动信号用)。
+
+        取数口径对齐 qmt/qmt_portfolio_runner.py 的 PROVEN 用法:
+        field_list=[] (返回全字段再取 close 列) + count 取最近 N 根。
+        指数数据常未下载到本地 (2026-08-15 实测 399673.SZ 直接取为 0 根),
+        取空时先 download_history_data 再重取 (幂等, 已下载则秒回)。
+        无未来函数: 剔除「当日未收盘」bar (盘中取数可能含今日盘中 bar)。
+        返回按交易日升序; 过滤 NaN/非正数; 仍空记 WARN 便于排查。"""
+        xtdata = self._xtdata()
+        df = None
+        for attempt in range(2):
+            raw = _call_with_timeout(
+                xtdata.get_market_data_ex, self._timeout,
+                [], [code], "1d", "", "", count, "none", False)
+            df = (raw or {}).get(code)
+            if df is not None and not df.empty:
+                break
+            if attempt == 0:
+                _logger.warning("query_daily_closes(%s) 取空, 尝试 download_history_data", code)
+                days_back = int(count * 1.6) + 30   # count 根交易日 ≈ 1.6× 自然日 + 余量
+                # 注 (审计 L7): 下载窗口用真实 time.time(); 生产真网关时钟即真实
+                # 时间, 与信号日期同源无分叉; 仅测试注入时钟偏移时才有理论差异。
+                start = time.strftime("%Y%m%d", time.localtime(time.time() - days_back * 86400))
+                try:
+                    _call_with_timeout(xtdata.download_history_data, self._timeout * 4,
+                                       code, "1d", start, "")
+                except Exception as e:
+                    _logger.warning("download_history_data(%s) 失败: %s", code, e)
+        if df is None or df.empty:
+            _logger.warning("query_daily_closes(%s) 下载后仍取空 (指数代码可能无数据)", code)
+            return []
+        closes = [float(x) for x in df["close"].tolist() if x == x and x > 0]
+        # 无未来函数(审计 CRITICAL#1): 最后一根是"今天"且当前<15:05(未收盘) →
+        # 丢弃当日盘中 bar, 信号只用已收盘完整日线
+        try:
+            s = str(df.index[-1])
+            last_day = "".join(ch for ch in s if ch.isdigit())[:8]
+            now = time.localtime()
+            if (last_day == time.strftime("%Y%m%d", now)
+                    and now.tm_hour * 60 + now.tm_min < 15 * 60 + 5):
+                closes = closes[:-1]
+        except Exception:
+            pass  # 日期解析失败不裁 (保守)
+        return closes
+
     @staticmethod
     def _order_to_dict(o: Any) -> dict:
         return {
@@ -490,14 +542,25 @@ class FakeGateway(BaseGateway):
 
     def __init__(self, cash: float = 1_000_000.0,
                  positions: dict[str, dict] | None = None,
-                 delayed_cancel: bool = False, **callbacks: Any):
+                 delayed_cancel: bool = False,
+                 daily_closes: dict[str, list[float]] | None = None,
+                 clock=time.time,
+                 **callbacks: Any):
         super().__init__(**callbacks)
         self._cash = cash
         self._frozen = 0.0      # 审计L7修复: 下单即冻结, 成交/撤单/废单释放
         self._delayed_cancel = delayed_cancel
+        # 2026-08-14: 注入时钟 —— 成交/委托的 ts 用它 (与 TradeApp 注入时钟
+        # 同源), 修掉周末跑测试时真实 time.time() 与注入时钟跨日的"跨日拦截"误拦
+        self._clock = clock
         # 可注入期初持仓, 方便卖出路径测试: {code: {volume, can_use, avg_cost}}
         self._positions: dict[str, dict] = {
             code: dict(p) for code, p in (positions or {}).items()
+        }
+        # 可注入日线收盘价序列 (ETF 轮动信号测试用, 2026-08-14):
+        # {code: [close1, close2, ...]} 按交易日升序
+        self._daily_closes: dict[str, list[float]] = {
+            code: list(v) for code, v in (daily_closes or {}).items()
         }
         self._orders: dict[str, dict] = {}
         self._trades: dict[str, dict] = {}
@@ -526,7 +589,7 @@ class FakeGateway(BaseGateway):
             rec = {
                 "order_id": order_id, "remark": remark, "code": code,
                 "direction": direction, "price": float(price), "qty": int(qty),
-                "filled_qty": 0, "status": OS_REPORTED, "ts": time.time(),
+                "filled_qty": 0, "status": OS_REPORTED, "ts": self._clock(),
                 "price_type": price_type,
             }
             self._orders[order_id] = rec
@@ -595,6 +658,12 @@ class FakeGateway(BaseGateway):
         return {code: dict(self._quotes[code]) for code in codes
                 if code in self._quotes}
 
+    def query_daily_closes(self, code: str, count: int = 500) -> list[float]:
+        """返回注入的日线收盘价序列 (ETF 轮动信号测试接缝, 2026-08-14)。
+        count 不做裁剪 —— 测试注入的是全序列, 信号计算自己裁窗口。"""
+        with self._lock:
+            return list(self._daily_closes.get(code, []))
+
     # ── 测试钩子 (脚本化订单行为) ───────────────────────────────
 
     def simulate_order_ack(self, order_id: str) -> None:
@@ -627,7 +696,7 @@ class FakeGateway(BaseGateway):
                 "order_id": order_id, "code": rec["code"],
                 "direction": rec["direction"], "price": fill_price,
                 "qty": fill_qty, "amount": fill_price * fill_qty,
-                "ts": time.time(),
+                "ts": self._clock(),
             }
             self._trades[trade["traded_id"]] = trade
 
@@ -686,7 +755,7 @@ class FakeGateway(BaseGateway):
                 "order_id": f"EXT{self._trade_seq:06d}",
                 "code": code, "direction": direction, "price": float(price),
                 "qty": int(qty), "amount": float(price) * int(qty),
-                "ts": time.time(),
+                "ts": self._clock(),
             }
             self._trades[trade["traded_id"]] = trade
             pos = self._positions.setdefault(

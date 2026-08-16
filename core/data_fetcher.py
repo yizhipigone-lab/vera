@@ -549,8 +549,9 @@ class DataFetcher(ConnectorSeam):
         cls._ensure_ready()
         tq = cls._connector().tq()
         result: dict = {}
-        # list_type='50' = 沪深A股, list_type=1 = 每只用 dict 返回 (含 Name 字段)
-        for market in ('5', '50'):
+        # '5'=全部A股, '50'=沪深A股, '31'=ETF基金 (2026-08-15: 补 ETF 名称,
+        # 原只拉股票列表, 159949/518880 等场内基金在持仓清单里没名字)
+        for market in ('5', '50', '31'):
             try:
                 raw = tq.get_stock_list(market, list_type=1)
             except Exception:

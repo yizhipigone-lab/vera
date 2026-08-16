@@ -524,6 +524,7 @@ function refresh() {
     get('/api/trade/positions', s).then(renderPositions).catch(function () { staleTag('tdPositions'); }),
     get('/api/trade/orders', s).then(renderOrders).catch(function () { staleTag('tdOrders'); }),
     get('/api/trade/auto_buy/last', s).then(renderAutoBuy).catch(function () {}),
+    get('/api/trade/rotation/last', s).then(renderRotation).catch(function () {}),
     get('/api/trade/asset', s).then(renderAsset).catch(function () { staleTag('tdAssetCard'); }),
   ]).then(function () { clearTimeout(timer); inflight = false; });
 }
@@ -712,6 +713,54 @@ document.getElementById('tdAbRunBtn').addEventListener('click', function () {
   cmd(this, '/api/trade/auto_buy', {}, '已发起, 选股约 1 分钟, 结果见本卡片与审计日志');
 });
 
+// ── ETF 轮动系统卡片 (2026-08-14) ────────────────────
+
+var ROT_STATE_NAME = {
+  full_cyb: '满仓创业板50', half: '半仓(创+金各半)', full_gold: '满仓黄金'
+};
+
+function renderRotation(d) {
+  var cfgBox = document.getElementById('tdRotCfg');
+  cfgBox.textContent = (d.config.enabled ? '已启用' : '已停用')
+    + ' · ETF池 ' + Math.round(d.config.etf_ratio * 100) + '%'
+    + ' · 执行 ' + d.config.execute_time;
+  var box = document.getElementById('tdRotLast');
+  var last = d.last;
+  if (!last) {
+    box.innerHTML = '<div style="color:var(--text2);font-size:12px">尚未运行</div>';
+    return;
+  }
+  if (last.error) {
+    box.innerHTML = '<div style="color:var(--down);font-size:12px">失败: '
+      + esc(last.error) + '</div>';
+    return;
+  }
+  var s = last.signal || {};
+  if (s.state === undefined || s.state === null) {
+    box.innerHTML = '<div style="color:var(--text2);font-size:12px">信号数据不足: '
+      + esc(s.reason || '') + '</div>';
+    return;
+  }
+  var dir = s.ma20_direction === 'up' ? '向上' : '向下';
+  var dd = (Number(s.drawdown) * 100).toFixed(1) + '%';
+  var html = '<div style="font-size:12px;margin-bottom:6px">最近 ' + fmtTs(last.ts)
+    + ' (' + esc(last.source) + '): 目标 <b style="color:var(--up)">'
+    + (ROT_STATE_NAME[s.state] || esc(s.state)) + '</b>'
+    + (s.date ? ' <span style="color:var(--text2)">(基于 ' + esc(s.date) + ' 收盘)</span>' : '')
+    + '</div>';
+  html += '<div style="font-size:12px;color:var(--text2)">MA20 <b>' + dir + '</b>'
+    + ' (今 ' + s.ma20_today + ' / 昨 ' + s.ma20_yesterday + ')'
+    + ' · 250日高点 ' + s.high_250
+    + ' · 现价 ' + s.close
+    + ' · 回撤 <b>' + dd + '</b></div>';
+  box.innerHTML = html;
+}
+
+document.getElementById('tdRotRunBtn').addEventListener('click', function () {
+  if (!confirm('立即执行一次 ETF 轮动 (算信号 + 调仓)?\n将按信号卖出超出的 ETF、买入目标 ETF, 确认?')) return;
+  cmd(this, '/api/trade/rotation/run', {}, '已发起, 结果见本卡片与审计日志', 'tdRotHint');
+});
+
 // ── 设置面板 (2026-07-26) ────────────────────────────
 // 打开时 GET 填充; 保存只发面板覆盖的字段 (后端深合并 —— 账号/路径
 // 不在面板内, 永不被面板清空)。真相校验在后端 (判断不出后端铁律),
@@ -724,6 +773,15 @@ function _int(id) { return parseInt(document.getElementById(id).value, 10); }
 function _chk(id) { return document.getElementById(id).checked; }
 function _setv(id, v) { document.getElementById(id).value = v; }
 function _setc(id, v) { document.getElementById(id).checked = !!v; }
+
+// ETF 池占比滑杆 (2026-08-14): 拖动实时显示两边百分比
+function _rotRatioLabel(v) {
+  document.getElementById('tdsRotRatioLabel').textContent =
+    'ETF池 ' + v + '% · 股票池 ' + (100 - v) + '%';
+}
+document.getElementById('tdsRotRatio').addEventListener('input', function () {
+  _rotRatioLabel(parseInt(this.value, 10));
+});
 
 function _ladderRow(profit, ratio) {
   var row = document.createElement('div');
@@ -766,8 +824,21 @@ function fillSettings(cfg) {
   _setv('tdsAbArg', cfg.auto_buy.formula_arg);
   _setv('tdsAbAmt', cfg.auto_buy.amount_per_stock);
   _setv('tdsAbMax', cfg.auto_buy.max_buys_per_day);
-  // 飞书通知区 (2026-07-31): 仅总开关; webhook URL 走环境变量
+  // ETF 轮动区 (2026-08-14)
+  _setc('tdsRotEn', cfg.rotation.enabled);
+  var rotPct = Math.round((cfg.rotation.etf_ratio || 0.5) * 100);
+  _setv('tdsRotRatio', rotPct); _rotRatioLabel(rotPct);
+  _setv('tdsRotTime', cfg.rotation.execute_time);
+  _setv('tdsRotIndex', cfg.rotation.signal_index);
+  _setv('tdsRotCyb', cfg.rotation.cyb_etf);
+  _setv('tdsRotGold', cfg.rotation.gold_etf);
+  // 弱市择时闸门区 (2026-08-16)
+  _setc('tdsRfEn', cfg.regime_filter && cfg.regime_filter.enabled);
+  _setv('tdsRfIndex', cfg.regime_filter && cfg.regime_filter.index_code);
+  _setv('tdsRfMa', cfg.regime_filter && cfg.regime_filter.ma_window);
+  // 飞书通知区 (2026-07-31): 仅总开关 + AI 复盘开关; webhook URL 走环境变量
   _setc('tdsFeishuEn', cfg.feishu && cfg.feishu.enabled);
+  _setc('tdsAiReview', cfg.feishu && cfg.feishu.ai_review);
 }
 
 function gatherSettings() {
@@ -803,7 +874,20 @@ function gatherSettings() {
       amount_per_stock: _num('tdsAbAmt'),
       max_buys_per_day: _int('tdsAbMax'),
     },
-    feishu: { enabled: _chk('tdsFeishuEn') },
+    rotation: {
+      enabled: _chk('tdsRotEn'),
+      etf_ratio: _num('tdsRotRatio') / 100,
+      execute_time: document.getElementById('tdsRotTime').value.trim(),
+      signal_index: document.getElementById('tdsRotIndex').value.trim(),
+      cyb_etf: document.getElementById('tdsRotCyb').value.trim(),
+      gold_etf: document.getElementById('tdsRotGold').value.trim(),
+    },
+    regime_filter: {
+      enabled: _chk('tdsRfEn'),
+      index_code: document.getElementById('tdsRfIndex').value.trim(),
+      ma_window: _int('tdsRfMa'),
+    },
+    feishu: { enabled: _chk('tdsFeishuEn'), ai_review: _chk('tdsAiReview') },
   };
 }
 

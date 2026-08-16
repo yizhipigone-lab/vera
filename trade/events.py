@@ -35,6 +35,7 @@ EVENT_RECONCILE = "reconcile"              # 定时/收盘对账触发
 EVENT_EOD = "eod"                          # 收盘归档
 EVENT_COMMAND = "command"                  # Web/CLI 人工命令
 EVENT_SIGNALS = "signals"                  # 尾盘选股结果 (工作线程→消费者)
+EVENT_ROTATION = "rotation"                # ETF 轮动信号结果 (工作线程→消费者, 2026-08-14)
 EVENT_CONNECTION_LOST = "connection_lost"  # 断线 (回调或心跳双检测)
 EVENT_SYNC_REPORTS = "sync_reports"        # 增量同步 (成交补记+委托回写)
 EVENT_ORDER_ERROR = "order_error"          # 下单失败回报 (拒单原因, 2026-08-07)
@@ -43,8 +44,8 @@ EVENT_CANCEL_ERROR = "cancel_error"        # 撤单失败回报 (2026-08-07)
 # 2026-08-01 M1: 关键事件类型 —— 队列满时优先保留, tick/快照可驱逐
 _CRITICAL_TYPES = frozenset({
     EVENT_RECONCILE, EVENT_SYNC_REPORTS, EVENT_TIMER_SCAN,
-    EVENT_COMMAND, EVENT_SIGNALS, EVENT_CONNECTION_LOST, EVENT_EOD,
-    EVENT_ORDER_ERROR, EVENT_CANCEL_ERROR,
+    EVENT_COMMAND, EVENT_SIGNALS, EVENT_ROTATION, EVENT_CONNECTION_LOST,
+    EVENT_EOD, EVENT_ORDER_ERROR, EVENT_CANCEL_ERROR,
 })
 
 

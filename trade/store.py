@@ -222,6 +222,13 @@ CREATE TABLE IF NOT EXISTS daily_report (
     payload_json TEXT NOT NULL,
     ts           REAL NOT NULL
 );
+-- ETF 轮动最近一次信号 (2026-08-14, UI 回看 + 冷启动恢复; 单行表)。
+-- 只做展示/留痕, 不驱动交易 —— 交易信号每次运行时重算 (不依赖持久化)
+CREATE TABLE IF NOT EXISTS rotation_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    signal_json TEXT NOT NULL DEFAULT '{}',
+    updated_ts  REAL NOT NULL
+);
 """
 
 
@@ -689,6 +696,33 @@ class TradeStore:
         if not row:
             return None
         return {"date": row[0], "total_asset": float(row[1])}
+
+    # ── ETF 轮动信号 (2026-08-14) ─────────────────────────────
+
+    def save_rotation_signal(self, signal: dict) -> None:
+        """落最近一次轮动信号 (含信号明细 + 调仓时间/来源)。单行 upsert,
+        只做 UI 回看/冷启动恢复, 不驱动交易 (交易每次运行时重算信号)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO rotation_state (id, signal_json, updated_ts)
+                   VALUES (1, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    signal_json=excluded.signal_json,
+                    updated_ts=excluded.updated_ts""",
+                (json.dumps(signal, ensure_ascii=False), time.time()),
+            )
+
+    def load_rotation_signal(self) -> dict | None:
+        """读最近一次轮动信号, 无记录/损坏返 None (fail-soft, 不影响交易)。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT signal_json FROM rotation_state WHERE id = 1").fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
 
     def close(self) -> None:
         # 先停 raw writer (drain 队列 + 终 flush), 再关 fp —— 正常退出不丢日志

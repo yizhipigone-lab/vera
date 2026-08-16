@@ -34,6 +34,7 @@ from trade.book import (
 )
 from trade.events import EVENT_SIGNALS, Event
 from trade.executor import limit_ratio, round_price
+from trade.regime import index_above_ma
 from trade.risk import OrderIntent
 from utils.logger import get_logger
 
@@ -46,7 +47,7 @@ class AutoBuyFeature:
 
     def __init__(self, engine, cfg_getter, store, gateway, book, monitor,
                  risk, executor, *, selection_runner, build_risk_ctx,
-                 get_prev_close, clock=time.time):
+                 get_prev_close, budget_provider=None, clock=time.time):
         self._engine = engine
         self._cfg_getter = cfg_getter      # callable → TradeConfig (热更穿透)
         self._store = store
@@ -59,6 +60,9 @@ class AutoBuyFeature:
         self._selection_runner = selection_runner
         self._build_risk_ctx = build_risk_ctx
         self._get_prev_close = get_prev_close
+        # 2026-08-14 双池预算帽: callable → 股票池还能花的钱 (None=不设帽,
+        # 即轮动关闭时的原口径)。注入自 composition root。
+        self._budget_provider = budget_provider
         self._running = False                   # 选股工作线程在跑 (防重入)
         self._last: dict | None = None          # 最近一次运行 (页面展示)
         self._placed: tuple = ("", set())       # (日期, 当日已下单代码)
@@ -128,10 +132,37 @@ class AutoBuyFeature:
                                    data={"signals": None, "error": str(e),
                                          "source": source}))
 
+    def _regime_allows(self, rf) -> bool:
+        """弱市择时闸门: 指数最新价 vs MA 均线。True=放行, False=禁买。
+        数据不足/取数失败一律 False (fail-closed, 宁可不买不可瞎买)。"""
+        try:
+            closes = self._gateway.query_daily_closes(
+                rf.index_code, count=rf.ma_window + 20)
+            q = (self._gateway.query_quotes([rf.index_code]) or {}).get(
+                rf.index_code) or {}
+            last = q.get("last") or 0.0
+            if last > 0:
+                closes = list(closes) + [last]
+            return bool(index_above_ma(closes, rf.ma_window))  # None → False
+        except Exception:
+            _logger.exception("弱市择时闸门取数失败 (fail-closed 不买)")
+            return False
+
     def _execute(self, signals: list[dict], source: str) -> None:
         """逐票过滤执行 (消费者线程)。过滤顺序 = 便宜到贵:
         上限 → 已持仓 → ETF → 今日已买过 → 涨停 → 现金/数量 → 风控。"""
         cfg = self._cfg_getter().auto_buy
+        # 弱市择时闸门 (2026-08-16): 指数跌破 MA 年线 → 当日不买新仓。
+        # 在最早、最便宜处拦 (先于资金/行情查询); 已持仓不受影响。
+        rf = self._cfg_getter().regime_filter
+        if rf.enabled and not self._regime_allows(rf):
+            self._last = {"ts": self._clock(), "source": source,
+                          "error": f"弱市闸门: {rf.index_code} 未站上 MA{rf.ma_window}",
+                          "dispositions": []}
+            self._store.write_audit(
+                "auto_buy_skip_regime",
+                f"{rf.index_code} 未站上 MA{rf.ma_window}, 尾盘不买", {})
+            return
         today = time.strftime("%Y%m%d", time.localtime(self._clock()))
         hhmm = time.strftime("%H:%M", time.localtime(self._clock()))
         # 当日已下单代码 (跨批次防重; 批次内也靠它) — 按日重置
@@ -146,6 +177,15 @@ class AutoBuyFeature:
             self._store.write_audit(
                 "auto_buy_error", "查询资金失败, 本轮自动买入中止", {})
             return
+        # 2026-08-14 双池预算帽: 轮动启用时股票买入被股票池预算封顶,
+        # 不花 ETF 池的钱 (卖出回笼的现金让给低配的 ETF 池)。
+        if self._budget_provider is not None:
+            try:
+                cap = self._budget_provider()
+                if cap is not None and cap < cash:
+                    cash = cap
+            except Exception:
+                pass  # 预算帽取不到 fail-open 回退原口径 (软隔离非安全闸)
 
         positions = self._book.snapshot()["positions"]
         # 2026-07-27 首次实跑修复: 候选票批量取行情。

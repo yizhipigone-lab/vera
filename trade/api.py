@@ -123,21 +123,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 # ── 2026-07-30: 持仓明细增强辅助 ─────────────────────────────
 
-_NAME_MAP: dict | None = None
-
-
-def _name_of(code: str) -> str:
-    """股票简称 (DataFetcher.get_name_map 惰性加载一次; 失败回退空串 → 前端显示代码)。"""
-    global _NAME_MAP
-    if _NAME_MAP is None:
-        try:
-            from core.data_fetcher import DataFetcher
-            _NAME_MAP = DataFetcher.get_name_map()
-        except Exception:
-            _NAME_MAP = {}
-    return _NAME_MAP.get(code, "")
-
-
 def _entry_and_closed(trade_app) -> tuple[dict, list, dict]:
     """从 trades 表算各代码的买卖汇总, 派生 entry_map / closed / summary 三件:
 
@@ -619,6 +604,28 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             "formula_name": trade_app.config.auto_buy.formula_name,
             "amount_per_stock": trade_app.config.auto_buy.amount_per_stock,
             "max_buys_per_day": trade_app.config.auto_buy.max_buys_per_day,
+        }}
+
+    # ── ETF 轮动 (2026-08-14) ──────────────────────────────────
+
+    @app.post("/api/trade/rotation/run")
+    def rotation_run():
+        """立即执行一次 ETF 轮动 (人工触发, 算信号+调仓, 任何时段放行)。"""
+        trade_app.submit_command({"action": "rotation_run",
+                                  "source": "manual_api"})
+        return {"accepted": True}
+
+    @app.get("/api/trade/rotation/last")
+    def rotation_last():
+        """最近一次轮动: 时间/来源/信号明细。"""
+        last = trade_app.rotation_last
+        return {"last": last, "config": {
+            "enabled": trade_app.config.rotation.enabled,
+            "etf_ratio": trade_app.config.rotation.etf_ratio,
+            "signal_index": trade_app.config.rotation.signal_index,
+            "cyb_etf": trade_app.config.rotation.cyb_etf,
+            "gold_etf": trade_app.config.rotation.gold_etf,
+            "execute_time": trade_app.config.rotation.execute_time,
         }}
 
     # ── 分析 Tab 端点 ──────────────────────────────────────────

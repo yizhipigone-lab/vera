@@ -67,9 +67,11 @@ class FeishuNotifier:
             _logger.warning("飞书通知队列满 (%d), 丢弃一笔成交通知",
                             self._queue.maxsize)
 
-    def notify_daily(self, payload: dict, level: str = "full") -> None:
+    def notify_daily(self, payload: dict, level: str = "full",
+                     ai_review: bool = False) -> None:
         """盘后日报。同 notify_fill, 只入队。level: full=全明细/summary=简报
-        (2026-08-07), 透传给 worker 的 _build_daily_card。"""
+        (2026-08-07), 透传给 worker 的 _build_daily_card; ai_review (2026-08-15)
+        追加「AI 复盘」段 (LLM 在 worker 线程跑, 失败返 None 跳过)。"""
         if not self._enabled_getter():
             return
         if not self._webhook_getter():
@@ -77,7 +79,8 @@ class FeishuNotifier:
             return
         try:
             self._queue.put_nowait(
-                {"kind": "daily", "data": payload, "level": level})
+                {"kind": "daily", "data": payload, "level": level,
+                 "ai_review": ai_review})
         except queue.Full:
             _logger.warning("飞书通知队列满 (%d), 丢弃日报", self._queue.maxsize)
 
@@ -131,7 +134,8 @@ class FeishuNotifier:
         if kind == "fill":
             card = self._build_fill_card(data)
         elif kind == "daily":
-            card = self._build_daily_card(data, level=job.get("level", "full"))
+            card = self._build_daily_card(data, level=job.get("level", "full"),
+                                          ai_review=job.get("ai_review", False))
         else:
             return
         self._post(webhook, card)
@@ -224,9 +228,11 @@ class FeishuNotifier:
             },
         }
 
-    def _build_daily_card(self, d: dict, level: str = "full") -> dict:
+    def _build_daily_card(self, d: dict, level: str = "full",
+                          ai_review: bool = False) -> dict:
         """盘后日报卡 (2026-08-07 全明细): 多 section, header 盈亏红绿。
         level: full=全明细 / summary=只资产+交易摘要 (不出变动/明细)。
+        ai_review (2026-08-15): 追加「AI 复盘」段 (LLM, worker 线程, 失败跳过)。
         缺字段 fail-soft (该 section 省略, 不抛)。"""
         total_asset = float(d.get("total_asset", 0.0) or 0.0)
         cash = float(d.get("cash", 0.0) or 0.0)
@@ -333,6 +339,20 @@ class FeishuNotifier:
                     elements.append({"tag": "hr"})
                     elements.append({"tag": "div", "text": {"tag": "lark_md",
                                                             "content": "\n".join(slines)}})
+
+        # ── AI 复盘 section (2026-08-15, 第一层 LLM 加持) ──
+        # 开关 ai_review (默认关, 避免测试打真 LLM + 用户可控成本); 只在 worker
+        # 线程跑 (LLM 阻塞 ≤45s, 绝不碰消费者线程); 失败返 None 跳过, 日报照常。
+        if ai_review:
+            try:
+                from trade.llm_review import build_daily_summary
+                summary = build_daily_summary(d)
+                if summary:
+                    elements.append({"tag": "hr"})
+                    elements.append({"tag": "div", "text": {"tag": "lark_md",
+                                                            "content": "**AI 复盘**\n" + summary}})
+            except Exception:
+                _logger.debug("AI 复盘生成失败 (跳过, 日报照常)")
 
         return {
             "msg_type": "interactive",

@@ -117,14 +117,49 @@ class AutoBuyConfig:
 
 
 @dataclass(frozen=True)
+class RotationConfig:
+    """ETF 轮动 + 双池资金分配 (2026-08-14)。
+
+    enabled 默认 False: 未显式配置不开 (fail-safe), trade.yaml 显式开。
+    etf_ratio: ETF 池占总资产比例 (0,1), 股票池 = 1 - etf_ratio。
+    drawdown_threshold: 回撤阈值 (正值口径, 0.20 = 20%), 判定用
+    「回撤率 < -threshold」。
+    """
+    enabled: bool = False
+    etf_ratio: float = 0.5                 # ETF 池占总资产比例
+    signal_index: str = "399673.SZ"        # 创业板50指数
+    cyb_etf: str = "159949.SZ"             # 创业板50ETF
+    gold_etf: str = "518880.SH"            # 黄金ETF
+    ma_window: int = 20                    # MA20 窗口
+    high_window: int = 250                 # 250日高点窗口
+    drawdown_threshold: float = 0.20       # 回撤阈值 (正值)
+    execute_time: str = "09:30"            # 每日「算信号+调仓」时点 (HH:MM, 连续竞价开盘)
+
+
+@dataclass(frozen=True)
+class RegimeFilterConfig:
+    """弱市择时闸门 (2026-08-16): 指数最新价跌破 MA 均线时当日不买新仓。
+
+    enabled 默认 False: 未显式配置不开 (fail-safe), trade.yaml 显式开。
+    判断在尾盘选股后 ~14:55 用指数实时价 (见 trade/auto_buy.py 闸门),
+    已持仓照常走移动止盈/时间止损自然了结, 不清仓。"""
+    enabled: bool = False
+    index_code: str = "399006.SZ"          # 创业板指
+    ma_window: int = 200                   # 年线
+
+
+@dataclass(frozen=True)
 class FeishuConfig:
     """飞书 webhook 通知 (2026-07-31): enabled=总开关 (设置面板可热关)。
     webhook URL 走环境变量 FEISHU_WEBHOOK_URL, 不入 yaml (半密钥);
     URL 缺失时通知器为 no-op (启动告警一次), 交易照常。
     daily_report_level (2026-08-07): 盘后日报详尽档, full=全明细 / summary=
-    简报 (只资产+交易摘要, 不出仓位变动/卖出明细), 设置面板可热切。"""
+    简报 (只资产+交易摘要, 不出仓位变动/卖出明细), 设置面板可热切。
+    ai_review (2026-08-15): 盘后日报追加「AI 复盘」段 (LLM 人话总结, 默认关;
+    需 .env 配 DEEPSEEK_API_KEY; LLM 失败返 None 自动跳过, 不影响日报)。"""
     enabled: bool = True
     daily_report_level: str = "full"
+    ai_review: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +184,8 @@ class TradeConfig:
     position_sizing: PositionSizingConfig = field(
         default_factory=PositionSizingConfig)
     auto_buy: AutoBuyConfig = field(default_factory=AutoBuyConfig)
+    rotation: RotationConfig = field(default_factory=RotationConfig)
+    regime_filter: RegimeFilterConfig = field(default_factory=RegimeFilterConfig)
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
     monitor_scan_interval_sec: int = 60    # 监控腿轮询间隔
     sync_interval_sec: int = 180           # 增量同步间隔 (成交补记+委托回写,
@@ -175,6 +212,8 @@ _FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "stop": (dict,),
     "position_sizing": (dict,),
     "auto_buy": (dict,),
+    "rotation": (dict,),
+    "regime_filter": (dict,),
     "feishu": (dict,),
     "monitor_scan_interval_sec": (int,),
     "sync_interval_sec": (int,),
@@ -383,15 +422,94 @@ def _coerce_auto_buy(data: dict) -> AutoBuyConfig:
     return AutoBuyConfig(**kwargs)
 
 
+_CODE_PATTERN = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
+
+
+def _coerce_rotation(data: dict) -> RotationConfig:
+    """ETF 轮动段校验。代码字段 (指数/两只ETF) 都必须是 6 位数字
+    + .SH/.SZ/.BJ 格式; etf_ratio 必须 (0,1) 开区间 (两边都得有额度,
+    0 或 1 会让双池退化成单池, 与设计意图冲突)。"""
+    if not isinstance(data, dict):
+        raise TypeError(f"trade rotation 必须是映射, 实际 {data!r}")
+    unknown = set(data) - {
+        "enabled", "etf_ratio", "signal_index", "cyb_etf", "gold_etf",
+        "ma_window", "high_window", "drawdown_threshold", "execute_time"}
+    if unknown:
+        _fail(f"trade rotation 存在未知字段: {sorted(unknown)}")
+    kwargs: dict = {}
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            raise TypeError("rotation.enabled 必须是 bool")
+        kwargs["enabled"] = data["enabled"]
+    if "etf_ratio" in data:
+        r = _num("rotation.etf_ratio", data["etf_ratio"])
+        if not (0.0 < r < 1.0):
+            _fail(f"rotation.etf_ratio 必须在 (0,1) 开区间, 实际 {r}")
+        kwargs["etf_ratio"] = r
+    for k in ("signal_index", "cyb_etf", "gold_etf"):
+        if k in data:
+            v = data[k]
+            if not isinstance(v, str) or not _CODE_PATTERN.match(v):
+                _fail(f"rotation.{k} 必须是 6 位数字 + .SH/.SZ/.BJ, 实际 {v!r}")
+            kwargs[k] = v
+    for k in ("ma_window", "high_window"):
+        if k in data:
+            v = data[k]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 2:
+                _fail(f"rotation.{k} 必须是 ≥2 的整数, 实际 {v!r}")
+            kwargs[k] = v
+    if kwargs.get("high_window", RotationConfig.high_window) < kwargs.get(
+            "ma_window", RotationConfig.ma_window):
+        _fail("rotation.high_window 必须 ≥ rotation.ma_window")
+    if "drawdown_threshold" in data:
+        d = _num("rotation.drawdown_threshold", data["drawdown_threshold"])
+        if not (0.0 < d < 1.0):
+            _fail(f"rotation.drawdown_threshold 必须在 (0,1), 实际 {d}")
+        kwargs["drawdown_threshold"] = d
+    for k in ("execute_time",):
+        if k in data:
+            if not isinstance(data[k], str):
+                raise TypeError(f"rotation.{k} 必须是 str")
+            _check_hhmm(f"rotation.{k}", data[k])
+            kwargs[k] = data[k]
+    return RotationConfig(**kwargs)
+
+
+def _coerce_regime_filter(data: dict) -> RegimeFilterConfig:
+    """弱市择时闸门段校验。index_code 必须 6 位数字 + .SH/.SZ/.BJ;
+    ma_window 必须 ≥2 的整数。"""
+    if not isinstance(data, dict):
+        raise TypeError(f"trade regime_filter 必须是映射, 实际 {data!r}")
+    unknown = set(data) - {"enabled", "index_code", "ma_window"}
+    if unknown:
+        _fail(f"trade regime_filter 存在未知字段: {sorted(unknown)}")
+    kwargs: dict = {}
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            raise TypeError("regime_filter.enabled 必须是 bool")
+        kwargs["enabled"] = data["enabled"]
+    if "index_code" in data:
+        v = data["index_code"]
+        if not isinstance(v, str) or not _CODE_PATTERN.match(v):
+            _fail(f"regime_filter.index_code 必须是 6 位数字 + .SH/.SZ/.BJ, 实际 {v!r}")
+        kwargs["index_code"] = v
+    if "ma_window" in data:
+        v = data["ma_window"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 2:
+            _fail(f"regime_filter.ma_window 必须是 ≥2 的整数, 实际 {v!r}")
+        kwargs["ma_window"] = v
+    return RegimeFilterConfig(**kwargs)
+
+
 _FEISHU_LEVELS = ("full", "summary")
 
 
 def _coerce_feishu(data: dict) -> FeishuConfig:
-    """飞书通知段校验。enabled 布尔 + daily_report_level 详尽档;
+    """飞书通知段校验。enabled 布尔 + daily_report_level 详尽档 + ai_review 布尔;
     webhook URL 不入配置。"""
     if not isinstance(data, dict):
         raise TypeError(f"trade feishu 必须是映射, 实际 {data!r}")
-    unknown = set(data) - {"enabled", "daily_report_level"}
+    unknown = set(data) - {"enabled", "daily_report_level", "ai_review"}
     if unknown:
         _fail(f"trade feishu 存在未知字段: {sorted(unknown)}")
     kwargs: dict = {}
@@ -399,6 +517,10 @@ def _coerce_feishu(data: dict) -> FeishuConfig:
         if not isinstance(data["enabled"], bool):
             raise TypeError("feishu.enabled 必须是 bool")
         kwargs["enabled"] = data["enabled"]
+    if "ai_review" in data:
+        if not isinstance(data["ai_review"], bool):
+            raise TypeError("feishu.ai_review 必须是 bool")
+        kwargs["ai_review"] = data["ai_review"]
     if "daily_report_level" in data:
         lvl = data["daily_report_level"]
         if not isinstance(lvl, str) or lvl not in _FEISHU_LEVELS:
@@ -424,6 +546,10 @@ def _coerce(key: str, value: Any) -> Any:
         return _coerce_sizing(value)
     if key == "auto_buy":
         return _coerce_auto_buy(value)
+    if key == "rotation":
+        return _coerce_rotation(value)
+    if key == "regime_filter":
+        return _coerce_regime_filter(value)
     if key == "feishu":
         return _coerce_feishu(value)
     if key == "reconcile_times":
@@ -514,8 +640,25 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
             "max_buys_per_day": cfg.auto_buy.max_buys_per_day,
             "universe": dict(cfg.auto_buy.universe),
         },
+        "rotation": {
+            "enabled": cfg.rotation.enabled,
+            "etf_ratio": cfg.rotation.etf_ratio,
+            "signal_index": cfg.rotation.signal_index,
+            "cyb_etf": cfg.rotation.cyb_etf,
+            "gold_etf": cfg.rotation.gold_etf,
+            "ma_window": cfg.rotation.ma_window,
+            "high_window": cfg.rotation.high_window,
+            "drawdown_threshold": cfg.rotation.drawdown_threshold,
+            "execute_time": cfg.rotation.execute_time,
+        },
+        "regime_filter": {
+            "enabled": cfg.regime_filter.enabled,
+            "index_code": cfg.regime_filter.index_code,
+            "ma_window": cfg.regime_filter.ma_window,
+        },
         "feishu": {"enabled": cfg.feishu.enabled,
-                   "daily_report_level": cfg.feishu.daily_report_level},
+                   "daily_report_level": cfg.feishu.daily_report_level,
+                   "ai_review": cfg.feishu.ai_review},
         "monitor_scan_interval_sec": cfg.monitor_scan_interval_sec,
         "sync_interval_sec": cfg.sync_interval_sec,
         "tick_heartbeat_sec": cfg.tick_heartbeat_sec,

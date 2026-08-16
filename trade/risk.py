@@ -91,6 +91,10 @@ class OrderIntent:
     price: float
     qty: int
     manual: bool = False
+    # 2026-08-14 ETF 轮动: rotation=True 的买单绕过单笔金额上限与持仓数上限
+    # (轮动是"总资产×比例"的满仓/半仓, 受 position_sizing 的 2 万上限约束
+    # 永远买不满); 急停/对账/日亏/T+1 四道保命闸照常生效。
+    rotation: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,13 +178,19 @@ class RiskGate:
         if intent.qty % s.lot_size != 0:
             return False, f"非整手: {intent.qty} 不是 {s.lot_size} 的整数倍"
         amount = intent.price * intent.qty
-        if amount < s.min_buy_amount:
+        # 2026-08-15 (审计 L5): 轮动买入豁免金额下限 —— 低单价 ETF (如黄金
+        # 518880 一手约 560 元) 的 1~3 手补仓会被 2000 元下限误拒, 导致半仓
+        # 小额缺口永不补齐; 轮动有池级预算帽兜底, 豁免下限无超买风险
+        if not intent.rotation and amount < s.min_buy_amount:
             return False, f"买入金额 {amount:.0f} 低于下限 {s.min_buy_amount:.0f}"
-        # 2026-08-13 用户裁决: 人工买入 (manual=True) 跳过单笔金额上限
-        if not intent.manual and amount > s.max_buy_amount:
+        # 2026-08-13 用户裁决: 人工买入 (manual=True) 跳过单笔金额上限;
+        # 2026-08-14: 轮动买入 (rotation=True) 同理 —— 满仓/半仓是
+        # "总资产×比例", 受 2 万上限约束永远买不满
+        if not intent.manual and not intent.rotation and amount > s.max_buy_amount:
             return False, f"买入金额 {amount:.0f} 高于上限 {s.max_buy_amount:.0f}"
         held = {c for c, p in ctx.positions.items() if p.volume > 0}
-        if intent.code not in held and len(held) >= s.max_positions:
+        # 轮动买入的 2 只 ETF 是"池子", 不受选股持仓数上限约束
+        if not intent.rotation and intent.code not in held and len(held) >= s.max_positions:
             return False, f"持仓数 {len(held)} 已达上限 {s.max_positions}"
         return True, ""
 

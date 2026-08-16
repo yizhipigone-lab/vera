@@ -48,6 +48,7 @@ from trade.events import (  # noqa: E402
     EVENT_ORDER_UPDATE,
     EVENT_QUOTE_SNAPSHOT,
     EVENT_RECONCILE,
+    EVENT_ROTATION,
     EVENT_SIGNALS,
     EVENT_SYNC_REPORTS,
     EVENT_TICK,
@@ -62,6 +63,7 @@ from trade.monitor import SESSION_NAMES, Monitor, is_trading_day_cached, trading
 from trade.notifier import FeishuNotifier  # noqa: E402
 from trade.reconciler import Reconciler  # noqa: E402
 from trade.risk import KillSwitch, OrderIntent, RiskContext, RiskGate  # noqa: E402
+from trade.rotation import RotationFeature  # noqa: E402
 from trade.store import TradeStore  # noqa: E402
 from utils.logger import get_logger  # noqa: E402
 
@@ -165,6 +167,10 @@ class _DailyTimer:
             if hhmm == self._cfg.auto_buy.time:
                 self._fire_once("auto_buy", Event(type=EVENT_COMMAND, data={
                     "action": "auto_buy", "source": "scheduled"}))
+            # 2026-08-14: ETF 轮动每日触发 (算信号 + 调仓, 一次做完)
+            if hhmm == self._cfg.rotation.execute_time:
+                self._fire_once("rotation", Event(type=EVENT_COMMAND, data={
+                    "action": "rotation_run", "source": "scheduled"}))
             # 15:05 EOD 归档
             if hhmm == "15:05":
                 self._fire_once("eod", Event(type=EVENT_EOD, data={"hhmm": hhmm}))
@@ -245,6 +251,8 @@ class TradeApp:
                 EVENT_COMMAND: lambda e: self.dispatch_command(e.data or {}),
                 # 批次4 接线①: 选股结果直接转发特性 (不在组合根落地逻辑)
                 EVENT_SIGNALS: lambda e: self._auto_buy.on_signals(e.data or {}),
+                # 2026-08-14 接线: 轮动信号结果转发轮动特性
+                EVENT_ROTATION: lambda e: self._rotation.on_signals(e.data or {}),
                 EVENT_CONNECTION_LOST: lambda e: self._on_connection_lost(e.data),
                 EVENT_ORDER_ERROR: lambda e: self._on_order_error(e.data),
                 EVENT_CANCEL_ERROR: lambda e: self._on_cancel_error(e.data),
@@ -255,6 +263,9 @@ class TradeApp:
         # FakeGateway 期初持仓/资金可注入 (e2e 测试接缝; 生产真网关不需要)
         if fake:
             gw_kwargs = dict(fake_gateway_kwargs or {})
+            # 2026-08-14: 注入 app 时钟到 FakeGateway, 成交/委托 ts 与 TradeApp
+            # 同源 —— 修掉周末跑测试时真实 time.time() 与注入时钟跨日的误拦
+            gw_kwargs["clock"] = clock
         else:
             # 启动预检: 真网关缺账号/路径时给能看懂的报错, 而不是 QMT 的 rc=-1
             if not config.account_id or not config.qmt_path:
@@ -278,7 +289,11 @@ class TradeApp:
         self.reconciler = Reconciler(
             self.gateway, self.book, self.store, self.kill,
             quote_price=lambda code: (q := self.monitor.quote_of(code)) and q["last"],
-            in_flight_sells=lambda: self.executor.in_flight_sells(),
+            # 2026-08-15 (审计 M4): 轮动卖单也纳入对账 in_flight 降级网 ——
+            # 轮动卖单绕过 executor._pending, 回调丢失时若只查 executor 会漏
+            # 掉这票差异 → 误判 CRITICAL 急停
+            in_flight_sells=lambda: {**self.executor.in_flight_sells(),
+                                     **self._rotation.in_flight_sells()},
             # 2026-07-31: 回调丢失走补记时同样读 fill ctx 落成交原因 +
             # 飞书通知。peek 不删 (部成多笔共享原因), 终态由
             # on_order_terminal 回收 (lambda 延迟取 self.executor —— 构造序在后)
@@ -397,7 +412,16 @@ class TradeApp:
             selection_runner=self._selection_runner,
             build_risk_ctx=self._build_risk_ctx,
             get_prev_close=self._prev_close,
+            # 2026-08-14: 双池预算帽 —— 轮动启用时选股系统买入被
+            # 股票池预算 (S_target − 股票市值) 封顶, 不花 ETF 池的钱
+            budget_provider=self._stock_budget,
             clock=clock)
+        # 2026-08-14: ETF 轮动特性 (双池资金分配)。cfg 传 getter 热更穿透;
+        # 信号在工作线程算, 调仓在消费者线程执行 (与 auto_buy 同纪律)。
+        self._rotation = RotationFeature(
+            self._engine, lambda: self._cfg, self.store, self.gateway,
+            self.book, self.monitor, self.risk, self.executor,
+            build_risk_ctx=self._build_risk_ctx, clock=clock)
         # 飞书通知器 (2026-07-31): 自带 worker 线程, 生产侧只入队裸 dict,
         # 消费者线程零阻塞 (铁律 3); URL 走环境变量, enabled 走 config 热关。
         self._notifier = FeishuNotifier(
@@ -450,7 +474,7 @@ class TradeApp:
 
         self._engine.start()
         self._notifier.start()
-        report = self.reconciler.reconcile()
+        report = self.reconciler.reconcile(now_ts=self._clock())
         self._reconciled = report.passed
         if not report.passed:
             _logger.critical("启动对账未通过 (%s), 急停已激活, 需人工介入",
@@ -465,6 +489,7 @@ class TradeApp:
         """审计M5修复: 定时任务补偿 —— 定时器精确匹配 hhmm, 进程错过
         时点就全天缺席。启动时对账通过后补一轮:
         - 已过 09:25 且在交易时段、当日未预埋 → 补偿预埋 (audit 留痕);
+        - 已过轮动 execute_time 且当日未跑轮动 → 补偿轮动 (2026-08-15 审计 L4);
         - 15:05 后启动且当日无 EOD 快照 → 补 EOD (对账 C 方次日基准)。
         """
         hhmm = _hhmm(self._clock())
@@ -479,6 +504,14 @@ class TradeApp:
                 "ladder_catchup", f"启动已过 09:15 ({hhmm}) 且当日未预埋, 补偿预埋",
                 {"hhmm": hhmm})
             self.executor.place_ladder(today)
+        # 2026-08-15 (审计 L4): 已过 execute_time 且当日未跑轮动 → 补一轮。
+        # 轮动 start 内部会再校验 enabled + 连续竞价时段 (fail-closed)。
+        if (self._cfg.rotation.execute_time <= hhmm <= "15:00"
+                and not self._rotation_ran_today(today)):
+            self.store.write_audit(
+                "rotation_catchup", f"启动已过 {self._cfg.rotation.execute_time} "
+                f"({hhmm}) 且当日未跑轮动, 补偿一轮", {"hhmm": hhmm})
+            self._rotation.start("scheduled")
         if hhmm >= "15:05":
             snap = self.store.load_position_snapshot()
             day_start = time.mktime(time.strptime(today, "%Y%m%d"))
@@ -537,6 +570,9 @@ class TradeApp:
         elif action == "auto_buy":
             # 批次4 接线②: 命令直接转发特性
             self._auto_buy.start(cmd.get("source", "manual"))
+        elif action == "rotation_run":
+            # 2026-08-14 接线: 轮动命令转发特性 (算信号 + 调仓)
+            self._rotation.start(cmd.get("source", "manual"))
         elif action == "update_config":
             self._apply_config(cmd["config_obj"], cmd.get("changed", []))
         else:
@@ -758,7 +794,7 @@ class TradeApp:
             self._unhealthy_scans = 0
 
     def _on_reconcile(self) -> None:
-        report = self.reconciler.reconcile()
+        report = self.reconciler.reconcile(now_ts=self._clock())
         # P0-③: UNKNOWN = 查询不可用 (疑似断线), 维持 reconciled 现状 —
         # 既不是"通过"也不是"不通过", 等下轮心跳/重连后再判
         if report.level == "UNKNOWN":
@@ -776,12 +812,14 @@ class TradeApp:
             return
         if trading_session(self._clock()) not in ("auction", "continuous", "lunch"):
             return
-        self.reconciler.sync_reports()
+        self.reconciler.sync_reports(now=self._clock())
 
     def _on_eod(self, notify_daily: bool = True) -> None:
         # 2026-08-08: 非交易日(周末/节假日)不做 EOD —— 此前周六 15:05 也归档
         # daily_asset + 推日报, 非交易日快照混进权益曲线/日历 (用户发现)
-        if not is_trading_day_cached():
+        # 2026-08-14: 用注入时钟的日期判交易日 (原 is_trading_day_cached() 走
+        # 真实 date.today(), 测试注入周五时钟、真实周六跑会误判非交易日)
+        if not is_trading_day_cached(_dt.date.fromtimestamp(self._clock())):
             self.store.write_audit("eod_skip", "非交易日, 跳过 EOD 归档与日报", {})
             return
         # 持仓快照归档 = 对账 C 方的明日基准; tier_state 在乐观标记时
@@ -796,7 +834,7 @@ class TradeApp:
         # 时段守卫, 15:05 后非盘中会被守卫拦) 供日报 realized_pnl/sell_details 读。fail-soft。
         prev_snapshot = self.store.load_position_snapshot()
         try:
-            self.reconciler.sync_reports()
+            self.reconciler.sync_reports(now=self._clock())
         except Exception:
             _logger.debug("EOD sync_reports 失败 (日报用本地已有成交)")
         positions = self.gateway.query_positions()
@@ -890,10 +928,20 @@ class TradeApp:
             changes = self._diff_positions(prev_snapshot, positions)
             if any(changes.values()):
                 payload["position_changes"] = changes
+        # 2026-08-15: 轮动信号进日报 (飞书 AI 复盘 + web 回看用)。只读 last 里的
+        # signal dict (state/ma20/回撤/现价), 不下单; 取不到 (轮动未跑) 就缺省。
+        try:
+            rot_last = self._rotation.last
+            if rot_last and rot_last.get("signal"):
+                payload["rotation"] = rot_last["signal"]
+        except Exception:
+            pass
         # 飞书 + 落库 (两路 fail-soft 互不影响, 不影响交易)
         level = getattr(self._cfg.feishu, "daily_report_level", "full")
         try:
-            self._notifier.notify_daily(payload, level=level)
+            self._notifier.notify_daily(
+                payload, level=level,
+                ai_review=getattr(self._cfg.feishu, "ai_review", False))
         except Exception:
             _logger.debug("盘后日报推送异常 (不影响交易)")
         try:
@@ -1120,6 +1168,46 @@ class TradeApp:
             {"code": code, "qty": qty, "price": price, "order_id": order_id})
         # 回报会经事件链自然入账, 这里只留人工动作痕迹
 
+    def _stock_budget(self) -> float | None:
+        """股票池买入预算帽 (2026-08-14, 轮动启用时生效)。
+
+        返回股票池还能花的钱 = max(0, (1−etf_ratio)×总资产 − 股票市值)。
+        轮动关闭返回 None (auto_buy 走原 cash×0.95, 行为不变)。
+        查询失败返回 None (fail-open 回退原口径, 预算帽是软隔离非安全闸)。"""
+        cfg = self._cfg.rotation
+        if not cfg.enabled:
+            return None
+        try:
+            asset = self.gateway.query_asset()
+            total = float(asset.get("total_asset", 0.0) or 0.0)
+        except Exception:
+            return None
+        if total <= 0:
+            return None
+        return max(0.0, (1.0 - cfg.etf_ratio) * total - self._stock_pool_value())
+
+    def _stock_pool_value(self) -> float:
+        """非轮动 ETF 的持仓市值 (股票池)。无行情回退成本价。"""
+        cyb, gold = self._cfg.rotation.cyb_etf, self._cfg.rotation.gold_etf
+        total = 0.0
+        for code, pos in self.book.snapshot()["positions"].items():
+            if code in (cyb, gold) or pos.volume <= 0:
+                continue
+            q = self.monitor.quote_of(code)
+            last = q.get("last") if q else None
+            if last and last > 0:
+                total += float(last) * pos.volume
+            elif pos.avg_cost > 0:
+                total += pos.avg_cost * pos.volume
+        return total
+
+    def _rotation_ran_today(self, today: str) -> bool:
+        """当日是否已跑过轮动 (启动补偿 L4 判重: 读 rotation.last 的 ts)。"""
+        last = self._rotation.last
+        if not last or not last.get("ts"):
+            return False
+        return _day_str(float(last["ts"])) == today
+
     def _build_risk_ctx(self) -> RiskContext:
         try:
             asset = self.gateway.query_asset()
@@ -1181,6 +1269,11 @@ class TradeApp:
     def auto_buy_last(self) -> dict | None:
         """最近一次尾盘自动买入运行结果 (批次4: 委托 AutoBuyFeature.last)。"""
         return self._auto_buy.last
+
+    @property
+    def rotation_last(self) -> dict | None:
+        """最近一次 ETF 轮动信号+调仓结果 (2026-08-14)。"""
+        return self._rotation.last
 
 
 def main() -> None:

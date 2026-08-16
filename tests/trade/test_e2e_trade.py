@@ -297,7 +297,9 @@ def test_startup_catchup_ladder_disabled_skips(tmp_path):
 
 def test_startup_catchup_eod_after_1505(cfg):
     """15:05 后启动且当日无 EOD 快照 → 补 EOD 归档 (对账 C 方次日基准)。"""
-    clock = _clock_at(15, 10)
+    # 用最近交易日 (周末/节假日跑测试时 _clock_at 会落到非交易日, EOD 被正确
+    # 跳过导致本测试假失败); 与 ladder 补偿测试同口径
+    clock = _clock_last_trading_day(15, 10)
     app = TradeApp(cfg, fake=True, clock=lambda: clock[0],
                    fake_gateway_kwargs={
                        "cash": 1_000_000.0,
