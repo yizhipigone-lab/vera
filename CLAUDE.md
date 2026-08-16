@@ -60,7 +60,7 @@
 
 **多重检验校正(Deflated Sharpe 等) 用户拍板不做, 勿再提。**
 
-**板块缓存 TTL(待实施)**: `core/data_cache.py` 板块列表/成份股缓存目前无保质期, server 不重启就一直用旧数据(新股进板块/退市剔除都看不到)。方案: 缓存写入记时间戳, 读取时跨自然日(或超 24h)视为 miss 自动重拉 TDX, 用户无需记着重启 server。
+**板块缓存 TTL(已实施 2026-08-01 D6, 本条目过时留档)**: `core/data_cache.py` 板块列表/成份股 24h、简称映射 7d 惰性过期(`DataCache`, has_* 读侧判过期→回源重拉 TDX), 测试 `tests/test_data_cache.py::TestDataCacheTTL` 锁定。跨自然日语义以 24h 绝对 TTL 近似(成份调整日级频率, 偏差可接受)。
 
 ## 协作风格(用户四禁,违反即止损)
 
