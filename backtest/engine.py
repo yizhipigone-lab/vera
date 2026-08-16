@@ -22,6 +22,7 @@ from backtest.degrade_5m import (
 )
 from backtest.loop import build_backtest_loop
 from backtest.metrics import MetricsCalculator
+from backtest.prepared import PreparedMatrix
 from backtest.result import BacktestResult
 from backtest.stop_config import (
     DEFAULT_PRIORITY,
@@ -684,35 +685,57 @@ class BacktestEngine:
                    formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
                    close_raw=None,
                    return_raw=False):
-        """用预取数据运行回测，跳过K线获取（用于批量优化）
+        """@deprecated 旧签名兼容壳 (P2-1 过渡期, 阶段 4 删除)。
 
-        候选 A 阶段 1 深化（加厚前门）: 9 旧位置参数不动, 新增 9 个 keyword-only
-        透传三类能力（公式卖出/跳空保护/退市检测）。40 调用方不传新参 → 全 None
-        → 三类能力 off → 与旧版字节级一致。capabilities 三开关（默认全开）gate
-        已提供的数据, 不自动造数据。
-
-        - filter_limit_up: 默认 True（40 调用方现状, 跑涨停过滤）; 收编脚本传 False
-          复现旧直调核心循环口径 (2026-08-01 前为直调 _simulate_core_v3, 壳已退役)。
-        - open_np/tradable_np/last_tradable_idx/formula_exit_np: 能力数据, None=off。
-        - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np（不从 close 自动建,
-          防 ffill 调用方误触发退市）。
-        - return_raw: True 时 result dict 加 raw_equity/raw_trades（收编脚本 + parity 测试用）。
-
-        ⚠️ degrade_5m (5m 数据层降级) 仅 run() 路径支持, run_cached 不做降级
-        (计划书 2026-07-18 LOW-3): 批量优化走预取数据, 缺 5m 的股-天照旧丢信号。
+        内部构造 PreparedMatrix 调 run_cached_prepared; `selections` 死参数保留但忽略。
+        新调用方请直接用 run_cached_prepared。
         """
-        stop = stop_config or {}
-        # 2026-08-01 批次 3b C2: priority 校验/trailing 缺省/时间缩放/ATR/build+run
-        # 已并入 _resolve_stop_and_build_loop (run/run_cached 共享, 防漂移)。
-
-        # 2026-07-06: bug fix - v3 优化脚本发现 close 是 tuple, 详情见 optimize_quantqq_v3.py 失败堆栈
-        # DEBUG 输出 close 实际类型 + 调用栈
+        # 2026-07-06: bug fix - 旧调用方位置参数错位把 (close, entries) 传成 tuple
         if isinstance(close, tuple) and not isinstance(close, pd.DataFrame):
             logger.warning("run_cached 收到 tuple 类型 close (疑似旧调用方位置参数错位), len=%d", len(close))
-            # 兼容老调用: (close, entries) 位置传成 tuple
             if len(close) == 2 and isinstance(close[0], pd.DataFrame) and isinstance(close[1], pd.DataFrame):
                 close, entries = close[0], close[1]
                 logger.debug("已自动 unpack tuple → (close, entries)")
+
+        prepared = PreparedMatrix(
+            close=close, entries=entries, high_np=high_np, low_np=low_np,
+            open_np=open_np, tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
+        )
+        return self.run_cached_prepared(
+            prepared, stop_config, ladder_profits, ladder_ratios, n_ladder,
+            filter_limit_up=filter_limit_up,
+            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
+            formula_exit_lag_bars=formula_exit_lag_bars,
+            close_raw=close_raw, return_raw=return_raw,
+        )
+
+    def run_cached_prepared(self, prepared, stop_config,
+                            ladder_profits, ladder_ratios, n_ladder, *,
+                            filter_limit_up=True,
+                            formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
+                            close_raw=None,
+                            return_raw=False):
+        """用预取数据运行回测，跳过K线获取（P2-1 新签名: prepared 打包 7 矩阵）。
+
+        与旧 run_cached 语义字节级一致, 只是把 close/entries/high_np/low_np/
+        open_np/tradable_np/last_tradable_idx 收进 PreparedMatrix (消除位置顺序
+        陷阱 + 配对不变量构造期 fail-fast), 并删除死参数 selections。
+
+        - filter_limit_up: 默认 True; 收编脚本传 False 复现旧直调核心循环口径。
+        - formula_exit_np/close_raw: 可选能力数据, None=off。
+        - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np。
+        - return_raw: True 时 result dict 加 raw_equity/raw_trades。
+
+        ⚠️ degrade_5m (5m 数据层降级) 仅 run() 路径支持, run_cached 不做降级。
+        """
+        stop = stop_config or {}
+        close = prepared.close
+        entries = prepared.entries
+        high_np = prepared.high_np
+        low_np = prepared.low_np
+        open_np = prepared.open_np
+        tradable_np = prepared.tradable_np
+        last_tradable_idx = prepared.last_tradable_idx
 
         bpday = self.bars_per_day
 
@@ -732,9 +755,8 @@ class BacktestEngine:
         if not cap_delist:
             tradable_np = None
             last_tradable_idx = None
-        # M2 修复: tradable_np 与 last_tradable_idx 应成对 (单传会导致退市永不触发, 仓位长期挂账)
-        if tradable_np is not None and last_tradable_idx is None:
-            logger.warning("tradable_np 已传但 last_tradable_idx=None, 退市检测将不触发 (应成对传)")
+        # (M2 配对 warning 已删: PreparedMatrix.__post_init__ 在构造期强制成对,
+        #  此处的 tradable_np/last_tradable_idx 恒成对或同 None, warning 永不触发)
         # formula_exit_ratio: keyword 优先, None 回退 config.formula_sell.sell_ratio
         if formula_exit_ratio is None:
             formula_exit_ratio = float(stop.get("formula_sell", {}).get("sell_ratio", 1.0))
@@ -755,8 +777,6 @@ class BacktestEngine:
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
         equity_curve, trades_df, metrics = self._post_process(equity_arr, raw_trades, close, bpday)
-        # C2 修复: 返回真实 equity_curve (以前只返回 cumret, 强制调用方用 trades 重建, 有前视偏差)
-        # C3: 返回 BacktestResult dataclass (dict-like 兼容老代码; raw_* 仅 return_raw 时设置)
         bt_kwargs = dict(
             metrics=metrics,
             trades=trades_df,
