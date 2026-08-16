@@ -319,6 +319,17 @@ class BacktestEngine:
         返回 (equity_arr, raw_trades, resolved); resolved 携带调用方后续需要的
         解析值 (目前仅 run() 的 degrade 报告用 trailing 缺省后值)。
         """
+        # 2026-08-16 药2 (回测提速): 价格矩阵降 float32 — 价格只需 ~7 位有效数字,
+        # float64 是浪费 (内存减半 + CPU 缓存友好); 资金/权益账 (cash/equity/
+        # trade buffer) 仍 float64 保精度。两入口 (run/run_cached) 都经此收口,
+        # 统一转 float32 防 drift。见 docs/plan/2026-08-16_float32价格矩阵_回测提速_方案书.md
+        close_np = np.asarray(close.values, dtype=np.float32)
+        if high_np is not None:
+            high_np = np.asarray(high_np, dtype=np.float32)
+        if low_np is not None:
+            low_np = np.asarray(low_np, dtype=np.float32)
+        if open_np is not None:
+            open_np = np.asarray(open_np, dtype=np.float32)
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
         # 移动止损止盈缺字段/None 语义: 回退命名常量 (两入口同一兜底, 防漂移)
@@ -355,7 +366,7 @@ class BacktestEngine:
         if atr_enabled:
             if high_np is not None and low_np is not None:
                 atr_matrix = _compute_atr_matrix(
-                    high_np, low_np, close.values.astype(np.float64),
+                    high_np, low_np, close_np,
                     period=int(atr_cfg.get("period", 14)))
             else:
                 logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
@@ -388,7 +399,7 @@ class BacktestEngine:
         )
         self._last_loop = loop
         equity_arr, raw_trades = loop.run(
-            close.values.astype(np.float64), entry_np,
+            close_np, entry_np,
             high_np=high_np, low_np=low_np, open_np=open_np,
             tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
             formula_exit_np=formula_exit_np,

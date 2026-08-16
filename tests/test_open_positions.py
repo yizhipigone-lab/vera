@@ -95,7 +95,9 @@ def test_position_open_at_end_not_liquidated(monkeypatch):
     # 权益最末 bar = 现金 + 市值 (买入成本 = 2000股 × 10 × (1+滑点0.001) × (1+佣金0.0003))
     eq = result.equity_curve["equity"].iloc[-1]
     cost = 2000 * 10.0 * (1 + 0.001) * (1 + 0.0003)
-    assert eq == pytest.approx(100000.0 - cost + 22000.0, rel=1e-9)
+    # 2026-08-16 药2: 价格矩阵降 float32, 权益精度从 1e-15 降到 ~1e-7,
+    # 容忍度放宽到 1e-6 (float32 量级, 仍能抓住真 bug, 真 bug 误差远超 1e-6)
+    assert eq == pytest.approx(100000.0 - cost + 22000.0, rel=1e-6)
 
 
 def test_open_positions_remainder_after_ladder_partial_sell(monkeypatch):
