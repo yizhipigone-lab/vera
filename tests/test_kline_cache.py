@@ -573,3 +573,43 @@ def test_fetch_span_guard_1m(tmp_path):
     # 2024-03-01 ~ 2024-04-30 ≈ 44 工作日 ≤ 80 → 单次
     cache2.get(["600001"], "20240301", "20240430", period="1m")
     assert len(calls) == 1
+
+
+def test_readonly_env_skips_network_validation(tmp_path, monkeypatch):
+    """VERA_KLINE_READONLY=1: 缓存命中时跳过缺口补拉 + 复权探针 (网络零校验)。
+
+    2026-08-14: 16 年 5m 寻优 prep 实测缺口补拉对远古停牌日逐只发 TDX 请求,
+    取数从分钟级拖到 50 小时级 —— 批量历史读取用只读模式绕开。
+    """
+    cache = _make_cache(tmp_path)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")  # 落缓存
+
+    def _forbidden(*a, **k):
+        raise AssertionError("只读模式不应触发网络校验")
+    monkeypatch.setattr(cache, "_detect_and_fill_gaps", _forbidden)
+    monkeypatch.setattr(cache, "_probe_shift", _forbidden)
+    monkeypatch.setenv("VERA_KLINE_READONLY", "1")
+    res = cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    assert not res["Close"].empty, "只读模式仍应正常返回缓存数据"
+
+
+def test_readonly_env_no_full_refetch_when_not_intact(tmp_path, monkeypatch):
+    """只读模式 + intact=false: 也不触发全量重拉 (601888.SH 事件, 2026-08-14)。
+
+    批量历史读取时, 几千只 intact=false 的票逐只全史重拉会把任务打爆;
+    只读模式必须"有缓存记录就原样用", 网络零动作。
+    """
+    calls = {"n": 0}
+
+    def counting_fetcher(*a, **k):
+        calls["n"] += 1
+        return _make_fake_kline(*a, **k)
+
+    cache = _make_cache(tmp_path, fetcher=counting_fetcher)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    n_after_first = calls["n"]
+    cache._manifest_set_intact("002008.SZ", "1d", False)  # 标记不完整
+    monkeypatch.setenv("VERA_KLINE_READONLY", "1")
+    res = cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    assert calls["n"] == n_after_first, "只读模式下 intact=false 不应触发重拉"
+    assert not res["Close"].empty, "缓存数据应原样返回"

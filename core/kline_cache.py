@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -187,6 +188,14 @@ class KlineCache:
         F6 [H2] 增量含重叠 bar 比对 last_close → 前复权分红 shift 检测
         """
         rec = self._manifest_get(code, period)
+        # 只读模式 (VERA_KLINE_READONLY=1, 批量历史回测取数专用): 有缓存记录就
+        # 直接用现状, 零网络动作 —— 不增量/不探针/不补缺口/不因 intact=false
+        # 全量重拉。2026-08-14 601888.SH 事件: intact=false 的 3343 只票在 16 年
+        # 5m 寻优 prep 里逐只触发全史分块重拉 (几百次 TDX 请求/只), prep 被打爆。
+        # 这些票的"缺口"多为远古停牌日, 补不补对回测零影响。
+        # 无记录 (rec is None) 仍走正常逻辑做首次拉取 (否则该票完全无数据)。
+        if rec is not None and os.environ.get("VERA_KLINE_READONLY") == "1":
+            return
         need_fetch: Optional[tuple] = None
         staleness_check: Optional[tuple] = None  # (last_d, old_last_close)
         is_full_fetch = False
@@ -233,6 +242,13 @@ class KlineCache:
                     with self._lock:
                         self._fetch_and_store(code, period, start_ts, end_ts, dividend_type)
                     self._mark_refetch(code, period)
+        # 2026-08-14: 只读模式 (VERA_KLINE_READONLY=1) — 批量历史回测取数专用。
+        # 跳过两类网络校验: 复权因子探针 + 缺口补拉。动机: 16 年长区间 5m 寻优
+        # prep 实测, 缺口补拉对远古停牌日逐只发 TDX 请求 (永远无数据, 每次 ~1s),
+        # 几千只票把取数从分钟级拖到 50 小时级; 而这些校验对"读历史"零价值。
+        # 缺数据段 (need_fetch) 的正常拉取不受此开关影响。
+        if os.environ.get("VERA_KLINE_READONLY") == "1":
+            return
         if need_fetch is None and self._probe_due(code, period):
             # 2026-07-18: 复权因子漂移探针。F6 只在增量扩展时检测, 区间已覆盖
             # (含 intact=false 冷却期内) 的因子漂移靠探针自愈 — 600000.SH 事件
