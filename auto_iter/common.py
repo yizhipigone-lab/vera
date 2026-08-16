@@ -502,12 +502,10 @@ def run_backtest(panel, entries_full, stop_cfg, bt_cfg=None,
     ladder_profits = np.array([lv["profit"] for lv in levels], dtype=np.float64)
     ladder_ratios = np.array([lv["sell_ratio"] for lv in levels], dtype=np.float64)
 
-    # run_cached 不读 selections (仅为签名兼容位), 传空壳
-    selections = pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
     prepared = PreparedMatrix(
         close=close_ff, entries=entries, high_np=high_np, low_np=low_np,
         open_np=open_np)
-    return eng.run_cached_prepared(
+    return eng.run_cached(
         prepared, stop_cfg, ladder_profits, ladder_ratios, len(levels),
         close_raw=close_raw,
         formula_exit_np=formula_exit_np,

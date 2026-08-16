@@ -84,7 +84,7 @@ def main() -> int:
                 high_np=mats["high_np"], low_np=mats["low_np"],
                 open_np=mats["open_np"], tradable_np=mats["tradable_np"],
                 last_tradable_idx=mats["last_tradable_idx"])
-            res = engine.run_cached_prepared(
+            res = engine.run_cached(
                 prepared, sweep.combo_stop_config(CHAMPION),
                 np.array([], dtype=np.float64), np.array([], dtype=np.float64),
                 0, filter_limit_up=False)

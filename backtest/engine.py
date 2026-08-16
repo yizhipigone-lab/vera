@@ -677,49 +677,17 @@ class BacktestEngine:
             bt_kwargs["open_positions"] = open_positions
         return BacktestResult(**bt_kwargs)
 
-    def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
+    def run_cached(self, prepared, stop_config,
                    ladder_profits, ladder_ratios, n_ladder, *,
                    filter_limit_up=True,
-                   open_np=None,
-                   tradable_np=None, last_tradable_idx=None,
                    formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
                    close_raw=None,
                    return_raw=False):
-        """@deprecated 旧签名兼容壳 (P2-1 过渡期, 阶段 4 删除)。
+        """用预取数据运行回测，跳过K线获取（P2-1 前门收敛: prepared 打包 7 矩阵）。
 
-        内部构造 PreparedMatrix 调 run_cached_prepared; `selections` 死参数保留但忽略。
-        新调用方请直接用 run_cached_prepared。
-        """
-        # 2026-07-06: bug fix - 旧调用方位置参数错位把 (close, entries) 传成 tuple
-        if isinstance(close, tuple) and not isinstance(close, pd.DataFrame):
-            logger.warning("run_cached 收到 tuple 类型 close (疑似旧调用方位置参数错位), len=%d", len(close))
-            if len(close) == 2 and isinstance(close[0], pd.DataFrame) and isinstance(close[1], pd.DataFrame):
-                close, entries = close[0], close[1]
-                logger.debug("已自动 unpack tuple → (close, entries)")
-
-        prepared = PreparedMatrix(
-            close=close, entries=entries, high_np=high_np, low_np=low_np,
-            open_np=open_np, tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
-        )
-        return self.run_cached_prepared(
-            prepared, stop_config, ladder_profits, ladder_ratios, n_ladder,
-            filter_limit_up=filter_limit_up,
-            formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
-            formula_exit_lag_bars=formula_exit_lag_bars,
-            close_raw=close_raw, return_raw=return_raw,
-        )
-
-    def run_cached_prepared(self, prepared, stop_config,
-                            ladder_profits, ladder_ratios, n_ladder, *,
-                            filter_limit_up=True,
-                            formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
-                            close_raw=None,
-                            return_raw=False):
-        """用预取数据运行回测，跳过K线获取（P2-1 新签名: prepared 打包 7 矩阵）。
-
-        与旧 run_cached 语义字节级一致, 只是把 close/entries/high_np/low_np/
-        open_np/tradable_np/last_tradable_idx 收进 PreparedMatrix (消除位置顺序
-        陷阱 + 配对不变量构造期 fail-fast), 并删除死参数 selections。
+        close/entries/high_np/low_np/open_np/tradable_np/last_tradable_idx 收进
+        PreparedMatrix (消除位置顺序陷阱 + 配对不变量构造期 fail-fast); 删除了
+        死参数 selections。
 
         - filter_limit_up: 默认 True; 收编脚本传 False 复现旧直调核心循环口径。
         - formula_exit_np/close_raw: 可选能力数据, None=off。

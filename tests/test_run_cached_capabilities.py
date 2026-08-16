@@ -74,7 +74,7 @@ def _make_market(n_dates=20):
 
 
 def _run(eng, close, entries, high, low, sc, **cap_kwargs):
-    """统一调用 run_cached_prepared; filter_limit_up=False 复现直调口径, return_raw=True 拿 raw_trades."""
+    """统一调用 run_cached; filter_limit_up=False 复现直调口径, return_raw=True 拿 raw_trades."""
     prepared = PreparedMatrix(
         close=close, entries=entries,
         high_np=high.values.astype(np.float64),
@@ -83,7 +83,7 @@ def _run(eng, close, entries, high, low, sc, **cap_kwargs):
         tradable_np=cap_kwargs.pop("tradable_np", None),
         last_tradable_idx=cap_kwargs.pop("last_tradable_idx", None),
     )
-    return eng.run_cached_prepared(
+    return eng.run_cached(
         prepared, sc, np.array([]), np.array([]), 0,
         filter_limit_up=False, return_raw=True,
         **cap_kwargs,
@@ -308,7 +308,7 @@ def test_run_cached_ladder_non_monotonic_warning():
         close=close, entries=entries,
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64))
-    result = eng.run_cached_prepared(
+    result = eng.run_cached(
         prepared, sc, lp, lr, 2, filter_limit_up=False, return_raw=True)
     assert result["raw_equity"].shape == (len(dates),), "非升序 ladder 应 warning 但不崩"
 
@@ -324,7 +324,7 @@ def test_run_cached_return_raw_false_no_raw_keys():
         close=close, entries=entries,
         high_np=high.values.astype(np.float64),
         low_np=low.values.astype(np.float64))
-    result = eng.run_cached_prepared(
+    result = eng.run_cached(
         prepared, _stop_config(), np.array([]), np.array([]), 0,
         filter_limit_up=False,  # return_raw 默认 False
     )

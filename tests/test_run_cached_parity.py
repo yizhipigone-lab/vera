@@ -167,7 +167,7 @@ def _assert_parity(eng, close, entries, high, low, sc, **caps):
         tradable_np=caps.pop("tradable_np", None),
         last_tradable_idx=caps.pop("last_tradable_idx", None),
     )
-    result = eng.run_cached_prepared(
+    result = eng.run_cached(
         prepared, sc, lp, lr, nl,
         filter_limit_up=False, return_raw=True, **caps,
     )

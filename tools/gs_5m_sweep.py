@@ -273,7 +273,7 @@ def do_run(args):
                     high_np=mats["high_np"], low_np=mats["low_np"],
                     open_np=mats["open_np"], tradable_np=mats["tradable_np"],
                     last_tradable_idx=mats["last_tradable_idx"])
-                res = engine.run_cached_prepared(
+                res = engine.run_cached(
                     prepared, combo_stop_config(c, PRIORITY),
                     ladder_profits, ladder_ratios, len(levels),
                     filter_limit_up=False)

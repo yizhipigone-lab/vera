@@ -230,7 +230,7 @@ def _sc_engine_run_cached(priority, seed):
         high_np=high.astype(np.float64), low_np=low.astype(np.float64),
         open_np=open_.astype(np.float64),
         tradable_np=tradable, last_tradable_idx=last_tradable)
-    result = eng.run_cached_prepared(
+    result = eng.run_cached(
         prepared, sc, lp, lr, nl,
         filter_limit_up=False,  # 合成数据无涨跌停语义, 且避免 ST 信息外部依赖
         formula_exit_np=fsig, formula_exit_ratio=1.0,
@@ -476,7 +476,7 @@ def test_run_vs_run_cached_consistency(monkeypatch):
         open_np=captured["open"],
         tradable_np=captured["tradable"],
         last_tradable_idx=captured["last_tradable_idx"])
-    res_cached = eng.run_cached_prepared(
+    res_cached = eng.run_cached(
         prepared, sc, lp, lr, nl,
         filter_limit_up=False,
         return_raw=True,

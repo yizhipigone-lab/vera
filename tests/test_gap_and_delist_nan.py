@@ -38,7 +38,7 @@ def test_gap_down_executes_at_open_not_stop_price():
     prepared = PreparedMatrix(close=close, entries=entries,
                               high_np=high_np, low_np=low_np,
                               open_np=open_np)
-    r = eng.run_cached_prepared(prepared, stop,
+    r = eng.run_cached(prepared, stop,
                                 np.array([0.06]), np.array([0.5]), 1,
                                 filter_limit_up=False, return_raw=True)
     raw = r.raw_trades
@@ -63,7 +63,7 @@ def test_no_gap_executes_at_stop_price():
     prepared = PreparedMatrix(close=close, entries=entries,
                               high_np=high_np, low_np=low_np,
                               open_np=open_np)
-    r = eng.run_cached_prepared(prepared, stop,
+    r = eng.run_cached(prepared, stop,
                                 np.array([0.06]), np.array([0.5]), 1,
                                 filter_limit_up=False, return_raw=True)
     raw = r.raw_trades

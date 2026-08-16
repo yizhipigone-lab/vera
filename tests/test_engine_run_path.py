@@ -304,7 +304,7 @@ class TestNoNewPositionalParamsAdded:
         """2026-08-01 批次 3b C2: run()/run_cached() 都必须经共享段, 不得各自 build。"""
         src = self._read_engine_src()
         run_start = src.find('def run(self, selections')
-        run_end = src.find('def run_cached(self, close')
+        run_end = src.find('def run_cached(self, prepared')
         cached_end = src.find('def _build_trades')
         run_body = src[run_start:run_end]
         cached_body = src[run_end:cached_end]
@@ -345,14 +345,16 @@ class TestNoNewPositionalParamsAdded:
 
 # === 4. run_cached 签名契约测试 (候选 A 阶段 1: 加厚前门) ===
 class TestRunCachedSignature:
-    """run_cached 深化后的签名契约 — 锁 10 旧位置参数 + 9 新 keyword-only 能力参数.
+    """run_cached 前门收敛后 (P2-1) 的签名契约 — 5 位置参数 (prepared + stop_config
+    + ladder_profits + ladder_ratios + n_ladder) + 6 keyword-only 能力参数。
 
-    深化方式: 旧 10 位置参数一字不动 (40 调用方依赖), 新增 9 个 keyword-only
-    全默认 None/False/True → 40 调用方不传 = 三类能力 off = 旧行为字节级一致。
+    close/entries/high_np/low_np/open_np/tradable_np/last_tradable_idx 已收进
+    PreparedMatrix, 死参数 selections 已删。
     """
 
     def test_run_cached_positional_params_unchanged(self):
-        """核心契约: 必需位置参数 ≤ 10 (含 self; 锁旧 baseline, 40 调用方位置调用依赖)."""
+        """核心契约: 必需位置参数 = 6 (含 self; 即 prepared + stop_config +
+        ladder_profits + ladder_ratios + n_ladder)。"""
         sig = inspect.signature(BacktestEngine.run_cached)
         positional_count = sum(
             1 for p in sig.parameters.values()
@@ -360,39 +362,33 @@ class TestRunCachedSignature:
             and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
                            inspect.Parameter.POSITIONAL_OR_KEYWORD)
         )
-        # 实测 = 10 (self + 9 必需位置: close/entries/high_np/low_np/stop_config/selections/
-        #           ladder_profits/ladder_ratios/n_ladder; skip_sm 有默认值不算)
-        assert positional_count <= 10, (
-            f"run_cached 必需位置参数个数 {positional_count} > 10 (self+9). "
-            f"40 调用方依赖旧 9 必需位置参数 (skip_sm 有默认), 不能加新必需位置参数 — 新能力必须 keyword-only。"
+        assert positional_count == 6, (
+            f"run_cached 必需位置参数个数 {positional_count} != 6 (self+5). "
+            f"P2-1 收敛后应为 prepared/stop_config/ladder_profits/ladder_ratios/n_ladder。"
         )
 
     def test_run_cached_capability_kwargs_keyword_only(self):
-        """9 个能力参数必须 keyword-only + 有默认值 (40 调用方不传 = 旧行为)."""
+        """6 个能力参数必须 keyword-only + 有默认值 (None=能力 off)。"""
         sig = inspect.signature(BacktestEngine.run_cached)
         required_kw = {
-            'filter_limit_up', 'open_np', 'tradable_np', 'last_tradable_idx',
-            'formula_exit_np', 'formula_exit_ratio', 'formula_exit_lag_bars',
-            'close_raw', 'return_raw',
+            'filter_limit_up', 'formula_exit_np', 'formula_exit_ratio',
+            'formula_exit_lag_bars', 'close_raw', 'return_raw',
         }
         for kw in required_kw:
             assert kw in sig.parameters, f"run_cached 缺少 keyword 参数 [{kw}]"
             p = sig.parameters[kw]
             assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
-                f"{kw} 必须 keyword-only (防 40 调用方位置传参错位)"
+                f"{kw} 必须 keyword-only (防位置传参错位)"
             )
             assert p.default != inspect.Parameter.empty, (
-                f"{kw} 必须有默认值 (40 调用方不传 = 旧行为)"
+                f"{kw} 必须有默认值 (不传 = 能力 off)"
             )
 
     def test_run_cached_capability_kwargs_default_values(self):
-        """H2 修复: 9 keyword 的精确默认值 (40 调用方行为命脉, 防 filter_limit_up=True 被改 False)."""
+        """6 keyword 的精确默认值 (filter_limit_up=True 是命脉, 防被改 False)。"""
         sig = inspect.signature(BacktestEngine.run_cached)
         expected_defaults = {
             'filter_limit_up': True,
-            'open_np': None,
-            'tradable_np': None,
-            'last_tradable_idx': None,
             'formula_exit_np': None,
             'formula_exit_ratio': None,
             'formula_exit_lag_bars': 1,
@@ -403,7 +399,7 @@ class TestRunCachedSignature:
             actual = sig.parameters[kw].default
             assert actual == expected, (
                 f"run_cached.{kw} 默认值应为 {expected!r}, 实际 {actual!r} — "
-                f"改默认值会破坏 40 调用方行为 (filter_limit_up=True 是命脉)"
+                f"改默认值会破坏行为 (filter_limit_up=True 是命脉)"
             )
 
     def test_run_cached_forwards_capability_keywords(self):
@@ -417,7 +413,7 @@ class TestRunCachedSignature:
                                 'backtest', 'engine.py')
         with open(src_path, 'r', encoding='utf-8') as f:
             src = f.read()
-        cached_start = src.find('def run_cached(self, close')
+        cached_start = src.find('def run_cached(self, prepared')
         cached_end = src.find('def _build_trades')
         cached_body = src[cached_start:cached_end]
         seg_start = src.find('def _resolve_stop_and_build_loop(')
@@ -508,7 +504,7 @@ def test_run_cached_uses_yaml_defaults_when_trailing_values_missing(
 
     prepared = PreparedMatrix(close=close, entries=entries,
                               high_np=None, low_np=None)
-    engine.run_cached_prepared(
+    engine.run_cached(
         prepared,
         {"trailing_stop": trailing_config},
         np.array([], dtype=np.float64),
@@ -533,7 +529,7 @@ def test_run_cached_preserves_explicit_trailing_values(
 
     prepared = PreparedMatrix(close=close, entries=entries,
                               high_np=None, low_np=None)
-    engine.run_cached_prepared(
+    engine.run_cached(
         prepared,
         {
             "trailing_stop": {

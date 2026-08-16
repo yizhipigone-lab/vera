@@ -67,7 +67,7 @@ class TestATRviaRunCached:
             high_np=high.values.astype(np.float64),
             low_np=low.values.astype(np.float64),
             open_np=op.values.astype(np.float64))
-        res = eng.run_cached_prepared(
+        res = eng.run_cached(
             prepared, _stop(), np.array([]), np.array([]), 0,
             filter_limit_up=False, return_raw=True)
         trades = res["raw_trades"]
@@ -84,7 +84,7 @@ class TestATRviaRunCached:
             high_np=high.values.astype(np.float64),
             low_np=low.values.astype(np.float64),
             open_np=op.values.astype(np.float64))
-        res = eng.run_cached_prepared(
+        res = eng.run_cached(
             prepared, _stop(atr_enabled=False), np.array([]), np.array([]), 0,
             filter_limit_up=False, return_raw=True)
         trades = res["raw_trades"]
@@ -97,7 +97,7 @@ class TestATRviaRunCached:
         eng = _engine()
         prepared = PreparedMatrix(close=close, entries=entries,
                                   high_np=None, low_np=None)
-        res = eng.run_cached_prepared(
+        res = eng.run_cached(
             prepared, _stop(atr_enabled=True), np.array([]), np.array([]), 0,
             filter_limit_up=False, return_raw=True)
         # 不崩 + 无 reason=13
@@ -114,7 +114,7 @@ class TestATRviaRunCached:
             high_np=high.values.astype(np.float64),
             low_np=low.values.astype(np.float64),
             open_np=op.values.astype(np.float64))
-        res = eng.run_cached_prepared(
+        res = eng.run_cached(
             prepared, _stop(), np.array([]), np.array([]), 0,
             filter_limit_up=False)
         trades_df = res["trades"]
