@@ -15,7 +15,7 @@ import json
 import math
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,6 +82,29 @@ def _today_range() -> tuple[float, float]:
     start = datetime.now().replace(
         hour=0, minute=0, second=0, microsecond=0).timestamp()
     return start, start + _SECONDS_PER_DAY
+
+
+def _last_trading_day_range(now: float | None = None) -> tuple[float, float]:
+    """最近一个交易日 (≤ now) 的 [00:00, 次日 00:00) epoch 秒。
+
+    持仓页"当日盈亏"的锚点 —— 尾盘新买的票要按买入均价算当日盈亏,
+    不该把买入前当天的涨幅算成盈利; 而"今天"在周末/节假日是非交易日,
+    若仍用墙钟今天, 上一交易日 (如周五) 的尾盘买入会被误判成过夜仓,
+    把周五全天涨幅算进"当日盈亏" (2026-08-16 中捷精工/联检科技/蓝箭
+    电子事件: 尾盘买入却显示当日盈亏 +1770)。
+
+    最多回退 15 天 (法定长假 + 日历异常兜底); 连续 15 天都判不到
+    交易日则退回墙钟今天 (旧行为, 不阻塞页面)。now 缺省取当前。
+    """
+    from trade.monitor import is_trading_day_cached
+    cur = datetime.fromtimestamp(now) if now is not None else datetime.now()
+    d = cur.date()
+    for _ in range(15):
+        if is_trading_day_cached(d):
+            start = datetime(d.year, d.month, d.day).timestamp()
+            return start, start + _SECONDS_PER_DAY
+        d -= timedelta(days=1)
+    return _today_range()
 
 
 def _day_range(date: str) -> tuple[float, float]:
@@ -307,12 +330,15 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         # 分区 (用户裁决)。平仓票的 avg_cost/pnl/pnl_pct 由 summary 覆盖。
         entry_map, closed, summary = _entry_and_closed(trade_app)
         # 2026-08-12: 当日盈亏精确化 — 昨仓按昨收、今买按买入均价。
-        # 先汇总今日买入 (尾盘新买的票不该把买入前今天的涨幅算成盈利)。
+        # 先汇总"最近一个交易日"的买入 (尾盘新买的票不该把买入前当天
+        # 的涨幅算成盈利)。2026-08-16 修复: 锚点从墙钟今天改成最近
+        # 交易日 —— 周末/节假日墙钟今天不是交易日, 周五尾盘买入会被
+        # 误判成过夜仓, 把周五全天涨幅算成"当日盈亏"。
         today_buys: dict = {}
         try:
             ro = trade_app.store.open_readonly()
             try:
-                lo, hi = _today_range()
+                lo, hi = _last_trading_day_range()
                 for code_, qty, amount in ro.execute(
                     "SELECT code, SUM(qty), SUM(amount) FROM trades "
                     "WHERE direction=? AND ts>=? AND ts<? GROUP BY code",
@@ -362,8 +388,12 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                     base = ((prev_close or 0.0) * yest_qty
                             + (tb_avg or 0.0) * tb_qty)
                     day_chg_amt = round(yest_amt + tb_amt, 2) if base else None
-                    day_chg_pct = (round((yest_amt + tb_amt) / base * 100, 2)
-                                   if base > 0 else None)
+                    # 当日涨幅 = 客观价格口径 (现价/昨收-1), 与买入时机无关:
+                    # 盘中是实时涨跌, 收盘/周末是最近一个交易日的涨跌
+                    # (2026-08-16 澄清: 中捷精工当日涨幅 9.93% 就应保持,
+                    # 不能因尾盘买入被清零)。
+                    day_chg_pct = (round((last / prev_close - 1) * 100, 2)
+                                   if prev_close else None)
                 else:
                     day_chg_amt = None
                     day_chg_pct = None

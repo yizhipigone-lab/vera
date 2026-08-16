@@ -5,6 +5,7 @@ TestClient + FakeGateway 装配。锁住: 读端点形状、code 入参正则
 (accepted 语义)。token 鉴权留 P2 (审计L12④裁决: 不引入 server.py
 改动, 本文件无 token 用例)。
 """
+import datetime as _dt
 import sys
 import time
 from pathlib import Path
@@ -49,6 +50,19 @@ def _wait(pred, timeout=3.0):
     return False
 
 
+def _pin_trading_day(monkeypatch, y, m, d):
+    """钉死"最近交易日"锚点 = y-m-d, 返回 (start, end) epoch 秒。
+
+    当日盈亏测试据此脱离真实"今天" —— 用 time.time() 灌买点会在周末/
+    节假日落不进锚定日 (真实今天不是交易日), 导致当日盈亏误按昨收算。
+    """
+    start = _dt.datetime(y, m, d).timestamp()
+    end = (_dt.datetime(y, m, d) + _dt.timedelta(days=1)).timestamp()
+    monkeypatch.setattr("trade.api._last_trading_day_range",
+                        lambda now=None: (start, end))
+    return start, end
+
+
 def test_status_shape(client):
     c, app = client
     d = c.get("/api/trade/status").json()
@@ -87,40 +101,81 @@ def test_positions_day_change(client):
     assert p["day_chg_amt"] == (11.0 - 10.0) * p["volume"]
 
 
-def test_positions_day_pnl_today_only(client):
+def test_positions_day_pnl_today_only(monkeypatch, client):
     """2026-08-12 (300119 事件): 尾盘新建仓的票, 当日盈亏按买入价算。
-    现价11/买入@11/昨收10 → 当日盈亏=0 (旧逻辑会错误地得 (11-10)*vol)。"""
+    现价11/买入@11/昨收10 → 当日盈亏=0 (旧逻辑会错误地得 (11-10)*vol);
+    但当日涨幅仍是客观价格口径 10% (现价/昨收-1), 不被买入时机清零。"""
     c, app = client
     SZ = "300119.SZ"
+    day_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 14)
     app.store.save_trade({"traded_id": "tb_r", "order_id": "ob_r", "code": SZ,
         "direction": DIRECTION_BUY, "price": 11.0, "qty": 1000,
-        "amount": 11000.0, "ts": time.time()})
+        "amount": 11000.0, "ts": day_start + 3600})
     app.book.apply_trade("tb_r", "ob_r", SZ, DIRECTION_BUY, 11.0, 1000, strategy="测试")
     app.monitor.on_quote(SZ, {"last": 11.0, "bid1": 10.9, "prev_close": 10.0})
     d = c.get("/api/trade/positions").json()
     p = {x["code"]: x for x in d["positions"]}[SZ]
     assert p["day_chg_amt"] == 0.0     # 全今仓: 买入价=现价 → 0 (不是 +1000)
-    assert p["day_chg_pct"] == 0.0
+    assert p["day_chg_pct"] == 10.0    # 客观涨幅 (11/10-1), 与买入时机无关
 
 
-def test_positions_day_pnl_mixed(client):
+def test_positions_day_pnl_mixed(monkeypatch, client):
     """2026-08-12: 混合仓精确化。昨仓500@9 + 今买500@11, 现价11/昨收10。
-    当日盈亏 = 昨仓(11-10)*500 + 今买(11-11)*500 = 500。"""
+    当日盈亏 = 昨仓(11-10)*500 + 今买(11-11)*500 = 500;
+    当日涨幅仍是客观价格口径 10% (11/10-1), 与持仓结构无关。"""
     c, app = client
     SZ = "300120.SZ"
+    day_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 14)
     app.store.save_trade({"traded_id": "tb_y", "order_id": "ob_y", "code": SZ,
         "direction": DIRECTION_BUY, "price": 9.0, "qty": 500,
-        "amount": 4500.0, "ts": time.time() - 86400})
+        "amount": 4500.0, "ts": day_start - 86400})    # 锚定日之前的老仓
     app.store.save_trade({"traded_id": "tb_t", "order_id": "ob_t", "code": SZ,
         "direction": DIRECTION_BUY, "price": 11.0, "qty": 500,
-        "amount": 5500.0, "ts": time.time()})
+        "amount": 5500.0, "ts": day_start + 3600})     # 锚定日新买
     app.book.apply_trade("tb_y", "ob_y", SZ, DIRECTION_BUY, 9.0, 500, strategy="测试")
     app.book.apply_trade("tb_t", "ob_t", SZ, DIRECTION_BUY, 11.0, 500, strategy="测试")
     app.monitor.on_quote(SZ, {"last": 11.0, "bid1": 10.9, "prev_close": 10.0})
     d = c.get("/api/trade/positions").json()
     p = {x["code"]: x for x in d["positions"]}[SZ]
     assert p["day_chg_amt"] == 500.0
-    assert p["day_chg_pct"] == round(500 / 10500 * 100, 2)
+    assert p["day_chg_pct"] == 10.0   # 客观涨幅 (11/10-1), 与持仓结构无关
+
+
+def test_last_trading_day_range_walks_back(monkeypatch):
+    """2026-08-16: 最近交易日锚点 —— 周末 (非交易日) 应回退到最近周五,
+    而不是用墙钟今天 (周日)。日历只认 2026-08-14(周五) 是交易日。"""
+    from trade import api
+    now = _dt.datetime(2026, 8, 16, 18, 0, 0).timestamp()   # 周日
+    monkeypatch.setattr(
+        "trade.monitor.is_trading_day_cached",
+        lambda d: d == _dt.date(2026, 8, 14))
+    lo, hi = api._last_trading_day_range(now)
+    assert lo == _dt.datetime(2026, 8, 14).timestamp()
+    assert hi == _dt.datetime(2026, 8, 15).timestamp()
+
+
+def test_positions_day_pnl_last_trading_day(monkeypatch, client):
+    """2026-08-16 (中捷精工事件) 回归: 上一交易日尾盘买入的票, 今天虽是
+    非交易日 (周末), 当日盈亏也要按买入均价算 (≈0), 不能按 (现价-昨收)
+    ×数量 把买入前当天的涨幅算成盈利 (旧 bug 得 +1770); 但当日涨幅保持
+    客观价格口径 (现价/昨收-1 ≈ 9.95%), 不被尾盘买入清零。"""
+    c, app = client
+    SZ = "301072.SZ"
+    fri_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 14)
+    # 周五 14:54 尾盘买入 500@39.13
+    app.store.save_trade({"traded_id": "tb_w", "order_id": "ob_w", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 39.13, "qty": 500,
+        "amount": 19565.0, "ts": fri_start + 14 * 3600 + 54 * 60})
+    app.book.apply_trade("tb_w", "ob_w", SZ, DIRECTION_BUY, 39.13, 500,
+                         strategy="测试")
+    # 现价 39.13 = 买入价, 昨收 35.59 → 锚错会得 (39.13-35.59)*500 = 1770
+    app.monitor.on_quote(SZ, {"last": 39.13, "bid1": 39.12,
+                              "prev_close": 35.59})
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[SZ]
+    assert p["day_chg_amt"] == 0.0
+    # 客观涨幅 = (39.13/35.59-1)*100 ≈ 9.95%, 不是 0
+    assert p["day_chg_pct"] == round((39.13 / 35.59 - 1) * 100, 2)
 
 
 def test_positions_closed_realized_pnl(client):
