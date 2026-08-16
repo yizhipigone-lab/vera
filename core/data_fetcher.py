@@ -384,10 +384,15 @@ class DataFetcher(ConnectorSeam):
         kline_out: dict = {}
         for f in fields:
             if field_frames[f]:
-                merged = pd.concat(field_frames[f], axis=0)
-                # groupby(level=0).first() 逐列取首个非 NaN, 正确合并跨批重叠时间戳
-                merged = merged.groupby(level=0).first().sort_index()
-                kline_out[f] = merged
+                # 2026-08-14 内存爆炸修复: 原 pd.concat(所有批次, axis=0) 把 198 批
+                # 堆成 ~1900 万行 (699 GiB) 再 groupby 去重 —— 长区间(11.5 年)下
+                # 窗口=整段信号跨度, 每批都拉全量, concat 中间态先 OOM。
+                # 改增量 combine_first: 结果始终停在最终尺寸(~13.5万行×4915列),
+                # 语义与 groupby(level=0).first() 完全一致 (首个非 NaN 胜出)。
+                merged = field_frames[f][0]
+                for frame in field_frames[f][1:]:
+                    merged = merged.combine_first(frame)
+                kline_out[f] = merged.sort_index()
 
         # 合并各批窗口 mask (2026-07-18 抽为模块级函数, 见 _merge_window_masks docstring)
         window_mask = _merge_window_masks(mask_frames)
