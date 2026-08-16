@@ -1,7 +1,7 @@
 # data_fetcher 去上帝化 计划书
 
 > 成文日期 2026-08-16 · 文档类型 计划书 · 是「深模块接口债治理」的后续专项
-> 版本：最终版（第 2 轮审计后定稿）。本文所有 `[文件:行号]` 引用均经 `docs/audit/_verify_references.py` 机器校验。
+> 版本：最终版（第 2 轮审计后定稿）· **✅ 已实施（2026-08-16，commit 71de660）**。本文所有 `[文件:行号]` 引用均经 `docs/audit/_verify_references.py` 机器校验。
 
 ## 修订记录
 
@@ -34,10 +34,10 @@
 |---|---|---|
 | K线取数 | `get_kline` / `get_kline_single` / `get_kline_windowed` / `get_index_data` | `[core/data_fetcher.py:75]` / `[core/data_fetcher.py:414]` / `[core/data_fetcher.py:278]` / `[core/data_fetcher.py:453]` |
 | **窗口数学（要挪走）** | `compute_window_bounds`（现含 TDX 传递依赖，见下）+ 模块级 `_merge_window_masks` | `[core/data_fetcher.py:216]` / `[core/data_fetcher.py:22]` |
-| 交易日历 | `get_trading_days`（Timestamp，robust）/ `get_trading_dates`（str，raw） | `[core/data_fetcher.py:189]` / `[core/data_fetcher.py:582]` |
+| 交易日历 | `get_trading_days`（Timestamp，robust）/ `get_trading_dates`（str，raw） | `[core/data_fetcher.py:157]` / `[core/data_fetcher.py:511]` |
 | 股票池 | `get_stock_universe` | `[core/data_fetcher.py:468]` |
 | 板块（已委托 DataCache） | `get_sector_list` / `get_sector_stocks` / `clear_sector_cache` | `[core/data_fetcher.py:486]` / `[core/data_fetcher.py:505]` / `[core/data_fetcher.py:525]` |
-| 名称映射（已委托 DataCache） | `get_name_map` / `clear_name_cache` | `[core/data_fetcher.py:544]` / `[core/data_fetcher.py:577]` |
+| 名称映射（已委托 DataCache） | `get_name_map` / `clear_name_cache` | `[core/data_fetcher.py:473]` / `[core/data_fetcher.py:506]` |
 
 ### 2.2 `compute_window_bounds` 现含 TDX 传递依赖（关键事实）
 
