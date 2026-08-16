@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -62,6 +62,15 @@ class TrailingStrategy:
         if confirm not in ("intraday", "low", "close", "simple", "real"):
             raise ValueError(f"trailing confirm 非法: {confirm!r} (合法: intraday/low/close/simple/real)")
         self.confirm = confirm
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛: 涨过激活线后, 盘中/简单/条件单模式看 Low 触线, 日频模式看当日末根 bar。"""
+        if x.peak_hi_profit < self.activation:
+            return False
+        if self.confirm in ("intraday", "simple", "real"):
+            return x.lo <= x.peak_hi * (1.0 - self.drawdown)
+        # low/close 日频确认: 只在当日末根 bar 可能触发
+        return (x.i % x.bpday) == x.bpday - 1
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         if ctx.peak_hi_profit < self.activation:

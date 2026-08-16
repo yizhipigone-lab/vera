@@ -19,7 +19,7 @@ from typing import List
 
 from backtest.ladder_tp import compute_ladder_sell_ratio, compute_ladder_trigger
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -32,6 +32,13 @@ class LadderTpStrategy:
     """
 
     name = "ladder_tp"
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛: hi_pp 达到任一未触发档位即可能触发。"""
+        for li in range(x.n_ladder):
+            if not (x.ladder_done >> li) & 1 and x.hi_pp >= x.ladder_profits[li]:
+                return True
+        return False
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         prev_mask = pos.ladder_done

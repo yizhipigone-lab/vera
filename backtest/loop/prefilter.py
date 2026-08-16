@@ -3,31 +3,30 @@
 跳过"本 bar 数学上不可能有任何触发"的持仓评估 (实测空跑率 84.7%)。
 推导与零假阴性论证: docs/audit/2026-07-18_Phase3预筛条件推导.md。
 
-设计:
-- 条件即触发本身或更宽(保守充分条件), 任一策略拿不准 → 返回 True 走全路径
-- 只引用策略的只读参数(threshold/activation/profits 等), 不碰任何可变状态
-- 禁用策略(capability gating 未进 dispatcher)不参与判定
+设计 (2026-08-16 P0-1 派生重构):
+- 预筛条件从策略对象派生: 每个策略暴露 prefilter(x) 谓词 (标量束 PrefilterInputs),
+  prefilter 遍历 dispatcher.strategies 统一调用, 不再手抄每策略 if 分支。
+- 条件即触发本身或更宽(保守充分条件), 任一策略拿不准 → 返回 True 走全路径。
+- fail-open: 策略缺 prefilter 方法 (未来新增策略忘了补) → 恒 True, 防静默漏卖
+  (旧版手抄 if 分支, 新策略漏补 = could_trigger 返 False = 该策略永不触发)。
+- 只引用策略的只读参数(threshold/activation/profits 等), 不碰任何可变状态。
+- 禁用策略(capability gating 未进 dispatcher)不参与判定。
 """
 
 from __future__ import annotations
 
 from typing import Sequence
 
-import numpy as np
+from .state import PrefilterInputs
 
 
 class TriggerPreFilter:
     """从 dispatcher 策略 + absolutes 构造, could_trigger() 纯标量短路。"""
 
     def __init__(self, dispatcher, absolutes: Sequence):
-        s = dispatcher.strategies
-        self._cost = s.get("cost_stop")
-        self._ladder = s.get("ladder_tp")
-        self._trailing = s.get("trailing")
-        self._time = s.get("time_stop")
-        self._cond = s.get("cond_time")
-        self._first = s.get("first_day")
-        self._atr = s.get("atr_stop")
+        # 保留 dispatcher 的构造顺序 (builder 按 cost/ladder/trailing/time/cond/first/atr
+        # 插入), 只存策略对象列表; 各策略的 prefilter 谓词内聚在策略自身。
+        self._strategies = list(dispatcher.strategies.values())
         self._formula = next(
             (a for a in absolutes if getattr(a, "name", None) == "formula_sell"), None)
 
@@ -36,56 +35,31 @@ class TriggerPreFilter:
                       peak_hi: float, peak_hi_profit: float,
                       hold_days: int, entry_idx: int, bpday: int,
                       ladder_done: int,
-                      ladder_profits: np.ndarray, n_ladder: int) -> bool:
+                      ladder_profits, n_ladder: int) -> bool:
         """True=可能触发(走全路径); False=数学上不可能触发(可安全跳过)。"""
-        # ── formula_sell (绝对优先, 条件即触发本身) ──
+        x = PrefilterInputs(
+            ci=ci, i=i, ep=ep, hi=hi, lo=lo, hi_pp=hi_pp, lo_pp=lo_pp,
+            peak_hi=peak_hi, peak_hi_profit=peak_hi_profit,
+            hold_days=hold_days, entry_idx=entry_idx, bpday=bpday,
+            ladder_done=ladder_done, ladder_profits=ladder_profits,
+            n_ladder=n_ladder,
+        )
+        # ── formula_sell (绝对优先) ──
         f = self._formula
-        if f is not None and f.signal is not None and i >= f.lag_bars \
-                and 0 <= ci < f.signal.shape[1] \
-                and bool(f.signal[i - f.lag_bars, ci]):
-            return True
-        # ── cost_stop: lo_pp <= threshold ──
-        c = self._cost
-        if c is not None and lo_pp <= c.threshold:
-            return True
-        # ── ladder_tp: hi_pp 达到任一未触发档位 ──
-        if self._ladder is not None:
-            for li in range(n_ladder):
-                if not (ladder_done >> li) & 1 and hi_pp >= ladder_profits[li]:
-                    return True
-        # ── trailing: 激活 + 回撤线触及 ──
-        t = self._trailing
-        if t is not None and peak_hi_profit >= t.activation:
-            conf = getattr(t, "confirm", "intraday")
-            if conf in ("intraday", "simple", "real"):
-                # 2026-08-05: simple/real 同为每 bar 判定 (real 的跳空触发
-                # open<线 蕴含 lo<线, 本条件仍是保守充分条件)
-                if lo <= peak_hi * (1.0 - t.drawdown):
-                    return True
-            else:
-                # 2026-08-04 日频确认模式 (low/close): 只在当日末根 bar 可能触发,
-                # 具体条件 (day_lo/close 触线 + 阶梯值班日休息) 留给全路径
-                if (i % bpday) == bpday - 1:
-                    return True
-        # ── time_stop: 持仓到期 ──
-        ts = self._time
-        if ts is not None and hold_days >= ts.max_hold_days:
-            return True
-        # ── cond_time: 到期 + 当根 High 达标 ──
-        ct = self._cond
-        if ct is not None and hold_days >= ct.days and hi_pp >= ct.profit:
-            return True
-        # ── first_day: 仅时间条件(保守放宽, 价格条件留给全路径) ──
-        fd = self._first
-        if fd is not None and bpday >= 1 \
-                and (i // bpday) == (entry_idx // bpday) + 1 \
-                and (i % bpday) == bpday - 1:
-            return True
-        # ── atr_stop: atr 有效 + low 触及回撤线 ──
-        a = self._atr
-        if a is not None and a.atr_matrix is not None \
-                and 0 <= i < a.atr_matrix.shape[0] and 0 <= ci < a.atr_matrix.shape[1]:
-            atr = a.atr_matrix[i, ci]
-            if atr > 0 and lo <= peak_hi - a.multiplier * atr:
+        if f is not None:
+            if self._eval(f, x):
+                return True
+        # ── dispatcher 退出策略 ──
+        for s in self._strategies:
+            if self._eval(s, x):
                 return True
         return False
+
+    @staticmethod
+    def _eval(strategy, x: PrefilterInputs) -> bool:
+        """调用策略的 prefilter 谓词; 无 prefilter → fail-open 恒 True。"""
+        pf = getattr(strategy, "prefilter", None)
+        if pf is None:
+            # 未来新增策略忘了补 prefilter: 宁可全路径慢, 不可静默漏卖。
+            return True
+        return bool(pf(x))

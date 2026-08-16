@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from ..state import Bar, Context, Position
+    from ..state import Bar, Context, Position, PrefilterInputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +58,12 @@ class ExitStrategy(Protocol):
     """
 
     name: str
+
+    def prefilter(self, x: "PrefilterInputs") -> bool:
+        """预筛保守充分条件 (2026-08-16 P0-1): 只读标量束 x + 自身只读参数,
+        返回"本 bar 数学上是否可能触发"。True=可能(走全路径); False=不可能(跳过)。
+        必须只引用 x 的标量字段, 不构造 pos/bar/ctx 对象。"""
+        ...
 
     def check(self, pos: "Position", bar: "Bar", ctx: "Context") -> List[TriggerResult]:
         """返回 0/1 个触发。trailing_first 下的第二个触发由 dispatcher 追加。"""

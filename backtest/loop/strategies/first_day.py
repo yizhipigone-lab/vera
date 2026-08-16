@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import List
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -20,6 +20,12 @@ class FirstDayStrategy:
 
     def __init__(self, target: float):
         self.target = float(target)
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛(保守放宽): 仅时间条件, 价格条件留给全路径。"""
+        return (x.bpday >= 1
+                and (x.i // x.bpday) == (x.entry_idx // x.bpday) + 1
+                and (x.i % x.bpday) == x.bpday - 1)
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         current_day = ctx.bar_index // ctx.bpday

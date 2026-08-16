@@ -24,6 +24,7 @@ import pytest
 import pipeline.pipeline as pipeline_module
 from pipeline.pipeline import Pipeline
 from selection import selection_cache as sc
+from selection.selector import StockSelector
 
 
 def _selections():
@@ -47,13 +48,15 @@ def _key(**overrides):
     return sc.build_key(**kw)
 
 
-class _FakeSelector:
-    """不碰 TDX 的替身, 记录调用次数。"""
+class _FakeSelector(StockSelector):
+    """不碰 TDX 的替身, 记录调用次数。
+
+    子类化真实 StockSelector 以继承 run_cached (L0 整段缓存接缝), 只替换
+    resolve_universe / run 两个触 TDX 的口子, 让 TestPipelineSeam 直接测到
+    真实 L0 行为 (build_key/load/save/force_refresh/1d 跳过/L2 关闭兜底)。
+    """
 
     calls = 0
-
-    def __init__(self, cfg):
-        self.cfg = cfg
 
     def resolve_universe(self):
         return ["600001.SH", "000001.SZ"]

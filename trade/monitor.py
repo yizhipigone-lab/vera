@@ -92,7 +92,7 @@ def trading_session(now: float | None = None) -> str:
 
 class Monitor:
     """行情缓存 + 健康检测 + 动态规则评估。公开接口:
-    on_quote / quote_of / scan_once / pending_check / is_healthy (5 个)。"""
+    on_quote / quote_of / scan_once / pending_check / is_healthy / has_tick (6 个)。"""
 
     def __init__(
         self,
@@ -348,59 +348,6 @@ class Monitor:
         peak = max(avg_cost, high, hist_peak)
         today = time.strftime("%Y%m%d", time.localtime(self._clock()))
 
-        def hit_cost_stop():
-            # [cost_stop.py:28] lo_pp ≤ threshold ≡ low ≤ ep×(1+threshold),
-            # threshold 负值口径 (回测 config 同)
-            c = stop.cost_stop
-            return (c.enabled and avg_cost > 0
-                    and last <= avg_cost * (1.0 + c.threshold))
-
-        def hit_trailing():
-            # [trailing.py:35-39] 先过 activation 激活线 (峰值涨幅),
-            # 再判现价跌破 峰值×(1-drawdown) —— 2026-07-26 裁决前
-            # 实盘缺激活线, 现已补齐复刻
-            t = stop.trailing_stop
-            if not t.enabled or avg_cost <= 0:
-                return False
-            if (peak - avg_cost) / avg_cost < t.activation:
-                return False
-            return last <= peak * (1.0 - t.drawdown)
-
-        def hit_ladder():
-            # [ladder_tp.py:37-53] High 涨破新档位即触发。实盘的档位
-            # 执行在券商端 (executor 预埋限价单), 本腿只对"未预埋档"
-            # 兜底 —— 已标记档券商自己会成交, 再触发就是双卖
-            lv = stop.ladder_tp
-            if not lv.enabled or avg_cost <= 0:
-                return None
-            done = self._book.tier_done(code, today)
-            for i, (profit, _ratio) in enumerate(lv.levels):
-                if i in done:
-                    continue
-                if high >= avg_cost * (1.0 + profit):
-                    return i
-            return None
-
-        def hit_time_stop():
-            # [time_stop.py:23] 到点即走 (回测无收益门槛;
-            # 旧 trade 私设的 min_gain 已随裁决①删除)
-            t = stop.time_stop
-            return t.enabled and days >= t.max_hold_days
-
-        def hit_cond_time():
-            # [cond_time.py:25] 持仓 ≥ days 且当日最高涨幅 ≥ profit
-            c = stop.cond_time_stop
-            return (c.enabled and avg_cost > 0 and days >= c.days
-                    and (high - avg_cost) / avg_cost >= c.profit)
-
-        def hit_first_day():
-            # [first_day.py:28-40] 首个可交易日 (T+1 即 hold_days==1)
-            # 日内最高涨幅 < target 即卖。回测在当日最后一根 bar 判定,
-            # 实盘无 bar 收盘概念取"当日"粒度 (1d bpday=1 口径相同)
-            f = stop.first_day
-            return (f.enabled and avg_cost > 0 and days == 1
-                    and (high - avg_cost) / avg_cost < f.target)
-
         # 优先级调度顺序 [exit_engine.py:46-53]: priority block 在前,
         # 公共尾部 time_stop → cond_time → first_day 恒在后
         _ORDER = {
@@ -415,28 +362,32 @@ class Monitor:
         high_pct = (high / avg_cost - 1) if avg_cost > 0 else 0.0
         dd_now = (1 - last / peak) if peak > 0 else 0.0
         checks = {
-            "cost_stop": (hit_cost_stop,
+            "cost_stop": (lambda: self._hit_cost_stop(stop.cost_stop, avg_cost, last),
                           f"cost_stop: 现价 {last:.2f} 跌破止损线 "
                           f"{avg_cost * (1.0 + stop.cost_stop.threshold):.2f} "
                           f"(成本 {avg_cost:.2f} {stop.cost_stop.threshold:+.0%})"),
-            "trailing": (hit_trailing,
+            "trailing": (lambda: self._hit_trailing(stop.trailing_stop, avg_cost,
+                                                    peak, last),
                          f"trailing: 最高 {peak:.2f} (峰值涨幅 {peak_pct:+.1%}, "
                          f"过激活线 {stop.trailing_stop.activation:.1%}), "
                          f"现价 {last:.2f} 回撤 {dd_now:.2%} 触发 "
                          f"(阈值 {stop.trailing_stop.drawdown:.1%})"),
-            "time_stop": (hit_time_stop, f"time_stop: 持有 {days} 天达上限 "
+            "time_stop": (lambda: self._hit_time_stop(stop.time_stop, days),
+                          f"time_stop: 持有 {days} 天达上限 "
                           f"{stop.time_stop.max_hold_days} 天"),
-            "cond_time": (hit_cond_time,
+            "cond_time": (lambda: self._hit_cond_time(stop.cond_time_stop,
+                                                      avg_cost, high, days),
                           f"cond_time: 持有 {days} 天, 当日最高涨幅 "
                           f"{high_pct:+.1%} 达门槛 {stop.cond_time_stop.profit:.0%}"),
-            "first_day": (hit_first_day,
+            "first_day": (lambda: self._hit_first_day(stop.first_day,
+                                                      avg_cost, high, days),
                           f"first_day: 首日最高涨幅 {high_pct:+.1%} "
                           f"未达 {stop.first_day.target:.0%}"),
         }
         for name in _ORDER[stop.priority] + ("time_stop", "cond_time",
                                              "first_day"):
             if name == "ladder_tp":
-                tier = hit_ladder()
+                tier = self._hit_ladder(stop.ladder_tp, avg_cost, high, today, code)
                 if tier is not None:
                     profit, ratio = stop.ladder_tp.levels[tier]
                     return (f"ladder_tp: 最高 {high:.2f} 涨破档{tier + 1}线 "
@@ -448,3 +399,51 @@ class Monitor:
             if hit():
                 return reason, None, None
         return None
+
+    def _hit_cost_stop(self, c, avg_cost: float, last: float) -> bool:
+        """[cost_stop.py:28] lo_pp ≤ threshold ≡ low ≤ ep×(1+threshold),
+        threshold 负值口径 (回测 config 同)。"""
+        return (c.enabled and avg_cost > 0
+                and last <= avg_cost * (1.0 + c.threshold))
+
+    def _hit_trailing(self, t, avg_cost: float, peak: float, last: float) -> bool:
+        """[trailing.py:35-39] 先过 activation 激活线 (峰值涨幅),
+        再判现价跌破 峰值×(1-drawdown) —— 2026-07-26 裁决前实盘缺激活线,
+        现已补齐复刻。"""
+        if not t.enabled or avg_cost <= 0:
+            return False
+        if (peak - avg_cost) / avg_cost < t.activation:
+            return False
+        return last <= peak * (1.0 - t.drawdown)
+
+    def _hit_ladder(self, lv, avg_cost: float, high: float,
+                    today: str, code: str) -> int | None:
+        """[ladder_tp.py:37-53] High 涨破新档位即触发。实盘的档位执行在
+        券商端 (executor 预埋限价单), 本腿只对"未预埋档"兜底 —— 已标记档
+        券商自己会成交, 再触发就是双卖。返回档位序号或 None。"""
+        if not lv.enabled or avg_cost <= 0:
+            return None
+        done = self._book.tier_done(code, today)
+        for i, (profit, _ratio) in enumerate(lv.levels):
+            if i in done:
+                continue
+            if high >= avg_cost * (1.0 + profit):
+                return i
+        return None
+
+    def _hit_time_stop(self, t, days: int) -> bool:
+        """[time_stop.py:23] 到点即走 (回测无收益门槛;
+        旧 trade 私设的 min_gain 已随裁决①删除)。"""
+        return t.enabled and days >= t.max_hold_days
+
+    def _hit_cond_time(self, c, avg_cost: float, high: float, days: int) -> bool:
+        """[cond_time.py:25] 持仓 ≥ days 且当日最高涨幅 ≥ profit。"""
+        return (c.enabled and avg_cost > 0 and days >= c.days
+                and (high - avg_cost) / avg_cost >= c.profit)
+
+    def _hit_first_day(self, f, avg_cost: float, high: float, days: int) -> bool:
+        """[first_day.py:28-40] 首个可交易日 (T+1 即 hold_days==1)
+        日内最高涨幅 < target 即卖。回测在当日最后一根 bar 判定,
+        实盘无 bar 收盘概念取"当日"粒度 (1d bpday=1 口径相同)。"""
+        return (f.enabled and avg_cost > 0 and days == 1
+                and (high - avg_cost) / avg_cost < f.target)

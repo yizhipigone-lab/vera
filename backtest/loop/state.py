@@ -122,6 +122,35 @@ class Context:
 
 
 # ─────────────────────────────────────────────────────────────
+# 预筛标量输入束（Phase 3 prefilter 派生重构, 2026-08-16）
+# ─────────────────────────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class PrefilterInputs:
+    """TriggerPreFilter.could_trigger 的标量输入束。
+
+    预筛的本意是"跳过构造完整 Position/Bar/Context 对象", 所以用纯标量束
+    而非 (pos, bar, ctx)。各策略的 prefilter(x) 只读本束 + 自身只读参数,
+    返回"本 bar 数学上是否可能触发"的保守充分条件。
+    """
+
+    ci: int
+    i: int
+    ep: float
+    hi: float
+    lo: float
+    hi_pp: float
+    lo_pp: float
+    peak_hi: float
+    peak_hi_profit: float
+    hold_days: int
+    entry_idx: int
+    bpday: int
+    ladder_done: int
+    ladder_profits: np.ndarray
+    n_ladder: int
+
+
+# ─────────────────────────────────────────────────────────────
 # 持仓（HA4: mutable, 跨 bar 累计状态）
 # ─────────────────────────────────────────────────────────────
 @dataclass(slots=True)

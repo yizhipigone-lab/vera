@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from typing import List
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -23,6 +23,10 @@ class CostStopStrategy:
 
     def __init__(self, threshold: float):
         self.threshold = float(threshold)
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛保守充分条件: 当根 Low 跌破阈值即可能触发。"""
+        return x.lo_pp <= self.threshold
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         if ctx.lo_pp <= self.threshold:

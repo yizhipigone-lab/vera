@@ -677,12 +677,6 @@ class TradeStore:
         return [{"date": r[0], "total_asset": r[1], "available": r[2],
                  "market_value": r[3], "ts": r[4]} for r in rows]
 
-    def get_daily_asset_count(self) -> int:
-        """daily_asset 行数 (判断有无历史数据)。"""
-        with self._lock:
-            return self._conn.execute(
-                "SELECT COUNT(*) FROM daily_asset").fetchone()[0]
-
     def load_prev_daily_asset(self, before_date: str) -> dict | None:
         """before_date 之前最近一日的日终资产 (当日盈亏的基准)。
         date 是 YYYY-MM-DD 文本, 字典序即日期序。无历史行 / total_asset 非正
