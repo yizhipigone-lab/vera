@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from core.data_fetcher import _merge_window_masks
+from core.window import merge_window_masks
 
 
 def _old_merge_reference(mask_frames):
@@ -40,7 +40,7 @@ def _frame(days, codes, seed, true_ratio=0.3) -> pd.DataFrame:
 def _assert_parity(frames):
     """新旧实现逐单元格一致 (旧结果 astype(bool) 后比较)。"""
     old = _old_merge_reference(frames).astype(bool)
-    new = _merge_window_masks(frames)
+    new = merge_window_masks(frames)
     assert list(new.columns) == list(old.columns), "列顺序不一致"
     # check_freq=False: freq 元数据属 pandas 实现细节 (groupby/reindex 保留策略不同),
     # 语义只看时间戳取值; 下游会再 reindex 到 Close.index, freq 不影响行为
@@ -99,8 +99,8 @@ class TestFallback:
         idx = _bars("2025-01-02", n=4)
         f1 = pd.DataFrame({"600001": [True, False, False, False]}, index=idx)
         f2 = pd.DataFrame({"600001": [False, False, True, False]}, index=idx)
-        with caplog.at_level("WARNING", logger="core.data_fetcher"):
-            out = _merge_window_masks([f1, f2])
+        with caplog.at_level("WARNING", logger="core.window"):
+            out = merge_window_masks([f1, f2])
         assert "退回 groupby 慢速合并" in caplog.text
         expected = pd.DataFrame(
             {"600001": [True, False, True, False]}, index=idx)
@@ -111,8 +111,8 @@ class TestFallback:
         """批内重复时间戳 → 退回 groupby 路径 (reindex 会炸, 必须兜底)。"""
         idx = _bars("2025-01-02", n=2).append(_bars("2025-01-02", n=2))  # 4 行含 2 重复
         f1 = pd.DataFrame({"600001": [True, False, False, True]}, index=idx)
-        with caplog.at_level("WARNING", logger="core.data_fetcher"):
-            out = _merge_window_masks([f1])
+        with caplog.at_level("WARNING", logger="core.window"):
+            out = merge_window_masks([f1])
         assert "退回 groupby 慢速合并" in caplog.text
         # OR 语义: 两个重复时间戳都是 (True|False)=True, (False|True)=True
         assert out.astype(bool).values.all()

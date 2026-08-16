@@ -1,6 +1,5 @@
 """数据获取层 — 通过 TDX TQ API 获取 K 线、财务、除权等数据。"""
 
-import bisect
 from typing import List, Optional
 
 import pandas as pd
@@ -12,43 +11,12 @@ from . import progress as _progress
 from .connector import ConnectorSeam
 from .data_cache import DataCache
 from .dividend_type import to_tdx_str
+from .window import compute_window_bounds as _window_compute_bounds, merge_window_masks
 
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)
 from .stop_flag import raise_if_stopped
 
 logger = get_logger(__name__)
-
-
-def _merge_window_masks(mask_frames: List[pd.DataFrame]) -> pd.DataFrame:
-    """合并各批窗口 mask: 时间轴取并集, 同 (行,列) 跨批取 OR。
-
-    2026-07-18 性能修复: 原 concat(axis=0) + groupby.max 在 bool+NaN→object
-    时退化为纯 Python 逐列聚合 (py-spy 实锤 ~0.84s/列 × 3873 列 ≈ 54 分钟,
-    回测假死事件)。各批 mask 列天然互斥 (每股 win_start 唯一 → 只属于一个
-    批次桶), 同 (行,列) 跨批取 OR 等价于"取唯一非空值", 故逐批 reindex 到
-    并集时间轴 (缺口填 False) 再 axis=1 拼列即等价 — 秒级完成, 内存峰值
-    从 ~5GB 降到 ~70MB。
-
-    兜底: 批间列重叠或批内重复时间戳 (按构造不应发生) 时退回原 groupby
-    慢速路径保正确性。
-    """
-    col_total = sum(len(m.columns) for m in mask_frames)
-    col_uniq = len({c for m in mask_frames for c in m.columns})
-    fast_ok = (col_total == col_uniq) and not any(
-        m.index.has_duplicates for m in mask_frames
-    )
-    if fast_ok:
-        union_idx = mask_frames[0].index
-        for m in mask_frames[1:]:
-            union_idx = union_idx.union(m.index)
-        return pd.concat(
-            [m.reindex(union_idx, fill_value=False) for m in mask_frames],
-            axis=1,
-        ).sort_index().fillna(False).astype(bool)
-    logger.warning("窗口 mask 批间列重叠/批内重复时间戳, 退回 groupby 慢速合并")
-    window_mask = pd.concat(mask_frames, axis=0)
-    # 同 (行,列) 跨批取 OR (任一批标记窗口内即为窗口内)
-    return window_mask.groupby(level=0).max().sort_index().fillna(False)
 
 
 class DataFetcher(ConnectorSeam):
@@ -196,6 +164,10 @@ class DataFetcher(ConnectorSeam):
 
         用于稀疏窗口拉取 (get_kline_windowed) 按交易日推进窗口, 避免自然日误差
         (周末/节假日)。底层调 tq.get_trading_dates, 失败时返回空列表。
+
+        【robust 版】: 异常吞掉返空 + 排序去重。与 get_trading_dates (raw 版,
+        异常上抛、不排序) 语义不同, 别混用 —— 窗口数学依赖有序, 用本方法;
+        server.py 依赖异常兜底, 用 get_trading_dates。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()
@@ -222,57 +194,14 @@ class DataFetcher(ConnectorSeam):
     ) -> tuple:
         """每只股的稀疏窗口 [窗口起, 窗口止] = [最早信号日, 最晚信号日+N 交易日]。
 
-        2026-07-18 从 get_kline_windowed 抽出 (degrade_5m 降级填充需要同一套
-        窗口边界判定"窗口内才可交易", 防两份逻辑 drift)。行为与原内联实现一致。
-        trading_days 传入则跳过交易日历拉取 (测试/复用)。
-        2026-07-21: end_time (可选, 'yyyymmdd') — 窗口终点截断到请求区间终点,
-        回测执行窗口=请求区间 (不再延长 +N 交易日尾巴); 期末持仓由 loop
-        "期末不平仓"按市值计价, 不被窗口边界当退市强平 (reason=11)。
-
-        Returns:
-            (win_start, win_end): 两个 dict {stock_code: pd.Timestamp}。
+        2026-08-16 去上帝化: 纯数学已挪到 core.window.compute_window_bounds,
+        本方法只做"拉日历 + 委托" (calendar_fetcher 注入 cls.get_trading_days)。
+        行为与原内联实现一致, 完整语义见 core/window.py 的 docstring。
         """
-        sel = selections.copy()
-        sel["select_date"] = pd.to_datetime(sel["select_date"])
-        sel["stock_code"] = sel["stock_code"].apply(
-            lambda c: nl[0] if (nl := normalize_list([c])) else c
+        return _window_compute_bounds(
+            selections, window_trading_days, trading_days, end_time,
+            calendar_fetcher=cls.get_trading_days,
         )
-
-        # 每只股的窗口起点 = 最早信号日; 窗口需覆盖到 最晚信号日 + N 交易日
-        first_sig = sel.groupby("stock_code")["select_date"].min()
-        last_sig = sel.groupby("stock_code")["select_date"].max()
-
-        if trading_days is None:
-            global_start = first_sig.min()
-            global_end = last_sig.max()
-            # 拉全区间交易日历 (往后多留 window+10 天缓冲, 保证末批窗口能推满)
-            cal_end = (global_end + pd.Timedelta(days=int(window_trading_days * 1.7) + 20))
-            trading_days = cls.get_trading_days(
-                global_start.strftime("%Y%m%d"), cal_end.strftime("%Y%m%d")
-            )
-            if not trading_days:
-                logger.warning("交易日历为空, 稀疏窗口退化为按自然日估算窗口")
-                trading_days = None
-
-        def _window_end(sig_date: pd.Timestamp) -> pd.Timestamp:
-            """信号日往后 window_trading_days 个交易日的日期。"""
-            if trading_days:
-                idx = bisect.bisect_left(trading_days, sig_date)  # 第一个 >= sig_date 的交易日
-                target = min(idx + window_trading_days, len(trading_days) - 1)
-                return trading_days[target]
-            # 无交易日历兜底: 自然日估算 (交易日≈自然日×5/7, 反推)
-            return sig_date + pd.Timedelta(days=int(window_trading_days * 1.5) + 5)
-
-        # 每只股的 [窗口起, 窗口止]
-        win_start = {c: first_sig[c] for c in first_sig.index}
-        win_end = {c: _window_end(last_sig[c]) for c in last_sig.index}
-        # 2026-07-21: 请求区间终点截断 (end_time 可为非交易日, 下游取数/日历
-        # 自然对齐到最后交易日 ≤ end_time); 钳制 win_end >= win_start 防
-        # 信号日晚于 end_time 时窗口倒置 (正常管线信号已被区间过滤, 属防御)。
-        if end_time:
-            end_ts = pd.Timestamp(str(end_time))
-            win_end = {c: max(win_start[c], min(w, end_ts)) for c, w in win_end.items()}
-        return win_start, win_end
 
     @classmethod
     def get_kline_windowed(
@@ -394,8 +323,8 @@ class DataFetcher(ConnectorSeam):
                     merged = merged.combine_first(frame)
                 kline_out[f] = merged.sort_index()
 
-        # 合并各批窗口 mask (2026-07-18 抽为模块级函数, 见 _merge_window_masks docstring)
-        window_mask = _merge_window_masks(mask_frames)
+        # 合并各批窗口 mask (2026-08-16 挪到 core.window.merge_window_masks)
+        window_mask = merge_window_masks(mask_frames)
         # 对齐到 Close 的行列 (兜底: 缺失填 False)
         if "Close" in kline_out:
             window_mask = window_mask.reindex(
@@ -585,7 +514,12 @@ class DataFetcher(ConnectorSeam):
         start_time: str = "",
         end_time: str = "",
     ) -> List[str]:
-        """获取交易日列表。"""
+        """获取交易日列表 (str, 原始顺序)。
+
+        【raw 版】: 直接透传 tq.get_trading_dates, 异常上抛 (不吞), 不排序去重。
+        与 get_trading_days (robust 版, 异常返空 + 排序去重) 语义不同, 别混用 ——
+        server.py 的 /api/calendar 依赖本方法异常上抛去降级本地 JSON 兜底, 别改成吞异常。
+        """
         cls._ensure_ready()
         tq = cls._connector().tq()
         dates = tq.get_trading_dates(
