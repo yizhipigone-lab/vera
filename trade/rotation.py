@@ -34,6 +34,7 @@ from trade.book import (
 )
 from trade.events import EVENT_ROTATION, Event
 from trade.monitor import is_trading_day_cached, trading_session
+from trade.quote_stale import is_quote_stale
 from trade.risk import OrderIntent
 from utils.logger import get_logger
 
@@ -143,7 +144,7 @@ class RotationFeature:
         self._pending_sells: dict[str, dict] = {}
         # 冷启动恢复最近一次信号 (UI 展示用; 不驱动交易)
         try:
-            self._last = store.load_rotation_signal()
+            self._last = store.rotation_signal.load()
         except Exception:
             self._last = None
 
@@ -214,7 +215,7 @@ class RotationFeature:
         finally:
             # 审计 L10: 失败/异常路径也落库, 重启后 last 不回退到旧成功信号
             try:
-                self._store.save_rotation_signal(dict(self._last))
+                self._store.rotation_signal.save(dict(self._last))
             except Exception:
                 _logger.debug("轮动信号落库异常 (不影响交易)")
 
@@ -371,15 +372,10 @@ class RotationFeature:
         return quotes
 
     def _quote_stale(self, q: dict | None) -> bool:
-        """行情是否陈旧 (无戳 / 超 quote_stale_sec)。与 monitor/executor 同口径。"""
-        if not q:
-            return True
-        if q.get("tick_ts_missing"):
-            return True
-        ts = q.get("ts")
-        if ts is None:
-            return True   # 无戳视为陈旧 (2026-07-27 裁决③)
-        return self._clock() - float(ts) > self._cfg_getter().quote_stale_sec
+        """行情是否陈旧。判定统一走 trade/quote_stale.py (单一真相源):
+        无 ts / ts 为 None / tick_ts_missing / 超时 任一即陈旧 (fail-closed)。"""
+        return is_quote_stale(q, self._clock(),
+                              self._cfg_getter().quote_stale_sec)[0]
 
     @staticmethod
     def _side_price(quote: dict | None, sell: bool) -> float | None:

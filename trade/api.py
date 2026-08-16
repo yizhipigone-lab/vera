@@ -290,7 +290,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             raise HTTPException(503, f"QMT 资产查询失败: {e}")
         try:
             today = time.strftime("%Y-%m-%d")
-            rows = trade_app.store.get_daily_assets(end=today)
+            rows = trade_app.store.daily_asset.get(end=today)
             prev = [r for r in rows if r["date"] < today]
             a["prev_day_asset"] = prev[-1]["total_asset"] if prev else None
         except Exception:
@@ -631,7 +631,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
     # ── 分析 Tab 端点 ──────────────────────────────────────────
 
     def _daily_asset_rows():
-        return trade_app.store.get_daily_assets()
+        return trade_app.store.daily_asset.get()
 
     def _calc_drawdowns(equities: list[float]) -> list[float]:
         """从净值序列计算逐日回撤。"""
@@ -726,7 +726,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             month = month if month > 0 else now.month
         prefix = f"{year}-{month:02d}"
         # 拉前月最后一行做首日基准 (避免首日盈亏恒为0)
-        rows_all = trade_app.store.get_daily_assets(
+        rows_all = trade_app.store.daily_asset.get(
             start=f"{year - 1 if month == 1 else year}-{(month - 1) if month > 1 else 12:02d}-25",
             end=f"{prefix}-31")
         # 只保留当月行; 但前月最后一行用于 i>0 计算
@@ -788,9 +788,9 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 datetime.strptime(date, "%Y-%m-%d")
             except ValueError as e:
                 raise HTTPException(422, f"date 需为 YYYY-MM-DD: {e}") from e
-            rep = trade_app.store.load_daily_report(date)
+            rep = trade_app.store.daily_report.load(date)
         else:
-            rep = trade_app.store.load_latest_daily_report()
+            rep = trade_app.store.daily_report.load_latest()
         return {"report": rep}
 
     @app.get("/api/trade/analysis/summary")

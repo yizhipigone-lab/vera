@@ -25,6 +25,7 @@ from trade.book import (
     TERMINAL_STATUSES,
     is_etf,
 )
+from trade.quote_stale import is_quote_stale
 from trade.risk import OrderIntent
 from utils.logger import get_logger
 
@@ -358,15 +359,19 @@ class Executor:
                 return False
             if not manual:
                 # 审计M6修复 + 2026-07-27 裁决③: 陈旧/无戳买一价与无价
-                # 同等 fail-closed (只约束自动规则; 人工单见 manual 分支)
-                quote_ts = quote.get("ts")
-                ts_missing = ("ts" in quote) and (quote["ts"] is None)
-                if ts_missing or (quote_ts and self._clock() - quote_ts
-                                  > self._cfg.quote_stale_sec):
+                # 同等 fail-closed (只约束自动规则; 人工单见 manual 分支)。
+                # 判定统一走 trade/quote_stale.py (单一真相源)。2026-08-16
+                # fail-closed 修复: 旧实现 ts 键缺席时判"不陈旧"继续卖
+                # (fail-open), 现与 monitor/rotation 对齐 —— 无 ts 键、
+                # ts 为 None、tick_ts_missing、超时 任一即陈旧, 宁可不卖。
+                stale, _reason = is_quote_stale(quote, self._clock(),
+                                                self._cfg.quote_stale_sec)
+                if stale:
                     self._store.write_audit(
                         "exit_fail_closed",
                         f"{code} 买一价无时间戳或陈旧, 本轮不卖 ({reason})",
-                        {"code": code, "reason": reason, "quote_ts": quote_ts})
+                        {"code": code, "reason": reason,
+                         "quote_ts": quote.get("ts")})
                     return False
             return self._sell(code, sell_qty, float(quote["bid1"]),
                               PRICE_TYPE_LIMIT, reason, "exit_sell")

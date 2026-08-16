@@ -292,7 +292,9 @@ def test_full_chain_trigger_to_fake_gateway_fill(store, tmp_path):
             is_trading_day=True)
 
     clock = [_T0]
-    quotes = {CODE: {"last": 8.7, "bid1": 8.7, "high": 8.7}}
+    # 注: executor 走共享 fail-closed 判定, 裸 quote 无 ts 键会判"陈旧"拒卖;
+    # 此处补 ts=_T0 使快照新鲜 (clock 即 _T0)。
+    quotes = {CODE: {"last": 8.7, "bid1": 8.7, "high": 8.7, "ts": _T0}}
     ex = Executor(gw, book, store, gate, cfg, build_ctx,
                   get_quote=quotes.get, clock=lambda: clock[0])
     mon = Monitor(gw, book, ex, store, cfg, clock=lambda: clock[0])

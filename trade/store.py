@@ -232,6 +232,166 @@ CREATE TABLE IF NOT EXISTS rotation_state (
 """
 
 
+class DailyAssetStore:
+    """每日资产快照 (分析 Tab 净值曲线数据源)。
+
+    2026-08-16 按表域内聚 (M7 重新论证): 从 TradeStore 抽出的独立小类,
+    拥有 daily_asset 表的全部 SQL 与读语义。共享父 TradeStore 的同一
+    `_conn`/`_lock` —— 不各自建连接、不各自跑迁移 (DDL 仍由父 `_SCHEMA`
+    统一负责)。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    def save(self, date: str, total_asset: float,
+             available: float, market_value: float) -> None:
+        """EOD 日终资产快照。date=YYYY-MM-DD。幂等 (冲突覆盖)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO daily_asset (date, total_asset, available,
+                   market_value, ts) VALUES (?,?,?,?,?)
+                   ON CONFLICT(date) DO UPDATE SET
+                    total_asset=excluded.total_asset,
+                    available=excluded.available,
+                    market_value=excluded.market_value,
+                    ts=excluded.ts""",
+                (date, total_asset, available, market_value, time.time()),
+            )
+
+    def get(self, start: str = "", end: str = "") -> list[dict]:
+        """读日终资产序列 (YYYY-MM-DD)。缺省 start/end = 全部。"""
+        with self._lock:
+            if start and end:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset WHERE date >= ? AND date <= ? "
+                    "ORDER BY date ASC", (start, end),
+                ).fetchall()
+            elif start:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset WHERE date >= ? ORDER BY date ASC",
+                    (start,),
+                ).fetchall()
+            elif end:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset WHERE date <= ? ORDER BY date ASC",
+                    (end,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT date, total_asset, available, market_value, ts "
+                    "FROM daily_asset ORDER BY date ASC",
+                ).fetchall()
+        return [{"date": r[0], "total_asset": r[1], "available": r[2],
+                 "market_value": r[3], "ts": r[4]} for r in rows]
+
+    def load_prev(self, before_date: str) -> dict | None:
+        """before_date 之前最近一日的日终资产 (当日盈亏的基准)。
+        date 是 YYYY-MM-DD 文本, 字典序即日期序。无历史行 / total_asset 非正
+        → None (首日运行等情况, 调用方走启动快照兜底)。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT date, total_asset FROM daily_asset "
+                "WHERE date < ? AND total_asset > 0 "
+                "ORDER BY date DESC LIMIT 1", (before_date,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"date": row[0], "total_asset": float(row[1])}
+
+
+class DailyReportStore:
+    """盘后日报全明细 payload (飞书/web 同源)。
+
+    2026-08-16 按表域内聚 (M7 重新论证): 从 TradeStore 抽出的独立小类,
+    拥有 daily_report 表的全部 SQL 与 fail-soft 读语义 (json.loads 损坏
+    返 None 不 500)。共享父 TradeStore 的同一 `_conn`/`_lock`。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    def save(self, date: str, payload: dict) -> None:
+        """盘后日报全明细 payload 落库 (2026-08-07, web 回看 + 飞书同源)。
+        date=YYYY-MM-DD。幂等 (UPSERT, 当日重跑覆盖)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO daily_report (date, payload_json, ts)
+                   VALUES (?,?,?)
+                   ON CONFLICT(date) DO UPDATE SET
+                     payload_json=excluded.payload_json, ts=excluded.ts""",
+                (date, json.dumps(payload, ensure_ascii=False), time.time()),
+            )
+
+    def load(self, date: str) -> dict | None:
+        """读某日日报 payload, 无记录返 None。date=YYYY-MM-DD。
+        2026-08-07 审计 MEDIUM#2: payload_json 损坏返 None (与 load_latest 同 fail-soft,
+        不让 /daily_report 端点因坏数据 500)。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM daily_report WHERE date = ?", (date,)
+            ).fetchone()
+        try:
+            return json.loads(row[0]) if row else None
+        except (ValueError, TypeError):
+            return None
+
+    def load_latest(self) -> dict | None:
+        """最近一份日报 payload (date DESC 首行)。无记录返 None。
+        日历缺省查询 / 日报接口缺省日期时用。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM daily_report ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+        try:
+            return json.loads(row[0]) if row else None
+        except (ValueError, TypeError):
+            return None
+
+
+class RotationSignalStore:
+    """ETF 轮动最近一次信号 (UI 回看 + 冷启动恢复, 单行表)。
+
+    2026-08-16 按表域内聚 (M7 重新论证): 从 TradeStore 抽出的独立小类,
+    拥有 rotation_state 表的全部 SQL 与 fail-soft 读语义。只做展示/留痕,
+    不驱动交易。共享父 TradeStore 的同一 `_conn`/`_lock`。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    def save(self, signal: dict) -> None:
+        """落最近一次轮动信号 (含信号明细 + 调仓时间/来源)。单行 upsert,
+        只做 UI 回看/冷启动恢复, 不驱动交易 (交易每次运行时重算信号)。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO rotation_state (id, signal_json, updated_ts)
+                   VALUES (1, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     signal_json=excluded.signal_json,
+                     updated_ts=excluded.updated_ts""",
+                (json.dumps(signal, ensure_ascii=False), time.time()),
+            )
+
+    def load(self) -> dict | None:
+        """读最近一次轮动信号, 无记录/损坏返 None (fail-soft, 不影响交易)。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT signal_json FROM rotation_state WHERE id = 1").fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
+
+
 class TradeStore:
     """单写连接 + JSONL 落盘。写连接由消费者线程专用, 内部锁兜底。"""
 
@@ -249,6 +409,13 @@ class TradeStore:
         self._migrate_orders_status_msg()
         self._migrate_trades_pnl()
         self._lock = threading.Lock()
+
+        # 分析/展示数据快照关切 (2026-08-16 M7 重新论证): 各子 store 拥有
+        # 自己表的 SQL + fail-soft 读语义, 共享本连接同一 `_conn`/`_lock` ——
+        # 不各自建连接、不各自跑迁移 (DDL 仍由上方 `_SCHEMA` + `_migrate_*` 负责)。
+        self.daily_asset = DailyAssetStore(self._conn, self._lock)
+        self.daily_report = DailyReportStore(self._conn, self._lock)
+        self.rotation_signal = RotationSignalStore(self._conn, self._lock)
 
         raw_path = Path(raw_log_path)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -591,132 +758,6 @@ class TradeStore:
     def flush_raw(self, timeout: float = 5.0) -> bool:
         """阻塞至 raw 日志队列清空且落盘 (测试接缝 / 关事前 drain)。"""
         return self._raw_writer.flush(timeout)
-
-    # ── 每日资产快照 (分析 Tab 净值曲线数据源) ──────────────
-
-    def save_daily_asset(self, date: str, total_asset: float,
-                         available: float, market_value: float) -> None:
-        """EOD 日终资产快照。date=YYYY-MM-DD。幂等 (冲突覆盖)。"""
-        with self._lock, self._conn:
-            self._conn.execute(
-                """INSERT INTO daily_asset (date, total_asset, available,
-                   market_value, ts) VALUES (?,?,?,?,?)
-                   ON CONFLICT(date) DO UPDATE SET
-                    total_asset=excluded.total_asset,
-                    available=excluded.available,
-                    market_value=excluded.market_value,
-                    ts=excluded.ts""",
-                (date, total_asset, available, market_value, time.time()),
-            )
-
-    # ── 盘后日报 (飞书/web 同源 payload) ─────────────────────
-
-    def save_daily_report(self, date: str, payload: dict) -> None:
-        """盘后日报全明细 payload 落库 (2026-08-07, web 回看 + 飞书同源)。
-        date=YYYY-MM-DD。幂等 (UPSERT, 当日重跑覆盖)。"""
-        with self._lock, self._conn:
-            self._conn.execute(
-                """INSERT INTO daily_report (date, payload_json, ts)
-                   VALUES (?,?,?)
-                   ON CONFLICT(date) DO UPDATE SET
-                    payload_json=excluded.payload_json, ts=excluded.ts""",
-                (date, json.dumps(payload, ensure_ascii=False), time.time()),
-            )
-
-    def load_daily_report(self, date: str) -> dict | None:
-        """读某日日报 payload, 无记录返 None。date=YYYY-MM-DD。
-        2026-08-07 审计 MEDIUM#2: payload_json 损坏返 None (与 load_latest 同 fail-soft,
-        不让 /daily_report 端点因坏数据 500)。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT payload_json FROM daily_report WHERE date = ?", (date,)
-            ).fetchone()
-        try:
-            return json.loads(row[0]) if row else None
-        except (ValueError, TypeError):
-            return None
-
-    def load_latest_daily_report(self) -> dict | None:
-        """最近一份日报 payload (date DESC 首行)。无记录返 None。
-        日历缺省查询 / 日报接口缺省日期时用。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT payload_json FROM daily_report ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-        try:
-            return json.loads(row[0]) if row else None
-        except (ValueError, TypeError):
-            return None
-
-    def get_daily_assets(self, start: str = "", end: str = "") -> list[dict]:
-        """读日终资产序列 (YYYY-MM-DD)。缺省 start/end = 全部。"""
-        with self._lock:
-            if start and end:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset WHERE date >= ? AND date <= ? "
-                    "ORDER BY date ASC", (start, end),
-                ).fetchall()
-            elif start:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset WHERE date >= ? ORDER BY date ASC",
-                    (start,),
-                ).fetchall()
-            elif end:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset WHERE date <= ? ORDER BY date ASC",
-                    (end,),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset ORDER BY date ASC",
-                ).fetchall()
-        return [{"date": r[0], "total_asset": r[1], "available": r[2],
-                 "market_value": r[3], "ts": r[4]} for r in rows]
-
-    def load_prev_daily_asset(self, before_date: str) -> dict | None:
-        """before_date 之前最近一日的日终资产 (当日盈亏的基准)。
-        date 是 YYYY-MM-DD 文本, 字典序即日期序。无历史行 / total_asset 非正
-        → None (首日运行等情况, 调用方走启动快照兜底)。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT date, total_asset FROM daily_asset "
-                "WHERE date < ? AND total_asset > 0 "
-                "ORDER BY date DESC LIMIT 1", (before_date,),
-            ).fetchone()
-        if not row:
-            return None
-        return {"date": row[0], "total_asset": float(row[1])}
-
-    # ── ETF 轮动信号 (2026-08-14) ─────────────────────────────
-
-    def save_rotation_signal(self, signal: dict) -> None:
-        """落最近一次轮动信号 (含信号明细 + 调仓时间/来源)。单行 upsert,
-        只做 UI 回看/冷启动恢复, 不驱动交易 (交易每次运行时重算信号)。"""
-        with self._lock, self._conn:
-            self._conn.execute(
-                """INSERT INTO rotation_state (id, signal_json, updated_ts)
-                   VALUES (1, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                    signal_json=excluded.signal_json,
-                    updated_ts=excluded.updated_ts""",
-                (json.dumps(signal, ensure_ascii=False), time.time()),
-            )
-
-    def load_rotation_signal(self) -> dict | None:
-        """读最近一次轮动信号, 无记录/损坏返 None (fail-soft, 不影响交易)。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT signal_json FROM rotation_state WHERE id = 1").fetchone()
-        if not row:
-            return None
-        try:
-            return json.loads(row[0])
-        except (ValueError, TypeError):
-            return None
 
     def close(self) -> None:
         # 先停 raw writer (drain 队列 + 终 flush), 再关 fp —— 正常退出不丢日志

@@ -855,7 +855,7 @@ class TradeApp:
             if total_asset > 0:
                 from datetime import datetime
                 date_str = datetime.now().strftime("%Y-%m-%d")
-                self.store.save_daily_asset(date_str, total_asset, available, market_value)
+                self.store.daily_asset.save(date_str, total_asset, available, market_value)
         except Exception:
             _logger.debug("EOD 资产快照写入失败 (分析 Tab 不受影响)")
         # 飞书盘后日报 (2026-07-31): 搭 15:05 EOD 的车; 查不到资产 fail-soft 不推。
@@ -892,7 +892,7 @@ class TradeApp:
         day_pnl_pct = None
         baseline = None
         try:
-            prev = self.store.load_prev_daily_asset(date_str)
+            prev = self.store.daily_asset.load_prev(date_str)
             if prev:
                 baseline = float(prev["total_asset"])
         except Exception:
@@ -945,7 +945,7 @@ class TradeApp:
         except Exception:
             _logger.debug("盘后日报推送异常 (不影响交易)")
         try:
-            self.store.save_daily_report(date_str, payload)
+            self.store.daily_report.save(date_str, payload)
         except Exception:
             _logger.debug("盘后日报落库异常 (web 回看该日将缺, 不影响交易)")
 

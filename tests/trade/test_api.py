@@ -440,7 +440,7 @@ def test_daily_report_endpoint_roundtrip(client):
     c, app = client
     today = time.strftime("%Y-%m-%d")
     payload = {"total_asset": 1e6, "day_pnl": 500.0, "buy_count": 1}
-    app.store.save_daily_report(today, payload)
+    app.store.daily_report.save(today, payload)
     assert c.get(f"/api/trade/analysis/daily_report?date={today}").json()["report"] == payload
     assert c.get("/api/trade/analysis/daily_report").json()["report"] == payload  # 缺省=最新
     assert c.get("/api/trade/analysis/daily_report?date=2099-12-31").json()["report"] is None

@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -222,6 +222,20 @@ _FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "reconcile_times": (list, tuple),
     "quote_stale_sec": (int,),
 }
+
+# 顶层字段集合自动对账 (DRY): _FIELD_TYPES 的键必须与 TradeConfig 的字段
+# 一一对应。每个字段的"类型" (含 (int,float)/(list,tuple) 多类型放宽) 仍
+# 手写在 _FIELD_TYPES —— dataclasses.fields 派不出输入侧类型放宽; 这里只对账
+# "字段集合", 防止给 TradeConfig 加字段时漏写 _FIELD_TYPES (漏了该字段就会
+# 绕过 _coerce 的类型/值域校验, 静默走默认值 —— 实盘大忌, import 期 fail-fast)。
+_TRADE_FIELDS = {f.name for f in fields(TradeConfig)}
+_extra_fields = set(_FIELD_TYPES) - _TRADE_FIELDS
+_missing_fields = _TRADE_FIELDS - set(_FIELD_TYPES)
+if _extra_fields or _missing_fields:
+    raise AssertionError(
+        f"TradeConfig 与 _FIELD_TYPES 字段集合漂移: "
+        f"_FIELD_TYPES 多余={sorted(_extra_fields)} 缺失={sorted(_missing_fields)}"
+    )
 
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -598,74 +612,67 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
     yaml 写回共用, 与入参校验同形 —— 往返无损)。"""
     s = cfg.stop
     ps = cfg.position_sizing
-    return {
-        "account_id": cfg.account_id,
-        "qmt_path": cfg.qmt_path,
-        "db_path": cfg.db_path,
-        "raw_log_path": cfg.raw_log_path,
-        "kill_flag_path": cfg.kill_flag_path,
-        "fake_sdk": cfg.fake_sdk,
-        "exclude_etf": cfg.exclude_etf,
-        "daily_loss_limit": cfg.daily_loss_limit,
-        "stop": {
-            "priority": s.priority,
-            "cost_stop": {"enabled": s.cost_stop.enabled,
-                          "threshold": s.cost_stop.threshold},
-            "trailing_stop": {"enabled": s.trailing_stop.enabled,
-                              "activation": s.trailing_stop.activation,
-                              "drawdown": s.trailing_stop.drawdown},
-            "ladder_tp": {"enabled": s.ladder_tp.enabled,
-                          "levels": [{"profit": p, "sell_ratio": r}
-                                     for p, r in s.ladder_tp.levels]},
-            "time_stop": {"enabled": s.time_stop.enabled,
-                          "max_hold_days": s.time_stop.max_hold_days},
-            "cond_time_stop": {"enabled": s.cond_time_stop.enabled,
-                               "days": s.cond_time_stop.days,
-                               "profit": s.cond_time_stop.profit},
-            "first_day": {"enabled": s.first_day.enabled,
-                          "target": s.first_day.target},
-        },
-        "position_sizing": {
-            "min_buy_amount": ps.min_buy_amount,
-            "max_buy_amount": ps.max_buy_amount,
-            "lot_size": ps.lot_size,
-            "max_positions": ps.max_positions,
-        },
-        "auto_buy": {
-            "enabled": cfg.auto_buy.enabled,
-            "time": cfg.auto_buy.time,
-            "formula_name": cfg.auto_buy.formula_name,
-            "formula_arg": cfg.auto_buy.formula_arg,
-            "amount_per_stock": cfg.auto_buy.amount_per_stock,
-            "max_buys_per_day": cfg.auto_buy.max_buys_per_day,
-            "universe": dict(cfg.auto_buy.universe),
-        },
-        "rotation": {
-            "enabled": cfg.rotation.enabled,
-            "etf_ratio": cfg.rotation.etf_ratio,
-            "signal_index": cfg.rotation.signal_index,
-            "cyb_etf": cfg.rotation.cyb_etf,
-            "gold_etf": cfg.rotation.gold_etf,
-            "ma_window": cfg.rotation.ma_window,
-            "high_window": cfg.rotation.high_window,
-            "drawdown_threshold": cfg.rotation.drawdown_threshold,
-            "execute_time": cfg.rotation.execute_time,
-        },
-        "regime_filter": {
-            "enabled": cfg.regime_filter.enabled,
-            "index_code": cfg.regime_filter.index_code,
-            "ma_window": cfg.regime_filter.ma_window,
-        },
-        "feishu": {"enabled": cfg.feishu.enabled,
-                   "daily_report_level": cfg.feishu.daily_report_level,
-                   "ai_review": cfg.feishu.ai_review},
-        "monitor_scan_interval_sec": cfg.monitor_scan_interval_sec,
-        "sync_interval_sec": cfg.sync_interval_sec,
-        "tick_heartbeat_sec": cfg.tick_heartbeat_sec,
-        "force_market_after": cfg.force_market_after,
-        "reconcile_times": list(cfg.reconcile_times),
-        "quote_stale_sec": cfg.quote_stale_sec,
+    # 顶层字段名与顺序由 dataclasses.fields(TradeConfig) 派生 (DRY): 标量字段
+    # 直接 f.name → getattr(cfg, f.name) 直取, 键序与字段声明序一致。结构特殊的
+    # 段仍手写覆盖 (dataclasses.fields 只给字段名, 派不出"对象 → 展开字典"的转换):
+    #   - 6 个嵌套段 (stop/position_sizing/auto_buy/rotation/regime_filter/
+    #     feishu) 展开成 dict;
+    #   - reconcile_times 入参 tuple → 出参 list, 手写 list(...) 转换。
+    out = {f.name: getattr(cfg, f.name) for f in fields(TradeConfig)}
+    out["stop"] = {
+        "priority": s.priority,
+        "cost_stop": {"enabled": s.cost_stop.enabled,
+                      "threshold": s.cost_stop.threshold},
+        "trailing_stop": {"enabled": s.trailing_stop.enabled,
+                          "activation": s.trailing_stop.activation,
+                          "drawdown": s.trailing_stop.drawdown},
+        "ladder_tp": {"enabled": s.ladder_tp.enabled,
+                      "levels": [{"profit": p, "sell_ratio": r}
+                                 for p, r in s.ladder_tp.levels]},
+        "time_stop": {"enabled": s.time_stop.enabled,
+                      "max_hold_days": s.time_stop.max_hold_days},
+        "cond_time_stop": {"enabled": s.cond_time_stop.enabled,
+                           "days": s.cond_time_stop.days,
+                           "profit": s.cond_time_stop.profit},
+        "first_day": {"enabled": s.first_day.enabled,
+                      "target": s.first_day.target},
     }
+    out["position_sizing"] = {
+        "min_buy_amount": ps.min_buy_amount,
+        "max_buy_amount": ps.max_buy_amount,
+        "lot_size": ps.lot_size,
+        "max_positions": ps.max_positions,
+    }
+    out["auto_buy"] = {
+        "enabled": cfg.auto_buy.enabled,
+        "time": cfg.auto_buy.time,
+        "formula_name": cfg.auto_buy.formula_name,
+        "formula_arg": cfg.auto_buy.formula_arg,
+        "amount_per_stock": cfg.auto_buy.amount_per_stock,
+        "max_buys_per_day": cfg.auto_buy.max_buys_per_day,
+        "universe": dict(cfg.auto_buy.universe),
+    }
+    out["rotation"] = {
+        "enabled": cfg.rotation.enabled,
+        "etf_ratio": cfg.rotation.etf_ratio,
+        "signal_index": cfg.rotation.signal_index,
+        "cyb_etf": cfg.rotation.cyb_etf,
+        "gold_etf": cfg.rotation.gold_etf,
+        "ma_window": cfg.rotation.ma_window,
+        "high_window": cfg.rotation.high_window,
+        "drawdown_threshold": cfg.rotation.drawdown_threshold,
+        "execute_time": cfg.rotation.execute_time,
+    }
+    out["regime_filter"] = {
+        "enabled": cfg.regime_filter.enabled,
+        "index_code": cfg.regime_filter.index_code,
+        "ma_window": cfg.regime_filter.ma_window,
+    }
+    out["feishu"] = {"enabled": cfg.feishu.enabled,
+                     "daily_report_level": cfg.feishu.daily_report_level,
+                     "ai_review": cfg.feishu.ai_review}
+    out["reconcile_times"] = list(cfg.reconcile_times)
+    return out
 
 
 _PANEL_HEADER = (

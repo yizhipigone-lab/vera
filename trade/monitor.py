@@ -16,6 +16,7 @@ from typing import Callable
 
 from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.book import is_etf
+from trade.quote_stale import REASON_STALE, is_quote_stale
 from utils.logger import get_logger
 
 _logger = get_logger("trade.monitor")
@@ -267,18 +268,20 @@ class Monitor:
                 continue
             # 审计M6修复: 陈旧快照与无快照同等 fail-closed —— 单票订阅
             # 丢失时全局心跳兜不住, 陈旧价驱动卖出比不卖更危险。
-            # 2026-07-27 裁决③: tick 显式缺时间戳 (ts=None) 也视为陈旧
-            if quote.get("tick_ts_missing"):
+            # 判定统一走 trade/quote_stale.py (单一真相源): 无 ts / ts 为
+            # None / tick_ts_missing / 超时 任一即陈旧 (2026-07-27 裁决③)。
+            stale, reason = is_quote_stale(quote, self._clock(),
+                                           self._cfg.quote_stale_sec)
+            if stale:
+                if reason == REASON_STALE:
+                    msg = (f"{code} 行情快照陈旧 "
+                           f"(>{self._cfg.quote_stale_sec}s), 本轮跳过")
+                else:
+                    # tick_ts_missing / no_ts / ts_none 同属"没可信时间戳"
+                    msg = f"{code} tick 缺时间戳, 视为陈旧, 本轮跳过"
                 self._store.write_audit(
-                    "monitor_stale_quote",
-                    f"{code} tick 缺时间戳, 视为陈旧, 本轮跳过",
-                    {"code": code})
-                continue
-            if (self._clock() - quote["ts"]) > self._cfg.quote_stale_sec:
-                self._store.write_audit(
-                    "monitor_stale_quote",
-                    f"{code} 行情快照陈旧 (>{self._cfg.quote_stale_sec}s), 本轮跳过",
-                    {"code": code, "quote_ts": quote["ts"]})
+                    "monitor_stale_quote", msg,
+                    {"code": code, "quote_ts": quote.get("ts")})
                 continue
             result = self._evaluate(code, pos.avg_cost, quote, pos.volume)
             if result is None:

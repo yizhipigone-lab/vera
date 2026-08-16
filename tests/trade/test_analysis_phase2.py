@@ -69,7 +69,7 @@ def mock_sector(monkeypatch):
 def test_equity_appends_rolling(client):
     c, app = client
     for i, asset in enumerate((1_000_000.0, 1_010_000.0, 990_000.0)):
-        app.store.save_daily_asset(f"2026-08-1{i}", asset, asset, 0.0)
+        app.store.daily_asset.save(f"2026-08-1{i}", asset, asset, 0.0)
     d = c.get("/api/trade/analysis/equity").json()
     assert len(d["equity"]) == 3  # 既有字段不动
     rolling = d["rolling"]

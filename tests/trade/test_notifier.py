@@ -751,8 +751,8 @@ def test_e2e_eod_daily_saves_report_for_web(cfg, clock, captured, monkeypatch):
         assert app.start(start_timers=False)
         app._engine.put(Event(type=EVENT_EOD, data={}))
         date_str = time.strftime("%Y-%m-%d", time.localtime(clock[0]))
-        assert _wait(lambda: app.store.load_daily_report(date_str) is not None)
-        rep = app.store.load_daily_report(date_str)
+        assert _wait(lambda: app.store.daily_report.load(date_str) is not None)
+        rep = app.store.daily_report.load(date_str)
         assert rep["total_asset"] == 1_010_000.0
         assert "buy_count" in rep and "sell_count" in rep  # 交易摘要已拼
     finally:
@@ -772,7 +772,7 @@ def test_e2e_eod_day_pnl_uses_prev_daily_asset(cfg, clock, captured, monkeypatch
         from datetime import datetime, timedelta
         yday = (datetime.fromtimestamp(clock[0]) - timedelta(days=1)
                 ).strftime("%Y-%m-%d")
-        app.store.save_daily_asset(yday, 1_090_409.44, 0.0, 0.0)
+        app.store.daily_asset.save(yday, 1_090_409.44, 0.0, 0.0)
         # 复现 bug: 模拟盘中重启后基准被刷成当前资产
         app._day_baseline = 1_084_551.39
         monkeypatch.setattr(app.gateway, "query_asset", lambda: {
@@ -788,7 +788,7 @@ def test_e2e_eod_day_pnl_uses_prev_daily_asset(cfg, clock, captured, monkeypatch
         assert "-5,858.05" in body and "-0.54%" in body
         # 落库 payload 同源同值 (web 回看一致)
         date_str = time.strftime("%Y-%m-%d", time.localtime(clock[0]))
-        rep = app.store.load_daily_report(date_str)
+        rep = app.store.daily_report.load(date_str)
         assert rep["day_pnl"] == -5_858.05 and rep["day_pnl_pct"] == -0.54
     finally:
         app.stop()
@@ -808,8 +808,8 @@ def test_e2e_eod_day_pnl_fallback_to_startup_baseline(cfg, clock, captured,
             "total_asset": 995_000.0, "cash": 995_000.0, "market_value": 0.0})
         app._engine.put(Event(type=EVENT_EOD, data={}))
         date_str = time.strftime("%Y-%m-%d", time.localtime(clock[0]))
-        assert _wait(lambda: app.store.load_daily_report(date_str) is not None)
-        rep = app.store.load_daily_report(date_str)
+        assert _wait(lambda: app.store.daily_report.load(date_str) is not None)
+        rep = app.store.daily_report.load(date_str)
         assert rep["day_pnl"] == -5_000.0 and rep["day_pnl_pct"] == -0.5
 
         app._day_baseline = None               # 两者都无 → None
@@ -817,7 +817,7 @@ def test_e2e_eod_day_pnl_fallback_to_startup_baseline(cfg, clock, captured,
                                 (date_str,))
         app.store._conn.commit()
         app._notify_daily()
-        rep2 = app.store.load_daily_report(date_str)
+        rep2 = app.store.daily_report.load(date_str)
         assert rep2["day_pnl"] is None and rep2["day_pnl_pct"] is None
     finally:
         app.stop()

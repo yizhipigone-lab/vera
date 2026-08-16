@@ -350,11 +350,11 @@ def test_load_today_trades_detail_with_pnl(store):
 
 def test_daily_report_upsert_and_latest(store):
     """daily_report 表 UPSERT + load_latest 取最近日期 (2026-08-07)。"""
-    store.save_daily_report("2026-08-01", {"day_pnl": 100.0})
-    store.save_daily_report("2026-08-07", {"day_pnl": 200.0})
-    store.save_daily_report("2026-08-03", {"day_pnl": 150.0})
-    assert store.load_daily_report("2026-08-07") == {"day_pnl": 200.0}
-    assert store.load_latest_daily_report() == {"day_pnl": 200.0}   # 最新日期
-    store.save_daily_report("2026-08-07", {"day_pnl": 999.0})       # UPSERT
-    assert store.load_daily_report("2026-08-07") == {"day_pnl": 999.0}
-    assert store.load_daily_report("2099-01-01") is None
+    store.daily_report.save("2026-08-01", {"day_pnl": 100.0})
+    store.daily_report.save("2026-08-07", {"day_pnl": 200.0})
+    store.daily_report.save("2026-08-03", {"day_pnl": 150.0})
+    assert store.daily_report.load("2026-08-07") == {"day_pnl": 200.0}
+    assert store.daily_report.load_latest() == {"day_pnl": 200.0}   # 最新日期
+    store.daily_report.save("2026-08-07", {"day_pnl": 999.0})       # UPSERT
+    assert store.daily_report.load("2026-08-07") == {"day_pnl": 999.0}
+    assert store.daily_report.load("2099-01-01") is None

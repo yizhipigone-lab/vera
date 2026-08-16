@@ -301,7 +301,7 @@ def test_execute_exit_pipeline(store, kill):
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     ex.place_ladder("20260726")
     assert ex.execute_exit(CODE, "hard_stop: 测试")
@@ -324,7 +324,7 @@ def test_execute_exit_lock_blocks_reentry(store, kill):
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     assert ex.execute_exit(CODE, "hard_stop")
     assert not ex.execute_exit(CODE, "trailing")   # 锁占用, 拒
@@ -337,7 +337,7 @@ def test_pending_fill_releases_lock(store, kill):
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     ex.execute_exit(CODE, "hard_stop")
     sell_oid = ex._pending[CODE]["order_id"]
@@ -353,7 +353,7 @@ def test_pending_timeout_escalates_to_cage_limit(store, kill):
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     ex.execute_exit(CODE, "hard_stop")
     first_oid = ex._pending[CODE]["order_id"]
@@ -375,7 +375,7 @@ def test_pending_force_market_after(store, kill):
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     ex.execute_exit(CODE, "hard_stop")
     ex.pending_check(now_ts=1001.0, now_hhmm="14:58")
@@ -399,7 +399,7 @@ def test_pending_escalation_sz_uses_limit_down(store, kill):
                                      "avg_cost": 10.0}})
     gw.connect()
     ex = _make_executor(store, kill, book, gw,
-                        quotes={SZ: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={SZ: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={SZ: 10.0})
     ex.execute_exit(SZ, "hard_stop")
     ex.pending_check(now_ts=1001.0, now_hhmm="14:58")
@@ -412,7 +412,7 @@ def test_pending_escalation_sz_uses_limit_down(store, kill):
     _seed_book(book2, CODE, 1000)
     ex2 = _make_executor(store, kill, book2, _gw_with(),
                          quotes={CODE: {"last": 10.8, "bid1": 10.8,
-                                        "high": 11.0}},
+                                        "high": 11.0, "ts": 1000.0}},
                          prev_closes={CODE: 10.0})
     ex2.execute_exit(CODE, "hard_stop")
     ex2.pending_check(now_ts=1001.0, now_hhmm="14:58")
@@ -435,7 +435,7 @@ def test_pending_timeout_sz_uses_5level_cancel(store, kill):
                                      "avg_cost": 10.0}})
     gw.connect()
     ex = _make_executor(store, kill, book, gw,
-                        quotes={SZ: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={SZ: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={SZ: 10.0})
     ex.execute_exit(SZ, "hard_stop")              # 第一笔挂买一价 10.8, ts=1000
     ex.pending_check(now_ts=1006.5)               # 盘中 (无 now_hhmm→非 force) 超时 6.5s
@@ -449,7 +449,7 @@ def test_in_flight_sells_for_reconciler(store, kill):
     book = Book()
     _seed_book(book, CODE, 1000)
     ex = _make_executor(store, kill, book, _gw_with(),
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     ex.execute_exit(CODE, "hard_stop")
     assert ex.in_flight_sells() == {CODE: 1000}
@@ -470,6 +470,22 @@ def test_execute_exit_stale_quote_fail_closed(store, kill):
     assert any("陈旧" in m for (m,) in rows)
 
 
+def test_execute_exit_no_ts_fail_closed(store, kill):
+    """2026-08-16 fail-closed 修复: 买一价无 ts 键 (旧实现判"不陈旧"继续卖,
+    fail-open) 现与无价/陈旧同等 fail-closed —— 宁可不卖, 不可瞎卖。
+    对齐 monitor/rotation 的"无 ts 判陈旧"口径 (单一真相源 quote_stale)。"""
+    book = Book()
+    _seed_book(book, CODE, 1000)
+    ex = _make_executor(
+        store, kill, book, _gw_with(),
+        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}})  # 无 ts 键
+    assert not ex.execute_exit(CODE, "hard_stop")
+    assert not [o for o in ex._gw.query_orders() if o["remark"].endswith("X")]
+    rows = store._conn.execute(
+        "SELECT message FROM audit WHERE kind='exit_fail_closed'").fetchall()
+    assert any("无时间戳" in m for (m,) in rows)
+
+
 def test_delayed_cancel_waits_ack_then_proceeds(store, kill):
     """审计M8修复: 受理≠撤成 —— delayed 模式下等 ack 超时告警,
     流水线不阻塞继续卖; ack 到达后订单落终态。"""
@@ -478,7 +494,7 @@ def test_delayed_cancel_waits_ack_then_proceeds(store, kill):
     gw = _gw_with()
     gw._delayed_cancel = True
     ex = _make_executor(store, kill, book, gw,
-                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0}},
+                        quotes={CODE: {"last": 10.8, "bid1": 10.8, "high": 11.0, "ts": 1000.0}},
                         prev_closes={CODE: 10.0})
     ex._ack_timeout = 0.3          # 测试不等真 2s
     ex.place_ladder("20260726")
