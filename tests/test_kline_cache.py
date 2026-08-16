@@ -154,6 +154,49 @@ def test_gap_persist_marks_intact_false(tmp_path):
     assert not rec[intact_idx], "补拉仍缺 → intact=false"
 
 
+def test_fix_d_intact_covered_skips_gap_detection(tmp_path, monkeypatch):
+    """2026-08-16 Fix D: intact=True 且区间完全覆盖 → 第二次 get 跳过缺口检测
+    (不再重复读 parquet/日历/strftime)。缺口不会凭空出现。"""
+    cache = _make_cache(tmp_path)
+    calls = {"n": 0}
+    orig = cache._detect_and_fill_gaps
+
+    def spy(code, period, start_ts, end_ts, dividend_type):
+        calls["n"] += 1
+        return orig(code, period, start_ts, end_ts, dividend_type)
+
+    monkeypatch.setattr(cache, "_detect_and_fill_gaps", spy)
+    # 首次 get: 取数 + 缺口检测一次
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+    n1 = calls["n"]
+    assert n1 == 1, f"首次取数应跑一次缺口检测, 实际 {n1}"
+    # 第二次 get 同区间: intact=True + 覆盖 → 跳过
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+    assert calls["n"] == n1, "intact=True 且区间覆盖时, 第二次 get 不应再跑缺口检测"
+
+
+def test_fix_d_probe_ran_forces_gap_detection(tmp_path, monkeypatch):
+    """2026-08-16 Fix D 审计修复: 探针运行 (可能因复权漂移全量重拉, 数据已变) 时,
+    即便本地 intact 仍 True, 也必须照查缺口 (probe_ran 兜底), 不能跳过。"""
+    cache = _make_cache(tmp_path)
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+
+    gap_calls = {"n": 0}
+    orig_gap = cache._detect_and_fill_gaps
+
+    def gap_spy(*a, **k):
+        gap_calls["n"] += 1
+        return orig_gap(*a, **k)
+
+    monkeypatch.setattr(cache, "_detect_and_fill_gaps", gap_spy)
+    # 强制 probe_due=True (probe_ran=True), probe 本体 no-op 即可验证守卫
+    monkeypatch.setattr(cache, "_probe_due", lambda code, period: True)
+    monkeypatch.setattr(cache, "_probe_shift", lambda *a, **k: None)
+
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+    assert gap_calls["n"] >= 1, "probe_ran=True 时必须照查缺口, 不能跳过"
+
+
 # ───────────────────────── 原子写 ─────────────────────────
 
 

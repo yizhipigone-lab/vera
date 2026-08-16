@@ -62,15 +62,24 @@ class KlineCache:
         # 2026-07-18: 复权因子漂移探针间隔 (0 = 禁用)。除权后前复权历史价整体
         # 平移, F6 只在增量扩展时检测, 区间已覆盖时靠探针自愈。
         self._probe_interval = pd.Timedelta(hours=float(probe_hours))
+        # 2026-08-16 Fix A: 持久连接 — 原 _conn() 每次查询新开连接 + 两条 PRAGMA,
+        # 每只股每次 get 开 2~3 个新连接 (实测 nt.stat 上万次)。改为单条持久连接
+        # (check_same_thread=False), 写路径已有 self._lock 串行, 读路径单线程。
+        self._db = self._open_db()
         self._init_db()
+
+    def _open_db(self):
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
     # ───────────────────── sqlite manifest ─────────────────────
 
     def _conn(self):
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        # 2026-08-16 Fix A: 返回持久连接 (不再每次新建)。调用方 `with self._conn()
+        # as c:` 语义不变 — with 管的是事务 commit/rollback, 不是连接生命周期。
+        return self._db
 
     def _init_db(self):
         with self._conn() as c:
@@ -124,11 +133,19 @@ class KlineCache:
         return self.cache_dir / "calendar" / "trading_days.parquet"
 
     def _get_calendar(self) -> set:
-        """返回交易日集合 (str YYYYMMDD)。命中 parquet 直接读, 否则拉取落盘。"""
+        """返回交易日集合 (str YYYYMMDD)。命中 parquet 直接读, 否则拉取落盘。
+
+        2026-08-16 Fix C: 实例级 memoize — 交易日历一天内不变, 原实现每次调用
+        (缺口检测每只股一次) 都重读 parquet。"""
+        cached = getattr(self, "_calendar_cache", None)
+        if cached is not None:
+            return cached
         p = self._calendar_path()
         if p.exists():
             df = pq.read_table(p).to_pandas()
-            return set(df["date"].astype(str).tolist())
+            result = set(df["date"].astype(str).tolist())
+            self._calendar_cache = result
+            return result
         dates = [str(d) for d in self.calendar_fetcher()]
         df = pd.DataFrame({"date": dates})
         # 2026-08-01: 收编 pcu 原语 (原固定 .tmp 名是最后一个没收编点) —
@@ -138,7 +155,8 @@ class KlineCache:
         pq.write_table(table, tmp)
         pcu.atomic_replace(tmp, p,
                            rewrite=lambda t: pq.write_table(table, t))
-        return set(dates)
+        self._calendar_cache = set(dates)
+        return self._calendar_cache
 
     # ───────────────────── public: get ─────────────────────
 
@@ -200,6 +218,7 @@ class KlineCache:
         staleness_check: Optional[tuple] = None  # (last_d, old_last_close)
         is_full_fetch = False
         skip_gap_detection = False
+        intact = False  # 仅在 rec is not None 分支被赋真值; 用于 Fix D 判断
         if rec is None:
             need_fetch = (start_ts, end_ts)
             is_full_fetch = True
@@ -249,12 +268,24 @@ class KlineCache:
         # 缺数据段 (need_fetch) 的正常拉取不受此开关影响。
         if os.environ.get("VERA_KLINE_READONLY") == "1":
             return
+        probe_ran = False
         if need_fetch is None and self._probe_due(code, period):
             # 2026-07-18: 复权因子漂移探针。F6 只在增量扩展时检测, 区间已覆盖
             # (含 intact=false 冷却期内) 的因子漂移靠探针自愈 — 600000.SH 事件
             # 里浦发 1d 缓存 intact=false, 探针挂在 intact 分支后永远到不了。
+            probe_ran = True
             self._probe_shift(code, period, dividend_type)
-        if period in ("1d", "5m", "1m") and not skip_gap_detection:
+        # 2026-08-16 Fix D: manifest 已确认 intact=True 且本轮无取数 (区间完全被
+        # 缓存覆盖) 时, 跳过缺口检测 —— 缺口不会凭空出现, 上次已查过无缺; 重复
+        # 检测是每只股每次 get 的第二次 parquet 读 + 日历读 + strftime 的元凶。
+        # 任何区间扩展 / intact=False / 本轮有取数 (need_fetch 非 None) 一律照查,
+        # 缺口兜底逻辑不丢; 部分 bar 告警在首次取数时已发过, 不再逐次重发。
+        # 审计补充: 探针可能因复权漂移触发全量重拉 (数据变了), 此时本地 intact
+        # 已陈旧 → 必须照查缺口, 不能跳过 (probe_ran 兜底)。
+        intact_covered = (rec is not None) and intact and (need_fetch is None) \
+            and not probe_ran
+        if (period in ("1d", "5m", "1m") and not skip_gap_detection
+                and not intact_covered):
             self._detect_and_fill_gaps(code, period, start_ts, end_ts, dividend_type)
 
     # ── F5 冷却 / F6 重叠 bar ──
@@ -470,7 +501,8 @@ class KlineCache:
         if df.empty:
             return
         cal = self._get_calendar()
-        cached_str = {d.strftime("%Y%m%d") for d in df.index}
+        # 2026-08-16 Fix B: 逐 bar strftime 改向量化 (原列表推导每根 bar 一次 strftime)
+        cached_str = set(df.index.strftime("%Y%m%d"))
         lo = max(df.index.min().strftime("%Y%m%d"), start_ts.strftime("%Y%m%d"))
         hi = min(df.index.max().strftime("%Y%m%d"), end_ts.strftime("%Y%m%d"))
         expected = {d for d in cal if lo <= d <= hi}
@@ -489,7 +521,7 @@ class KlineCache:
                                   dividend_type)
         # 复检
         df2 = self._read_parquet(code, period, start_ts, end_ts)
-        cached_str2 = {d.strftime("%Y%m%d") for d in df2.index}
+        cached_str2 = set(df2.index.strftime("%Y%m%d"))
         still = sorted(expected - cached_str2)
         if still:
             logger.warning("kline_gap: %s %s 补拉后仍缺 %s, 标记 intact=false",
@@ -555,6 +587,8 @@ class KlineCache:
         df = df.sort_index()
         # F2 [H3]: 按日期比较, 1d (00:00) 与 5m (09:35-15:00) 都含首末日全天。
         # 直接 <= end_ts (end=00:00) 会把 5m 区间末日 48 根 bar 全切掉。
+        # 2026-08-16 Fix B: normalize() 原被调两次 (每次全索引遍历), 算一次复用。
         start_norm = start_ts.normalize()
         end_norm = end_ts.normalize()
-        return df.loc[(df.index.normalize() >= start_norm) & (df.index.normalize() <= end_norm)]
+        norm = df.index.normalize()
+        return df.loc[(norm >= start_norm) & (norm <= end_norm)]
