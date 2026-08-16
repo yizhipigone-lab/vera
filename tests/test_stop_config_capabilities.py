@@ -4,7 +4,7 @@
 验证:
   - load_stop_config() 返回 capabilities 三键 (default.yaml 加了)
   - load_stop_config_or_default() 兜底含 capabilities + priority (修了原兜底漏 priority)
-  - yaml/stop_config 缺 capabilities 时 .get 回退全 True (安全, 40 调用方零感知)
+  - yaml/stop_config 缺 capabilities 时 .get 回退全 True (安全, 调用方零感知)
 """
 import os
 import sys
@@ -38,7 +38,7 @@ def test_load_stop_config_or_default_has_capabilities_and_priority():
 def test_missing_capabilities_defaults_all_true():
     """老格式 stop_config (无 capabilities) → run_cached 用 .get(caps, {}) 回退全 True.
 
-    这是 40 调用方零感知的关键: 即使 stop_config 没 capabilities 键,
+    这是调用方零感知的关键: 即使 stop_config 没 capabilities 键,
     run_cached 的 caps.get('formula_exit', True) 等也回退 True → 全开 → 数据 None → 能力 off = 旧行为。
     """
     sc = {

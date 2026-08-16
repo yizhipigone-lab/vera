@@ -317,7 +317,7 @@ def test_run_cached_ladder_non_monotonic_warning():
 # Test 13: return_raw=False (默认) → result 不含 raw_equity/raw_trades (L1 补)
 # ---------------------------------------------------------------------------
 def test_run_cached_return_raw_false_no_raw_keys():
-    """return_raw=False (默认) → result 不含 raw_equity/raw_trades 键 (40 调用方返回结构不变)."""
+    """return_raw=False (默认) → result 不含 raw_equity/raw_trades 键 (调用方返回结构不变)."""
     dates, close, high, low, open_, entries, columns = _make_market()
     eng = _make_engine()
     prepared = PreparedMatrix(
