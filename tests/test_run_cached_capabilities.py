@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from backtest.engine import BacktestEngine
+from backtest.prepared import PreparedMatrix
 
 
 def _make_engine():
@@ -73,11 +74,17 @@ def _make_market(n_dates=20):
 
 
 def _run(eng, close, entries, high, low, sc, **cap_kwargs):
-    """统一调用深化后 run_cached; filter_limit_up=False 复现直调口径, return_raw=True 拿 raw_trades."""
-    return eng.run_cached(
-        close, entries,
-        high.values.astype(np.float64), low.values.astype(np.float64),
-        sc, None, np.array([]), np.array([]), 0,
+    """统一调用 run_cached_prepared; filter_limit_up=False 复现直调口径, return_raw=True 拿 raw_trades."""
+    prepared = PreparedMatrix(
+        close=close, entries=entries,
+        high_np=high.values.astype(np.float64),
+        low_np=low.values.astype(np.float64),
+        open_np=cap_kwargs.pop("open_np", None),
+        tradable_np=cap_kwargs.pop("tradable_np", None),
+        last_tradable_idx=cap_kwargs.pop("last_tradable_idx", None),
+    )
+    return eng.run_cached_prepared(
+        prepared, sc, np.array([]), np.array([]), 0,
         filter_limit_up=False, return_raw=True,
         **cap_kwargs,
     )
@@ -297,10 +304,12 @@ def test_run_cached_ladder_non_monotonic_warning():
     ]}
     lp = np.array([0.15, 0.06], dtype=np.float64)  # 非升序
     lr = np.array([0.3, 0.3], dtype=np.float64)
-    result = eng.run_cached(
-        close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
-        sc, None, lp, lr, 2, filter_limit_up=False, return_raw=True,
-    )
+    prepared = PreparedMatrix(
+        close=close, entries=entries,
+        high_np=high.values.astype(np.float64),
+        low_np=low.values.astype(np.float64))
+    result = eng.run_cached_prepared(
+        prepared, sc, lp, lr, 2, filter_limit_up=False, return_raw=True)
     assert result["raw_equity"].shape == (len(dates),), "非升序 ladder 应 warning 但不崩"
 
 
@@ -311,9 +320,12 @@ def test_run_cached_return_raw_false_no_raw_keys():
     """return_raw=False (默认) → result 不含 raw_equity/raw_trades 键 (40 调用方返回结构不变)."""
     dates, close, high, low, open_, entries, columns = _make_market()
     eng = _make_engine()
-    result = eng.run_cached(
-        close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
-        _stop_config(), None, np.array([]), np.array([]), 0,
+    prepared = PreparedMatrix(
+        close=close, entries=entries,
+        high_np=high.values.astype(np.float64),
+        low_np=low.values.astype(np.float64))
+    result = eng.run_cached_prepared(
+        prepared, _stop_config(), np.array([]), np.array([]), 0,
         filter_limit_up=False,  # return_raw 默认 False
     )
     assert "raw_equity" not in result, "return_raw=False 时不应有 raw_equity"

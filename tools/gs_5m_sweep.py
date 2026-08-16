@@ -217,6 +217,7 @@ def do_run(args):
     import logging
     logging.getLogger().setLevel(logging.WARNING)
     from backtest.engine import ENGINE_VERSION, BacktestEngine
+    from backtest.prepared import PreparedMatrix
 
     formula = args.formula
     meta, mats = _load_cache(formula, args.window_td)
@@ -267,16 +268,15 @@ def do_run(args):
             ladder_ratios = np.array([r for _, r in levels], dtype=np.float64)
             t0 = time.time()
             try:
-                res = engine.run_cached(
-                    mats["close_df"], mats["entries_df"],
-                    mats["high_np"], mats["low_np"],
-                    combo_stop_config(c, PRIORITY), selections,
+                prepared = PreparedMatrix(
+                    close=mats["close_df"], entries=mats["entries_df"],
+                    high_np=mats["high_np"], low_np=mats["low_np"],
+                    open_np=mats["open_np"], tradable_np=mats["tradable_np"],
+                    last_tradable_idx=mats["last_tradable_idx"])
+                res = engine.run_cached_prepared(
+                    prepared, combo_stop_config(c, PRIORITY),
                     ladder_profits, ladder_ratios, len(levels),
-                    filter_limit_up=False,
-                    open_np=mats["open_np"],
-                    tradable_np=mats["tradable_np"],
-                    last_tradable_idx=mats["last_tradable_idx"],
-                )
+                    filter_limit_up=False)
                 m = res["metrics"]
                 row = {
                     "key": key, "cost": c["cost"], "act": c["act"], "dd": c["dd"],

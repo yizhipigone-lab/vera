@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.engine import ENGINE_VERSION, BacktestEngine
 from backtest.loop import build_backtest_loop
+from backtest.prepared import PreparedMatrix
 
 # 复用既有固定种子合成数据生成器 (不依赖真实行情缓存 — 真实数据会漂移)
 from tests.test_loop_parity import make_crafted_dual_trigger, make_synthetic
@@ -224,13 +225,14 @@ def _sc_engine_run_cached(priority, seed):
     eng = _make_engine()
     sc = _stop_config_snapshot(priority)
     lp, lr, nl = _ladder_triplet(sc)
-    result = eng.run_cached(
-        close, entries,
-        high.astype(np.float64), low.astype(np.float64),
-        sc, None, lp, lr, nl,
-        filter_limit_up=False,  # 合成数据无涨跌停语义, 且避免 ST 信息外部依赖
+    prepared = PreparedMatrix(
+        close=close, entries=entries,
+        high_np=high.astype(np.float64), low_np=low.astype(np.float64),
         open_np=open_.astype(np.float64),
-        tradable_np=tradable, last_tradable_idx=last_tradable,
+        tradable_np=tradable, last_tradable_idx=last_tradable)
+    result = eng.run_cached_prepared(
+        prepared, sc, lp, lr, nl,
+        filter_limit_up=False,  # 合成数据无涨跌停语义, 且避免 ST 信息外部依赖
         formula_exit_np=fsig, formula_exit_ratio=1.0,
         return_raw=True,
     )
@@ -468,14 +470,15 @@ def test_run_vs_run_cached_consistency(monkeypatch):
     assert captured, "_prepare_run_matrices 未被调用, run() 路径异常"
 
     lp, lr, nl = _ladder_triplet(sc)
-    res_cached = eng.run_cached(
-        captured["close"], captured["entries"],
-        captured["high"], captured["low"],
-        sc, selections, lp, lr, nl,
-        filter_limit_up=False,
+    prepared = PreparedMatrix(
+        close=captured["close"], entries=captured["entries"],
+        high_np=captured["high"], low_np=captured["low"],
         open_np=captured["open"],
         tradable_np=captured["tradable"],
-        last_tradable_idx=captured["last_tradable_idx"],
+        last_tradable_idx=captured["last_tradable_idx"])
+    res_cached = eng.run_cached_prepared(
+        prepared, sc, lp, lr, nl,
+        filter_limit_up=False,
         return_raw=True,
     )
 

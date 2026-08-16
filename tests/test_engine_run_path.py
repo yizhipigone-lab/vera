@@ -33,6 +33,7 @@ import backtest.engine as engine_module
 import backtest.stop_config as stop_config_module
 from backtest.engine import BacktestEngine
 from backtest.loop import build_backtest_loop
+from backtest.prepared import PreparedMatrix
 from backtest.stop_config import load_stop_config
 from tests.loop_direct import run_loop_direct
 
@@ -505,13 +506,11 @@ def test_run_cached_uses_yaml_defaults_when_trailing_values_missing(
     close, entries = _default_contract_market()
     captured = _capture_core_trailing(monkeypatch, len(close))
 
-    engine.run_cached(
-        close,
-        entries,
-        None,
-        None,
+    prepared = PreparedMatrix(close=close, entries=entries,
+                              high_np=None, low_np=None)
+    engine.run_cached_prepared(
+        prepared,
         {"trailing_stop": trailing_config},
-        pd.DataFrame(),
         np.array([], dtype=np.float64),
         np.array([], dtype=np.float64),
         0,
@@ -532,11 +531,10 @@ def test_run_cached_preserves_explicit_trailing_values(
     close, entries = _default_contract_market()
     captured = _capture_core_trailing(monkeypatch, len(close))
 
-    engine.run_cached(
-        close,
-        entries,
-        None,
-        None,
+    prepared = PreparedMatrix(close=close, entries=entries,
+                              high_np=None, low_np=None)
+    engine.run_cached_prepared(
+        prepared,
         {
             "trailing_stop": {
                 "enabled": True,
@@ -544,7 +542,6 @@ def test_run_cached_preserves_explicit_trailing_values(
                 "drawdown": drawdown,
             },
         },
-        pd.DataFrame(),
         np.array([], dtype=np.float64),
         np.array([], dtype=np.float64),
         0,

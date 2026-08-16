@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from backtest.engine import BacktestEngine
+from backtest.prepared import PreparedMatrix
 
 # 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
 from tests.loop_direct import run_loop_direct
@@ -160,8 +161,14 @@ def _assert_parity(eng, close, entries, high, low, sc, **caps):
     hn = high.values.astype(np.float64)
     ln = low.values.astype(np.float64)
     ea, rt = _direct_call(eng, close, entries, hn, ln, sc, lp, lr, nl, **caps)
-    result = eng.run_cached(
-        close, entries, hn, ln, sc, None, lp, lr, nl,
+    prepared = PreparedMatrix(
+        close=close, entries=entries, high_np=hn, low_np=ln,
+        open_np=caps.pop("open_np", None),
+        tradable_np=caps.pop("tradable_np", None),
+        last_tradable_idx=caps.pop("last_tradable_idx", None),
+    )
+    result = eng.run_cached_prepared(
+        prepared, sc, lp, lr, nl,
         filter_limit_up=False, return_raw=True, **caps,
     )
     assert np.array_equal(result["raw_equity"], ea), (

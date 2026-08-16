@@ -57,6 +57,7 @@ def main() -> int:
               for k, v in regimes.items()}
 
     from backtest.engine import BacktestEngine
+    from backtest.prepared import PreparedMatrix
     rows, curves = [], []
     for sname, sz in SIZINGS.items():
         engine = BacktestEngine({
@@ -72,13 +73,15 @@ def main() -> int:
             masked = entries if fname == "none" else entries.copy()
             if fname != "none":
                 masked[~allows[fname]] = False
-            res = engine.run_cached(
-                mats["close_df"], masked, mats["high_np"], mats["low_np"],
-                sweep.combo_stop_config(CHAMPION), selections,
-                np.array([], dtype=np.float64), np.array([], dtype=np.float64),
-                0, filter_limit_up=False, open_np=mats["open_np"],
-                tradable_np=mats["tradable_np"],
+            prepared = PreparedMatrix(
+                close=mats["close_df"], entries=masked,
+                high_np=mats["high_np"], low_np=mats["low_np"],
+                open_np=mats["open_np"], tradable_np=mats["tradable_np"],
                 last_tradable_idx=mats["last_tradable_idx"])
+            res = engine.run_cached_prepared(
+                prepared, sweep.combo_stop_config(CHAMPION),
+                np.array([], dtype=np.float64), np.array([], dtype=np.float64),
+                0, filter_limit_up=False)
             m = res["metrics"]
             rows.append({"sizing": sname, "filter": fname,
                          "cumret": m.get("cumulative_return", 0),

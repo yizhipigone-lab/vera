@@ -478,6 +478,7 @@ def run_backtest(panel, entries_full, stop_cfg, bt_cfg=None,
       backtest/loop/absolute.py (触发 signal[i-lag,ci], 执行价=当根 Close)。
     """
     from backtest.engine import BacktestEngine
+    from backtest.prepared import PreparedMatrix
 
     eng = BacktestEngine(bt_cfg or DEFAULT_BT_CFG)
     close_raw = panel["close"].loc[bt_start:bt_end]
@@ -503,10 +504,12 @@ def run_backtest(panel, entries_full, stop_cfg, bt_cfg=None,
 
     # run_cached 不读 selections (仅为签名兼容位), 传空壳
     selections = pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
-    return eng.run_cached(
-        close_ff, entries, high_np, low_np, stop_cfg, selections,
-        ladder_profits, ladder_ratios, len(levels),
-        open_np=open_np, close_raw=close_raw,
+    prepared = PreparedMatrix(
+        close=close_ff, entries=entries, high_np=high_np, low_np=low_np,
+        open_np=open_np)
+    return eng.run_cached_prepared(
+        prepared, stop_cfg, ladder_profits, ladder_ratios, len(levels),
+        close_raw=close_raw,
         formula_exit_np=formula_exit_np,
         formula_exit_ratio=1.0,      # 全仓清
         formula_exit_lag_bars=0,     # 熊市信号日当天收盘成交 (见 docstring)

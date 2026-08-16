@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import BacktestEngine
+from backtest.prepared import PreparedMatrix
 
 
 def _engine():
@@ -61,12 +62,14 @@ class TestATRviaRunCached:
         """stop_config['atr_stop'] 经 run_cached → ATR 触发 reason=13。"""
         close, high, low, op, entries = _make_data()
         eng = _engine()
-        res = eng.run_cached(
-            close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
-            _stop(), None, np.array([]), np.array([]), 0,
-            filter_limit_up=False, return_raw=True,
-            open_np=op.values.astype(np.float64),
-        )
+        prepared = PreparedMatrix(
+            close=close, entries=entries,
+            high_np=high.values.astype(np.float64),
+            low_np=low.values.astype(np.float64),
+            open_np=op.values.astype(np.float64))
+        res = eng.run_cached_prepared(
+            prepared, _stop(), np.array([]), np.array([]), 0,
+            filter_limit_up=False, return_raw=True)
         trades = res["raw_trades"]
         assert trades.shape[0] >= 1, "应有交易"
         reasons = trades[:, 8]
@@ -76,12 +79,14 @@ class TestATRviaRunCached:
         """atr_stop.enabled=False → 不产 reason=13。"""
         close, high, low, op, entries = _make_data()
         eng = _engine()
-        res = eng.run_cached(
-            close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
-            _stop(atr_enabled=False), None, np.array([]), np.array([]), 0,
-            filter_limit_up=False, return_raw=True,
-            open_np=op.values.astype(np.float64),
-        )
+        prepared = PreparedMatrix(
+            close=close, entries=entries,
+            high_np=high.values.astype(np.float64),
+            low_np=low.values.astype(np.float64),
+            open_np=op.values.astype(np.float64))
+        res = eng.run_cached_prepared(
+            prepared, _stop(atr_enabled=False), np.array([]), np.array([]), 0,
+            filter_limit_up=False, return_raw=True)
         trades = res["raw_trades"]
         reasons = trades[:, 8] if trades.shape[0] else np.array([])
         assert 13.0 not in reasons, f"ATR 禁用不应有 reason=13, reasons={reasons}"
@@ -90,11 +95,11 @@ class TestATRviaRunCached:
         """atr_stop.enabled=True 但 high_np/low_np=None → ATR 强制禁用, 不崩。"""
         close, _, _, _, entries = _make_data()
         eng = _engine()
-        res = eng.run_cached(
-            close, entries, None, None,
-            _stop(atr_enabled=True), None, np.array([]), np.array([]), 0,
-            filter_limit_up=False, return_raw=True,
-        )
+        prepared = PreparedMatrix(close=close, entries=entries,
+                                  high_np=None, low_np=None)
+        res = eng.run_cached_prepared(
+            prepared, _stop(atr_enabled=True), np.array([]), np.array([]), 0,
+            filter_limit_up=False, return_raw=True)
         # 不崩 + 无 reason=13
         trades = res["raw_trades"]
         reasons = trades[:, 8] if trades.shape[0] else np.array([])
@@ -104,12 +109,14 @@ class TestATRviaRunCached:
         """reason=13 在 trades_df 显示 'ATR止损' (reason_map 13.0)。"""
         close, high, low, op, entries = _make_data()
         eng = _engine()
-        res = eng.run_cached(
-            close, entries, high.values.astype(np.float64), low.values.astype(np.float64),
-            _stop(), None, np.array([]), np.array([]), 0,
-            filter_limit_up=False,
-            open_np=op.values.astype(np.float64),
-        )
+        prepared = PreparedMatrix(
+            close=close, entries=entries,
+            high_np=high.values.astype(np.float64),
+            low_np=low.values.astype(np.float64),
+            open_np=op.values.astype(np.float64))
+        res = eng.run_cached_prepared(
+            prepared, _stop(), np.array([]), np.array([]), 0,
+            filter_limit_up=False)
         trades_df = res["trades"]
         if not trades_df.empty:
             reasons = set(trades_df["exit_reason"].unique())

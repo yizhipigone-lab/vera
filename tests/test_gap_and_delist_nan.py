@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import BacktestEngine
+from backtest.prepared import PreparedMatrix
 
 # 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
 from tests.loop_direct import run_loop_direct
@@ -34,9 +35,12 @@ def test_gap_down_executes_at_open_not_stop_price():
             'trailing_stop': {'enabled': False}, 'ladder_tp': {'enabled': False},
             'time_stop': {'enabled': False}}
     eng = _engine()
-    r = eng.run_cached(close, entries, high_np, low_np, stop, None,
-                       np.array([0.06]), np.array([0.5]), 1,
-                       filter_limit_up=False, open_np=open_np, return_raw=True)
+    prepared = PreparedMatrix(close=close, entries=entries,
+                              high_np=high_np, low_np=low_np,
+                              open_np=open_np)
+    r = eng.run_cached_prepared(prepared, stop,
+                                np.array([0.06]), np.array([0.5]), 1,
+                                filter_limit_up=False, return_raw=True)
     raw = r.raw_trades
     assert len(raw) == 1, f"应 1 笔交易, 实际 {len(raw)}"
     assert raw[0, 8] == 3.0, "退出原因应为硬止损(3)"
@@ -56,9 +60,12 @@ def test_no_gap_executes_at_stop_price():
             'trailing_stop': {'enabled': False}, 'ladder_tp': {'enabled': False},
             'time_stop': {'enabled': False}}
     eng = _engine()
-    r = eng.run_cached(close, entries, high_np, low_np, stop, None,
-                       np.array([0.06]), np.array([0.5]), 1,
-                       filter_limit_up=False, open_np=open_np, return_raw=True)
+    prepared = PreparedMatrix(close=close, entries=entries,
+                              high_np=high_np, low_np=low_np,
+                              open_np=open_np)
+    r = eng.run_cached_prepared(prepared, stop,
+                                np.array([0.06]), np.array([0.5]), 1,
+                                filter_limit_up=False, return_raw=True)
     raw = r.raw_trades
     assert len(raw) == 1
     assert raw[0, 8] == 3.0

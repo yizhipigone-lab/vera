@@ -59,6 +59,7 @@ def main() -> int:
         importlib.reload(sweep)
         meta, mats = sweep._load_cache()
         from backtest.engine import BacktestEngine
+        from backtest.prepared import PreparedMatrix
         engine = BacktestEngine({
             "initial_capital": sweep.CAPITAL, "commission": 0.0003,
             "slippage": 0.001, "stamp_tax": 0.0005,
@@ -78,13 +79,15 @@ def main() -> int:
             masked = entries if fname == "none" else entries.copy()
             if fname != "none":
                 masked[~allow] = False
-            res = engine.run_cached(
-                mats["close_df"], masked, mats["high_np"], mats["low_np"],
-                sweep.combo_stop_config(CHAMPION), selections,
-                np.array([], dtype=np.float64), np.array([], dtype=np.float64),
-                0, filter_limit_up=False, open_np=mats["open_np"],
-                tradable_np=mats["tradable_np"],
+            prepared = PreparedMatrix(
+                close=mats["close_df"], entries=masked,
+                high_np=mats["high_np"], low_np=mats["low_np"],
+                open_np=mats["open_np"], tradable_np=mats["tradable_np"],
                 last_tradable_idx=mats["last_tradable_idx"])
+            res = engine.run_cached_prepared(
+                prepared, sweep.combo_stop_config(CHAMPION),
+                np.array([], dtype=np.float64), np.array([], dtype=np.float64),
+                0, filter_limit_up=False)
             eq = res["equity_curve"]
             # 列名防御: 找日期列与权益列
             dcol = next(c for c in eq.columns if "date" in c.lower())

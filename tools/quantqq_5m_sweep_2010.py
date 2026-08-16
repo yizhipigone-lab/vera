@@ -339,6 +339,7 @@ def do_run(args):
     import logging
     logging.getLogger().setLevel(logging.WARNING)  # 引擎每组合 INFO 刷屏, 扫描期压掉
     from backtest.engine import ENGINE_VERSION, BacktestEngine
+    from backtest.prepared import PreparedMatrix
 
     meta, mats = _load_cache(args.window_td)
     if meta.get("engine_version") and meta["engine_version"] != ENGINE_VERSION:
@@ -395,16 +396,15 @@ def do_run(args):
             ladder_ratios = np.array([r for _, r in levels], dtype=np.float64)
             t0 = time.time()
             try:
-                res = engine.run_cached(
-                    mats["close_df"], mats["entries_df"],
-                    mats["high_np"], mats["low_np"],
-                    combo_stop_config(c), selections,
+                prepared = PreparedMatrix(
+                    close=mats["close_df"], entries=mats["entries_df"],
+                    high_np=mats["high_np"], low_np=mats["low_np"],
+                    open_np=mats["open_np"], tradable_np=mats["tradable_np"],
+                    last_tradable_idx=mats["last_tradable_idx"])
+                res = engine.run_cached_prepared(
+                    prepared, combo_stop_config(c),
                     ladder_profits, ladder_ratios, len(levels),
-                    filter_limit_up=False,   # prep 已预过滤
-                    open_np=mats["open_np"],
-                    tradable_np=mats["tradable_np"],
-                    last_tradable_idx=mats["last_tradable_idx"],
-                )
+                    filter_limit_up=False)   # prep 已预过滤
                 m = res["metrics"]
                 row = {
                     "key": key, "priority": c.get("priority", "trailing_first"),
