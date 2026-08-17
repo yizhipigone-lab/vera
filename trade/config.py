@@ -133,7 +133,7 @@ class RotationConfig:
     ma_window: int = 20                    # MA20 窗口
     high_window: int = 250                 # 250日高点窗口
     drawdown_threshold: float = 0.20       # 回撤阈值 (正值)
-    execute_time: str = "09:30"            # 每日「算信号+调仓」时点 (HH:MM, 连续竞价开盘)
+    execute_time: str = "14:56"            # 每日「算信号+调仓」时点 (HH:MM, 尾盘 14:56 用实时价当今日收盘, 2026-08-16 拍板)
 
 
 @dataclass(frozen=True)

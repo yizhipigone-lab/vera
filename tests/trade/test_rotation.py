@@ -271,6 +271,59 @@ def test_worker_full_path(tmp_path):
     assert any(b["code"] == CYB for b in buys)
 
 
+def test_worker_intraday_uses_realtime_price(tmp_path, monkeypatch):
+    """2026-08-16 拍板: 盘中(14:56)用实时价当今日收盘价, 信号日=今日(非昨日)。"""
+    from datetime import datetime
+    # 钉死"今日是交易日" — 否则真实日历把节后/周一标成非交易日会致测试 flaky
+    monkeypatch.setattr("trade.rotation.is_trading_day_cached", lambda d: True)
+    clock = [_ts("14:56")]
+    closes = [1000.0 + i for i in range(300)]   # 持续上涨 → 昨日信号 full_cyb
+    app = _start(_app(_cfg(tmp_path), clock, closes={INDEX: closes}))
+    # 推指数实时价 900 (当日大跌) → 追加进 closes, 信号应反映回撤
+    app.gateway.push_quote(INDEX, _quote(INDEX, 900.0))
+    app._rotation.start("manual")
+    assert _wait(lambda: app._rotation.last is not None
+                 and app._rotation.last.get("signal") is not None, timeout=5.0)
+    sig = app._rotation.last["signal"]
+    today = datetime.fromtimestamp(clock[0]).strftime("%Y%m%d")
+    assert sig["date"] == today, f"盘中实时价应记今日, 实际 {sig['date']}"
+    assert sig["close"] == 900.0, f"信号应基于实时价 900, 实际 {sig['close']}"
+    # 昨日收盘 1299 是 full_cyb; 追加 900 (当日大跌 31%) 后 MA20 转 down → full_gold
+    assert sig["state"] == STATE_FULL_GOLD, f"实时价大跌应转 full_gold, 实际 {sig['state']}"
+
+
+def test_fetch_closes_qmt_primary(tmp_path):
+    """2026-08-17: 取数降级链 — QMT 命中时不降级。"""
+    clock = [_ts("10:00")]
+    app = _start(_app(_cfg(tmp_path), clock,
+                      closes={INDEX: [1000.0 + i for i in range(300)]}))
+    closes, src = app._rotation._fetch_closes(INDEX, 370, 250)
+    assert src == "QMT" and len(closes) == 300
+
+
+def test_fetch_closes_fallback_chain(tmp_path, monkeypatch):
+    """2026-08-17: 三级降级 QMT 不足 → TDX; TDX 挂 → 腾讯; 全挂 → none (fail-closed)。"""
+    clock = [_ts("10:00")]
+    app = _start(_app(_cfg(tmp_path), clock))   # 无 closes → QMT 空
+    # mock TDX/腾讯 兜底 (不真连网络)
+    monkeypatch.setattr(app._rotation, "_fetch_tdx_closes",
+                        lambda code, count: [float(i) for i in range(300)])
+    monkeypatch.setattr(app._rotation, "_fetch_tencent_closes",
+                        lambda code, count: [float(i) for i in range(300)])
+    closes, src = app._rotation._fetch_closes(INDEX, 370, 250)
+    assert src == "TDX" and len(closes) == 300
+    # TDX 也挂 → 腾讯
+    monkeypatch.setattr(app._rotation, "_fetch_tdx_closes",
+                        lambda code, count: [])
+    closes, src = app._rotation._fetch_closes(INDEX, 370, 250)
+    assert src == "腾讯" and len(closes) == 300
+    # 全挂 → none (fail-closed, compute_signal 判数据不足)
+    monkeypatch.setattr(app._rotation, "_fetch_tencent_closes",
+                        lambda code, count: [])
+    closes, src = app._rotation._fetch_closes(INDEX, 370, 250)
+    assert src == "none" and closes == []
+
+
 # ═══════════════════════════════════════════════════════════════
 # 股票池预算帽
 # ═══════════════════════════════════════════════════════════════
@@ -389,7 +442,9 @@ def test_api_rotation_endpoints(tmp_path):
 
     from trade.api import create_api_app
     clock = [_ts("10:00")]
-    app = _start(_app(_cfg(tmp_path), clock))
+    # 注入 closes 让 QMT 主源命中, 避免 run 端点触发真实 TDX/akshare 网络降级
+    app = _start(_app(_cfg(tmp_path), clock,
+                      closes={INDEX: [1000.0 + i for i in range(300)]}))
     client = TestClient(create_api_app(app))
     r = client.get("/api/trade/rotation/last")
     assert r.status_code == 200

@@ -223,26 +223,50 @@ class RotationFeature:
 
     def _worker(self, source: str) -> None:
         """工作线程: 拉 399673 日线收盘价 (阻塞) → 算信号 → 只 put 事件。
-        取数口径 (最新完整收盘, 无未来函数): 收盘后 (≥15:05) 用今日收盘价,
-        盘中/盘前用昨日 —— 收盘后点「立即」看的是今日信号 (方案 A, 2026-08-14)。"""
+        取数口径 (2026-08-16 拍板): 收盘后 (≥15:05) 用今日完整日线; 盘中 (如尾盘
+        14:56) 用实时价当今日收盘价 (近似, 14:56≈15:00 收盘); 无实时价/非交易日
+        回退昨日 —— 无未来函数。"""
         cfg = self._cfg_getter().rotation
         try:
             now = datetime.fromtimestamp(self._clock())
             # 15:05 后今日日线已完整 (收盘 15:00 + 5 分钟 feed 缓冲)
             after_close = now.hour > 15 or (now.hour == 15 and now.minute >= 5)
-            end = now if after_close else (now - timedelta(days=1))
-            # 回退到最近交易日 (审计 L1: 周一/节后用自然日减一会标成非交易日)
-            while not is_trading_day_cached(end.date()):
-                end -= timedelta(days=1)
-            end_str = end.strftime("%Y%m%d")
             # 取最近 N 根收盘价 (count 口径, 避开 start/end 日期格式坑);
-            # high_window + ma_window + 100 留足非交易日余量
+            # high_window + ma_window + 100 留足非交易日余量。
+            # <15:05 时 query_daily_closes 已丢弃今日盘中 bar → closes 末根=昨日。
+            # 2026-08-17: 三级降级 QMT → TDX → 腾讯 (东财限连已剔除)。
             need = cfg.high_window + cfg.ma_window + 100
-            closes = self._gateway.query_daily_closes(cfg.signal_index, count=need)
+            min_bars = max(cfg.high_window, cfg.ma_window + 1)
+            closes, data_source = self._fetch_closes(cfg.signal_index, need, min_bars)
+            if after_close:
+                # 今日日线已完整, closes 末根即今日; 信号日=最近交易日(≤now)
+                end = now
+                while not is_trading_day_cached(end.date()):
+                    end -= timedelta(days=1)
+                signal_date = end.strftime("%Y%m%d")
+            else:
+                # 盘中: 用实时价当今日收盘 (尾盘 14:56); 无实时价/非交易日回退昨日
+                today_price = None
+                try:
+                    q = (self._gateway.query_quotes([cfg.signal_index]) or {}).get(
+                        cfg.signal_index) or {}
+                    today_price = q.get("last") or 0.0
+                except Exception:
+                    today_price = None
+                if (today_price and float(today_price) > 0
+                        and is_trading_day_cached(now.date())):
+                    closes = list(closes) + [float(today_price)]
+                    signal_date = now.strftime("%Y%m%d")
+                else:
+                    end = now - timedelta(days=1)
+                    while not is_trading_day_cached(end.date()):
+                        end -= timedelta(days=1)
+                    signal_date = end.strftime("%Y%m%d")
             signal = compute_signal(closes, cfg.ma_window, cfg.high_window,
                                     cfg.drawdown_threshold)
-            signal["date"] = end_str     # 信号基于哪一天的收盘价 (非运行日)
+            signal["date"] = signal_date   # 信号基于哪一天的收盘价 (非运行日)
             signal["index"] = cfg.signal_index
+            signal["data_source"] = data_source   # 实际取数源 (QMT/TDX/腾讯/none)
             # 注 (审计 L6): 本线程读 cfg 算信号, 消费者线程 _execute 会再读 cfg
             # 取 etf_ratio/代码。若两步之间热改配置, 信号按旧窗口算、调仓按新
             # 配置执行; 窗口极小(秒级)且次日按持仓派生自愈, 接受此边界。
@@ -253,6 +277,65 @@ class RotationFeature:
             self._engine.put(Event(type=EVENT_ROTATION, ts=self._clock(),
                                    data={"signal": None, "error": str(e),
                                          "source": source}))
+
+    # ── 指数日线取数降级链 (2026-08-17: QMT → TDX → 腾讯; 东财限连已剔除) ──
+
+    def _fetch_closes(self, code: str, count: int, min_bars: int) -> tuple[list[float], str]:
+        """取指数日线收盘价, 三级降级: QMT(主) → TDX → 腾讯。
+        每级判空(根数 ≥ min_bars)才算成功, 否则降级下一级; 全挂返回 ([], "none")
+        → compute_signal 判数据不足 → fail-closed 不动作。返回 (closes, 来源名)。"""
+        # 1) QMT 主源
+        try:
+            closes = self._gateway.query_daily_closes(code, count=count)
+            if closes and len(closes) >= min_bars:
+                return [float(c) for c in closes], "QMT"
+            _logger.warning("轮动信号 QMT 取数不足(%s 根), 降级 TDX", len(closes or []))
+        except Exception as e:
+            _logger.warning("轮动信号 QMT 取数失败, 降级 TDX: %s", e)
+        # 2) TDX (core/data_fetcher)
+        try:
+            closes = self._fetch_tdx_closes(code, count)
+            if closes and len(closes) >= min_bars:
+                return closes, "TDX"
+            _logger.warning("轮动信号 TDX 取数不足(%s 根), 降级腾讯", len(closes or []))
+        except Exception as e:
+            _logger.warning("轮动信号 TDX 取数失败, 降级腾讯: %s", e)
+        # 3) 腾讯 (akshare)
+        try:
+            closes = self._fetch_tencent_closes(code, count)
+            if closes and len(closes) >= min_bars:
+                return closes, "腾讯"
+            _logger.warning("轮动信号腾讯取数不足(%s 根)", len(closes or []))
+        except Exception as e:
+            _logger.warning("轮动信号腾讯取数失败: %s", e)
+        return [], "none"
+
+    def _fetch_tdx_closes(self, code: str, count: int) -> list[float]:
+        """TDX (core/data_fetcher) 取指数日线收盘价, 返回最近 count 根。"""
+        import datetime as _dt
+        from core.data_fetcher import DataFetcher
+        # count 根交易日 ≈ 1.5×count 自然日 (含周末/节假日), 再留 60 天余量
+        end = _dt.date.today().strftime("%Y%m%d")
+        start = (_dt.date.today() - _dt.timedelta(days=count * 2 + 60)).strftime("%Y%m%d")
+        kl = DataFetcher.get_kline([code], start, end, period="1d",
+                                   dividend_type="front", use_cache=True)
+        s = (kl or {}).get("Close")
+        if s is None or code not in s.columns:
+            return []
+        s = s[code].dropna()
+        if s.empty:
+            return []
+        return [float(x) for x in s.tolist()[-count:]]
+
+    def _fetch_tencent_closes(self, code: str, count: int) -> list[float]:
+        """腾讯 (akshare stock_zh_index_daily_tx) 取指数日线收盘价, 返回最近 count 根。"""
+        import akshare as ak
+        num, ex = code.split(".")
+        sym = f"{ex.lower()}{num}"   # 399673.SZ → sz399673
+        df = ak.stock_zh_index_daily_tx(symbol=sym)
+        if df is None or df.empty or "close" not in df.columns:
+            return []
+        return [float(x) for x in df["close"].tolist()[-count:]]
 
     def _execute(self, signal: dict) -> None:
         """调仓执行 (消费者线程)。fail-closed: 任何一步拿不到数据就不动作。"""
