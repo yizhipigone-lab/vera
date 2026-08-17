@@ -178,24 +178,28 @@ def test_positions_day_pnl_last_trading_day(monkeypatch, client):
     assert p["day_chg_pct"] == round((39.13 / 35.59 - 1) * 100, 2)
 
 
-def test_positions_closed_realized_pnl(client):
+def test_positions_closed_realized_pnl(monkeypatch, client):
     """2026-08-11: volume=0 的已平仓票 (幽灵持仓) 应展示真实已实现盈亏,
     不是一堆 0。后端从 trades 算买入均价/卖出均价/已实现盈亏/出场时间,
-    标 closed=True 供前端灰显+徽标。"""
+    标 closed=True 供前端灰显+徽标。
+    2026-08-17: 平仓票也显示当日涨幅(客观) + 当日盈亏(锚昨收, ≠已实现盈亏)。"""
     c, app = client
     SZ = "000001.SZ"
-    # 灌买卖记录: 买 1000@10 (10000), 卖 1000@11 (11000) —— 整周期闭环
+    day_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 14)
+    # 买 1000@10 (锚定日前一天), 卖 1000@11 (锚定日) —— 整周期闭环
     app.store.save_trade({"traded_id": "tb1", "order_id": "ob1", "code": SZ,
         "direction": DIRECTION_BUY, "price": 10.0, "qty": 1000,
-        "amount": 10000.0, "ts": time.time() - 86400})
+        "amount": 10000.0, "ts": day_start - 86400})
     app.store.save_trade({"traded_id": "ts1", "order_id": "os1", "code": SZ,
         "direction": DIRECTION_SELL, "price": 11.0, "qty": 1000,
         "amount": 11000.0, "pnl_amount": 1000.0, "pnl_pct": 10.0,
-        "ts": time.time() - 3600})
+        "ts": day_start + 3600})
     # book 里造幽灵: 买入再卖出 → volume 归零但 key 保留 (模拟卖光后未清的持仓)
     app.book.apply_trade("tb1", "ob1", SZ, DIRECTION_BUY, 10.0, 1000, strategy="测试")
     app.book.apply_trade("ts1", "os1", SZ, DIRECTION_SELL, 11.0, 1000)
     assert app.book.snapshot()["positions"][SZ].volume == 0
+    # 昨收 10.5 → 当日盈亏=(卖出均价11-昨收10.5)×1000=500 (锚昨收, 非买入均价10)
+    app.monitor.on_quote(SZ, {"last": 11.0, "bid1": 10.9, "prev_close": 10.5})
 
     d = c.get("/api/trade/positions").json()
     p = {x["code"]: x for x in d["positions"]}[SZ]
@@ -204,11 +208,12 @@ def test_positions_closed_realized_pnl(client):
     assert p["avg_cost"] == 10.0          # 买入均价 (不再是 0)
     assert p["sell_avg"] == 11.0          # 卖出均价
     assert p["buy_qty"] == 1000
-    assert p["pnl"] == 1000.0             # 已实现盈亏 (不再是 0)
+    assert p["pnl"] == 1000.0             # 已实现盈亏 = (卖出11-买入10)×1000
     assert p["pnl_pct"] == 10.0           # 已实现%
     assert p["exit_ts"] is not None
-    assert p["market_value"] is None      # 平仓 → 无市值/当日
-    assert p["day_chg_pct"] is None
+    assert p["market_value"] is None      # 平仓 → 无市值
+    assert p["day_chg_pct"] == round((11 / 10.5 - 1) * 100, 2)  # 客观涨幅
+    assert p["day_chg_amt"] == 500.0      # 当日盈亏=(11-10.5)×1000, ≠已实现 1000
 
 
 def test_read_endpoints_200(client):

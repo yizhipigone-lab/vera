@@ -353,14 +353,32 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             quote = trade_app.monitor.quote_of(code)
             last = quote["last"] if quote else None
             prev_close = (quote.get("prev_close") or None) if quote else None
+            # 当日涨幅 = 客观价格口径 (现价/昨收-1), 与是否持仓/何时买入无关:
+            # 盘中实时、收盘/周末为最近交易日涨跌。2026-08-16 澄清 (尾盘买入不
+            # 清零) + 2026-08-17 (已平仓票也要显示 —— 客观事实不因平仓消失)。
+            day_chg_pct = (round((last / prev_close - 1) * 100, 2)
+                           if last and prev_close else None)
             s = summary.get(code)
             # 平仓票: volume=0 且 trades 证明确已整周期闭环
             is_closed_pos = (p.volume == 0 and s is not None and s["is_closed"])
             etf = is_etf(code)
             if is_closed_pos:
-                # 成本→买入均价; 浮盈→已实现盈亏; 盈亏%→已实现%; 当日/市值无意义→None
-                day_chg_pct = None
+                # 成本→买入均价; 浮盈→已实现盈亏; 盈亏%→已实现%; 市值无意义→None。
+                # 当日涨幅(客观)已在上方算出, 保留。
+                # 当日盈亏 = 今日价格变动 × 卖出量 = (卖出均价 - 昨收) × 卖出量。
+                # T+1 下今日卖出的必然全是昨仓 (无今买今卖), 故无"今买"腿。
+                # 仅卖出发生在最近交易日才非零, 否则当日已不持有 → 0。
+                # (用户 2026-08-17 澄清: 当日盈亏≠已实现盈亏, 前者锚昨收、后者锚买入均价)
                 day_chg_amt = None
+                sell_avg = s["sell_avg"]
+                exit_ts = s["exit_ts"]
+                if sell_avg and prev_close and exit_ts:
+                    lo, hi = _last_trading_day_range()
+                    if lo <= exit_ts < hi:
+                        day_chg_amt = round(
+                            (sell_avg - prev_close) * s["sell_qty"], 2)
+                    else:
+                        day_chg_amt = 0.0
                 market_value = None
                 avg_cost = s["buy_avg"]
                 pnl = s["realized_pnl"]
@@ -388,15 +406,8 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                     base = ((prev_close or 0.0) * yest_qty
                             + (tb_avg or 0.0) * tb_qty)
                     day_chg_amt = round(yest_amt + tb_amt, 2) if base else None
-                    # 当日涨幅 = 客观价格口径 (现价/昨收-1), 与买入时机无关:
-                    # 盘中是实时涨跌, 收盘/周末是最近一个交易日的涨跌
-                    # (2026-08-16 澄清: 中捷精工当日涨幅 9.93% 就应保持,
-                    # 不能因尾盘买入被清零)。
-                    day_chg_pct = (round((last / prev_close - 1) * 100, 2)
-                                   if prev_close else None)
                 else:
                     day_chg_amt = None
-                    day_chg_pct = None
                 market_value = round(last * p.volume, 2) if last else None
                 avg_cost = p.avg_cost
                 pnl = round((last - p.avg_cost) * p.volume, 2) if last else None
