@@ -192,7 +192,7 @@ function renderPositions(d) {
       ? ' <span class="trade-badge wait">ETF·不管理</span>'
       : (p.closed === true ? ' <span class="trade-badge wait">已平仓</span>' : '');
     var qtyCell = p.closed === true
-      ? (p.buy_qty != null ? p.buy_qty + '<span style="color:var(--text2);font-size:10px"> 已平</span>' : '0')
+      ? (p.buy_qty != null ? p.buy_qty + '<span class="hint"> 已平</span>' : '0')
       : p.volume;
     var priceCell = p.closed === true
       ? (p.sell_avg != null ? p.sell_avg.toFixed(2) : '—')

@@ -330,7 +330,7 @@ export function renderTradeTable(trades, allTradesCount) {
     const reasonFull = esc((t.exit_reason || '').split('+').map(s => reasonDetail[s] || s).join('；'));
     const tidx = totalTrades - 1 - (start + i);   // Phase 3: 行在传入 trades 数组中的索引 (pageRows 经过倒序+分页), 回放点击定位用
     return '<tr data-tidx="' + tidx + '" style="cursor:pointer" title="点击查看 K 线回放">' +
-      '<td style="color:var(--text2);font-size:10px">' + (totalTrades - (start + i)) + '</td>' +
+      '<td class="hint">' + (totalTrades - (start + i)) + '</td>' +
       '<td style="font-family:var(--mono);font-size:10px">' + code + '</td>' +
       '<td title="' + code + '">' + name + '</td>' +
       '<td>' + conceptTags(t.stock_code) + '</td>' +

@@ -100,8 +100,10 @@ a{color:var(--link)} ::-webkit-scrollbar{width:6px;height:6px}
 .form-section{margin-bottom:18px}
 .form-section-title{font-size:11px;color:var(--text2);margin-bottom:10px;font-weight:600;letter-spacing:.6px;display:flex;align-items:center;gap:6px;text-transform:uppercase}
 .form-section-title::before{content:'';display:inline-block;width:3px;height:12px;background:var(--accent);border-radius:2px}
+/* 2026-08-16 design-review: 统一灰字提示类, 替代散落的 inline style */
+.hint{font-size:11px;color:var(--text2);line-height:1.55}
 .form-group{margin-bottom:8px}
-.form-group label{display:block;font-size:10px;color:var(--text2);margin-bottom:3px;font-weight:500}
+.form-group label{display:block;font-size:11px;color:var(--text2);margin-bottom:3px;font-weight:500}
 .form-row{display:flex;gap:8px}
 .form-row .form-group{flex:1}
 input,select{width:100%;padding:7px 9px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:var(--mono);outline:none;transition:border .15s,box-shadow .15s}
@@ -157,7 +159,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .kpi-spark:empty{display:none}
 .kpi-spark svg{width:100%;height:32px;display:block}
 .kpi-sub{font-size:11px;color:var(--text2);margin-top:8px;font-family:var(--mono);display:flex;align-items:center;gap:4px}
-.kpi-hint{font-size:10px;color:var(--text2);margin-top:6px;line-height:1.35;letter-spacing:.2px;opacity:.85}
+.kpi-hint{font-size:11px;color:var(--text2);margin-top:6px;line-height:1.35;letter-spacing:.2px;opacity:.85}
 .kpi-sub .delta-up{color:var(--up)} .kpi-sub .delta-down{color:var(--down)}
 /* 交易统计缩小 */
 .kpi-row-tertiary .kpi-card{padding:12px 14px}
@@ -191,7 +193,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 /* 2026-07-28 P1.5: 概念标签 list 渲染 (一票多概念) */
 .concept-list{display:flex;flex-wrap:wrap;gap:2px;max-width:150px}
 .concept-tag{display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--text);white-space:nowrap}
-.concept-more{font-size:9px;color:var(--text2);align-self:center}
+.concept-more{font-size:11px;color:var(--text2);align-self:center}
 
 /* P4-1: 交易筛选工具栏 */
 .trade-toolbar{display:flex;gap:8px;padding:8px 16px;align-items:center;border-bottom:1px solid var(--border)}
@@ -199,7 +201,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 /* ====== Progress ====== */
 .progress-bar{height:3px;background:var(--border);border-radius:2px;margin-top:8px;overflow:hidden}
 .progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
-.progress-text{font-size:10px;color:var(--text2);margin-top:4px}
+.progress-text{font-size:11px;color:var(--text2);margin-top:4px}
 
 /* B-9: 回测完成入场动效 — JS 给 KPI/图表卡加 .reveal 并 stagger 延迟（forwards 保持终态，KPI hover 不用 transform 故无冲突） */
 .reveal{animation:revealIn .5s cubic-bezier(0.16,1,0.3,1) both}
@@ -231,7 +233,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .config-block .cfg-fields input{font-size:11px;padding:5px 8px;background:var(--surface)}
 
 /* ====== Log Panel ====== */
-.log-panel{background:var(--bg);border-radius:var(--radius);padding:8px 12px;font-family:var(--mono);font-size:10px;color:var(--text2);max-height:160px;overflow-y:auto;line-height:1.6}
+.log-panel{background:var(--bg);border-radius:var(--radius);padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--text2);max-height:160px;overflow-y:auto;line-height:1.6}
 .log-info{color:var(--text2)} .log-ok{color:var(--down)} .log-error{color:var(--up)}
 
 /* P1-4: Toast 通知 */
@@ -246,7 +248,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 
 /* P1-5: 表单即时校验 */
 input.invalid{border-color:var(--up)!important}
-.input-error{color:var(--up);font-size:10px;margin-top:2px;display:none}
+.input-error{color:var(--up);font-size:11px;margin-top:2px;display:none}
 input.invalid~.input-error{display:block}
 
 /* B-14: 行业板块 — 可折叠面板 + 搜索高亮 + 已选计数徽章 */
@@ -260,7 +262,7 @@ input.invalid~.input-error{display:block}
 .sector-count-badge.has{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 14%,transparent);border-color:color-mix(in srgb,var(--accent2) 40%,transparent)}
 .sector-panel{overflow:hidden;max-height:1000px;opacity:1;transition:max-height .3s ease,opacity .2s}
 .sector-section.collapsed .sector-panel{max-height:0;opacity:0}
-.sector-hint{font-size:10px;color:var(--text2);margin-bottom:8px;line-height:1.4}
+.sector-hint{font-size:11px;color:var(--text2);margin-bottom:8px;line-height:1.4}
 .sector-selected{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;max-height:120px;overflow-y:auto}
 .sector-selected:empty{display:none}
 .sector-tag{display:inline-flex;align-items:center;gap:4px;background:color-mix(in srgb,var(--accent2) 15%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 40%,transparent);border-radius:10px;padding:3px 9px;font-size:10px;cursor:pointer;font-weight:500;transition:all .15s}
@@ -269,7 +271,7 @@ input.invalid~.input-error{display:block}
 .sector-toolbar{display:flex;gap:6px;margin-bottom:6px;align-items:center}
 .sector-toolbar input{flex:1;padding:5px 9px;font-size:11px}
 .sector-toolbar button{font-size:10px;padding:4px 10px;white-space:nowrap}
-.sector-match-info{font-size:10px;color:var(--text2);padding:0 2px 6px;font-family:var(--mono);min-height:14px}
+.sector-match-info{font-size:11px;color:var(--text2);padding:0 2px 6px;font-family:var(--mono);min-height:14px}
 .sector-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px;max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px;background:var(--bg)}
 .sector-item{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 6px;border-radius:5px;cursor:pointer;transition:background .12s;border-left:2px solid transparent}
 .sector-item:hover{background:var(--surface)}
@@ -279,7 +281,7 @@ input.invalid~.input-error{display:block}
 .sector-item label .code{color:var(--text2);font-size:9px;font-family:var(--mono)}
 .sector-item.hidden{display:none}
 .sector-item mark{background:color-mix(in srgb,var(--warn) 35%,transparent);color:inherit;border-radius:2px;padding:0 1px}
-.sector-empty{font-size:10px;color:var(--text2);padding:12px;text-align:center}
+.sector-empty{font-size:11px;color:var(--text2);padding:12px;text-align:center}
 /* ===== 页签栏 + 公式体检页 (2026-07-20) ===== */
 .ff-master{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text)}
 .ff-master input[type=checkbox]{width:auto;margin:0;flex:none}
@@ -303,8 +305,8 @@ input.invalid~.input-error{display:block}
 .cal-day{font-size:11px;color:var(--text2);font-family:var(--mono);align-self:flex-start}
 .cal-pnl{font-size:15px;font-weight:700;font-family:var(--mono);margin:2px 0}
 .cal-pnl.cal-up{color:var(--up)} .cal-pnl.cal-down{color:var(--down)}
-.cal-amt{font-size:10px;font-family:var(--mono);color:var(--text2)}
-.cal-trades{font-size:9px;color:var(--text2);margin-top:2px}
+.cal-amt{font-size:11px;font-family:var(--mono);color:var(--text2)}
+.cal-trades{font-size:11px;color:var(--text2);margin-top:2px}
 #pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:20px 24px}
 #pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
@@ -934,7 +936,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <div class="chart-box full">
       <div class="chart-box-header">
         <span>成交明细</span>
-        <span id="analysisTradeCount" style="font-size:11px;color:var(--text2)"></span>
+        <span id="analysisTradeCount" class="hint"></span>
       </div>
       <div class="trade-toolbar">
         <input id="analysisTradeSearch" placeholder="代码/名称搜索..." style="width:160px;font-size:11px;padding:4px 8px">
@@ -988,7 +990,7 @@ input:focus-visible,select:focus-visible{outline:none}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input id="researchStockInput" placeholder="代码 如 300750.SZ" style="width:180px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px">
         <button id="researchStockBtn" class="btn btn-primary" style="padding:7px 16px">查询</button>
-        <span style="font-size:11px;color:var(--text2)">例: 300750 宁德 / 688981 中芯 / 600519 茅台</span>
+        <span class="hint">例: 300750 宁德 / 688981 中芯 / 600519 茅台</span>
       </div>
       <div id="researchPolicyResult" style="margin-top:14px;font-size:12px;color:var(--text2)">输入代码点查询 (政策库现有: 新能源汽车/AI/集成电路 三条种子政策)</div>
       </div>
@@ -1033,7 +1035,7 @@ input:focus-visible,select:focus-visible{outline:none}
         <div class="tds-sec" style="border-top:none;margin-top:0">
           <div class="tds-sec-title">止盈止损 (结构与回测 stop_loss 同形)</div>
           <div class="tds-row"><input type="checkbox" id="tdsSellEn"><label for="tdsSellEn">监控卖出总开关</label>
-            <span style="color:var(--text2);font-size:11px">(关闭=停止一切自动卖出, 不动已挂单子与持仓; 人工卖出不受限)</span></div>
+            <span class="hint">(关闭=停止一切自动卖出, 不动已挂单子与持仓; 人工卖出不受限)</span></div>
           <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-bottom:4px">
             这些是「什么时候自动卖」的规则，每条可单独开/关：<br>
             成本止损 · 亏损超过阈值就割（硬止损，兜底）<br>
@@ -1049,7 +1051,7 @@ input:focus-visible,select:focus-visible{outline:none}
               <option value="ladder_tp_first">阶梯止盈优先</option>
               <option value="stop_first">止损优先</option>
             </select>
-            <span style="color:var(--text2);font-size:11px">(同一时刻多条规则都命中时，谁先卖)</span>
+            <span class="hint">(同一时刻多条规则都命中时，谁先卖)</span>
           </div>
           <div class="tds-row"><input type="checkbox" id="tdsCostEn"><label for="tdsCostEn">成本止损</label>
             阈值 <input type="number" id="tdsCostThreshold" step="0.01" max="0" min="-1"> (负值, 如 -0.12)</div>
@@ -1098,7 +1100,7 @@ input:focus-visible,select:focus-visible{outline:none}
           </div>
           <div class="tds-row"><input type="checkbox" id="tdsAbEn"><label for="tdsAbEn">启用</label>
             时间 <input type="text" id="tdsAbTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="14:52">
-            <span style="color:var(--text2);font-size:11px">(HH:MM)</span></div>
+            <span class="hint">(HH:MM)</span></div>
           <div class="tds-row"><label>公式</label>
             <input type="text" id="tdsAbFormula" class="lab-input" style="width:140px">
             参数 <input type="text" id="tdsAbArg" class="lab-input" style="width:80px"></div>
@@ -1115,7 +1117,7 @@ input:focus-visible,select:focus-visible{outline:none}
             信号：创业板50指数 20 日均线向上且回撤&lt;20% → 满仓创业板；回撤&gt;20% → 半仓+黄金；均线向下 → 满仓黄金。
           </div>
           <div class="tds-row"><input type="checkbox" id="tdsRotEn"><label for="tdsRotEn">启用轮动系统</label>
-            <span style="color:var(--text2);font-size:11px">(启用时选股系统买入被股票池预算封顶)</span></div>
+            <span class="hint">(启用时选股系统买入被股票池预算封顶)</span></div>
           <div class="tds-row">
             <label>ETF 池占比</label>
             <input type="range" id="tdsRotRatio" min="10" max="90" step="5" style="width:180px">
@@ -1123,7 +1125,7 @@ input:focus-visible,select:focus-visible{outline:none}
           </div>
           <div class="tds-row"><label>执行时点</label>
             <input type="text" id="tdsRotTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="09:30">
-            <span style="color:var(--text2);font-size:11px">(HH:MM, 每日算信号+调仓)</span></div>
+            <span class="hint">(HH:MM, 每日算信号+调仓)</span></div>
           <div class="tds-row"><label>指数</label>
             <input type="text" id="tdsRotIndex" class="lab-input" style="width:110px;font-family:var(--mono)">
             <label style="min-width:0">创业板ETF</label>
@@ -1134,7 +1136,7 @@ input:focus-visible,select:focus-visible{outline:none}
         <div class="tds-sec">
           <div class="tds-sec-title">弱市择时闸门 (指数跌破年线当日不买)</div>
           <div class="tds-row"><input type="checkbox" id="tdsRfEn"><label for="tdsRfEn">启用弱市择时</label>
-            <span style="color:var(--text2);font-size:11px">(创业板指跌破年线时尾盘不买新仓, 已持仓照常管理)</span></div>
+            <span class="hint">(创业板指跌破年线时尾盘不买新仓, 已持仓照常管理)</span></div>
           <div class="tds-row"><label>指数</label>
             <input type="text" id="tdsRfIndex" class="lab-input" style="width:110px;font-family:var(--mono)">
             <label style="min-width:0">均线窗口</label>
@@ -1144,7 +1146,7 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="tds-sec-title">飞书通知</div>
           <div class="tds-row"><input type="checkbox" id="tdsFeishuEn"><label for="tdsFeishuEn">推送成交提醒与盘后日报</label></div>
           <div class="tds-row"><input type="checkbox" id="tdsAiReview"><label for="tdsAiReview">盘后日报追加「AI 复盘」(LLM 人话总结)</label></div>
-          <div class="tds-row"><span style="color:var(--text2);font-size:11px">webhook 地址走环境变量 FEISHU_WEBHOOK_URL (不在面板填写); AI 复盘需 .env 配 DEEPSEEK_API_KEY, LLM 失败自动跳过</span></div>
+          <div class="tds-row"><span class="hint">webhook 地址走环境变量 FEISHU_WEBHOOK_URL (不在面板填写); AI 复盘需 .env 配 DEEPSEEK_API_KEY, LLM 失败自动跳过</span></div>
         </div>
         <div class="tds-sec" style="display:flex;gap:10px;align-items:center">
           <button class="btn btn-primary" id="tdsSaveBtn">保存设置</button>
