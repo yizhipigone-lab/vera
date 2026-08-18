@@ -39,6 +39,11 @@ from trade.book import (  # noqa: E402
     compute_remaining_map,
 )
 from trade.config import TradeConfig, load_trade_config  # noqa: E402
+from trade.daily_report import (  # noqa: E402 (2026-08-19 深模块治理: 日报计算下沉)
+    build_trade_summary,
+    diff_positions,
+    enrich_sell_quotes,
+)
 from trade.events import (  # noqa: E402
     EVENT_COMMAND,
     EVENT_CONNECTION_LOST,
@@ -327,7 +332,7 @@ class TradeApp:
                 ro.close()
                 if not row or not row[0]:
                     return 0
-                from trade.api import _hold_days as _calc_hold_days
+                from trade.analysis import hold_days as _calc_hold_days
                 days = _calc_hold_days(row[0])
                 return days if days is not None else 0
             except Exception:
@@ -918,8 +923,19 @@ class TradeApp:
         except Exception:
             trades_detail = []
             _logger.debug("load_today_trades_detail 异常 (日报交易段留空)")
-        payload.update(self._build_trade_summary(trades_detail))
-        self._enrich_sell_quotes(payload)
+        payload.update(build_trade_summary(
+            trades_detail, self.store.load_all_trades()))
+        # 卖飞信号: 取 quotes -> 纯函数补字段 (查询失败 fail-soft 留空, 不影响日报)
+        details = payload.get('trade_details') or []
+        sells = [t for t in details
+                 if t.get('direction') != DIRECTION_BUY and t.get('price')]
+        if sells:
+            try:
+                quotes = self.gateway.query_quotes(sorted({t['code'] for t in sells})) or {}
+            except Exception:
+                quotes = {}
+                _logger.debug('卖飞信号行情查询异常 (日报照常)')
+            enrich_sell_quotes(details, quotes)
         # 浮盈 = 市值 − 持仓成本 (不含税费/已实现盈亏, 与 realized_pnl 分开)
         cost_basis = sum(p.volume * p.avg_cost for p in positions.values()
                          if p.volume > 0)
@@ -928,7 +944,7 @@ class TradeApp:
         # 2026-08-07 审计 MEDIUM#1: truthy 检查 — 空 dict {} 也跳过 (load_position_snapshot
         # 表空时返 {},is not None 会误进 diff → 首次 EOD 把全部既有持仓报成"新进")
         if prev_snapshot:
-            changes = self._diff_positions(prev_snapshot, positions)
+            changes = diff_positions(prev_snapshot, positions)
             if any(changes.values()):
                 payload["position_changes"] = changes
         # 2026-08-15: 轮动信号进日报 (飞书 AI 复盘 + web 回看用)。只读 last 里的
@@ -951,137 +967,6 @@ class TradeApp:
             self.store.daily_report.save(date_str, payload)
         except Exception:
             _logger.debug("盘后日报落库异常 (web 回看该日将缺, 不影响交易)")
-
-    def _build_trade_summary(self, trades_detail: list[dict]) -> dict:
-        """从当日成交明细算交易摘要 + 卖出明细 + 交易明细混排。
-        2026-08-08: 重放全历史 Book (compute_remaining_map) 给每笔补
-        剩余股数/剩余市值/卖出比例(=本次卖出÷累计买入, 用户口径)。
-        sell_count=0 → win_rate=None (卡片省略, 不除零); sell_details (web 回看用,
-        不动) 按 ts 升序超 8 笔折叠; trade_details (飞书单列每条一块, 买卖混排)
-        按 ts 升序超 12 笔折叠 (trade_details_folded 只汇总卖出盈亏)。"""
-        buy_count = sell_count = 0
-        turnover = 0.0
-        realized_pnl = 0.0
-        wins = 0
-        sells: list[dict] = []
-        details: list[dict] = []   # 买卖混排 (飞书交易明细单列每条一块; 2026-08-07)
-        # 重放全历史 Book 算每笔剩余/卖出比例 (trades 表不存剩余, 2026-08-08)
-        tgt_tids = {str(t.get("traded_id")) for t in trades_detail
-                    if t.get("traded_id")}
-        remain_map = (compute_remaining_map(self.store.load_all_trades(), tgt_tids)
-                      if tgt_tids else {})
-        for t in trades_detail:
-            turnover += abs(float(t.get("amount", 0.0) or 0.0))
-            tid = str(t.get("traded_id", ""))
-            rm = remain_map.get(tid, {})
-            rec: dict = {
-                "code": t["code"], "direction": t.get("direction"),
-                "price": float(t.get("price", 0.0) or 0.0),
-                "qty": int(t.get("qty", 0) or 0),
-                "amount": float(t.get("amount", 0.0) or 0.0),
-                "reason": t.get("reason", ""), "ts": t.get("ts", 0.0),
-                "remaining_vol": rm.get("remaining_vol"),
-                "remaining_value": rm.get("remaining_value"),
-            }
-            if t.get("direction") == DIRECTION_BUY:
-                buy_count += 1
-                rec["pnl_amount"] = None
-                rec["pnl_pct"] = None
-            else:
-                sell_count += 1
-                pnl = float(t.get("pnl_amount", 0.0) or 0.0)
-                realized_pnl += pnl
-                if pnl > 0:
-                    wins += 1
-                rec["pnl_amount"] = pnl
-                rec["pnl_pct"] = t.get("pnl_pct")
-                rec["sell_ratio"] = rm.get("sell_ratio")
-                sells.append({"code": t["code"], "reason": t.get("reason", ""),
-                              "pnl_amount": pnl, "pnl_pct": t.get("pnl_pct"),
-                              "ts": t.get("ts", 0.0)})
-            details.append(rec)
-        out: dict = {
-            "buy_count": buy_count, "sell_count": sell_count,
-            "turnover": round(turnover, 2),
-            "realized_pnl": round(realized_pnl, 2),
-            "win_rate": round(wins / sell_count, 4) if sell_count > 0 else None,
-        }
-        if sells:
-            sells.sort(key=lambda s: s["ts"])
-            if len(sells) > 8:
-                folded = sells[8:]
-                out["sell_details"] = sells[:8]
-                out["sell_details_folded"] = {
-                    "count": len(folded),
-                    "sum_pnl_amount": round(sum(s["pnl_amount"] for s in folded), 2),
-                }
-            else:
-                out["sell_details"] = sells
-        # 交易明细混排 (飞书双列; 买卖按 ts 升序, 超 12 笔折叠, 折叠只汇总卖出盈亏)
-        if details:
-            details.sort(key=lambda x: x["ts"])
-            cap = 12
-            if len(details) > cap:
-                folded_d = details[cap:]
-                out["trade_details"] = details[:cap]
-                out["trade_details_folded"] = {
-                    "count": len(folded_d),
-                    "sum_sell_pnl": round(
-                        sum(d["pnl_amount"] for d in folded_d
-                            if d["pnl_amount"] is not None), 2),
-                }
-            else:
-                out["trade_details"] = details
-        return out
-
-    def _enrich_sell_quotes(self, payload: dict) -> None:
-        """盘后给卖单补「盘中最高涨幅 / 卖出时点涨幅」—— 卖飞信号 (2026-08-18)。
-
-        AI 复盘原来只能看到「盈亏 + 原因」, 看不出某票盘中冲高 9% 却被
-        移动止盈卖在低位 (卖飞)。补两个相对昨收的涨幅字段, LLM 才能点名。
-        fail-soft: 取不到行情 (已退订/查失败/昨收为 0) 就留空, 不影响日报。"""
-        details = payload.get("trade_details") or []
-        sells = [t for t in details
-                 if t.get("direction") != DIRECTION_BUY and t.get("price")]
-        if not sells:
-            return
-        codes = sorted({t["code"] for t in sells})
-        try:
-            quotes = self.gateway.query_quotes(codes) or {}
-        except Exception:
-            _logger.debug("卖飞信号行情查询异常 (日报照常)")
-            return
-        for t in sells:
-            q = quotes.get(t["code"])
-            if not q:
-                continue
-            prev = float(q.get("prev_close") or 0.0)
-            high = float(q.get("high") or 0.0)
-            price = float(t.get("price") or 0.0)
-            if prev <= 0 or price <= 0:
-                continue
-            t["intraday_high_pct"] = round((high / prev - 1.0) * 100, 2)
-            t["sell_pct_vs_prev"] = round((price / prev - 1.0) * 100, 2)
-
-    def _diff_positions(self, prev: dict, curr: dict) -> dict:
-        """仓位变动 (2026-08-07): 按 (今 curr vs 昨 prev) 净 volume diff 分类。
-        delta = curr_volume − prev_volume。prev={code:{volume,..}} (store 快照),
-        curr={code:PositionView} (book)。return {new,closed,added,reduced}。"""
-        prev_vols = {c: int(p.get("volume", 0)) for c, p in prev.items()}
-        curr_vols = {c: int(getattr(p, "volume", 0)) for c, p in curr.items()}
-        new, closed, added, reduced = [], [], [], []
-        for code in set(prev_vols) | set(curr_vols):
-            pv, cv = prev_vols.get(code, 0), curr_vols.get(code, 0)
-            delta = cv - pv
-            if pv == 0 and cv > 0:
-                new.append({"code": code, "delta": cv})
-            elif cv == 0 and pv > 0:
-                closed.append({"code": code, "delta": -pv})
-            elif delta > 0:
-                added.append({"code": code, "delta": delta})
-            elif delta < 0:
-                reduced.append({"code": code, "delta": delta})
-        return {"new": new, "closed": closed, "added": added, "reduced": reduced}
 
     def _on_order_error(self, rec: dict) -> None:
         """下单失败回报 (2026-08-07 接线, 0807 事件): xtquant order_stock
