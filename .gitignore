@@ -34,6 +34,7 @@ data/universe_cache/
 data/signal_day_cache/
 data/brain_vectors/
 data/brain_model_cache/
+data/sentiment/
 
 # 第二大脑 vault（4586+ 生成文件，知识库数据，不入 git）— 2026-08-01
 vera_obs_vault/
