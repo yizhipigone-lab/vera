@@ -14,7 +14,7 @@ import json
 import re
 
 from utils.logger import get_logger
-from utils.sysutil import project_root
+from utils.sysutil import close_subprocess_pipes, project_root
 
 logger = get_logger(__name__)
 
@@ -119,6 +119,8 @@ async def _run_judge(cli: str, prompt: str, timeout: int) -> str:
         except ProcessLookupError:
             pass
         raise TimeoutError(f"judge 超时 (>{timeout}s)")
+    finally:
+        close_subprocess_pipes(proc)  # 消 Windows Proactor "closed pipe" 噪音
 
     if proc.returncode != 0:
         err = (stderr or b"").decode("utf-8", "replace")[:200]

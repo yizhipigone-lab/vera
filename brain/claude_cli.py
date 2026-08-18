@@ -26,7 +26,7 @@ from pathlib import Path
 from brain import counter, evidence, memory, prompts
 from brain.archive import archive_exchange
 from utils.logger import get_logger
-from utils.sysutil import project_root
+from utils.sysutil import close_subprocess_pipes, project_root
 
 logger = get_logger(__name__)
 
@@ -194,6 +194,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
         except TimeoutError:  # py3.11+ wait_for 抛内建 TimeoutError（无 asyncio.TimeoutExpired）
             await _kill_tree(proc)  # Windows 双坑 (孙进程持管道/taskkill /T) 见 _kill_tree
             return None, b"", f"大脑超时（>{timeout}s），已终止"
+        finally:
+            close_subprocess_pipes(proc)  # 消 Windows Proactor "closed pipe" 噪音
         return proc.returncode, out, serr
 
     # 2026-08-12: 流式回答全文收集器（归档用）。原流式分支 answer 返回空串,
@@ -270,6 +272,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
             try: sproc.kill()
             except Exception: pass
             raise
+        finally:
+            close_subprocess_pipes(sproc)  # 消 Windows Proactor "closed pipe" 噪音
         return sproc.returncode, b"".join(stderr_buf), "\n".join(tail)
 
     # ★v2 流式分支: on_line 提供 → 走流式 + 简化 result

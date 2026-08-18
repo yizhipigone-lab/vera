@@ -38,6 +38,11 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
        "Chrome/120.0.0.0 Safari/537.36")
 _last_call: float = 0.0
 
+# 全部后端失败汇总告警节流（2026-08-17）：盘中每 10 分钟一 tick × 3 关键词，
+# 全挂时每个 keyword 都会走到 return []，不节流会刷屏。30 分钟内只报一次。
+_ALL_FAIL_LOG_INTERVAL = 30 * 60  # 30 分钟
+_last_all_fail_log = 0.0
+
 # 搜索结果短缓存（2026-08-13 提速三轮 ③）：同一 query 30 分钟内命中直接返，
 # 省掉 bing 那 ~11s（快路径实测最大单点）。只缓存带摘要的有效结果，
 # 空结果/标题-only 不缓存（防把瞬时失败或最弱数据源缓存住）。
@@ -62,6 +67,21 @@ def _prune_search_cache(now: float) -> None:
     for k in [k for k, (ts, _) in _search_cache.items()
               if now - ts >= _SEARCH_CACHE_TTL]:
         del _search_cache[k]
+
+
+def _log_all_backends_failed(query: str) -> None:
+    """联网搜索所有 backend 均无可用结果时，节流打印一次汇总告警。
+
+    单个 backend 的失败/无摘要已在循环里打过 warning；此处是"本轮整体失效"的
+    收尾信号，让连续多轮搜不到时能被一眼看到（30 分钟内只报一次防刷屏）。
+    """
+    global _last_all_fail_log
+    now = time_mod.time()
+    if now - _last_all_fail_log >= _ALL_FAIL_LOG_INTERVAL:
+        _last_all_fail_log = now
+        logger.warning(
+            "search_web 全部 backend 均无可用结果 (样例 query=%r): 本轮联网搜索失效",
+            query)
 
 
 def clear_search_cache() -> None:
@@ -119,6 +139,9 @@ def search_web(query: str, max_results: int = MAX_RESULTS,
             logger.warning(f"search_web backend={be} 失败: {e}")
             continue
 
+    # 走到这说明所有 backend 都没给出带摘要的可用结果 → 本轮联网搜索失效。
+    # 汇总告警已节流 (见 _log_all_backends_failed), 防盘中 3 关键词 × 每 tick 刷屏。
+    _log_all_backends_failed(query)
     return []
 
 

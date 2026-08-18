@@ -39,3 +39,26 @@ def load_module_from_path(name: str, path: Path):
     sys.modules[name] = mod  # 先注册再 exec，支持模块内自引用
     spec.loader.exec_module(mod)
     return mod
+
+
+def close_subprocess_pipes(proc) -> None:
+    """显式关闭 asyncio 子进程的 stdin/stdout/stderr 管道 transport。
+
+    Windows Proactor 事件循环下, create_subprocess_exec 的管道 transport 若未显式
+    close 就随 asyncio.run() 一起销毁, 垃圾回收时 _ProactorBasePipeTransport.__del__
+    会去读已关闭的管道 (fileno 抛 ValueError), 刷屏无害但很脏的
+    "Exception ignored ... I/O operation on closed pipe"。逐个 close() 后 __del__
+    见 _sock=None 直接跳过, 噪音消失。brain/sentiment_judge、eval_judge、claude_cli
+    三处同款子进程模式共用 (2026-08-17)。
+    """
+    for stream in (getattr(proc, "stdin", None),
+                   getattr(proc, "stdout", None),
+                   getattr(proc, "stderr", None)):
+        if stream is None:
+            continue
+        transport = getattr(stream, "_transport", None)
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
