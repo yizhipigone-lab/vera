@@ -124,12 +124,17 @@ class RotationConfig:
     etf_ratio: ETF 池占总资产比例 (0,1), 股票池 = 1 - etf_ratio。
     drawdown_threshold: 回撤阈值 (正值口径, 0.20 = 20%), 判定用
     「回撤率 < -threshold」。
+    hedge_etf2: 第二只避险 ETF (空串=单避险, 即现状只买黄金)。2026-08-18 加。
+    hedge_ratio: 黄金ETF在避险篮子里的占比 [0,1]; 1.0=纯黄金(现状),
+    0.5=黄金+避险ETF2各半, 0.3=黄金30%/避险ETF2 70%。仅 hedge_etf2 非空时生效。
     """
     enabled: bool = False
     etf_ratio: float = 0.5                 # ETF 池占总资产比例
     signal_index: str = "399673.SZ"        # 创业板50指数
     cyb_etf: str = "159949.SZ"             # 创业板50ETF
-    gold_etf: str = "518880.SH"            # 黄金ETF
+    gold_etf: str = "518880.SH"            # 黄金ETF (避险腿1)
+    hedge_etf2: str = ""                   # 避险腿2 (空=单避险)
+    hedge_ratio: float = 1.0               # 黄金在避险篮子的占比 [0,1]
     ma_window: int = 20                    # MA20 窗口
     high_window: int = 250                 # 250日高点窗口
     drawdown_threshold: float = 0.20       # 回撤阈值 (正值)
@@ -451,6 +456,7 @@ def _coerce_rotation(data: dict) -> RotationConfig:
         raise TypeError(f"trade rotation 必须是映射, 实际 {data!r}")
     unknown = set(data) - {
         "enabled", "etf_ratio", "signal_index", "cyb_etf", "gold_etf",
+        "hedge_etf2", "hedge_ratio",
         "ma_window", "high_window", "drawdown_threshold", "execute_time"}
     if unknown:
         _fail(f"trade rotation 存在未知字段: {sorted(unknown)}")
@@ -470,6 +476,27 @@ def _coerce_rotation(data: dict) -> RotationConfig:
             if not isinstance(v, str) or not _CODE_PATTERN.match(v):
                 _fail(f"rotation.{k} 必须是 6 位数字 + .SH/.SZ/.BJ, 实际 {v!r}")
             kwargs[k] = v
+    if "hedge_etf2" in data:
+        v = data["hedge_etf2"]
+        if v in ("", None):
+            kwargs["hedge_etf2"] = ""
+        else:
+            if not isinstance(v, str) or not _CODE_PATTERN.match(v):
+                _fail(f"rotation.hedge_etf2 必须是 6 位数字 + .SH/.SZ/.BJ 或空串, 实际 {v!r}")
+            if v in (kwargs.get("cyb_etf", RotationConfig.cyb_etf),
+                     kwargs.get("gold_etf", RotationConfig.gold_etf)):
+                _fail(f"rotation.hedge_etf2 不能与 cyb_etf/gold_etf 重复: {v}")
+            kwargs["hedge_etf2"] = v
+    if "hedge_ratio" in data:
+        r = _num("rotation.hedge_ratio", data["hedge_ratio"])
+        if not (0.0 <= r <= 1.0):
+            _fail(f"rotation.hedge_ratio 必须在 [0,1], 实际 {r}")
+        kwargs["hedge_ratio"] = r
+    # 交叉校验 (2026-08-18 审计①): hedge_ratio 只在 hedge_etf2 非空时生效。
+    # hedge_etf2 空 + hedge_ratio!=1.0 → 配置说 0.3 但运行按 1.0 的静默分歧,
+    # 在配置层 fail-fast 拦掉, 不再靠 target_values 静默归一化。
+    if kwargs.get("hedge_etf2", "") == "" and kwargs.get("hedge_ratio", 1.0) != 1.0:
+        _fail("rotation.hedge_ratio 仅在 hedge_etf2 非空时生效; hedge_etf2 为空时 hedge_ratio 必须为 1.0")
     for k in ("ma_window", "high_window"):
         if k in data:
             v = data[k]
@@ -662,6 +689,8 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
         "signal_index": cfg.rotation.signal_index,
         "cyb_etf": cfg.rotation.cyb_etf,
         "gold_etf": cfg.rotation.gold_etf,
+        "hedge_etf2": cfg.rotation.hedge_etf2,
+        "hedge_ratio": cfg.rotation.hedge_ratio,
         "ma_window": cfg.rotation.ma_window,
         "high_window": cfg.rotation.high_window,
         "drawdown_threshold": cfg.rotation.drawdown_threshold,

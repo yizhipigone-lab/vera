@@ -783,6 +783,15 @@ document.getElementById('tdsRotRatio').addEventListener('input', function () {
   _rotRatioLabel(parseInt(this.value, 10));
 });
 
+// 避险腿黄金占比滑杆 (2026-08-18): 拖动实时显示黄金/避险ETF2两边百分比
+function _rotHedgeLabel(v) {
+  document.getElementById('tdsRotHedgeLabel').textContent =
+    '黄金 ' + v + '% · 避险ETF2 ' + (100 - v) + '%';
+}
+document.getElementById('tdsRotHedge').addEventListener('input', function () {
+  _rotHedgeLabel(parseInt(this.value, 10));
+});
+
 function _ladderRow(profit, ratio) {
   var row = document.createElement('div');
   row.className = 'tds-lv-row';
@@ -833,6 +842,10 @@ function fillSettings(cfg) {
   _setv('tdsRotIndex', cfg.rotation.signal_index);
   _setv('tdsRotCyb', cfg.rotation.cyb_etf);
   _setv('tdsRotGold', cfg.rotation.gold_etf);
+  _setv('tdsRotHedge2', cfg.rotation.hedge_etf2 || '');
+  var hedgePct = Math.round(((cfg.rotation.hedge_ratio != null
+                              ? cfg.rotation.hedge_ratio : 1.0)) * 100);
+  _setv('tdsRotHedge', hedgePct); _rotHedgeLabel(hedgePct);
   // 弱市择时闸门区 (2026-08-16)
   _setc('tdsRfEn', cfg.regime_filter && cfg.regime_filter.enabled);
   _setv('tdsRfIndex', cfg.regime_filter && cfg.regime_filter.index_code);
@@ -883,6 +896,8 @@ function gatherSettings() {
       signal_index: document.getElementById('tdsRotIndex').value.trim(),
       cyb_etf: document.getElementById('tdsRotCyb').value.trim(),
       gold_etf: document.getElementById('tdsRotGold').value.trim(),
+      hedge_etf2: document.getElementById('tdsRotHedge2').value.trim(),
+      hedge_ratio: _num('tdsRotHedge') / 100,
     },
     regime_filter: {
       enabled: _chk('tdsRfEn'),

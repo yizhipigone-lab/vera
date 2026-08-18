@@ -19,11 +19,13 @@ from trade.rotation import (
     STATE_HALF,
     _derive_state,
     compute_signal,
+    target_values,
 )
 from trade_main import TradeApp
 
 CYB = "159949.SZ"
 GOLD = "518880.SH"
+NASDAQ = "513100.SH"
 INDEX = "399673.SZ"
 STOCK = "000001.SZ"
 
@@ -122,6 +124,26 @@ def test_derive_state():
     assert _derive_state(0, 0) is None
 
 
+def test_target_values_single_and_split():
+    pool = 1_000_000.0
+    # 单避险 (hedge_etf2 空): 与旧口径一致 —— 满仓避险 = 100% 黄金
+    assert target_values(CYB, GOLD, "", 1.0, STATE_FULL_GOLD, pool) == \
+        [(CYB, 0.0), (GOLD, pool)]
+    # 各半 (hedge_ratio 0.5): 满仓避险 = 黄金 50% + 纳指 50%
+    assert target_values(CYB, GOLD, NASDAQ, 0.5, STATE_FULL_GOLD, pool) == \
+        [(CYB, 0.0), (GOLD, pool * 0.5), (NASDAQ, pool * 0.5)]
+    # 30/70: 黄金 30% + 纳指 70%
+    legs = target_values(CYB, GOLD, NASDAQ, 0.3, STATE_FULL_GOLD, pool)
+    assert legs[1] == (GOLD, pool * 0.3)
+    assert legs[2] == (NASDAQ, pool * 0.7)
+    # 半仓态 + 各半: 主腿 50%, 黄金 25%, 纳指 25%
+    assert target_values(CYB, GOLD, NASDAQ, 0.5, STATE_HALF, pool) == \
+        [(CYB, pool * 0.5), (GOLD, pool * 0.25), (NASDAQ, pool * 0.25)]
+    # hedge_etf2 空 + hedge_ratio=0.5 → 归一化回单黄金 (审计② 归一化分支)
+    assert target_values(CYB, GOLD, "", 0.5, STATE_FULL_GOLD, pool) == \
+        [(CYB, 0.0), (GOLD, pool)]
+
+
 # ═══════════════════════════════════════════════════════════════
 # config 校验
 # ═══════════════════════════════════════════════════════════════
@@ -151,6 +173,18 @@ def test_rotation_config_validation(tmp_path):
         _load("rotation:\n  signal_index: '999'\n")
     with pytest.raises(ValueError, match="未知字段"):
         _load("rotation:\n  magic: 1\n")
+    # 第二避险ETF + 比例 (2026-08-18)
+    cfg2 = _load("rotation:\n  hedge_etf2: '513100.SH'\n  hedge_ratio: 0.5\n")
+    assert cfg2.rotation.hedge_etf2 == "513100.SH"
+    assert cfg2.rotation.hedge_ratio == 0.5
+    with pytest.raises(ValueError, match="hedge_ratio"):
+        _load("rotation:\n  hedge_ratio: 1.5\n")        # 超 [0,1]
+    with pytest.raises(ValueError, match="hedge_ratio"):
+        _load("rotation:\n  hedge_ratio: 0.5\n")         # hedge_etf2 空时非 1.0 (审计①)
+    with pytest.raises(ValueError, match="hedge_etf2"):
+        _load("rotation:\n  hedge_etf2: '999'\n")        # 非 6 位代码
+    with pytest.raises(ValueError, match="hedge_etf2"):
+        _load("rotation:\n  hedge_etf2: '518880.SH'\n")  # 与 gold_etf 重复
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -218,6 +252,42 @@ def test_swap_sell_filled_then_buy_next_run(tmp_path):
     buys, _ = _orders_by(app)
     gold_buys = [b for b in buys if b["code"] == GOLD]
     assert gold_buys and gold_buys[0]["qty"] == 250_000  # 50万 @2.0
+
+
+def test_two_hedge_split_first_buy(tmp_path):
+    """两只避险腿各半: 满仓避险首买 → 黄金/纳指各买一半池。"""
+    clock = [_ts("10:00")]
+    cfg = _cfg(tmp_path, hedge_etf2=NASDAQ, hedge_ratio=0.5)
+    app = _start(_app(cfg, clock))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 2.0, bid=2.0, ask=2.0))
+    app.gateway.push_quote(NASDAQ, _quote(NASDAQ, 1.0, bid=1.0, ask=1.0))
+    assert _wait(lambda: app.monitor.quote_of(GOLD) is not None)
+    app._rotation.on_signals({"signal": {"state": STATE_FULL_GOLD},
+                              "source": "test"})
+    buys, sells = _orders_by(app)
+    assert len(sells) == 0
+    # pool = 50 万; 黄金 25 万 @2.0 = 125,000 份; 纳指 25 万 @1.0 = 250,000 份
+    gold_b = [b for b in buys if b["code"] == GOLD]
+    nas_b = [b for b in buys if b["code"] == NASDAQ]
+    assert gold_b and gold_b[0]["qty"] == 125_000
+    assert nas_b and nas_b[0]["qty"] == 250_000
+
+
+def test_two_hedge_split_half_first_buy(tmp_path):
+    """两只避险腿各半 + 半仓态首买: 主腿 50%、黄金/纳指各 25% (审计② 换档买两腿)。"""
+    clock = [_ts("10:00")]
+    cfg = _cfg(tmp_path, hedge_etf2=NASDAQ, hedge_ratio=0.5)
+    app = _start(_app(cfg, clock))
+    app.gateway.push_quote(CYB, _quote(CYB, 1.0, bid=1.0, ask=1.0))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 2.0, bid=2.0, ask=2.0))
+    app.gateway.push_quote(NASDAQ, _quote(NASDAQ, 1.0, bid=1.0, ask=1.0))
+    assert _wait(lambda: app.monitor.quote_of(CYB) is not None)
+    app._rotation.on_signals({"signal": {"state": STATE_HALF}, "source": "test"})
+    buys, sells = _orders_by(app)
+    assert len(sells) == 0
+    by_code = {b["code"]: b["qty"] for b in buys}
+    # pool=50万; 主腿50%=25万@1.0=250_000; 黄金25%=12.5万@2.0=62_500; 纳指25%=12.5万@1.0=125_000
+    assert by_code == {CYB: 250_000, GOLD: 62_500, NASDAQ: 125_000}
 
 
 def test_half_from_full_cyb(tmp_path):

@@ -666,6 +666,8 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             "signal_index": trade_app.config.rotation.signal_index,
             "cyb_etf": trade_app.config.rotation.cyb_etf,
             "gold_etf": trade_app.config.rotation.gold_etf,
+            "hedge_etf2": trade_app.config.rotation.hedge_etf2,
+            "hedge_ratio": trade_app.config.rotation.hedge_ratio,
             "execute_time": trade_app.config.rotation.execute_time,
         }}
 

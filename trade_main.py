@@ -1190,10 +1190,13 @@ class TradeApp:
 
     def _stock_pool_value(self) -> float:
         """非轮动 ETF 的持仓市值 (股票池)。无行情回退成本价。"""
-        cyb, gold = self._cfg.rotation.cyb_etf, self._cfg.rotation.gold_etf
+        rot = self._cfg.rotation
+        rot_codes = {rot.cyb_etf, rot.gold_etf}
+        if rot.hedge_etf2:
+            rot_codes.add(rot.hedge_etf2)
         total = 0.0
         for code, pos in self.book.snapshot()["positions"].items():
-            if code in (cyb, gold) or pos.volume <= 0:
+            if code in rot_codes or pos.volume <= 0:
                 continue
             q = self.monitor.quote_of(code)
             last = q.get("last") if q else None

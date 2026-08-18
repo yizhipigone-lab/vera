@@ -42,10 +42,10 @@ _logger = get_logger("trade.rotation")
 
 # 三态常量 (持久化/UI 共用的字符串)
 STATE_FULL_CYB = "full_cyb"    # 满仓创业板50ETF
-STATE_HALF = "half"            # 半仓 (创业板+黄金各半)
-STATE_FULL_GOLD = "full_gold"  # 满仓黄金ETF
+STATE_HALF = "half"            # 半仓 (创业板 + 避险腿各半)
+STATE_FULL_GOLD = "full_gold"  # 满仓避险腿
 
-# 三态 → (创业板ETF比例, 黄金ETF比例)
+# 三态 → (主腿比例, 避险腿总比例)。避险腿内部再按 hedge_ratio 拆两只 (见 target_values)。
 STATE_RATIOS = {
     STATE_FULL_CYB: (1.0, 0.0),
     STATE_HALF: (0.5, 0.5),
@@ -102,10 +102,10 @@ def compute_signal(closes: list[float], ma_window: int = 20,
     }
 
 
-def _derive_state(v_cyb: float, v_gold: float) -> str | None:
-    """从两只 ETF 的市值派生当前状态 (自愈: 换档半途失败次日自然补齐)。
-    None = 两只都空仓 (首日未建仓)。阈值 90%/10% 容差防碎仓误判。"""
-    total = v_cyb + v_gold
+def _derive_state(v_cyb: float, v_hedge: float) -> str | None:
+    """从主腿市值 + 避险腿总市值派生当前状态 (自愈: 换档半途失败次日自然补齐)。
+    None = 主腿与避险腿都空仓 (首日未建仓)。阈值 90%/10% 容差防碎仓误判。"""
+    total = v_cyb + v_hedge
     if total <= 0:
         return None
     ratio = v_cyb / total
@@ -114,6 +114,24 @@ def _derive_state(v_cyb: float, v_gold: float) -> str | None:
     if ratio <= 0.1:
         return STATE_FULL_GOLD
     return STATE_HALF
+
+
+def target_values(cyb_etf: str, gold_etf: str, hedge_etf2: str,
+                  hedge_ratio: float, target_state: str,
+                  pool: float) -> list[tuple[str, float]]:
+    """三态 + 避险两腿配置 → [(代码, 目标市值)] (主腿在前, 避险腿在后)。
+
+    避险腿总权重 = STATE_RATIOS[state] 第二项; 再按 hedge_ratio 拆两只:
+      黄金 = hedge_ratio × 避险总,  避险ETF2 = (1-hedge_ratio) × 避险总。
+    hedge_etf2 为空时 hedge_ratio 视为 1.0 (单避险, 与旧口径逐字节一致)。
+    """
+    cyb_w, hedge_w = STATE_RATIOS[target_state]
+    ratio = hedge_ratio if hedge_etf2 else 1.0
+    hedge_pool = hedge_w * pool
+    legs = [(cyb_etf, cyb_w * pool), (gold_etf, ratio * hedge_pool)]
+    if hedge_etf2:
+        legs.append((hedge_etf2, (1.0 - ratio) * hedge_pool))
+    return legs
 
 
 class RotationFeature:
@@ -358,34 +376,37 @@ class RotationFeature:
             self._store.write_audit("rotation_error", "总资产为 0, 跳过调仓", {})
             return
         pool = cfg.etf_ratio * total
-        cyb_code, gold_code = cfg.cyb_etf, cfg.gold_etf
+        legs = target_values(cfg.cyb_etf, cfg.gold_etf, cfg.hedge_etf2,
+                             cfg.hedge_ratio, target_state, pool)
+        codes = [c for c, _ in legs]
+        cyb_code = cfg.cyb_etf
         # 用 QMT 真实持仓 (book.can_use 可能因在途冻结/预埋陈旧, 审计 M1;
         # 与 executor 卖出前 _refresh_can_use 同口径 —— QMT 是可卖量唯一真相源)
         qmt_pos0 = {p["code"]: p for p in self._gateway.query_positions()}
-        cyb_vol = int((qmt_pos0.get(cyb_code) or {}).get("volume", 0) or 0)
-        gold_vol = int((qmt_pos0.get(gold_code) or {}).get("volume", 0) or 0)
-        cyb_can = int((qmt_pos0.get(cyb_code) or {}).get("can_use", 0) or 0)
-        gold_can = int((qmt_pos0.get(gold_code) or {}).get("can_use", 0) or 0)
-        v_cyb = self._etf_value(cyb_code, cyb_vol)
-        v_gold = self._etf_value(gold_code, gold_vol)
-        derived = _derive_state(v_cyb, v_gold)
-        state_changed = derived != target_state
-        cyb_ratio, gold_ratio = STATE_RATIOS[target_state]
-        t_cyb = cyb_ratio * pool
-        t_gold = gold_ratio * pool
 
-        quotes = self._fetch_quotes([cyb_code, gold_code])
+        def _vol(pos, code):
+            return int((pos.get(code) or {}).get("volume", 0) or 0)
+
+        def _can(pos, code):
+            return int((pos.get(code) or {}).get("can_use", 0) or 0)
+
+        cur = {c: self._etf_value(c, _vol(qmt_pos0, c)) for c in codes}
+        v_cyb = cur[cyb_code]
+        v_hedge = sum(cur[c] for c in codes if c != cyb_code)
+        derived = _derive_state(v_cyb, v_hedge)
+        state_changed = derived != target_state
+
+        quotes = self._fetch_quotes(codes)
 
         # 换档: 只卖"状态变了才卖" (模型 B: 不因上涨漂移而主动卖)
         self._pending_sells.clear()   # 当日重跑时重置在途卖单登记 (审计 M4)
         sell_ids: list[str] = []
         if state_changed:
-            oid = self._sell_to(cyb_code, v_cyb, t_cyb, quotes.get(cyb_code), cyb_can)
-            if oid:
-                sell_ids.append(oid)
-            oid = self._sell_to(gold_code, v_gold, t_gold, quotes.get(gold_code), gold_can)
-            if oid:
-                sell_ids.append(oid)
+            for code, tval in legs:
+                oid = self._sell_to(code, cur[code], tval, quotes.get(code),
+                                    _can(qmt_pos0, code))
+                if oid:
+                    sell_ids.append(oid)
 
         # 卖单等成交 (限价@买一, 流动性好的 ETF 秒级成交)
         self._wait_fills(sell_ids)
@@ -394,10 +415,7 @@ class RotationFeature:
         # 关键(审计 CRITICAL#2): 卖未成交 → 池值未降 → 池级预算帽归零 → 不超买,
         # 绝不用股票池现金补 ETF 池。
         qmt_pos = {p["code"]: p for p in self._gateway.query_positions()}
-        cyb_vol2 = int((qmt_pos.get(cyb_code) or {}).get("volume", 0) or 0)
-        gold_vol2 = int((qmt_pos.get(gold_code) or {}).get("volume", 0) or 0)
-        v_cyb2 = self._etf_value(cyb_code, cyb_vol2)
-        v_gold2 = self._etf_value(gold_code, gold_vol2)
+        cur2 = {c: self._etf_value(c, _vol(qmt_pos, c)) for c in codes}
 
         # 回款刷新现金 (卖单已成交则含卖款)
         try:
@@ -405,19 +423,20 @@ class RotationFeature:
         except Exception:
             cash = 0.0
         # 池级预算帽: 只补到 E=etf_ratio×总资产, 绝不超配 (双向自然再平衡的落点)
-        pool_gap = max(0.0, pool - v_cyb2 - v_gold2)
+        pool_gap = max(0.0, pool - sum(cur2.values()))
         cash = min(cash, pool_gap)
-        cash = self._buy_to(cyb_code, max(0.0, t_cyb - v_cyb2), cash, quotes.get(cyb_code))
-        cash = self._buy_to(gold_code, max(0.0, t_gold - v_gold2), cash, quotes.get(gold_code))
+        for code, tval in legs:
+            cash = self._buy_to(code, max(0.0, tval - cur2[code]), cash,
+                                quotes.get(code))
 
         self._store.write_audit(
             "rotation_summary",
             f"ETF 轮动: 目标 {target_state} (池 {pool:.0f}), "
-            f"现值 创{v_cyb:.0f}/金{v_gold:.0f}, "
+            f"现值 {'/'.join(f'{cur[c]:.0f}' for c in codes)}, "
             f"换档 {state_changed}, 状态派生自 {derived}",
             {"state": target_state, "derived": derived, "changed": state_changed,
-             "pool": round(pool, 2), "v_cyb": round(v_cyb, 2),
-             "v_gold": round(v_gold, 2), "signal": signal})
+             "pool": round(pool, 2),
+             "values": {c: round(cur[c], 2) for c in codes}, "signal": signal})
 
     def _etf_value(self, code: str, volume: int) -> float:
         """持仓市值 = 股数 × 最新价; 无行情回退成本价 (与对账同口径)。"""

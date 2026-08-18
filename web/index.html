@@ -1114,7 +1114,8 @@ input:focus-visible,select:focus-visible{outline:none}
           <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-bottom:4px">
             把账户分成两个池子：ETF 池（只买创业板50ETF / 黄金ETF，按信号来回切换）和股票池（现有选股系统）。
             比例是「上限」不是「强制目标」，卖出回笼的钱自动流向低配的一边，不主动卖来凑比例。<br>
-            信号：创业板50指数 20 日均线向上且回撤&lt;20% → 满仓创业板；回撤&gt;20% → 半仓+黄金；均线向下 → 满仓黄金。
+            信号：创业板50指数 20 日均线向上且回撤&lt;20% → 满仓创业板；回撤&gt;20% → 半仓+避险；均线向下 → 满仓避险。<br>
+            避险腿可配两只（黄金 + 避险ETF2），下方滑条调黄金占比（留空避险ETF2 = 单黄金）。
           </div>
           <div class="tds-row"><input type="checkbox" id="tdsRotEn"><label for="tdsRotEn">启用轮动系统</label>
             <span class="hint">(启用时选股系统买入被股票池预算封顶)</span></div>
@@ -1131,7 +1132,14 @@ input:focus-visible,select:focus-visible{outline:none}
             <label style="min-width:0">创业板ETF</label>
             <input type="text" id="tdsRotCyb" class="lab-input" style="width:110px;font-family:var(--mono)">
             <label style="min-width:0">黄金ETF</label>
-            <input type="text" id="tdsRotGold" class="lab-input" style="width:110px;font-family:var(--mono)"></div>
+            <input type="text" id="tdsRotGold" class="lab-input" style="width:110px;font-family:var(--mono)">
+            <label style="min-width:0">避险ETF2</label>
+            <input type="text" id="tdsRotHedge2" class="lab-input" style="width:110px;font-family:var(--mono)" placeholder="留空=单黄金"></div>
+          <div class="tds-row">
+            <label>避险腿黄金占比</label>
+            <input type="range" id="tdsRotHedge" min="0" max="100" step="5" value="100" style="width:180px">
+            <span id="tdsRotHedgeLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
+          </div>
         </div>
         <div class="tds-sec">
           <div class="tds-sec-title">弱市择时闸门 (指数跌破年线当日不买)</div>
