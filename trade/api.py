@@ -937,7 +937,11 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             if abs(qmt_total - current) / max(qmt_total, 1) > 0.01:
                 reconciliation_warning = True
         except Exception:
-            pass
+            # 审计 Q3 (2026-08-19): 查询失败 ≠ 对账通过 —— 补日志并置告警。
+            # fail-closed: 对账结果未知即提示人工核对, 不可静默吞掉
+            # (原 pass 让"没查成"与"对账通过"无法区分, 违反对账只告警铁律)。
+            logger.exception("QMT 对账资产查询失败, 视为对账告警 (资产数字未与 QMT 核对)")
+            reconciliation_warning = True
         return {
             "start_date": rows[0]["date"],
             "end_date": rows[-1]["date"],

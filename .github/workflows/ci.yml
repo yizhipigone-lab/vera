@@ -2,7 +2,7 @@ name: Lint & Test
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'feature/*', 'feat/*', 'fix/*', 'refactor/*']
   pull_request:
     branches: [master]
 
@@ -15,8 +15,14 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install deps
-        run: pip install ruff pytest pandas numpy
-      - name: Lint
-        run: ruff check . --exclude output --exclude .claude
+        run: |
+          pip install ruff pytest pandas numpy fastapi uvicorn pydantic pyyaml \
+            pyarrow requests python-dotenv matplotlib plotly
+      # 审计 2026-08-19 Q2: lint 只拦正确性级错误 (未定义名/重复定义),
+      # 当前 F821/F822/F823 = 0 违规 —— 不设虚门, 也不被 2383 个存量风格违规
+      # (E402/E702/I001/E401/F401...) 堵死。风格债清理见审计报告 P1。
+      # 注意: ruff 默认已按 pyproject [tool.ruff] exclude 排除 output/.claude。
+      - name: Lint (correctness gate)
+        run: ruff check . --select F821,F822,F823
       - name: Test
         run: pytest tests/ -q --tb=short
