@@ -179,11 +179,13 @@ class AutoBuyFeature:
             return
         # 2026-08-14 双池预算帽: 轮动启用时股票买入被股票池预算封顶,
         # 不花 ETF 池的钱 (卖出回笼的现金让给低配的 ETF 池)。
+        budget_capped = False   # 2026-08-17: 记下"现金被预算帽压过", 供下方报准确原因
         if self._budget_provider is not None:
             try:
                 cap = self._budget_provider()
                 if cap is not None and cap < cash:
                     cash = cap
+                    budget_capped = True
             except Exception:
                 pass  # 预算帽取不到 fail-open 回退原口径 (软隔离非安全闸)
 
@@ -257,7 +259,14 @@ class AutoBuyFeature:
             amount = min(cfg.amount_per_stock, cash * 0.95)
             qty = int(amount / price / 100) * 100
             if qty < 100:
-                _skip(code, "现金不足一手")
+                # 2026-08-17: 区分"买不起一手"的真实原因, 别让"现金不足"误导——
+                # 双池预算帽把股票池额度压到 0 时账户其实有钱 (钱归 ETF 池)。
+                if cfg.amount_per_stock < price * 100:
+                    _skip(code, "单票上限低于一手")
+                elif budget_capped:
+                    _skip(code, "股票池预算不足")
+                else:
+                    _skip(code, "现金不足一手")
                 continue
             intent = OrderIntent(code=code, direction=DIRECTION_BUY,
                                  price=price, qty=qty)

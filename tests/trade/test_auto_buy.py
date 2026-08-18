@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from trade.api import create_api_app
 from trade.book import PRICE_TYPE_LIMIT
-from trade.config import TradeConfig, load_trade_config
+from trade.config import AutoBuyConfig, TradeConfig, load_trade_config
 from trade.events import EVENT_TICK, Event
 from trade_main import TradeApp
 
@@ -199,6 +199,37 @@ def test_skip_matrix(cfg):
     assert reasons["000003.SZ"] == "现金不足一手"
     # 现金 1000: 000004 (1051/手) 与 CODE (2551/手) 都买不起
     assert last["bought"] == 0
+
+
+def test_budget_cap_insufficient_reason(cfg):
+    """2026-08-17: 双池预算帽把股票池额度压到 0 时, 报"股票池预算不足"
+    而非"现金不足一手" (账户有钱, 只是那钱归 ETF 池)。"""
+    clock = [_ts("14:52")]
+    app = _start(_make_app(cfg, clock, cash=500_000.0))
+    app._auto_buy._budget_provider = lambda: 0.0   # 股票池额度已满
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+    _run_signals(app, [{"code": CODE, "select_date": "x"}])
+    last = app._auto_buy.last
+    assert last["bought"] == 0
+    assert last["dispositions"][0]["reason"] == "股票池预算不足"
+
+
+def test_amount_per_stock_below_lot_reason(tmp_path):
+    """2026-08-17: 单票金额上限低于一手价 (高价股) 时, 报"单票上限低于一手",
+    区分于现金不足 (这是配置问题, 调高 amount_per_stock 即可)。"""
+    cfg = TradeConfig(
+        account_id="AB", fake_sdk=True,
+        db_path=str(tmp_path / "t.db"),
+        raw_log_path=str(tmp_path / "r.jsonl"),
+        kill_flag_path=str(tmp_path / "KILL"),
+        auto_buy=AutoBuyConfig(enabled=True, amount_per_stock=1000.0))
+    clock = [_ts("14:52")]
+    app = _start(_make_app(cfg, clock, cash=1_000_000.0))
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)   # 一手 2551 > 上限 1000
+    _run_signals(app, [{"code": CODE, "select_date": "x"}])
+    last = app._auto_buy.last
+    assert last["bought"] == 0
+    assert last["dispositions"][0]["reason"] == "单票上限低于一手"
 
 
 def test_max_buys_per_day_cap(cfg):
