@@ -309,8 +309,14 @@ class RealGateway(BaseGateway):
     def query_asset(self) -> dict:
         a = _call_with_timeout(
             self._trader.query_stock_asset, self._timeout, self._account)
+        # 2026-08-18 (159949 事件): QMT 的 total_asset 字段对"昨日尾盘新买入"的
+        # 持仓有 T+1 结算延迟 —— market_value(市值)已含该持仓, 但 total_asset
+        # 字段漏算 (08-17 尾盘买 159949 后, 08-18 盘前 total_asset 少 46 万,
+        # 当日盈亏误显 -42%)。现金账户总资产 = 可用 + 冻结 + 市值, 按此重算,
+        # 不信任 QMT 的 total_asset 字段 (FakeGateway 同口径)。
         return {"cash": a.cash, "frozen_cash": a.frozen_cash,
-                "market_value": a.market_value, "total_asset": a.total_asset}
+                "market_value": a.market_value,
+                "total_asset": a.cash + a.frozen_cash + a.market_value}
 
     def query_positions(self) -> list[dict]:
         ps = _call_with_timeout(

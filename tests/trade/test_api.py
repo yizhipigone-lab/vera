@@ -25,7 +25,11 @@ SH = "600519.SH"
 
 
 @pytest.fixture()
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    # 2026-08-18: 锁盘前分支不随真实钟点漂移 —— 默认走连续竞价(非盘前),
+    # 盘前行为由 test_positions_day_pnl_pre_open 单独覆盖。
+    monkeypatch.setattr("trade.monitor.trading_session",
+                        lambda now=None: "continuous")
     cfg = TradeConfig(
         account_id="API", fake_sdk=True,
         db_path=str(tmp_path / "t.db"),
@@ -176,6 +180,28 @@ def test_positions_day_pnl_last_trading_day(monkeypatch, client):
     assert p["day_chg_amt"] == 0.0
     # 客观涨幅 = (39.13/35.59-1)*100 ≈ 9.95%, 不是 0
     assert p["day_chg_pct"] == round((39.13 / 35.59 - 1) * 100, 2)
+
+
+def test_positions_day_pnl_pre_open(monkeypatch, client):
+    """2026-08-18 (159949 事件): 盘前(还没开盘)当日盈亏应为 0, 不能把
+    前一交易日的全天涨幅算进来 —— QMT prev_close 未翻日(仍是前前交易日
+    收盘), 直接 (last-prev_close) 会误得 +13950。"""
+    c, app = client
+    SZ = "159949.SZ"
+    # 前一个交易日尾盘买入 263200@1.766 (锚定日 08-18 之前)
+    day_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 18)
+    app.store.save_trade({"traded_id": "tb_p", "order_id": "ob_p", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 1.766, "qty": 263200,
+        "amount": 464811.2, "ts": day_start - 86400})
+    app.book.apply_trade("tb_p", "ob_p", SZ, DIRECTION_BUY, 1.766, 263200,
+                         strategy="测试")
+    # 现价=08-17收盘1.765, 昨收未翻日=08-14收盘1.712
+    app.monitor.on_quote(SZ, {"last": 1.765, "bid1": 1.764, "prev_close": 1.712})
+    monkeypatch.setattr("trade.monitor.trading_session",
+                        lambda now=None: "pre_open")
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[SZ]
+    assert p["day_chg_amt"] == 0.0        # 盘前: 今日无变动 (不是 13950)
 
 
 def test_positions_closed_realized_pnl(monkeypatch, client):

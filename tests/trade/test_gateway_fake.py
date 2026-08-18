@@ -171,3 +171,29 @@ def test_simulate_fill_rejects_terminal_order(events):
     g.simulate_reject(oid)
     with pytest.raises(ValueError, match="终态单"):
         g.simulate_fill(oid)
+
+
+def test_real_gateway_query_asset_recomputes_total():
+    """2026-08-18 (159949 事件): QMT 的 total_asset 字段对"昨日尾盘新买入"持仓
+    有 T+1 结算延迟 (total_asset 漏算, market_value 正确)。真网关应重算
+    total_asset = 可用 + 冻结 + 市值, 不信任 QMT 的 total_asset 字段。"""
+    from trade.gateway import RealGateway
+
+    class _Asset:
+        cash = 1000.0
+        frozen_cash = 500.0
+        market_value = 50_000.0
+        total_asset = 30_000.0    # QMT 漏算 (错值, 模拟 159949 的 T+1 延迟)
+
+    class _Trader:
+        def query_stock_asset(self, account):
+            return _Asset()
+
+    gw = RealGateway(account_id="test")
+    gw._trader = _Trader()
+    gw._account = "test"
+    a = gw.query_asset()
+    assert a["total_asset"] == 51_500.0      # 重算 = 1000 + 500 + 50000
+    assert a["cash"] == 1000.0
+    assert a["frozen_cash"] == 500.0
+    assert a["market_value"] == 50_000.0     # 市值原样透传

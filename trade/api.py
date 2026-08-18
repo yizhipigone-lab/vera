@@ -348,6 +348,12 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 ro.close()
         except Exception:
             today_buys = {}
+        # 2026-08-18: 盘前(还没开盘)判定一次。QMT 的 prev_close 尚未翻日
+        # (仍是"前前一个交易日"的收盘价), 直接 (last-prev_close) 会把前一交易日
+        # 全天涨幅算成"当日盈亏" (159949: 08-17 尾盘买入, 08-18 盘前显示 +13950)。
+        # 盘前"今日"无任何变动 → 当日盈亏应为 0。
+        from trade.monitor import trading_session
+        pre_open = trading_session() == "pre_open"
         result = []
         for code, p in sorted(snap["positions"].items()):
             quote = trade_app.monitor.quote_of(code)
@@ -399,13 +405,17 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                           if tb.get("qty") and tb["qty"] > 0 else None)
                 yest_qty = max(0, p.volume - tb_qty)
                 if last:
-                    yest_amt = ((last - prev_close) * yest_qty
-                                if yest_qty > 0 and prev_close else 0.0)
-                    tb_amt = ((last - tb_avg) * tb_qty
-                              if tb_qty > 0 and tb_avg else 0.0)
-                    base = ((prev_close or 0.0) * yest_qty
-                            + (tb_avg or 0.0) * tb_qty)
-                    day_chg_amt = round(yest_amt + tb_amt, 2) if base else None
+                    if pre_open:
+                        # 盘前: 今日无变动, 当日盈亏 = 0 (见上方 2026-08-18 注)
+                        day_chg_amt = 0.0
+                    else:
+                        yest_amt = ((last - prev_close) * yest_qty
+                                    if yest_qty > 0 and prev_close else 0.0)
+                        tb_amt = ((last - tb_avg) * tb_qty
+                                  if tb_qty > 0 and tb_avg else 0.0)
+                        base = ((prev_close or 0.0) * yest_qty
+                                + (tb_avg or 0.0) * tb_qty)
+                        day_chg_amt = round(yest_amt + tb_amt, 2) if base else None
                 else:
                     day_chg_amt = None
                 market_value = round(last * p.volume, 2) if last else None
