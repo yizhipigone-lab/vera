@@ -53,7 +53,7 @@ def mock_sector(monkeypatch):
     """mock 行业映射, 避免真拉 TDX; 同时固定股票名表。"""
     import core.data_fetcher as dfm
     import policy_kb.build_sector_index as bsi
-    import trade.api as tapi
+    import trade.analysis as an
     monkeypatch.setattr(bsi, "build_stock_sector_index",
                         lambda force_refresh=False: {SH: "S1", SZ: "S2"})
     monkeypatch.setattr(dfm.DataFetcher, "get_sector_list",
@@ -61,7 +61,7 @@ def mock_sector(monkeypatch):
                                                  {"code": "S2", "name": "银行"}]))
     monkeypatch.setattr(dfm.DataFetcher, "get_name_map",
                         classmethod(lambda cls: {SH: "贵州茅台", SZ: "平安银行"}))
-    monkeypatch.setattr(tapi, "_name_map", None)  # 清惰性缓存, 防跨测试污染
+    monkeypatch.setattr(an, "_name_map", None)  # 清惰性缓存, 防跨测试污染
 
 
 # ---------- /api/trade/analysis/equity 追加 rolling ----------

@@ -617,79 +617,66 @@ def test_daily_card_trade_details_fold(monkeypatch):
     assert "另 2 笔" in body and "卖出合计" in body and "+27.00" in body
 
 
-def test_build_trade_summary_trade_details_cap(cfg):
-    """>12 笔 trade_details: 前 12 + trade_details_folded (count + sum_sell_pnl)。"""
-    app = TradeApp(cfg, fake=True,
-                   fake_gateway_kwargs={"cash": 1e6, "positions": {}})
-    try:
-        assert app.start(start_timers=False)
-        td = [{"code": f"C{i}", "direction": 24, "amount": 100.0,
-               "price": 10.0, "qty": 10, "pnl_amount": float(i),
-               "pnl_pct": float(i), "reason": "", "ts": float(i)}
-              for i in range(14)]
-        s = app._build_trade_summary(td)
-        assert len(s["trade_details"]) == 12
-        assert s["trade_details_folded"]["count"] == 2
-        assert s["trade_details_folded"]["sum_sell_pnl"] == 25.0  # ts12+13
-    finally:
-        app.stop()
+def test_build_trade_summary_trade_details_cap():
+    """>12 笔 trade_details: 前 12 + trade_details_folded (count + sum_sell_pnl)。
+    2026-08-19 深模块治理: 改直调 trade.daily_report 纯函数 (原经 TradeApp)。"""
+    from trade.daily_report import build_trade_summary
+    td = [{"code": f"C{i}", "direction": 24, "amount": 100.0,
+           "price": 10.0, "qty": 10, "pnl_amount": float(i),
+           "pnl_pct": float(i), "reason": "", "ts": float(i)}
+          for i in range(14)]
+    s = build_trade_summary(td, [])
+    assert len(s["trade_details"]) == 12
+    assert s["trade_details_folded"]["count"] == 2
+    assert s["trade_details_folded"]["sum_sell_pnl"] == 25.0  # ts12+13
 
 
-def test_build_trade_summary_win_rate_and_sort(cfg):
-    """sell_count=0 → win_rate=None (不除零); 有卖出按 ts 升序 + 胜率。"""
-    app = TradeApp(cfg, fake=True,
-                   fake_gateway_kwargs={"cash": 1e6, "positions": {}})
-    try:
-        assert app.start(start_timers=False)
-        # 无卖出: win_rate=None
-        s0 = app._build_trade_summary([
-            {"code": "A", "direction": 23, "amount": 1000.0, "pnl_amount": 0.0}])
-        assert s0["sell_count"] == 0 and s0["win_rate"] is None
-        assert s0["buy_count"] == 1 and s0["turnover"] == 1000.0
-        # 两笔卖出 (一盈一亏): 胜率 0.5, realized=+20, ts 升序
-        s1 = app._build_trade_summary([
-            {"code": "B", "direction": 24, "amount": 100.0,
-             "pnl_amount": 50.0, "pnl_pct": 5.0, "ts": 2.0},
-            {"code": "C", "direction": 24, "amount": 100.0,
-             "pnl_amount": -30.0, "pnl_pct": -3.0, "ts": 1.0}])
-        assert s1["sell_count"] == 2 and s1["win_rate"] == 0.5
-        assert s1["realized_pnl"] == 20.0
-        assert s1["sell_details"][0]["code"] == "C"   # ts=1 在前
-        # 2026-08-07 trade_details (买卖混排, 按 ts 升序, 买 pnl=None)
-        assert len(s0["trade_details"]) == 1
-        assert s0["trade_details"][0]["direction"] == 23
-        assert s0["trade_details"][0]["pnl_amount"] is None
-        assert len(s1["trade_details"]) == 2
-        assert s1["trade_details"][0]["code"] == "C"   # 混排也按 ts 升序
-    finally:
-        app.stop()
+def test_build_trade_summary_win_rate_and_sort():
+    """sell_count=0 → win_rate=None (不除零); 有卖出按 ts 升序 + 胜率。
+    2026-08-19 深模块治理: 改直调 trade.daily_report 纯函数 (原经 TradeApp)。"""
+    from trade.daily_report import build_trade_summary
+    # 无卖出: win_rate=None
+    s0 = build_trade_summary([
+        {"code": "A", "direction": 23, "amount": 1000.0, "pnl_amount": 0.0}], [])
+    assert s0["sell_count"] == 0 and s0["win_rate"] is None
+    assert s0["buy_count"] == 1 and s0["turnover"] == 1000.0
+    # 两笔卖出 (一盈一亏): 胜率 0.5, realized=+20, ts 升序
+    s1 = build_trade_summary([
+        {"code": "B", "direction": 24, "amount": 100.0,
+         "pnl_amount": 50.0, "pnl_pct": 5.0, "ts": 2.0},
+        {"code": "C", "direction": 24, "amount": 100.0,
+         "pnl_amount": -30.0, "pnl_pct": -3.0, "ts": 1.0}], [])
+    assert s1["sell_count"] == 2 and s1["win_rate"] == 0.5
+    assert s1["realized_pnl"] == 20.0
+    assert s1["sell_details"][0]["code"] == "C"   # ts=1 在前
+    # 2026-08-07 trade_details (买卖混排, 按 ts 升序, 买 pnl=None)
+    assert len(s0["trade_details"]) == 1
+    assert s0["trade_details"][0]["direction"] == 23
+    assert s0["trade_details"][0]["pnl_amount"] is None
+    assert len(s1["trade_details"]) == 2
+    assert s1["trade_details"][0]["code"] == "C"   # 混排也按 ts 升序
 
 
-def test_build_trade_summary_with_remaining(cfg, monkeypatch):
-    """2026-08-08: _build_trade_summary 重放全历史 Book 算每笔剩余/卖出比例
-    (卖出比例=本次卖出÷累计买入, 用户口径)。"""
-    app = TradeApp(cfg, fake=True,
-                   fake_gateway_kwargs={"cash": 1e6, "positions": {}})
-    try:
-        assert app.start(start_timers=False)
-        # 全历史: 买 1000 股 → 卖 300 (剩 700, 卖出比例 30%)
-        monkeypatch.setattr(app.store, "load_all_trades", lambda: [
-            {"traded_id": "T1", "order_id": "O1", "code": "X", "direction": 23,
-             "price": 10.0, "qty": 1000, "ts": 1.0},
-            {"traded_id": "T2", "order_id": "O2", "code": "X", "direction": 24,
-             "price": 11.0, "qty": 300, "ts": 2.0},
-        ])
-        s = app._build_trade_summary([
-            {"traded_id": "T2", "code": "X", "direction": 24, "price": 11.0,
-             "qty": 300, "amount": 3300.0, "pnl_amount": 300.0, "pnl_pct": 10.0,
-             "reason": "移动止盈", "ts": 2.0},
-        ])
-        d = s["trade_details"][0]
-        assert d["remaining_vol"] == 700
-        assert d["remaining_value"] == 7700.0      # 700 × 11.0 (成交价近似现价)
-        assert d["sell_ratio"] == 0.3              # 300 / 1000
-    finally:
-        app.stop()
+def test_build_trade_summary_with_remaining():
+    """2026-08-08: 重放全历史 Book 算每笔剩余/卖出比例
+    (卖出比例=本次卖出÷累计买入, 用户口径)。
+    2026-08-19 深模块治理: 改直调 trade.daily_report 纯函数 (原经 TradeApp)。"""
+    from trade.daily_report import build_trade_summary
+    # 全历史: 买 1000 股 → 卖 300 (剩 700, 卖出比例 30%)
+    s = build_trade_summary([
+        {"traded_id": "T2", "code": "X", "direction": 24, "price": 11.0,
+         "qty": 300, "amount": 3300.0, "pnl_amount": 300.0, "pnl_pct": 10.0,
+         "reason": "移动止盈", "ts": 2.0},
+    ], [
+        {"traded_id": "T1", "order_id": "O1", "code": "X", "direction": 23,
+         "price": 10.0, "qty": 1000, "ts": 1.0},
+        {"traded_id": "T2", "order_id": "O2", "code": "X", "direction": 24,
+         "price": 11.0, "qty": 300, "ts": 2.0},
+    ])
+    d = s["trade_details"][0]
+    assert d["remaining_vol"] == 700
+    assert d["remaining_value"] == 7700.0      # 700 × 11.0 (成交价近似现价)
+    assert d["sell_ratio"] == 0.3              # 300 / 1000
 
 
 def test_compute_remaining_map_robustness():
