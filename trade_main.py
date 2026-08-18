@@ -919,6 +919,7 @@ class TradeApp:
             trades_detail = []
             _logger.debug("load_today_trades_detail 异常 (日报交易段留空)")
         payload.update(self._build_trade_summary(trades_detail))
+        self._enrich_sell_quotes(payload)
         # 浮盈 = 市值 − 持仓成本 (不含税费/已实现盈亏, 与 realized_pnl 分开)
         cost_basis = sum(p.volume * p.avg_cost for p in positions.values()
                          if p.volume > 0)
@@ -1032,6 +1033,35 @@ class TradeApp:
             else:
                 out["trade_details"] = details
         return out
+
+    def _enrich_sell_quotes(self, payload: dict) -> None:
+        """盘后给卖单补「盘中最高涨幅 / 卖出时点涨幅」—— 卖飞信号 (2026-08-18)。
+
+        AI 复盘原来只能看到「盈亏 + 原因」, 看不出某票盘中冲高 9% 却被
+        移动止盈卖在低位 (卖飞)。补两个相对昨收的涨幅字段, LLM 才能点名。
+        fail-soft: 取不到行情 (已退订/查失败/昨收为 0) 就留空, 不影响日报。"""
+        details = payload.get("trade_details") or []
+        sells = [t for t in details
+                 if t.get("direction") != DIRECTION_BUY and t.get("price")]
+        if not sells:
+            return
+        codes = sorted({t["code"] for t in sells})
+        try:
+            quotes = self.gateway.query_quotes(codes) or {}
+        except Exception:
+            _logger.debug("卖飞信号行情查询异常 (日报照常)")
+            return
+        for t in sells:
+            q = quotes.get(t["code"])
+            if not q:
+                continue
+            prev = float(q.get("prev_close") or 0.0)
+            high = float(q.get("high") or 0.0)
+            price = float(t.get("price") or 0.0)
+            if prev <= 0 or price <= 0:
+                continue
+            t["intraday_high_pct"] = round((high / prev - 1.0) * 100, 2)
+            t["sell_pct_vs_prev"] = round((price / prev - 1.0) * 100, 2)
 
     def _diff_positions(self, prev: dict, curr: dict) -> dict:
         """仓位变动 (2026-08-07): 按 (今 curr vs 昨 prev) 净 volume diff 分类。

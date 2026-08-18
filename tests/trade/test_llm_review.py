@@ -58,6 +58,20 @@ def test_format_daily_data_empty():
     assert format_daily_data({}) == ""
 
 
+def test_format_daily_data_sell_fly_fields():
+    """卖飞信号: 卖单带盘中最高涨幅/卖出时点涨幅时进文本, 缺字段则跳过。"""
+    s = format_daily_data(_payload(trade_details=[
+        {"code": "301072.SZ", "direction": 24, "pnl_amount": 546.0,
+         "reason": "移动止盈", "intraday_high_pct": 9.64,
+         "sell_pct_vs_prev": 2.10},
+        {"code": "600519.SH", "direction": 24, "pnl_amount": 8000.0,
+         "reason": "移动止盈"},
+    ]))
+    assert "盘中最高+9.64%" in s      # 有字段 → 进文本
+    assert "卖在+2.10%" in s
+    assert "卖 600519.SH" in s        # 无字段的卖单照常, 不误加
+
+
 def test_format_daily_data_no_rotation():
     s = format_daily_data(_payload(rotation=None))
     assert "轮动信号" not in s           # 无轮动不出现该行

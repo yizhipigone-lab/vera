@@ -34,7 +34,8 @@ _PROMPT = """你是 VERA 量化实盘系统的盘后复盘助手, 读者是量�
 2. 归因: 主要盈亏来自什么(涨的持仓 / 止盈落袋 / 止损割肉), 点名具体标的;
 3. 报数字给参照: 不只说绝对值, 尽量说"比昨天多/少"或"占总资产多少";
 4. 指出 1~2 个值得注意的点(轮动换仓信号、异常卖出、连续触发止盈止损);
-5. 大白话 + 生活化比喻, 禁止英文缩写和 emoji, 纯文本, 不用 Markdown 标题/列表符号。
+5. 卖飞识别: 某笔卖出若「盘中最高涨幅」明显高于「卖在涨幅」(如盘中最高 +9% 你卖在 +2%), 要点名说"这票盘中冲高 X%、你卖在 Y%、卖飞了、少赚了"; 若卖在最高点附近就说止盈及时;
+6. 大白话 + 生活化比喻, 禁止英文缩写和 emoji, 纯文本, 不用 Markdown 标题/列表符号。
 
 直接输出复盘正文, 不要复述原始数据, 不要"根据数据""今天数据显示"之类的废话开头。"""
 
@@ -90,9 +91,13 @@ def format_daily_data(payload: dict) -> str:
         act = "买" if t.get("direction") == _DIRECTION_BUY else "卖"
         pnl = t.get("pnl_amount")
         pnl_s = f" 盈亏 {float(pnl):+,.2f}" if pnl is not None else ""
+        hi = t.get("intraday_high_pct")
+        hi_s = f" 盘中最高{float(hi):+.2f}%" if hi is not None else ""
+        sp = t.get("sell_pct_vs_prev")
+        sp_s = f" 卖在{float(sp):+.2f}%" if sp is not None else ""
         reason = (t.get("reason") or "").strip()
         reason_s = f" 原因({reason})" if reason else ""
-        lines.append(f"{act} {t.get('code', '')}{pnl_s}{reason_s}")
+        lines.append(f"{act} {t.get('code', '')}{pnl_s}{hi_s}{sp_s}{reason_s}")
 
     # 轮动信号 (明日 09:30 的目标)
     rot = payload.get("rotation")
