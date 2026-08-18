@@ -22,6 +22,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from trade.book import is_etf, DIRECTION_BUY, DIRECTION_SELL
+from trade.analysis import (  # 2026-08-19 深模块治理: 计算逻辑下沉
+    calc_drawdowns,
+    deep_merge,
+    diff_dicts,
+    entry_and_closed,
+    hold_days,
+    name_of,
+    rows_to_dicts,
+)
 from trade.config import (
     trade_config_from_dict,
     trade_config_to_dict,
@@ -51,27 +60,6 @@ class SellRequest(BaseModel):
 
 class CancelRequest(BaseModel):
     order_id: str = Field(min_length=1)
-
-
-def _rows_to_dicts(cursor) -> list[dict]:
-    cols = [d[0] for d in cursor.description]
-    return [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-
-# 股票名查询 (惰性加载, worker 线程首次查名时加载)
-_name_map: dict[str, str] | None = None
-
-
-def _name_of(code: str) -> str:
-    """股票代码 → 简称。惰性加载, 查不到返回空串。"""
-    global _name_map
-    if _name_map is None:
-        try:
-            from core.data_fetcher import DataFetcher
-            _name_map = DataFetcher.get_name_map() or {}
-        except Exception:
-            _name_map = {}
-    return _name_map.get(code, "")
 
 
 _SECONDS_PER_DAY = 86400
@@ -113,161 +101,6 @@ def _day_range(date: str) -> tuple[float, float]:
         raise ValueError(f"date 必须是 YYYYMMDD, 实际 {date!r}")
     start = datetime.strptime(date, "%Y%m%d").timestamp()
     return start, start + _SECONDS_PER_DAY
-
-
-def _diff_dicts(old: dict, new: dict, prefix: str = "") -> list[str]:
-    """递归 diff 两个配置 dict, 返回变更字段的 dotted 路径列表
-    (audit 记录用 —— "改了什么"必须可追溯)。"""
-    changed = []
-    for key in sorted(set(old) | set(new)):
-        path = f"{prefix}{key}"
-        if key not in old or key not in new:
-            changed.append(path)
-        elif isinstance(old[key], dict) and isinstance(new[key], dict):
-            changed.extend(_diff_dicts(old[key], new[key], path + "."))
-        elif old[key] != new[key]:
-            changed.append(path)
-    return changed
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """dict 递归合并, 非 dict 值 (含 levels 列表) 整体替换 —
-    与 utils/config_loader._deep_merge 同语义, 但这边界内聚在 api
-    薄层自己的合并点 (config_loader 是回测侧配置链, 不跨侧复用)。"""
-    result = dict(base)
-    for key, value in override.items():
-        if (key in result and isinstance(result[key], dict)
-                and isinstance(value, dict)):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
-# ── 2026-07-30: 持仓明细增强辅助 ─────────────────────────────
-
-def _entry_and_closed(trade_app) -> tuple[dict, list, dict]:
-    """从 trades 表算各代码的买卖汇总, 派生 entry_map / closed / summary 三件:
-
-    - entry_map: 首笔买入时间 (持仓票入场时间用)
-    - closed: 已平仓列表 (前 20, 供已平仓区; 用户 2026-08-11 裁决改为持仓表灰显,
-      此列表保留兼容, 前端暂不单独分区)
-    - summary: {code: 买卖汇总} —— 平仓票展示真实盈亏/买卖均价/出场时间用
-
-    is_closed = 累计卖出量 > 0 且 >= 累计买入量 (整周期闭环)。
-    realized_pnl = Σ 卖方 pnl_amount (账本成本法, 与 deals/飞书成交卡同源;
-                2026-08-11 统一口径, 不再用卖金额-买金额的毛口径)。
-    """
-    entry_map: dict = {}
-    summary: dict = {}
-    try:
-        ro = trade_app.store.open_readonly()
-    except Exception:
-        return entry_map, [], summary
-    try:
-        cur = ro.execute(
-            "SELECT code, direction, MIN(ts), MAX(ts), SUM(qty), SUM(amount), "
-            "SUM(pnl_amount) FROM trades GROUP BY code, direction")
-        per_code: dict = {}
-        for code, direction, min_ts, max_ts, qty, amount, pnl_amt in cur.fetchall():
-            d = per_code.setdefault(code, {})
-            d[direction] = {"min_ts": min_ts, "max_ts": max_ts,
-                            "qty": qty or 0, "amount": amount or 0.0,
-                            "pnl": pnl_amt or 0.0}
-        for code, d in per_code.items():
-            buy = d.get(DIRECTION_BUY)
-            sell = d.get(DIRECTION_SELL)
-            buy_qty = buy["qty"] if buy else 0
-            buy_amount = buy["amount"] if buy else 0.0
-            sell_qty = sell["qty"] if sell else 0
-            sell_amount = sell["amount"] if sell else 0.0
-            is_closed = bool(sell and sell_qty > 0 and sell_qty >= buy_qty)
-            entry_ts = buy["min_ts"] if buy else None
-            if buy:
-                entry_map[code] = entry_ts
-            summary[code] = {
-                "buy_qty": buy_qty,
-                "buy_avg": (buy_amount / buy_qty) if buy_qty > 0 else None,
-                "sell_qty": sell_qty,
-                "sell_avg": (sell_amount / sell_qty) if sell_qty > 0 else None,
-                "entry_ts": entry_ts,
-                "exit_ts": sell["max_ts"] if sell else None,
-                "realized_pnl": (round(sell["pnl"], 2)
-                                 if is_closed else None),
-                "realized_pnl_pct": (round(sell["pnl"] / buy_amount * 100, 2)
-                                     if is_closed and buy_amount > 0 and sell["pnl"]
-                                     else None),
-                "is_closed": is_closed,
-            }
-        closed = [{
-            "code": code, "name": _name_of(code),
-            "entry_ts": summary[code]["entry_ts"],
-            "exit_ts": summary[code]["exit_ts"],
-            "qty": summary[code]["buy_qty"],
-            "buy_avg": summary[code]["buy_avg"],
-            "sell_avg": summary[code]["sell_avg"],
-            "realized_pnl": summary[code]["realized_pnl"],
-            "realized_pnl_pct": summary[code]["realized_pnl_pct"],
-            "hold_days": _hold_days(summary[code]["entry_ts"],
-                                    summary[code]["exit_ts"]),
-        } for code in summary if summary[code]["is_closed"]]
-        closed.sort(key=lambda x: x["exit_ts"] or 0, reverse=True)
-        return entry_map, closed[:20], summary
-    finally:
-        ro.close()
-
-
-_TRADING_DAYS: list | None = None
-
-
-def _trading_days() -> list:
-    """交易日历 (data/kline_cache/calendar, 惰性加载一次; 缺失回退空列表)。"""
-    global _TRADING_DAYS
-    if _TRADING_DAYS is None:
-        try:
-            from pathlib import Path
-
-            import pandas as pd
-            p = (Path(__file__).resolve().parent.parent
-                 / "data" / "kline_cache" / "calendar" / "trading_days.parquet")
-            _TRADING_DAYS = sorted(
-                pd.read_parquet(p)["date"].astype(str).tolist())
-        except Exception:
-            _TRADING_DAYS = []
-    return _TRADING_DAYS
-
-
-def _hold_days(entry_ts: float | None, end_ts: float | None = None):
-    """持仓天数: T+1 起算 (买入日不计, 之后第一个交易日为第 1 天)。
-    end_ts 缺省=今天 (在持仓票); 传 exit_ts → 算到出场日 (已平仓票的
-    整段持有天数, 2026-08-11)。日历滞后时尾部按工作日近似; 日历整体
-    缺失时全段工作日近似。无 entry_ts (QMT 恢复的老仓) 给 None。"""
-    if not entry_ts:
-        return None
-    ed = time.strftime("%Y%m%d", time.localtime(entry_ts))
-    today = (time.strftime("%Y%m%d", time.localtime(end_ts))
-             if end_ts else time.strftime("%Y%m%d"))
-    days = _trading_days()
-    n = sum(1 for d in days if ed < d <= today)
-
-    import datetime as _dt
-
-    def _weekdays_between(start: str, end: str) -> int:
-        cur = _dt.datetime.strptime(start, "%Y%m%d").date()
-        end_d = _dt.datetime.strptime(end, "%Y%m%d").date()
-        cnt = 0
-        while cur < end_d:
-            cur += _dt.timedelta(days=1)
-            if cur.weekday() < 5:
-                cnt += 1
-        return cnt
-
-    if days and days[-1] < today:
-        # 尾部从 max(日历尾, 买入日) 起算, 防日历滞后段与买入日前段重复计数
-        n += _weekdays_between(max(days[-1], ed), today)   # 尾部工作日近似
-    elif not days:
-        n = _weekdays_between(ed, today)
-    return n
 
 
 def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastAPI:
@@ -328,7 +161,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         # 2026-08-11: 数量=0 的幽灵持仓 (已卖光但 book key 未删) 改用真实已实现
         # 盈亏展示 —— 留在持仓表灰显 + "已平仓"徽标, 不再显示一堆 0, 也不另开
         # 分区 (用户裁决)。平仓票的 avg_cost/pnl/pnl_pct 由 summary 覆盖。
-        entry_map, closed, summary = _entry_and_closed(trade_app)
+        entry_map, closed, summary = entry_and_closed(trade_app.store)
         # 2026-08-12: 当日盈亏精确化 — 昨仓按昨收、今买按买入均价。
         # 先汇总"最近一个交易日"的买入 (尾盘新买的票不该把买入前当天
         # 的涨幅算成盈利)。2026-08-16 修复: 锚点从墙钟今天改成最近
@@ -391,7 +224,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 pnl_pct = s["realized_pnl_pct"]
                 entry_ts = s["entry_ts"]
                 exit_ts = s["exit_ts"]
-                hold = _hold_days(s["entry_ts"], s["exit_ts"])
+                hold = hold_days(s["entry_ts"], s["exit_ts"])
                 buy_qty = s["buy_qty"]
                 sell_avg = s["sell_avg"]
             else:
@@ -425,11 +258,11 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                            if last and p.avg_cost > 0 else None)
                 entry_ts = entry_map.get(code)
                 exit_ts = None
-                hold = _hold_days(entry_ts)
+                hold = hold_days(entry_ts)
                 buy_qty = None
                 sell_avg = None
             result.append({
-                "code": code, "name": _name_of(code),
+                "code": code, "name": name_of(code),
                 "volume": p.volume, "can_use": p.can_use,
                 "avg_cost": round(avg_cost, 2) if avg_cost is not None else None,
                 "strategy": p.strategy,
@@ -475,9 +308,9 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 "(updated_ts >= ? AND updated_ts < ?) "
                 "ORDER BY updated_ts DESC, order_id DESC LIMIT ? OFFSET ?",
                 (start, end, start, end, limit, offset))
-            rows = _rows_to_dicts(cur)
+            rows = rows_to_dicts(cur)
             for r in rows:
-                r["name"] = _name_of(r["code"])
+                r["name"] = name_of(r["code"])
             return {"orders": rows}
         finally:
             ro.close()
@@ -512,10 +345,10 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 "SELECT * FROM trades WHERE ts >= ? AND ts < ? "
                 "ORDER BY ts DESC, traded_id DESC LIMIT ? OFFSET ?",
                 (start_ts, end_ts, limit, offset))
-            rows = _rows_to_dicts(cur)
+            rows = rows_to_dicts(cur)
             from trade.book import DIRECTION_SELL
             for r in rows:
-                r["name"] = _name_of(r["code"])
+                r["name"] = name_of(r["code"])
                 # pnl 改读列 (单一 book 口径, 与飞书日报同源); 历史/买入行 → None
                 col_amt = r.get("pnl_amount") or 0
                 col_pct = r.get("pnl_pct") or 0
@@ -537,10 +370,10 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             cur = ro.execute(
                 "SELECT * FROM reconcile_log ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset))
-            recs = _rows_to_dicts(cur)
+            recs = rows_to_dicts(cur)
             for r in recs:
                 code = r.get("code", "")
-                r["name"] = _name_of(code) if code else ""
+                r["name"] = name_of(code) if code else ""
             return {"reconciles": recs}
         finally:
             ro.close()
@@ -553,7 +386,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             cur = ro.execute(
                 "SELECT * FROM audit ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset))
-            recs = _rows_to_dicts(cur)
+            recs = rows_to_dicts(cur)
             for r in recs:
                 detail = {}
                 try:
@@ -562,7 +395,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                     pass
                 code = detail.get("code", "")
                 if code:
-                    r["name"] = _name_of(code)
+                    r["name"] = name_of(code)
             return {"audits": recs}
         finally:
             ro.close()
@@ -583,12 +416,12 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         校验复用 load_trade_config 同一份逻辑 (判断不出路由层);
         校验过 → put 命令 → accepted; 失败 → 422 + 字段错误。"""
         base = trade_config_to_dict(trade_app.config)
-        merged = _deep_merge(base, body)
+        merged = deep_merge(base, body)
         try:
             new_cfg = trade_config_from_dict(merged)
         except (ValueError, TypeError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
-        changed = _diff_dicts(trade_config_to_dict(trade_app.config),
+        changed = diff_dicts(trade_config_to_dict(trade_app.config),
                               trade_config_to_dict(new_cfg))
         trade_app.submit_command({
             "action": "update_config", "config_obj": new_cfg,
@@ -686,16 +519,6 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
     def _daily_asset_rows():
         return trade_app.store.daily_asset.get()
 
-    def _calc_drawdowns(equities: list[float]) -> list[float]:
-        """从净值序列计算逐日回撤。"""
-        peak = equities[0] if equities else 1.0
-        dds = []
-        for eq in equities:
-            if eq > peak:
-                peak = eq
-            dds.append((eq / peak - 1) if peak > 0 else 0.0)
-        return dds
-
     @app.get("/api/trade/analysis/equity")
     def analysis_equity():
         """逐日资产净值曲线 (分析 Tab 权益曲线数据源)。
@@ -706,7 +529,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         if not rows:
             return {"equity": []}
         equities = [r["total_asset"] for r in rows]
-        dds = _calc_drawdowns(equities)
+        dds = calc_drawdowns(equities)
         resp = {"equity": [
             {"date": rows[i]["date"], "equity": equities[i],
              "drawdown": dds[i]}
@@ -734,7 +557,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         ro = trade_app.store.open_readonly()
         try:
             cur = ro.execute("SELECT code, direction, pnl_amount FROM trades")
-            rows = _rows_to_dicts(cur)
+            rows = rows_to_dicts(cur)
         finally:
             ro.close()
         items = []
@@ -863,7 +686,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         years = max(0.01, (end_d - start_d).days / 365.25)
         ann_ret = ((1 + cum_ret) ** (1 / years) - 1) if cum_ret > -1 else 0.0
         # 回撤
-        dds = _calc_drawdowns(equities)
+        dds = calc_drawdowns(equities)
         max_dd = min(dds) if dds else 0.0
         # 回撤修复天数: 从谷底到创新高的交易日数。未修复则计到序列末尾
         max_dd_idx = dds.index(max_dd) if dds else 0
