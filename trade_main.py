@@ -1335,10 +1335,11 @@ def main() -> None:
     from trade.api import create_api_app
     try:
         # CORS 放行页面服务器 (回测服务器) 的 origin, 随 --page-port 推导
-        origins = [f"http://127.0.0.1:{args.page_port}",
-                   f"http://localhost:{args.page_port}"]
+        # 2026-08-18: 局域网手机访问 —— 放行所有 origin (个人局域网工具, 页面从
+        # http://<lan-ip>:8080 跨端口调 8081, 动态 IP 无法枚举, 用 * 兜底)。
+        origins = ["*"]
         uvicorn.run(create_api_app(app, allowed_origins=origins),
-                    host="127.0.0.1", port=args.api_port, access_log=False)
+                    host="0.0.0.0", port=args.api_port, access_log=False)
     except KeyboardInterrupt:
         pass
     finally:

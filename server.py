@@ -46,7 +46,7 @@ def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 app = FastAPI(title="VERA 量化回测系统", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])  # 2026-08-18: 放行局域网手机访问
 
 # 静态文件
 app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
@@ -428,6 +428,15 @@ async def index():
         return html_path.read_text(encoding="utf-8")
     return "<h1>VERA Web 前端未找到，请创建 web/index.html</h1>"
 
+
+@app.get("/m", response_class=HTMLResponse)
+async def mobile():
+    """移动版入口 (2026-08-18): 手机局域网访问 http://<lan-ip>:8080/m。"""
+    html_path = _PROJECT_ROOT / "web" / "mobile.html"
+    if html_path.exists():
+        return html_path.read_text(encoding="utf-8")
+    return "<h1>VERA 移动版未找到，请创建 web/mobile.html</h1>"
+
 @app.get("/favicon.ico")
 async def favicon():
     from fastapi.responses import RedirectResponse
@@ -601,7 +610,7 @@ if __name__ == "__main__":
     import uvicorn
     parser = argparse.ArgumentParser(description="VERA Web 服务器")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--host", type=str, default="127.0.0.1")
+    parser.add_argument("--host", type=str, default="0.0.0.0")  # 2026-08-18: 局域网手机访问
     args = parser.parse_args()
 
     logger.info("VERA 量化回测系统 Web 服务器启动")
