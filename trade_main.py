@@ -36,7 +36,6 @@ from trade.book import (  # noqa: E402
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
     Book,
-    compute_remaining_map,
 )
 from trade.config import TradeConfig, load_trade_config  # noqa: E402
 from trade.daily_report import (  # noqa: E402 (2026-08-19 深模块治理: 日报计算下沉)
