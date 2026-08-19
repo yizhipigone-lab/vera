@@ -348,9 +348,13 @@ def test_worker_intraday_uses_realtime_price(tmp_path, monkeypatch):
     monkeypatch.setattr("trade.rotation.is_trading_day_cached", lambda d: True)
     clock = [_ts("14:56")]
     closes = [1000.0 + i for i in range(300)]   # 持续上涨 → 昨日信号 full_cyb
-    app = _start(_app(_cfg(tmp_path), clock, closes={INDEX: closes}))
-    # 推指数实时价 900 (当日大跌) → 追加进 closes, 信号应反映回撤
+    app = _app(_cfg(tmp_path), clock, closes={INDEX: closes})
+    # 先推实时价再启动: clock=14:56 恰等于默认 execute_time=14:56, app.start()
+    # 的启动补偿 (_startup_catchup) 会补跑一轮 scheduled —— 若此时 quote 为空,
+    # 那轮补跑走"回退昨日"分支产出 signal_date=昨日, 与后续 manual 触发竞速污染
+    # _last (2026-08-19 审计定位: 该测试自 207f1a1 引入起即因时序缺陷失败)。
     app.gateway.push_quote(INDEX, _quote(INDEX, 900.0))
+    _start(app)
     app._rotation.start("manual")
     assert _wait(lambda: app._rotation.last is not None
                  and app._rotation.last.get("signal") is not None, timeout=5.0)
