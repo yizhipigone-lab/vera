@@ -61,6 +61,10 @@ def build_backtest_loop(
     max_total_exposure: float = 1.0,
     loss_streak_halt_n: int = 0,
     loss_streak_halt_bars: int = 0,
+    # 2026-08-20: open_t1 买入口径 — 买入价矩阵 (=open), None=收盘价老行为。
+    # 配合 entry_next_open.py 平移后的信号使用; 提供时 EntryEngine 自动
+    # 声明 EntryPath.BACKTEST_T1_OPEN (entry.py 构造期校验配对)。
+    buy_price_np: Optional[np.ndarray] = None,
 ) -> BacktestLoop:
     """从原 _simulate_core_v3 壳的参数构造 BacktestLoop。
 
@@ -125,7 +129,7 @@ def build_backtest_loop(
         params=params,
         dispatcher=dispatcher,
         absolutes=absolutes,
-        entry_engine=EntryEngine(params),
+        entry_engine=EntryEngine(params, buy_price_np=buy_price_np),
         equity_tracker=EquityTracker(n_dates_hint),
         position_book=PositionBook(),
         ladder_profits=ladder_profits,

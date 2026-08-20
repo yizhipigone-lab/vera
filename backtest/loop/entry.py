@@ -26,10 +26,28 @@ ENTRY_PATH: EntryPath = EntryPath.BACKTEST_T_CLOSE
 
 
 class EntryEngine:
-    """每 bar 的买入循环: 换股先卖旧 + 新仓买入。"""
+    """每 bar 的买入循环: 换股先卖旧 + 新仓买入。
 
-    def __init__(self, params: BacktestParams):
+    buy_price_np (2026-08-20, open_t1 口径): 提供时买入价取该矩阵而非
+    price_np (收盘价) — 调用方传 open 矩阵, 配合 entry_next_open.py 平移后的
+    信号实现"T+1 开盘价买入"。None = 老行为 (收盘价), 零行为变化。
+    entry_path 与 buy_price_np 必须配对: 传了 buy_price_np 就必须声明
+    EntryPath.BACKTEST_T1_OPEN (防两套口径混用, 业务铁律 3)。
+    """
+
+    def __init__(self, params: BacktestParams,
+                 buy_price_np: Optional[np.ndarray] = None,
+                 entry_path: EntryPath = None):
         self.params = params
+        if entry_path is None:
+            entry_path = (EntryPath.BACKTEST_T1_OPEN if buy_price_np is not None
+                          else ENTRY_PATH)
+        if buy_price_np is not None and entry_path is not EntryPath.BACKTEST_T1_OPEN:
+            raise ValueError(
+                "buy_price_np 提供时 entry_path 必须是 BACKTEST_T1_OPEN "
+                "(open_t1 口径), 防回测/实盘口径混用")
+        self._buy_price_np = buy_price_np
+        self.entry_path = entry_path
         # F7 [H4]: entry 因停牌/价缺失被 skip 的计数 (loop 结束汇总告警, 补圆"不静默吞信号")
         self.skipped_signal_count = 0
         # 2026-07-23: 卖出冷却跳过的买入信号计数 (loop 结束汇总)
@@ -69,7 +87,8 @@ class EntryEngine:
             if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
                 self._record_skip()
                 continue
-            bp = price_np[i, ci]
+            bp = (self._buy_price_np[i, ci] if self._buy_price_np is not None
+                  else price_np[i, ci])
             if np.isnan(bp) or bp <= 0.0:
                 self._record_skip()
                 continue

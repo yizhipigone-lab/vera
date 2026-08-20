@@ -36,7 +36,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-ENGINE_VERSION = "v3.6-no-legacy-20260723"
+ENGINE_VERSION = "v3.7-entry-t1-open-20260820"
 
 # ═══════════════════════════════════════════════════════════════
 # VeraCore 设计要点 — 核心循环实现已迁至 backtest/loop/ (候选 A 阶段 2, 2026-07-14)
@@ -158,6 +158,14 @@ class BacktestEngine:
         _ls = config.get("loss_streak_halt", {}) or {}
         self.loss_streak_halt_n = int(_ls.get("n", 0))
         self.loss_streak_halt_days = int(_ls.get("days", 0))
+        # 2026-08-20: 买入价口径 — close_t=信号日收盘价(默认, 零行为变化);
+        # open_t1=次日开盘价买入 (T+1 一字涨停拒买, T 日涨停过滤关闭)。
+        # 计划书: docs/plan/2026-08-20_回测次日开盘买入模式_计划书.md
+        self.entry_price_mode = str(config.get("entry_price_mode", "close_t"))
+        if self.entry_price_mode not in ("close_t", "open_t1"):
+            raise ValueError(
+                f"entry_price_mode 非法: {self.entry_price_mode!r} "
+                f"(合法: close_t/open_t1)")
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -305,7 +313,8 @@ class BacktestEngine:
                                      ladder_profits, ladder_ratios, n_ladder,
                                      formula_exit_np, formula_exit_ratio,
                                      formula_exit_lag_bars=1,
-                                     degraded_np=None):
+                                     degraded_np=None,
+                                     buy_price_np=None):
         """run()/run_cached() 共享段 (2026-08-01 批次 3b C2 合并)。
 
         priority 校验 → trailing 缺省 → 时间参数 ×bpday 缩放 → ATR →
@@ -330,6 +339,9 @@ class BacktestEngine:
             low_np = np.asarray(low_np, dtype=np.float32)
         if open_np is not None:
             open_np = np.asarray(open_np, dtype=np.float32)
+        # 2026-08-20: open_t1 买入价矩阵 (与价格矩阵同一 float32 口径)
+        if buy_price_np is not None:
+            buy_price_np = np.asarray(buy_price_np, dtype=np.float32)
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
         # 移动止损止盈缺字段/None 语义: 回退命名常量 (两入口同一兜底, 防漂移)
@@ -396,6 +408,7 @@ class BacktestEngine:
             max_total_exposure=float(self.max_total_exposure),
             loss_streak_halt_n=self.loss_streak_halt_n,
             loss_streak_halt_bars=self.loss_streak_halt_days * bpday,
+            buy_price_np=buy_price_np,
         )
         self._last_loop = loop
         equity_arr, raw_trades = loop.run(
@@ -412,6 +425,41 @@ class BacktestEngine:
             "mhd_scaled": mhd_scaled,
         }
         return equity_arr, raw_trades, resolved
+
+    def _apply_entry_price_mode(self, entries, close, high_np, low_np, open_np,
+                                tradable_np):
+        """买入价口径应用 (run()/run_cached() 共用, 2026-08-20, 防双入口漂移)。
+
+        close_t (默认): T 日收盘涨停过滤 (_filter_limit_up), 返回 (entries, None, None)。
+        open_t1: 信号平移到 T+1 首个可交易 bar (一字涨停拒买, 详见
+        backtest/entry_next_open.py), 返回 (平移后 entries, 买入价矩阵=open, 统计)。
+        open_t1 需要 OHLC 齐全, 缺失 fail-fast (不许静默退化成错误口径)。
+        """
+        if self.entry_price_mode != "open_t1":
+            return self._filter_limit_up(entries, close), None, None
+        if open_np is None or high_np is None or low_np is None:
+            raise ValueError(
+                "entry_price_mode=open_t1 需要 OHLC 数据 (open/high/low 缺失)")
+        from backtest.entry_next_open import shift_entries_to_next_open
+        idx, cols = close.index, close.columns
+        t1 = shift_entries_to_next_open(
+            entries,
+            pd.DataFrame(open_np, index=idx, columns=cols),
+            pd.DataFrame(high_np, index=idx, columns=cols),
+            pd.DataFrame(low_np, index=idx, columns=cols),
+            close,
+            limit_ratio_vec=self._limit_ratio_vector(entries.columns),
+            tradable_np=tradable_np)
+        info = {"mode": "open_t1", "n_signals": t1.n_signals,
+                "n_shifted": t1.n_shifted,
+                "n_oneline_limit_up": t1.n_oneline_limit_up,
+                "n_no_t1_bar": t1.n_no_t1_bar,
+                "n_no_tradable_bar": t1.n_no_tradable_bar}
+        logger.info(
+            "open_t1: 信号 %d → 平移 %d, 一字涨停拒买 %d, 无T+1丢弃 %d, 全天停牌丢弃 %d",
+            t1.n_signals, t1.n_shifted, t1.n_oneline_limit_up,
+            t1.n_no_t1_bar, t1.n_no_tradable_bar)
+        return t1.entries, np.asarray(open_np), info
 
     def run(self, selections, start_time="", end_time="", stop_config=None):
         """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
@@ -568,7 +616,9 @@ class BacktestEngine:
 
         bpday = self.bars_per_day
         t0 = pd.Timestamp.now()
-        entries = self._filter_limit_up(entries, close)
+        # 2026-08-20: 买入价口径 (close_t=T日收盘+涨停过滤; open_t1=T+1开盘+一字板拒买)
+        entries, buy_price_np, entry_t1_info = self._apply_entry_price_mode(
+            entries, close, high_np, low_np, open_np, tradable_np)
         _progress.report("loop", 0.0, "核心回测...")  # 2026-07-26
         # 2026-08-01 批次 3b C2: 共享段 (priority/trailing 缺省/缩放/ATR/build+run)
         equity_arr, raw_trades, resolved = self._resolve_stop_and_build_loop(
@@ -578,6 +628,7 @@ class BacktestEngine:
             ladder_profits, ladder_ratios, len(lv),
             formula_exit_np, formula_exit_ratio,
             degraded_np=degraded_np,
+            buy_price_np=buy_price_np,
         )
         # ENGINE_DEBUG 日志的缩放值仅作展示, 从 resolved 读 (2026-08-01 批次 3b C2;
         # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化)。
@@ -684,6 +735,8 @@ class BacktestEngine:
         bt_kwargs["data_fingerprint"] = _data_fp()
         if degradation is not None:
             bt_kwargs["degradation"] = degradation
+        if entry_t1_info is not None:
+            bt_kwargs["entry_mode_info"] = entry_t1_info
         if open_positions:
             bt_kwargs["open_positions"] = open_positions
         return BacktestResult(**bt_kwargs)
@@ -743,7 +796,16 @@ class BacktestEngine:
         if n_ladder > 1 and not bool(np.all(np.diff(ladder_profits[:n_ladder]) >= 0)):
             logger.warning("ladder_profits 非升序, 阶梯触发可能不符预期 (调用方应预排序)")
 
-        entries = self._filter_limit_up(entries, close) if filter_limit_up else entries
+        # 2026-08-20: 买入价口径 (engine config entry_price_mode)。
+        # open_t1 时 T 日涨停过滤由 T+1 一字板判定替代 (filter_limit_up 开关不适用);
+        # close_t 维持 filter_limit_up 开关语义 (收编脚本传 False 复现旧口径)。
+        buy_price_np = None
+        entry_t1_info = None
+        if self.entry_price_mode == "open_t1":
+            entries, buy_price_np, entry_t1_info = self._apply_entry_price_mode(
+                entries, close, high_np, low_np, open_np, tradable_np)
+        elif filter_limit_up:
+            entries = self._filter_limit_up(entries, close)
         # 2026-08-01 批次 3b C2: 共享段 (priority/trailing 缺省/缩放/ATR/build+run)
         equity_arr, raw_trades, _ = self._resolve_stop_and_build_loop(
             stop, close, entries.values,
@@ -752,6 +814,7 @@ class BacktestEngine:
             ladder_profits, ladder_ratios, n_ladder,
             formula_exit_np, formula_exit_ratio,
             formula_exit_lag_bars=formula_exit_lag_bars,
+            buy_price_np=buy_price_np,
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
@@ -765,6 +828,8 @@ class BacktestEngine:
         if return_raw:
             bt_kwargs["raw_equity"] = equity_arr
             bt_kwargs["raw_trades"] = raw_trades
+        if entry_t1_info is not None:
+            bt_kwargs["entry_mode_info"] = entry_t1_info
         return BacktestResult(**bt_kwargs)
 
     def _post_process(self, equity_arr, raw_trades, close, bpday):
@@ -961,7 +1026,9 @@ class BacktestEngine:
             win_start, win_end = DataFetcher.compute_window_bounds(
                 selections, win_td, end_time=end_time or None)
             bounds = {c: (win_start[c], win_end[c]) for c in codes if c in win_start}
-            ratio_vec = self._limit_ratio_vector(close_g.columns)
+            # 2026-08-20: open_t1 口径下 T 日不成交, 降级的 1d 涨停拒单无意义 → 关闭
+            ratio_vec = (None if self.entry_price_mode == "open_t1"
+                         else self._limit_ratio_vector(close_g.columns))
             res = apply_5m_degradation(
                 close_g, high_g, low_g, open_g,
                 c1, _f("High"), _f("Low"), _f("Open"),
