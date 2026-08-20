@@ -9,8 +9,8 @@ docs/plan/2026-08-20_回测次日开盘买入模式_计划书.md
 注意(2026-07-20 口径声明): 1d 终审口径下移动止盈 0.3% 回撤偏乐观,
 两口径对比只看**相对差异**, 绝对值不可全信。
 
-用法: python research/quantqq_open_t1_2025_08.py
-产出: output/quantqq_open_t1/compare.csv + trades_{mode}.csv + equity_{mode}.csv
+用法: python research/quantqq_open_t1_2025_08.py [period]   # period 默认 1d, 可选 5m
+产出: output/quantqq_open_t1[_5m]/compare.csv + trades_{mode}.csv + equity_{mode}.csv
 """
 from __future__ import annotations
 
@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 BASE_CFG = "config/strategy_QUANTQQ.yaml"
 START, END = "20250801", "20260820"
 MODES = ("open_t1", "close_t")
-OUT = Path("output/quantqq_open_t1")
+PERIOD = sys.argv[1] if len(sys.argv) > 1 else "1d"
+OUT = Path("output/quantqq_open_t1" if PERIOD == "1d"
+           else f"output/quantqq_open_t1_{PERIOD}")
 
 METRIC_KEYS = ["cumulative_return", "annualized_return", "max_drawdown",
                "sharpe_ratio", "calmar_ratio", "win_rate", "total_trades"]
@@ -37,9 +39,14 @@ def run_one(mode: str) -> dict:
     cfg["time_range"]["start"] = START
     cfg["time_range"]["end"] = END
     cfg["backtest"]["entry_price_mode"] = mode
+    cfg["backtest"]["period"] = PERIOD
+    if PERIOD != "1d":
+        # 2026-07-21 起默认口径: 缺 5m 的股-天用 1d OHLC 填充保信号
+        cfg["backtest"]["degrade_5m"] = True
     tmp = OUT / f"_tmp_{mode}.yaml"
     tmp.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-    print(f"\n{'=' * 60}\n[{mode}] 回测开始 {START}~{END}\n{'=' * 60}", flush=True)
+    print(f"\n{'=' * 60}\n[{PERIOD}/{mode}] 回测开始 {START}~{END}\n{'=' * 60}",
+          flush=True)
     pipe = Pipeline(str(tmp))
     res = pipe.run(close_on_finish=False)
     bt = res["backtest"]
