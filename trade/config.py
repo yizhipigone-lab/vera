@@ -118,27 +118,27 @@ class AutoBuyConfig:
 
 @dataclass(frozen=True)
 class RotationConfig:
-    """ETF 轮动 + 双池资金分配 (2026-08-14)。
+    """ETF 动量轮动 + 双池资金分配 (2026-08-20 动量化改造)。
 
     enabled 默认 False: 未显式配置不开 (fail-safe), trade.yaml 显式开。
     etf_ratio: ETF 池占总资产比例 (0,1), 股票池 = 1 - etf_ratio。
-    drawdown_threshold: 回撤阈值 (正值口径, 0.20 = 20%), 判定用
-    「回撤率 < -threshold」。
-    hedge_etf2: 第二只避险 ETF (空串=单避险, 即现状只买黄金)。2026-08-18 加。
-    hedge_ratio: 黄金ETF在避险篮子里的占比 [0,1]; 1.0=纯黄金(现状),
-    0.5=黄金+避险ETF2各半, 0.3=黄金30%/避险ETF2 70%。仅 hedge_etf2 非空时生效。
+    cyb_etf/risk_etf2: 两只风险腿, 按 4 周动量择腿 (谁涨跟谁)。
+    gold_etf/hedge_etf2/hedge_ratio: 避险篮子, 风险腿全无动量时落点 (空仓买黄金)。
+    momentum_window: 动量窗口 (交易日, 20=4周)。
+    trailing_stop_pct: 日频移动止损回撤阈值 (正值, 0.15=15%)。
+    signal_day: 周频信号日 (monday~friday)。
     """
     enabled: bool = False
     etf_ratio: float = 0.5                 # ETF 池占总资产比例
-    signal_index: str = "399673.SZ"        # 创业板50指数
-    cyb_etf: str = "159949.SZ"             # 创业板50ETF
-    gold_etf: str = "518880.SH"            # 黄金ETF (避险腿1)
+    cyb_etf: str = "159949.SZ"             # 风险腿1 (创业板50ETF)
+    risk_etf2: str = "513100.SH"           # 风险腿2 (纳指ETF); 空=单腿退化
+    gold_etf: str = "518880.SH"            # 避险腿1 (黄金ETF, 空仓时的落点)
     hedge_etf2: str = ""                   # 避险腿2 (空=单避险)
     hedge_ratio: float = 1.0               # 黄金在避险篮子的占比 [0,1]
-    ma_window: int = 20                    # MA20 窗口
-    high_window: int = 250                 # 250日高点窗口
-    drawdown_threshold: float = 0.20       # 回撤阈值 (正值)
-    execute_time: str = "14:56"            # 每日「算信号+调仓」时点 (HH:MM, 尾盘 14:56 用实时价当今日收盘, 2026-08-16 拍板)
+    momentum_window: int = 20              # 动量窗口 (交易日, 20=4周)
+    trailing_stop_pct: float = 0.15        # 日频移动止损回撤阈值 (正值)
+    signal_day: str = "friday"             # 周频信号日 (monday~friday)
+    execute_time: str = "14:56"            # 每日「执行+止损检查」时点 (HH:MM, 尾盘)
 
 
 @dataclass(frozen=True)
@@ -446,6 +446,7 @@ def _coerce_auto_buy(data: dict) -> AutoBuyConfig:
 
 
 _CODE_PATTERN = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
+_SIGNAL_DAYS = frozenset({"monday", "tuesday", "wednesday", "thursday", "friday"})
 
 
 def _coerce_rotation(data: dict) -> RotationConfig:
@@ -455,9 +456,9 @@ def _coerce_rotation(data: dict) -> RotationConfig:
     if not isinstance(data, dict):
         raise TypeError(f"trade rotation 必须是映射, 实际 {data!r}")
     unknown = set(data) - {
-        "enabled", "etf_ratio", "signal_index", "cyb_etf", "gold_etf",
+        "enabled", "etf_ratio", "cyb_etf", "risk_etf2", "gold_etf",
         "hedge_etf2", "hedge_ratio",
-        "ma_window", "high_window", "drawdown_threshold", "execute_time"}
+        "momentum_window", "trailing_stop_pct", "signal_day", "execute_time"}
     if unknown:
         _fail(f"trade rotation 存在未知字段: {sorted(unknown)}")
     kwargs: dict = {}
@@ -470,12 +471,23 @@ def _coerce_rotation(data: dict) -> RotationConfig:
         if not (0.0 < r < 1.0):
             _fail(f"rotation.etf_ratio 必须在 (0,1) 开区间, 实际 {r}")
         kwargs["etf_ratio"] = r
-    for k in ("signal_index", "cyb_etf", "gold_etf"):
+    for k in ("cyb_etf", "gold_etf"):
         if k in data:
             v = data[k]
             if not isinstance(v, str) or not _CODE_PATTERN.match(v):
                 _fail(f"rotation.{k} 必须是 6 位数字 + .SH/.SZ/.BJ, 实际 {v!r}")
             kwargs[k] = v
+    if "risk_etf2" in data:
+        v = data["risk_etf2"]
+        if v in ("", None):
+            kwargs["risk_etf2"] = ""
+        else:
+            if not isinstance(v, str) or not _CODE_PATTERN.match(v):
+                _fail(f"rotation.risk_etf2 必须是 6 位数字 + .SH/.SZ/.BJ 或空串, 实际 {v!r}")
+            if v in (kwargs.get("cyb_etf", RotationConfig.cyb_etf),
+                     kwargs.get("gold_etf", RotationConfig.gold_etf)):
+                _fail(f"rotation.risk_etf2 不能与 cyb_etf/gold_etf 重复: {v}")
+            kwargs["risk_etf2"] = v
     if "hedge_etf2" in data:
         v = data["hedge_etf2"]
         if v in ("", None):
@@ -497,20 +509,22 @@ def _coerce_rotation(data: dict) -> RotationConfig:
     # 在配置层 fail-fast 拦掉, 不再靠 target_values 静默归一化。
     if kwargs.get("hedge_etf2", "") == "" and kwargs.get("hedge_ratio", 1.0) != 1.0:
         _fail("rotation.hedge_ratio 仅在 hedge_etf2 非空时生效; hedge_etf2 为空时 hedge_ratio 必须为 1.0")
-    for k in ("ma_window", "high_window"):
+    for k in ("momentum_window",):
         if k in data:
             v = data[k]
             if isinstance(v, bool) or not isinstance(v, int) or v < 2:
                 _fail(f"rotation.{k} 必须是 ≥2 的整数, 实际 {v!r}")
             kwargs[k] = v
-    if kwargs.get("high_window", RotationConfig.high_window) < kwargs.get(
-            "ma_window", RotationConfig.ma_window):
-        _fail("rotation.high_window 必须 ≥ rotation.ma_window")
-    if "drawdown_threshold" in data:
-        d = _num("rotation.drawdown_threshold", data["drawdown_threshold"])
+    if "trailing_stop_pct" in data:
+        d = _num("rotation.trailing_stop_pct", data["trailing_stop_pct"])
         if not (0.0 < d < 1.0):
-            _fail(f"rotation.drawdown_threshold 必须在 (0,1), 实际 {d}")
-        kwargs["drawdown_threshold"] = d
+            _fail(f"rotation.trailing_stop_pct 必须在 (0,1), 实际 {d}")
+        kwargs["trailing_stop_pct"] = d
+    if "signal_day" in data:
+        v = data["signal_day"]
+        if not isinstance(v, str) or v not in _SIGNAL_DAYS:
+            _fail(f"rotation.signal_day 必须是 {sorted(_SIGNAL_DAYS)} 之一, 实际 {v!r}")
+        kwargs["signal_day"] = v
     for k in ("execute_time",):
         if k in data:
             if not isinstance(data[k], str):
@@ -686,14 +700,14 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
     out["rotation"] = {
         "enabled": cfg.rotation.enabled,
         "etf_ratio": cfg.rotation.etf_ratio,
-        "signal_index": cfg.rotation.signal_index,
         "cyb_etf": cfg.rotation.cyb_etf,
+        "risk_etf2": cfg.rotation.risk_etf2,
         "gold_etf": cfg.rotation.gold_etf,
         "hedge_etf2": cfg.rotation.hedge_etf2,
         "hedge_ratio": cfg.rotation.hedge_ratio,
-        "ma_window": cfg.rotation.ma_window,
-        "high_window": cfg.rotation.high_window,
-        "drawdown_threshold": cfg.rotation.drawdown_threshold,
+        "momentum_window": cfg.rotation.momentum_window,
+        "trailing_stop_pct": cfg.rotation.trailing_stop_pct,
+        "signal_day": cfg.rotation.signal_day,
         "execute_time": cfg.rotation.execute_time,
     }
     out["regime_filter"] = {

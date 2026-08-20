@@ -20,12 +20,6 @@ from llm.providers import get_client
 # 与 trade.book.DIRECTION_BUY 同值 (不 import book, 保持本模块零交易依赖、可独立测)
 _DIRECTION_BUY = 23
 
-_ROT_STATE_NAME = {
-    "full_cyb": "满仓创业板50ETF",
-    "half": "半仓(创业板50ETF+黄金ETF各半)",
-    "full_gold": "满仓黄金ETF",
-}
-
 # 成文模板 (system prompt): 人话铁律 (结论先行/大白话/报数字给参照/禁英文缩写)
 _PROMPT = """你是 VERA 量化实盘系统的盘后复盘助手, 读者是量化入门者。
 根据用户提供的「当日交易数据」, 用大白话写 3~5 句复盘。要求:
@@ -99,18 +93,22 @@ def format_daily_data(payload: dict) -> str:
         reason_s = f" 原因({reason})" if reason else ""
         lines.append(f"{act} {t.get('code', '')}{pnl_s}{hi_s}{sp_s}{reason_s}")
 
-    # 轮动信号 (明日 09:30 的目标)
+    # 轮动信号 (2026-08-20 动量改造: 目标代码 + 各腿动量 + 移动止损基准)
     rot = payload.get("rotation")
-    if rot and rot.get("state"):
-        state = rot.get("state")
-        s = f"轮动信号: 目标 {_ROT_STATE_NAME.get(state, str(state))}"
-        d = rot.get("ma20_direction")
-        if d:
-            s += f", 20日均线{'向上' if d == 'up' else '向下'}"
-        if rot.get("drawdown") is not None:
-            s += f", 回撤 {float(rot['drawdown']) * 100:.1f}%"
-        if rot.get("close") is not None:
-            s += f", 指数现价 {float(rot['close']):,.2f}"
+    if rot and ("target" in rot or "momentum" in rot):
+        target = rot.get("target")
+        s = f"轮动信号: 目标 {target or '避险篮子(黄金)'}"
+        mom = rot.get("momentum")
+        if mom:
+            parts = []
+            for c, m in mom.items():
+                parts.append(f"{c} {float(m)*100:+.1f}%"
+                             if m is not None else f"{c} 数据不足")
+            s += " (" + " / ".join(parts) + ")"
+        eh = rot.get("entry_high")
+        if eh:
+            parts = [f"{c}@{float(v):.3f}" for c, v in eh.items()]
+            s += f", 移动止损基准 {', '.join(parts)}"
         lines.append(s)
 
     return "\n".join(lines)

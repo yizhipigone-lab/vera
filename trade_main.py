@@ -947,7 +947,8 @@ class TradeApp:
             if any(changes.values()):
                 payload["position_changes"] = changes
         # 2026-08-15: 轮动信号进日报 (飞书 AI 复盘 + web 回看用)。只读 last 里的
-        # signal dict (state/ma20/回撤/现价), 不下单; 取不到 (轮动未跑) 就缺省。
+        # signal dict (target/momentum/entry_high, 2026-08-20 动量改造后结构), 不下单;
+        # 取不到 (轮动未跑) 就缺省。
         try:
             rot_last = self._rotation.last
             if rot_last and rot_last.get("signal"):
@@ -1106,6 +1107,8 @@ class TradeApp:
         """非轮动 ETF 的持仓市值 (股票池)。无行情回退成本价。"""
         rot = self._cfg.rotation
         rot_codes = {rot.cyb_etf, rot.gold_etf}
+        if rot.risk_etf2:          # 2026-08-20 动量改造: 第二风险腿也属轮动池
+            rot_codes.add(rot.risk_etf2)
         if rot.hedge_etf2:
             rot_codes.add(rot.hedge_etf2)
         total = 0.0

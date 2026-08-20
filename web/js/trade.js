@@ -713,11 +713,7 @@ document.getElementById('tdAbRunBtn').addEventListener('click', function () {
   cmd(this, '/api/trade/auto_buy', {}, '已发起, 选股约 1 分钟, 结果见本卡片与审计日志');
 });
 
-// ── ETF 轮动系统卡片 (2026-08-14) ────────────────────
-
-var ROT_STATE_NAME = {
-  full_cyb: '满仓创业板50', half: '半仓(创+金各半)', full_gold: '满仓黄金'
-};
+// ── ETF 轮动系统卡片 (2026-08-14; 2026-08-20 动量改造) ────────────────────
 
 function renderRotation(d) {
   var cfgBox = document.getElementById('tdRotCfg');
@@ -736,23 +732,41 @@ function renderRotation(d) {
     return;
   }
   var s = last.signal || {};
-  if (s.state === undefined || s.state === null) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">信号数据不足: '
-      + esc(s.reason || '') + '</div>';
+  // 跳过/非交易日 (只有 note, 无 target/momentum)
+  if (s.target === undefined && s.momentum === undefined && s.note) {
+    box.innerHTML = '<div style="color:var(--text2);font-size:12px">'
+      + esc(s.note) + '</div>';
     return;
   }
-  var dir = s.ma20_direction === 'up' ? '向上' : '向下';
-  var dd = (Number(s.drawdown) * 100).toFixed(1) + '%';
   var html = '<div style="font-size:12px;margin-bottom:6px">最近 ' + fmtTs(last.ts)
     + ' (' + esc(last.source) + '): 目标 <b style="color:var(--up)">'
-    + (ROT_STATE_NAME[s.state] || esc(s.state)) + '</b>'
+    + esc(s.target || '避险篮子') + '</b>'
     + (s.date ? ' <span style="color:var(--text2)">(基于 ' + esc(s.date) + ' 收盘)</span>' : '')
+    + (s.pending_target !== undefined
+       ? ' <span style="color:var(--text2)">· 待执行 ' + esc(s.pending_target || '避险') + '</span>'
+       : '')
     + '</div>';
-  html += '<div style="font-size:12px;color:var(--text2)">MA20 <b>' + dir + '</b>'
-    + ' (今 ' + s.ma20_today + ' / 昨 ' + s.ma20_yesterday + ')'
-    + ' · 250日高点 ' + s.high_250
-    + ' · 现价 ' + s.close
-    + ' · 回撤 <b>' + dd + '</b></div>';
+  if (s.momentum) {
+    var legs = [];
+    Object.keys(s.momentum).forEach(function (c) {
+      var m = s.momentum[c];
+      legs.push(c + ' ' + (m == null ? '—' : (m * 100).toFixed(1) + '%'));
+    });
+    html += '<div style="font-size:12px;color:var(--text2)">4周动量 '
+      + legs.map(function (x) { return esc(x); }).join(' / ')
+      + (s.reason ? ' · ' + esc(s.reason) : '')
+      + (s.data_source ? ' · 源 ' + esc(s.data_source) : '') + '</div>';
+  }
+  if (s.entry_high && Object.keys(s.entry_high).length) {
+    var eh = Object.keys(s.entry_high).map(function (c) {
+      return c + '@' + Number(s.entry_high[c]).toFixed(3);
+    }).join(' / ');
+    html += '<div style="font-size:12px;color:var(--text2)">移动止损基准(持仓期最高) '
+      + esc(eh) + '</div>';
+  }
+  if (s.note && s.target !== undefined) {
+    html += '<div style="font-size:12px;color:var(--text2)">' + esc(s.note) + '</div>';
+  }
   box.innerHTML = html;
 }
 
@@ -790,6 +804,15 @@ function _rotHedgeLabel(v) {
 }
 document.getElementById('tdsRotHedge').addEventListener('input', function () {
   _rotHedgeLabel(parseInt(this.value, 10));
+});
+
+// 移动止损滑杆 (2026-08-20 动量改造): 拖动实时显示回撤阈值百分比
+function _rotTrailLabel(v) {
+  document.getElementById('tdsRotTrailLabel').textContent =
+    '回撤超 ' + v + '% 切避险';
+}
+document.getElementById('tdsRotTrail').addEventListener('input', function () {
+  _rotTrailLabel(parseInt(this.value, 10));
 });
 
 function _ladderRow(profit, ratio) {
@@ -839,10 +862,16 @@ function fillSettings(cfg) {
   var rotPct = Math.round((cfg.rotation.etf_ratio || 0.5) * 100);
   _setv('tdsRotRatio', rotPct); _rotRatioLabel(rotPct);
   _setv('tdsRotTime', cfg.rotation.execute_time);
-  _setv('tdsRotIndex', cfg.rotation.signal_index);
+  _setv('tdsRotRisk2', cfg.rotation.risk_etf2 || '');
   _setv('tdsRotCyb', cfg.rotation.cyb_etf);
   _setv('tdsRotGold', cfg.rotation.gold_etf);
   _setv('tdsRotHedge2', cfg.rotation.hedge_etf2 || '');
+  _setv('tdsRotMomWin', cfg.rotation.momentum_window != null
+        ? cfg.rotation.momentum_window : 20);
+  var trailPct = Math.round(((cfg.rotation.trailing_stop_pct != null
+                              ? cfg.rotation.trailing_stop_pct : 0.15)) * 100);
+  _setv('tdsRotTrail', trailPct); _rotTrailLabel(trailPct);
+  _setv('tdsRotSignalDay', cfg.rotation.signal_day || 'friday');
   var hedgePct = Math.round(((cfg.rotation.hedge_ratio != null
                               ? cfg.rotation.hedge_ratio : 1.0)) * 100);
   _setv('tdsRotHedge', hedgePct); _rotHedgeLabel(hedgePct);
@@ -893,11 +922,14 @@ function gatherSettings() {
       enabled: _chk('tdsRotEn'),
       etf_ratio: _num('tdsRotRatio') / 100,
       execute_time: document.getElementById('tdsRotTime').value.trim(),
-      signal_index: document.getElementById('tdsRotIndex').value.trim(),
+      risk_etf2: document.getElementById('tdsRotRisk2').value.trim(),
       cyb_etf: document.getElementById('tdsRotCyb').value.trim(),
       gold_etf: document.getElementById('tdsRotGold').value.trim(),
       hedge_etf2: document.getElementById('tdsRotHedge2').value.trim(),
       hedge_ratio: _num('tdsRotHedge') / 100,
+      momentum_window: _int('tdsRotMomWin'),
+      trailing_stop_pct: _num('tdsRotTrail') / 100,
+      signal_day: document.getElementById('tdsRotSignalDay').value,
     },
     regime_filter: {
       enabled: _chk('tdsRfEn'),

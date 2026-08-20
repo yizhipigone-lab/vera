@@ -35,8 +35,9 @@ def _payload(**kw):
             {"code": "300750.SZ", "direction": 24, "pnl_amount": -800.0,
              "reason": "硬止损"},
         ],
-        "rotation": {"state": "full_gold", "ma20_direction": "down",
-                     "drawdown": -0.19, "close": 3807.97},
+        "rotation": {"target": "513100.SH",
+                     "momentum": {"159949.SZ": 0.03, "513100.SH": 0.08},
+                     "entry_high": {"513100.SH": 1.05}},
     }
     base.update(kw)
     return base
@@ -46,8 +47,10 @@ def test_format_daily_data_includes_key_fields():
     s = format_daily_data(_payload())
     assert "1,032,000.00" in s          # 总资产
     assert "+3,200.00" in s             # 当日盈亏
-    assert "满仓黄金ETF" in s            # 轮动信号 → 中文
-    assert "回撤 -19.0%" in s           # 回撤百分比
+    assert "513100.SH" in s             # 轮动目标代码
+    assert "159949.SZ +3.0%" in s       # 各腿动量百分比
+    assert "513100.SH +8.0%" in s
+    assert "移动止损基准" in s          # 移动止损基准
     assert "移动止盈" in s              # 卖出原因
     assert "硬止损" in s
     assert "卖 600519.SH" in s          # 卖出方向

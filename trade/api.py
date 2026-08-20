@@ -506,11 +506,14 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         return {"last": last, "config": {
             "enabled": trade_app.config.rotation.enabled,
             "etf_ratio": trade_app.config.rotation.etf_ratio,
-            "signal_index": trade_app.config.rotation.signal_index,
             "cyb_etf": trade_app.config.rotation.cyb_etf,
+            "risk_etf2": trade_app.config.rotation.risk_etf2,
             "gold_etf": trade_app.config.rotation.gold_etf,
             "hedge_etf2": trade_app.config.rotation.hedge_etf2,
             "hedge_ratio": trade_app.config.rotation.hedge_ratio,
+            "momentum_window": trade_app.config.rotation.momentum_window,
+            "trailing_stop_pct": trade_app.config.rotation.trailing_stop_pct,
+            "signal_day": trade_app.config.rotation.signal_day,
             "execute_time": trade_app.config.rotation.execute_time,
         }}
 

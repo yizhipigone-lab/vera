@@ -1,21 +1,25 @@
-"""trade/rotation.py — ETF 轮动 + 双池资金分配 (2026-08-14)。
+"""trade/rotation.py — ETF 轮动 + 双池资金分配 (2026-08-14; 2026-08-20 动量改造)。
 
 设计意图 (照 trade/auto_buy.py 骨架):
     在选股系统之外新增一个 ETF 轮动系统, 两个系统同时跑, 资金按
     etf_ratio 分两半, 靠"预算帽"软隔离。信号计算在工作线程 (拉
-    399673 日线收盘价, 阻塞可达数秒), 调仓执行在消费者线程 (唯一写者)。
+    两只风险腿日线收盘价, 阻塞可达数秒), 调仓执行在消费者线程 (唯一写者)。
 
-规则 (用户手册, 唯一真相):
-    - MA20 向上 且 回撤 >= -20% → 满仓 159949 (STATE_FULL_CYB)
-    - MA20 向上 但 回撤 < -20%  → 半仓 159949+518880 (STATE_HALF)
-    - MA20 向下                → 满仓 518880 (STATE_FULL_GOLD)
+规则 (用户手册, 唯一真相; 2026-08-20 由 MA20 三态改造为动量):
+    - 两只风险腿 (cyb_etf + risk_etf2) 各算 4 周动量 m = 末收盘/N日前收盘 − 1,
+      择动量最高 且 > 0 的腿满仓; 两腿都 ≤ 0 → 满仓避险篮子 (默认单黄金,
+      "空仓买黄金")。
+    - 日频移动止损: 持仓风险腿期间, 每日更新「持仓期最高收盘 H」, 当日收盘
+      < H×(1−trailing_stop_pct) → 当日切避险篮子 (H 换腿时重置)。
+    - 周频信号: 每周最后一个交易日 (signal_day 锚定, 节假日前移) 重算动量并
+      存 pending_target, 次日 (下一交易日) 14:56 执行。
     "满仓" = ETF 池的 100% = etf_ratio × 总资产 (不是整个账户)。
 
 调仓 (模型 B: 预算帽 + 自然回笼 + 双向, 用户 2026-08-14 拍板):
-    每日算目标市值 = 三态比例 × (etf_ratio × 总资产), 与当前持仓对比:
-    - 状态变了 → 换档 (先卖超出的 ETF, 回款后买目标 ETF)
-    - 状态没变 → 只补仓 (低配的 ETF 用自由现金买, 绝不主动卖来凑比例)
-    当前状态从持仓市值派生 (自愈: 换档半途失败, 次日按市值差额自然补齐,
+    每日算目标市值 = 目标腿 100% 池 或 避险篮子 100% 池, 与当前持仓对比:
+    - 目标腿变了 → 换档 (先卖超出的 ETF, 回款后买目标 ETF)
+    - 目标没变 → 只补仓 (低配的 ETF 用自由现金买, 绝不主动卖来凑比例)
+    当前持仓从 QMT 真实持仓派生 (自愈: 换档半途失败, 次日按市值差额自然补齐,
     不依赖"持久化状态"与真实持仓同步)。
 """
 
@@ -32,6 +36,7 @@ from trade.book import (
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
 )
+from scheduler.trading_calendar import next_trading_day
 from trade.events import EVENT_ROTATION, Event
 from trade.monitor import is_trading_day_cached, trading_session
 from trade.quote_stale import is_quote_stale
@@ -40,10 +45,15 @@ from utils.logger import get_logger
 
 _logger = get_logger("trade.rotation")
 
-# 三态常量 (持久化/UI 共用的字符串)
-STATE_FULL_CYB = "full_cyb"    # 满仓创业板50ETF
-STATE_HALF = "half"            # 半仓 (创业板 + 避险腿各半)
-STATE_FULL_GOLD = "full_gold"  # 满仓避险腿
+# ══════════════════════════════════════════════════════════════════
+# 旧 MA20 三态 (2026-08-20 动量改造后已弃用, 生产路径不再调用)。
+# 保留仅为 research/*.py 历史回测脚本仍 import 它们 (改名必改引用,
+# 一次性清理这些脚本属独立任务)。compute_signal / STATE_RATIOS /
+# target_values / _derive_state / 三态常量 全部标 deprecated。
+# ══════════════════════════════════════════════════════════════════
+STATE_FULL_CYB = "full_cyb"    # 满仓创业板50ETF (deprecated)
+STATE_HALF = "half"            # 半仓 (创业板 + 避险腿各半) (deprecated)
+STATE_FULL_GOLD = "full_gold"  # 满仓避险腿 (deprecated)
 
 # 三态 → (主腿比例, 避险腿总比例)。避险腿内部再按 hedge_ratio 拆两只 (见 target_values)。
 STATE_RATIOS = {
@@ -51,6 +61,27 @@ STATE_RATIOS = {
     STATE_HALF: (0.5, 0.5),
     STATE_FULL_GOLD: (0.0, 1.0),
 }
+
+# 周频信号日锚定 weekday (config.signal_day → datetime.weekday() 0=周一)。
+_SIGNAL_DAY_WEEKDAY = {"monday": 0, "tuesday": 1, "wednesday": 2,
+                       "thursday": 3, "friday": 4}
+
+
+def _is_signal_day(d, signal_day: str) -> bool:
+    """d 是否周频信号日 (计划书自审 §八.3): 信号日 = 每周「最后一个交易日
+    ≤ 配置锚定 weekday」, 节假日休市时前移到最后一个能交易的 weekday。
+    执行日 = 信号日的下一交易日 (next_trading_day 自然跳过节假日)。"""
+    if not is_trading_day_cached(d):
+        return False
+    anchor = _SIGNAL_DAY_WEEKDAY.get(signal_day, 4)
+    if d.weekday() > anchor:          # 已过锚定日 (如 signal_day=monday 而今天周二)
+        return False
+    nxt = next_trading_day(d)
+    # d 之后到锚定日之间若还有交易日, 则 d 不是最后一个 ≤ 锚定日的交易日
+    if nxt.isocalendar()[:2] == d.isocalendar()[:2] and nxt.weekday() <= anchor:
+        return False
+    return True
+
 
 _LOT = 100  # ETF 一手 = 100 份
 
@@ -65,7 +96,8 @@ def round_price_etf(x: float) -> float:
 def compute_signal(closes: list[float], ma_window: int = 20,
                    high_window: int = 250,
                    drawdown_threshold: float = 0.20) -> dict:
-    """纯函数: 收盘价序列 (交易日升序) → 信号 dict。
+    """(deprecated, 2026-08-20) 旧 MA20 三态信号纯函数。生产已切动量规则
+    compute_momentum_signal, 此函数仅 research/*.py 历史回测脚本仍调用。
 
     返回 state (三态之一) 或 None (数据不足, fail-closed 不动作);
     其余字段为明细 (ma20 方向/250日高点/回撤率/最新收盘), 供 UI 展示。
@@ -100,6 +132,60 @@ def compute_signal(closes: list[float], ma_window: int = 20,
         "drawdown": round(drawdown, 4),
         "close": round(close, 4),
     }
+
+
+def compute_momentum_signal(closes_by_leg: dict, momentum_window: int = 20) -> dict:
+    """纯函数: {腿代码: 收盘序列(交易日升序)} → 动量择腿信号 dict (2026-08-20 动量改造)。
+
+    逐腿算动量 m = 末收盘 / momentum_window 日前收盘 − 1，取动量最高 且 > 0 的腿为目标；
+    两腿都 ≤ 0 → target=None (切避险篮子, "空仓买黄金")。
+    数据不足的腿 (closes 长度 ≤ momentum_window 或 N日前收盘 ≤ 0) 不参与择腿;
+    两腿都不足 → target=None + reason (fail-safe 切避险, 同 compute_signal 口径)。
+    """
+    momentum: dict = {}
+    for code, closes in closes_by_leg.items():
+        if (closes and len(closes) > momentum_window
+                and closes[-1 - momentum_window] > 0):
+            momentum[code] = round(closes[-1] / closes[-1 - momentum_window] - 1.0, 4)
+        else:
+            momentum[code] = None
+    valid = {c: m for c, m in momentum.items() if m is not None}
+    if not valid:
+        return {"target": None, "insufficient": True,
+                "reason": f"数据不足: 无腿可算动量 (需要 > {momentum_window} 根)",
+                "momentum": momentum}
+    best = max(valid, key=lambda c: valid[c])
+    target = best if valid[best] > 0 else None
+    return {"target": target, "insufficient": False,
+            "momentum": momentum,
+            "reason": "" if target else "两腿动量均 ≤ 0"}
+
+
+def momentum_target_values(cyb_etf: str, risk_etf2: str, gold_etf: str,
+                           hedge_etf2: str, hedge_ratio: float,
+                           target_code: str | None,
+                           pool: float) -> list[tuple[str, float]]:
+    """动量择腿 → [(代码, 目标市值)] (风险腿在前, 避险腿在后)。
+
+    target_code 非空 = 持有该风险腿 (100% 池); target_code=None = 避险篮子
+    (黄金 = hedge_ratio × 池, 避险ETF2 = (1-hedge_ratio) × 池; hedge_etf2 空则单黄金)。
+    risk_etf2 空 = 单风险腿退化。"""
+    risk_legs = [cyb_etf] + ([risk_etf2] if risk_etf2 else [])
+    legs: list[tuple[str, float]] = []
+    if target_code:
+        for c in risk_legs:
+            legs.append((c, pool if c == target_code else 0.0))
+        legs.append((gold_etf, 0.0))
+        if hedge_etf2:
+            legs.append((hedge_etf2, 0.0))
+    else:
+        for c in risk_legs:
+            legs.append((c, 0.0))
+        ratio = hedge_ratio if hedge_etf2 else 1.0
+        legs.append((gold_etf, ratio * pool))
+        if hedge_etf2:
+            legs.append((hedge_etf2, (1.0 - ratio) * pool))
+    return legs
 
 
 def _derive_state(v_cyb: float, v_hedge: float) -> str | None:
@@ -160,9 +246,22 @@ class RotationFeature:
         # 当日已挂出的在途卖单 {code: {order_id, qty}} —— 对账 in_flight 降级网用
         # (审计 M4: 轮动卖单绕过 executor._pending, 回调丢失时对账误判 CRITICAL)
         self._pending_sells: dict[str, dict] = {}
-        # 冷启动恢复最近一次信号 (UI 展示用; 不驱动交易)
+        # 日频移动止损基准: 当前持仓风险腿的「持仓期最高收盘」{代码: 最高价}
+        # (2026-08-20 动量改造; 随 signal 一起落 rotation_state, 重启不丢)
+        self._entry_high: dict[str, float] = {}
+        # 周频信号持久化的「待执行目标」: signal_day 算好存这里, 次日执行
+        # (2026-08-20 动量改造; 随 signal 落 rotation_state, 重启不丢)
+        self._pending_target: str | None = None
+        # 是否已算出过周频信号 (区分 pending_target=None 是"避险"还是"没算过")
+        self._has_target = False
+        # 冷启动恢复最近一次信号 (UI 展示 + 恢复 entry_high/pending_target)
         try:
             self._last = store.rotation_signal.load()
+            if isinstance(self._last, dict):
+                sig = self._last.get("signal") or {}
+                self._entry_high = dict(sig.get("entry_high") or {})
+                self._pending_target = sig.get("pending_target")
+                self._has_target = "pending_target" in sig
         except Exception:
             self._last = None
 
@@ -211,10 +310,16 @@ class RotationFeature:
             "rotation_start", f"ETF 轮动已发起 ({source})", {"source": source})
 
     def on_signals(self, data: dict) -> None:
-        """信号结果处理 (消费者线程): 失败记 audit; 正常则执行调仓 + 持久化。"""
+        """信号结果处理 (消费者线程)。四种数据形态:
+          - signal=None         → 错误 (记 audit)
+          - signal_only=True    → 周频信号日/跳过: 只存 pending_target, 不执行
+          - insufficient        → 数据不足 (fail-safe, 不动作)
+          - 正常                → 执行调仓 (_execute, 含日频移动止损)
+        """
         self._running = False
         source = data.get("source")
         signal = data.get("signal")
+        signal_only = bool(data.get("signal_only"))
         try:
             if signal is None:
                 self._last = {"ts": self._clock(), "source": source,
@@ -224,7 +329,20 @@ class RotationFeature:
                     {"source": source})
                 return
             self._last = {"ts": self._clock(), "source": source, "signal": signal}
-            if signal.get("state") is None:
+            if signal_only:
+                # 周频信号日: 算好 target 存 pending_target, 次日才执行
+                if "pending_target" in signal:
+                    self._pending_target = signal.get("pending_target")
+                    self._has_target = True
+                    self._store.write_audit(
+                        "rotation_signal",
+                        f"周频信号已算, 待次日执行: {self._pending_target or '避险'}",
+                        dict(signal))
+                else:
+                    self._store.write_audit(
+                        "rotation_skip", "跳过 (非交易日或首信号未算)", dict(signal))
+                return
+            if signal.get("insufficient"):
                 self._store.write_audit(
                     "rotation_skip", f"轮动信号数据不足: {signal.get('reason')}",
                     dict(signal))
@@ -240,68 +358,89 @@ class RotationFeature:
     # ── 内部 ────────────────────────────────────────────────────
 
     def _worker(self, source: str) -> None:
-        """工作线程: 拉 399673 日线收盘价 (阻塞) → 算信号 → 只 put 事件。
-        取数口径 (2026-08-16 拍板): 收盘后 (≥15:05) 用今日完整日线; 盘中 (如尾盘
-        14:56) 用实时价当今日收盘价 (近似, 14:56≈15:00 收盘); 无实时价/非交易日
-        回退昨日 —— 无未来函数。"""
-        cfg = self._cfg_getter().rotation
+        """工作线程: 周频信号日算动量存 pending_target; 非信号日取 pending_target
+        执行 (含日频移动止损)。只 put 事件, 不碰交易写者。
+        取数口径 (2026-08-16 拍板): 收盘后 (≥15:05) 用今日完整日线; 盘中 (尾盘
+        14:56) 用实时价当今日收盘价; 无实时价/非交易日回退昨日 —— 无未来函数。"""
         try:
             now = datetime.fromtimestamp(self._clock())
-            # 15:05 后今日日线已完整 (收盘 15:00 + 5 分钟 feed 缓冲)
-            after_close = now.hour > 15 or (now.hour == 15 and now.minute >= 5)
-            # 取最近 N 根收盘价 (count 口径, 避开 start/end 日期格式坑);
-            # high_window + ma_window + 100 留足非交易日余量。
-            # <15:05 时 query_daily_closes 已丢弃今日盘中 bar → closes 末根=昨日。
-            # 2026-08-17: 三级降级 QMT → TDX → 腾讯 (东财限连已剔除)。
-            need = cfg.high_window + cfg.ma_window + 100
-            min_bars = max(cfg.high_window, cfg.ma_window + 1)
-            closes, data_source = self._fetch_closes(cfg.signal_index, need, min_bars)
-            if after_close:
-                # 今日日线已完整, closes 末根即今日; 信号日=最近交易日(≤now)
-                end = now
-                while not is_trading_day_cached(end.date()):
-                    end -= timedelta(days=1)
-                signal_date = end.strftime("%Y%m%d")
+            today = now.date()
+            if not is_trading_day_cached(today):
+                self._engine.put(Event(
+                    type=EVENT_ROTATION, ts=self._clock(),
+                    data={"signal": {"note": "非交易日, 不动作"},
+                          "source": source, "signal_only": True}))
+                return
+            cfg = self._cfg_getter().rotation
+            if _is_signal_day(today, cfg.signal_day):
+                # 周频信号日: 算动量 → 存 pending_target (次日执行)
+                signal = self._compute_momentum(now)
+                signal["pending_target"] = signal.get("target")
+                self._engine.put(Event(
+                    type=EVENT_ROTATION, ts=self._clock(),
+                    data={"signal": signal, "source": source, "signal_only": True}))
+            elif not self._has_target:
+                # 冷启动后首个周频信号还没算: 不动作, 等信号日 (避免先买黄金再换腿)
+                self._engine.put(Event(
+                    type=EVENT_ROTATION, ts=self._clock(),
+                    data={"signal": {"note": "首个周频信号未算, 等信号日"},
+                          "source": source, "signal_only": True}))
             else:
-                # 盘中: 用实时价当今日收盘 (尾盘 14:56); 无实时价/非交易日回退昨日
-                today_price = None
-                try:
-                    q = (self._gateway.query_quotes([cfg.signal_index]) or {}).get(
-                        cfg.signal_index) or {}
-                    today_price = q.get("last") or 0.0
-                except Exception:
-                    today_price = None
-                if (today_price and float(today_price) > 0
-                        and is_trading_day_cached(now.date())):
-                    closes = list(closes) + [float(today_price)]
-                    signal_date = now.strftime("%Y%m%d")
-                else:
-                    end = now - timedelta(days=1)
-                    while not is_trading_day_cached(end.date()):
-                        end -= timedelta(days=1)
-                    signal_date = end.strftime("%Y%m%d")
-            signal = compute_signal(closes, cfg.ma_window, cfg.high_window,
-                                    cfg.drawdown_threshold)
-            signal["date"] = signal_date   # 信号基于哪一天的收盘价 (非运行日)
-            signal["index"] = cfg.signal_index
-            signal["data_source"] = data_source   # 实际取数源 (QMT/TDX/腾讯/none)
-            # 注 (审计 L6): 本线程读 cfg 算信号, 消费者线程 _execute 会再读 cfg
-            # 取 etf_ratio/代码。若两步之间热改配置, 信号按旧窗口算、调仓按新
-            # 配置执行; 窗口极小(秒级)且次日按持仓派生自愈, 接受此边界。
-            self._engine.put(Event(type=EVENT_ROTATION, ts=self._clock(),
-                                   data={"signal": signal, "source": source}))
+                # 非信号日: 用持久化 pending_target 执行 (含日频移动止损)
+                signal = {"target": self._pending_target, "insufficient": False,
+                          "date": now.strftime("%Y%m%d"),
+                          "note": "日频执行 (持久化 pending_target + 移动止损)"}
+                self._engine.put(Event(
+                    type=EVENT_ROTATION, ts=self._clock(),
+                    data={"signal": signal, "source": source}))
         except Exception as e:
             _logger.exception("ETF 轮动信号工作线程异常")
             self._engine.put(Event(type=EVENT_ROTATION, ts=self._clock(),
                                    data={"signal": None, "error": str(e),
                                          "source": source}))
 
+    def _compute_momentum(self, now) -> dict:
+        """工作线程: 拉两只风险腿收盘 → 算动量信号 (纯取数+计算, 不执行)。"""
+        cfg = self._cfg_getter().rotation
+        after_close = now.hour > 15 or (now.hour == 15 and now.minute >= 5)
+        need = cfg.momentum_window + 30          # 动量窗口 + 余量
+        min_bars = cfg.momentum_window + 1
+        risk_legs = [cfg.cyb_etf] + ([cfg.risk_etf2] if cfg.risk_etf2 else [])
+        closes_by_leg: dict = {}
+        data_sources: list[str] = []
+        for code in risk_legs:
+            closes, src = self._fetch_closes(code, need, min_bars)
+            if after_close:
+                closes_by_leg[code] = closes
+            else:
+                # 盘中: 实时价当今日收盘
+                today_price = None
+                try:
+                    q = (self._gateway.query_quotes([code]) or {}).get(code) or {}
+                    today_price = q.get("last") or 0.0
+                except Exception:
+                    today_price = None
+                if (today_price and float(today_price) > 0
+                        and is_trading_day_cached(now.date())):
+                    closes_by_leg[code] = list(closes) + [float(today_price)]
+                else:
+                    closes_by_leg[code] = closes
+            data_sources.append(src)
+        signal = compute_momentum_signal(closes_by_leg, cfg.momentum_window)
+        signal["date"] = now.strftime("%Y%m%d")
+        signal["risk_legs"] = risk_legs
+        signal["data_source"] = "/".join(sorted(set(data_sources)))
+        # 注 (审计 L6): 本线程读 cfg 算信号, 消费者线程 _execute 会再读 cfg
+        # 取 etf_ratio/代码。若两步之间热改配置, 信号按旧窗口算、调仓按新
+        # 配置执行; 窗口极小(秒级)且次日按持仓派生自愈, 接受此边界。
+        return signal
+
     # ── 指数日线取数降级链 (2026-08-17: QMT → TDX → 腾讯; 东财限连已剔除) ──
 
     def _fetch_closes(self, code: str, count: int, min_bars: int) -> tuple[list[float], str]:
         """取指数日线收盘价, 三级降级: QMT(主) → TDX → 腾讯。
         每级判空(根数 ≥ min_bars)才算成功, 否则降级下一级; 全挂返回 ([], "none")
-        → compute_signal 判数据不足 → fail-closed 不动作。返回 (closes, 来源名)。"""
+        → compute_momentum_signal 判数据不足 → fail-closed 不动作。返回 (closes, 来源名)。"""
         # 1) QMT 主源
         try:
             closes = self._gateway.query_daily_closes(code, count=count)
@@ -361,11 +500,7 @@ class RotationFeature:
         if trading_session(self._clock()) != "continuous":
             self._store.write_audit("rotation_skip", "非连续竞价时段, 跳过调仓", {})
             return
-        target_state = signal.get("state")
-        if target_state not in STATE_RATIOS:
-            self._store.write_audit("rotation_skip", "信号状态非法, 跳过调仓",
-                                    dict(signal))
-            return
+        target_code = signal.get("target")   # 风险腿代码, 或 None (避险篮子)
         try:
             asset = self._gateway.query_asset()
             total = float(asset.get("total_asset", 0.0) or 0.0)
@@ -376,13 +511,21 @@ class RotationFeature:
             self._store.write_audit("rotation_error", "总资产为 0, 跳过调仓", {})
             return
         pool = cfg.etf_ratio * total
-        legs = target_values(cfg.cyb_etf, cfg.gold_etf, cfg.hedge_etf2,
-                             cfg.hedge_ratio, target_state, pool)
+
+        def _mk_legs(tcode):
+            return momentum_target_values(cfg.cyb_etf, cfg.risk_etf2, cfg.gold_etf,
+                                          cfg.hedge_etf2, cfg.hedge_ratio, tcode, pool)
+
+        legs = _mk_legs(target_code)
         codes = [c for c, _ in legs]
-        cyb_code = cfg.cyb_etf
-        # 用 QMT 真实持仓 (book.can_use 可能因在途冻结/预埋陈旧, 审计 M1;
-        # 与 executor 卖出前 _refresh_can_use 同口径 —— QMT 是可卖量唯一真相源)
+        risk_legs = [cfg.cyb_etf] + ([cfg.risk_etf2] if cfg.risk_etf2 else [])
+
+        # 用 QMT 真实持仓 + can_use 回填 (2026-08-19 修复: 昨尾盘买入 can_use 陈旧)
         qmt_pos0 = {p["code"]: p for p in self._gateway.query_positions()}
+        for c in codes:
+            p = qmt_pos0.get(c)
+            if p is not None:
+                self._book.set_can_use(c, int(p.get("can_use", 0) or 0))
 
         def _vol(pos, code):
             return int((pos.get(code) or {}).get("volume", 0) or 0)
@@ -391,51 +534,66 @@ class RotationFeature:
             return int((pos.get(code) or {}).get("can_use", 0) or 0)
 
         cur = {c: self._etf_value(c, _vol(qmt_pos0, c)) for c in codes}
-        v_cyb = cur[cyb_code]
-        v_hedge = sum(cur[c] for c in codes if c != cyb_code)
-        derived = _derive_state(v_cyb, v_hedge)
-        state_changed = derived != target_state
-
         quotes = self._fetch_quotes(codes)
 
-        # 换档: 只卖"状态变了才卖" (模型 B: 不因上涨漂移而主动卖)
-        self._pending_sells.clear()   # 当日重跑时重置在途卖单登记 (审计 M4)
-        sell_ids: list[str] = []
-        if state_changed:
-            for code, tval in legs:
-                oid = self._sell_to(code, cur[code], tval, quotes.get(code),
-                                    _can(qmt_pos0, code))
-                if oid:
-                    sell_ids.append(oid)
+        # 日频移动止损: 当前唯一持仓风险腿从「持仓期最高收盘」回撤超阈值 → 切避险
+        held = [c for c in risk_legs if _vol(qmt_pos0, c) > 0]
+        stop_off = False
+        if len(held) == 1:
+            h = held[0]
+            q = quotes.get(h)
+            last = q.get("last") if q else None
+            if last and last > 0:
+                self._entry_high[h] = max(self._entry_high.get(h, last), last)
+                if last < self._entry_high[h] * (1.0 - cfg.trailing_stop_pct):
+                    stop_off = True
+        if stop_off:
+            target_code = None
+            legs = _mk_legs(None)
+            self._pending_target = None   # §八.4: 止损触发清空 pending_target, 后续守避险
+            self._store.write_audit(
+                "rotation_stop", "日频移动止损触发, 切避险篮子",
+                {"entry_high": dict(self._entry_high)})
 
-        # 卖单等成交 (限价@买一, 流动性好的 ETF 秒级成交)
+        # 卖超目标腿
+        self._pending_sells.clear()
+        sell_ids: list[str] = []
+        for code, tval in legs:
+            oid = self._sell_to(code, cur[code], tval, quotes.get(code),
+                                _can(qmt_pos0, code))
+            if oid:
+                sell_ids.append(oid)
         self._wait_fills(sell_ids)
 
-        # 卖后重读 QMT 真实持仓 (book 可能尚未消费成交回报), 算真实 ETF 池值。
-        # 关键(审计 CRITICAL#2): 卖未成交 → 池值未降 → 池级预算帽归零 → 不超买,
-        # 绝不用股票池现金补 ETF 池。
+        # 卖后重读 QMT 持仓, 算真实 ETF 池值; 池级预算帽防超买 (审计 CRITICAL#2)
         qmt_pos = {p["code"]: p for p in self._gateway.query_positions()}
         cur2 = {c: self._etf_value(c, _vol(qmt_pos, c)) for c in codes}
-
-        # 回款刷新现金 (卖单已成交则含卖款)
         try:
             cash = float(self._gateway.query_asset().get("cash", 0.0) or 0.0)
         except Exception:
             cash = 0.0
-        # 池级预算帽: 只补到 E=etf_ratio×总资产, 绝不超配 (双向自然再平衡的落点)
         pool_gap = max(0.0, pool - sum(cur2.values()))
         cash = min(cash, pool_gap)
         for code, tval in legs:
             cash = self._buy_to(code, max(0.0, tval - cur2[code]), cash,
                                 quotes.get(code))
 
+        # 收尾: 移动止损基准对齐当前目标 (切腿清旧、同腿保最高), 随 signal 落库
+        if target_code in risk_legs:
+            q = quotes.get(target_code)
+            last = q.get("last") if q else None
+            self._entry_high = {target_code:
+                                max(self._entry_high.get(target_code, 0.0),
+                                    last if last and last > 0 else 0.0)}
+        else:
+            self._entry_high = {}
+        signal["entry_high"] = dict(self._entry_high)
+        signal["pending_target"] = self._pending_target
         self._store.write_audit(
             "rotation_summary",
-            f"ETF 轮动: 目标 {target_state} (池 {pool:.0f}), "
-            f"现值 {'/'.join(f'{cur[c]:.0f}' for c in codes)}, "
-            f"换档 {state_changed}, 状态派生自 {derived}",
-            {"state": target_state, "derived": derived, "changed": state_changed,
-             "pool": round(pool, 2),
+            f"ETF 轮动: 目标 {target_code or '避险'} (池 {pool:.0f}), "
+            f"现值 {'/'.join(f'{cur[c]:.0f}' for c in codes)}",
+            {"target": target_code, "pool": round(pool, 2),
              "values": {c: round(cur[c], 2) for c in codes}, "signal": signal})
 
     def _etf_value(self, code: str, volume: int) -> float:
