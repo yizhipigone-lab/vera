@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from backtest._entry_basis import ENTRY_BASIS_BACKTEST as ENTRY_PRICE_BASIS
+from backtest._entry_basis import ENTRY_BASIS_BACKTEST_T1 as ENTRY_PRICE_BASIS_T1
 from backtest.result import BacktestResult
 
 # P1-3 (2026-07-15): 模块级 logger, 替代 4 处内联 `import logging` + `logging.getLogger(__name__)`
@@ -216,8 +217,17 @@ class ResultWriter:
             "trade_count": len(trades),
             # F2 回归保护 (server.py:508-514)
             "engine_version": ENGINE_VERSION,
-            "entry_price_basis": ENTRY_PRICE_BASIS,
+            # 2026-08-20: open_t1 口径时标注次日开盘 (有才变值, close_t 恒为旧值,
+            # F2 回归保护语义不变)
+            "entry_price_basis": (
+                ENTRY_PRICE_BASIS_T1
+                if (backtest.get("entry_mode_info") or {}).get("mode") == "open_t1"
+                else ENTRY_PRICE_BASIS),
         }
+        # 2026-08-20: 买入价口径统计 (有才加 key, 同 degradation 先例)
+        entry_mode_info = backtest.get("entry_mode_info")
+        if entry_mode_info is not None:
+            resp["entry_mode_info"] = safe_serialize(entry_mode_info)
         if benchmark_stats:
             resp["benchmark_stats"] = benchmark_stats
         # 2026-07-18 (计划书 §4.7 LOW-2): 5m 降级报告有才加 key, 无则响应形状不变
@@ -306,10 +316,12 @@ class ResultWriter:
                 **meta_extras,
             }
             # data 顶层也加 engine_version/entry_price_basis (server.py:512-514)
-            # 改用直接赋值(与 server.py 一致)，setdefault 在非 dict 时抛 AttributeError 被吞
+            # 2026-08-20: entry_price_basis 改 setdefault — serialize() 在 open_t1
+            # 口径下已写入 BASIS_T1, 直接赋值会覆盖掉; close_t 时键已存在且值相同,
+            # setdefault 语义与旧直接赋值完全一致 (非 dict 时 AttributeError 仍被吞)。
             if isinstance(response, dict):
                 response["engine_version"] = ENGINE_VERSION
-                response["entry_price_basis"] = ENTRY_PRICE_BASIS
+                response.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)
             # results/{ts}.json
             result_path = results_dir / f"{ts}.json"
             with open(result_path, "w", encoding="utf-8") as f:

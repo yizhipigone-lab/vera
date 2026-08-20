@@ -35,6 +35,8 @@ class StrategyConfig(BaseModel):
     start_time: str = "20240101"
     end_time: str = "20250630"
     period: str = "1d"
+    # 2026-08-20: 买入价口径 (close_t=信号日收盘价默认 / open_t1=次日开盘价, 一字涨停才放弃)
+    entry_price_mode: str = "close_t"
     dividend_type: int = 1
     initial_capital: Optional[float] = None
     commission: Optional[float] = None
@@ -130,6 +132,8 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             "commission": cfg.get("commission", 0.0003),
             "slippage": cfg.get("slippage", 0.001),
             "period": bt_period,
+            # 2026-08-20: 买入价口径透传 (close_t/open_t1; 非法值 engine 构造期 fail-fast)
+            "entry_price_mode": str(getattr(cfg, "entry_price_mode", None) or "close_t"),
             # 2026-07-21 用户决策: web 回测默认开启 5m 数据层降级
             # (没有 5M 线的时段降级为日线, 回测区间完整覆盖请求起点)
             "degrade_5m": bool(getattr(cfg, "degrade_5m", True)),

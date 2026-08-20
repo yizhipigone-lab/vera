@@ -571,8 +571,13 @@ export function renderAllCharts(data) {
   // Chart header
   const formula = data.formula_name || '';
   const dateRange = (document.getElementById('cfgStart').value || '') + '~' + (document.getElementById('cfgEnd').value || '');
+  // 2026-08-20: 买入价口径标注 (open_t1 = 次日开盘价, 一字涨停拒买 N 笔)
+  const emi = data.entry_mode_info;
+  const basisTag = (emi && emi.mode === 'open_t1')
+    ? ' · 买入口径: 次日开盘价 (一字涨停拒买 ' + (emi.n_oneline_limit_up || 0) + ' 笔)'
+    : ' · 买入口径: 信号日收盘价';
   const hdr = document.getElementById('equityChartHeader');
-  if (hdr && formula) hdr.textContent = '权益曲线 & 基准对比 — ' + formula + ' ' + dateRange;
+  if (hdr && formula) hdr.textContent = '权益曲线 & 基准对比 — ' + formula + ' ' + dateRange + basisTag;
 
   // Equity curve (delegated to shared renderer)
   renderEquityCurve('chartEquity', data, '策略', c);

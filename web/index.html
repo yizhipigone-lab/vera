@@ -455,6 +455,11 @@ input:focus-visible,select:focus-visible{outline:none}
             <option value="51">创业板</option><option value="52">科创板</option>
           </select></div>
           <div class="form-group"><label>K线周期</label><select id="cfgPeriod"><option value="1d">日线</option><option value="1w">周线</option><option value="5m">5分线</option><option value="1m">1分线（数据 2026-01-26 起）</option></select></div>
+          <!-- 2026-08-20: 买入价口径 (计划书 docs/plan/2026-08-20_回测次日开盘买入模式_计划书.md) -->
+          <div class="form-group"><label>买入价口径</label><select id="cfgEntryPriceMode">
+            <option value="close_t" selected>信号日收盘价（尾盘下单，默认）</option>
+            <option value="open_t1">次日开盘价（一字涨停才放弃）</option>
+          </select></div>
         </div>
         <div class="form-row">
           <!-- P1-5: 加即时校验 -->

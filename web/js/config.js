@@ -7,6 +7,7 @@
 export const STORAGE_KEY = 'vera_all_config';
 export const CONFIG_IDS = [
   'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
+  'cfgEntryPriceMode',
   'cfgStart', 'cfgEnd', 'cfgExcludeST',
   'cfgIncludeEtf', 'cfgEtfOnly',
   'cfgCapital', 'cfgCommission', 'cfgSlippage',
@@ -122,6 +123,8 @@ export function collectConfigFromForm(_selectedSectors, collectFactorFilter, esc
     sectors: (_selectedSectors || []).join(','),
     start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
     period: getVal('cfgPeriod'), dividend_type: 1,
+    // 2026-08-20: 买入价口径 (close_t=信号日收盘/open_t1=次日开盘, 一字涨停才放弃)
+    entry_price_mode: (document.getElementById('cfgEntryPriceMode') || {}).value || 'close_t',
     initial_capital: safeFloat('cfgCapital'),
     commission: safeFloat('cfgCommission'),
     slippage: safeFloat('cfgSlippage'),
@@ -159,6 +162,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     cfgFormulaArg: cfg.selection?.formula_arg,
     cfgUniverse: cfg.selection?.universe?.type,
     cfgPeriod: cfg.backtest?.period === '1m' ? '1m' : cfg.backtest?.period === '5m' ? '5m' : cfg.backtest?.period === '1w' ? '1w' : '1d',
+    cfgEntryPriceMode: cfg.backtest?.entry_price_mode || 'close_t',
     cfgStart: cfg.time_range?.start,
     cfgEnd: cfg.time_range?.end,
     cfgCapital: cfg.backtest?.initial_capital,
