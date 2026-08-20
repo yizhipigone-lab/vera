@@ -423,28 +423,30 @@ def test_trailing_stop_not_triggered(tmp_path):
 # 工作线程 (周频信号 / 日频执行)
 # ═══════════════════════════════════════════════════════════════
 
-def test_worker_signal_day_stores_pending(monkeypatch, tmp_path):
-    """信号日: 算动量存 pending_target, 不执行 (无下单)。"""
+def test_worker_signal_day_executes_immediately(monkeypatch, tmp_path):
+    """信号日: 算动量 → **当日尾盘直接执行** (T 日执行, 非 T+1 次日)。"""
     monkeypatch.setattr("trade.rotation.is_trading_day_cached", lambda d: True)
     monkeypatch.setattr("trade.rotation._is_signal_day", lambda d, sd: True)
+    monkeypatch.setattr("trade.monitor.is_trading_day_cached", lambda d: True)
     clock = [_ts("10:00")]
     closes = {CYB: [1.0] * 25, NASDAQ: [1.0] * 25}
     app = _start(_app(_cfg(tmp_path), clock, closes=closes))
-    app.gateway.push_quote(CYB, _quote(CYB, 1.2))
+    app.gateway.push_quote(CYB, _quote(CYB, 1.2, bid=1.2, ask=1.2))
     app.gateway.push_quote(NASDAQ, _quote(NASDAQ, 0.8))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 2.0))
     app._rotation.start("manual")
-    assert _wait(lambda: app._rotation.last is not None
-                 and app._rotation.last.get("signal") is not None, timeout=5.0)
-    sig = app._rotation.last["signal"]
-    assert sig["target"] == CYB                    # cyb 动量 0.2 > nasdaq -0.2
-    assert sig["pending_target"] == CYB
-    assert app._rotation._pending_target == CYB
-    assert app._rotation._has_target is True
-    assert app.gateway.query_orders() == []        # signal_only → 不执行
+    assert _wait(lambda: any(
+        b["code"] == CYB and b["direction"] == DIRECTION_BUY
+        for b in app.gateway.query_orders()), timeout=5.0)
+    # 信号日直接下单: cyb 动量 0.2 > nasdaq -0.2 → 当日买 cyb (不是次日)
+    buys, _ = _orders_by(app)
+    assert any(b["code"] == CYB for b in buys)
+    # 买单之后 _execute 还有几步微秒级收尾 (写 pending_target), 用 _wait 等落定
+    assert _wait(lambda: app._rotation._pending_target == CYB, timeout=2.0)
 
 
 def test_worker_executes_pending_target(monkeypatch, tmp_path):
-    """非信号日: 用持久化 pending_target 执行 (首买)。"""
+    """非信号日: 用当前生效 target 执行 (首买)。"""
     monkeypatch.setattr("trade.rotation.is_trading_day_cached", lambda d: True)
     monkeypatch.setattr("trade.rotation._is_signal_day", lambda d, sd: False)
     monkeypatch.setattr("trade.monitor.is_trading_day_cached", lambda d: True)
@@ -453,7 +455,7 @@ def test_worker_executes_pending_target(monkeypatch, tmp_path):
     app.gateway.push_quote(CYB, _quote(CYB, 1.0, bid=1.0, ask=1.0))
     app.gateway.push_quote(GOLD, _quote(GOLD, 2.0))
     assert _wait(lambda: app.monitor.quote_of(CYB) is not None)
-    # 预置上个信号日已算好的 pending_target
+    # 预置上个信号日已算好的当前生效 target
     app._rotation._pending_target = CYB
     app._rotation._has_target = True
     app._rotation.start("manual")

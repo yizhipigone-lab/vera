@@ -11,8 +11,9 @@
       "空仓买黄金")。
     - 日频移动止损: 持仓风险腿期间, 每日更新「持仓期最高收盘 H」, 当日收盘
       < H×(1−trailing_stop_pct) → 当日切避险篮子 (H 换腿时重置)。
-    - 周频信号: 每周最后一个交易日 (signal_day 锚定, 节假日前移) 重算动量并
-      存 pending_target, 次日 (下一交易日) 14:56 执行。
+    - 周频信号: 每周最后一个交易日 (signal_day 锚定, 节假日前移) 尾盘 14:54
+      重算动量并**当日直接执行** (T 日执行, 对齐回测「信号日 T 日收盘价买入」铁律);
+      其余交易日尾盘只做日频移动止损检查 + 维持当前目标。
     "满仓" = ETF 池的 100% = etf_ratio × 总资产 (不是整个账户)。
 
 调仓 (模型 B: 预算帽 + 自然回笼 + 双向, 用户 2026-08-14 拍板):
@@ -70,7 +71,7 @@ _SIGNAL_DAY_WEEKDAY = {"monday": 0, "tuesday": 1, "wednesday": 2,
 def _is_signal_day(d, signal_day: str) -> bool:
     """d 是否周频信号日 (计划书自审 §八.3): 信号日 = 每周「最后一个交易日
     ≤ 配置锚定 weekday」, 节假日休市时前移到最后一个能交易的 weekday。
-    执行日 = 信号日的下一交易日 (next_trading_day 自然跳过节假日)。"""
+    信号日尾盘算动量并**当日执行** (T 日执行)。"""
     if not is_trading_day_cached(d):
         return False
     anchor = _SIGNAL_DAY_WEEKDAY.get(signal_day, 4)
@@ -249,8 +250,9 @@ class RotationFeature:
         # 日频移动止损基准: 当前持仓风险腿的「持仓期最高收盘」{代码: 最高价}
         # (2026-08-20 动量改造; 随 signal 一起落 rotation_state, 重启不丢)
         self._entry_high: dict[str, float] = {}
-        # 周频信号持久化的「待执行目标」: signal_day 算好存这里, 次日执行
-        # (2026-08-20 动量改造; 随 signal 落 rotation_state, 重启不丢)
+        # 当前生效的轮动目标: 信号日 T 日尾盘算动量后直接执行并落这里, 非信号日
+        # 用它做日频移动止损检查 (2026-08-20 动量改造; 随 signal 落 rotation_state,
+        # 重启不丢)。None = 避险篮子。
         self._pending_target: str | None = None
         # 是否已算出过周频信号 (区分 pending_target=None 是"避险"还是"没算过")
         self._has_target = False
@@ -312,7 +314,7 @@ class RotationFeature:
     def on_signals(self, data: dict) -> None:
         """信号结果处理 (消费者线程)。四种数据形态:
           - signal=None         → 错误 (记 audit)
-          - signal_only=True    → 周频信号日/跳过: 只存 pending_target, 不执行
+          - signal_only=True    → 非交易日/首信号未算: 纯跳过, 不执行
           - insufficient        → 数据不足 (fail-safe, 不动作)
           - 正常                → 执行调仓 (_execute, 含日频移动止损)
         """
@@ -330,17 +332,10 @@ class RotationFeature:
                 return
             self._last = {"ts": self._clock(), "source": source, "signal": signal}
             if signal_only:
-                # 周频信号日: 算好 target 存 pending_target, 次日才执行
-                if "pending_target" in signal:
-                    self._pending_target = signal.get("pending_target")
-                    self._has_target = True
-                    self._store.write_audit(
-                        "rotation_signal",
-                        f"周频信号已算, 待次日执行: {self._pending_target or '避险'}",
-                        dict(signal))
-                else:
-                    self._store.write_audit(
-                        "rotation_skip", "跳过 (非交易日或首信号未算)", dict(signal))
+                # 非交易日 / 首个周频信号未算: 纯跳过, 不执行不更新状态
+                self._store.write_audit(
+                    "rotation_skip",
+                    signal.get("note") or "跳过 (非交易日或首信号未算)", dict(signal))
                 return
             if signal.get("insufficient"):
                 self._store.write_audit(
@@ -358,10 +353,11 @@ class RotationFeature:
     # ── 内部 ────────────────────────────────────────────────────
 
     def _worker(self, source: str) -> None:
-        """工作线程: 周频信号日算动量存 pending_target; 非信号日取 pending_target
-        执行 (含日频移动止损)。只 put 事件, 不碰交易写者。
+        """工作线程: 周频信号日 (每周最后一个交易日) 算动量 → **当日尾盘直接执行**
+        (T 日执行, 对齐回测「信号日 T 日收盘价买入」铁律); 非信号日取当前生效
+        target 执行 (含日频移动止损)。只 put 事件, 不碰交易写者。
         取数口径 (2026-08-16 拍板): 收盘后 (≥15:05) 用今日完整日线; 盘中 (尾盘
-        14:56) 用实时价当今日收盘价; 无实时价/非交易日回退昨日 —— 无未来函数。"""
+        14:54) 用实时价当今日收盘价; 无实时价/非交易日回退昨日 —— 无未来函数。"""
         try:
             now = datetime.fromtimestamp(self._clock())
             today = now.date()
@@ -373,12 +369,11 @@ class RotationFeature:
                 return
             cfg = self._cfg_getter().rotation
             if _is_signal_day(today, cfg.signal_day):
-                # 周频信号日: 算动量 → 存 pending_target (次日执行)
+                # 周频信号日: 算动量 → 当日尾盘直接执行 (T 日执行)
                 signal = self._compute_momentum(now)
-                signal["pending_target"] = signal.get("target")
                 self._engine.put(Event(
                     type=EVENT_ROTATION, ts=self._clock(),
-                    data={"signal": signal, "source": source, "signal_only": True}))
+                    data={"signal": signal, "source": source}))
             elif not self._has_target:
                 # 冷启动后首个周频信号还没算: 不动作, 等信号日 (避免先买黄金再换腿)
                 self._engine.put(Event(
@@ -386,10 +381,10 @@ class RotationFeature:
                     data={"signal": {"note": "首个周频信号未算, 等信号日"},
                           "source": source, "signal_only": True}))
             else:
-                # 非信号日: 用持久化 pending_target 执行 (含日频移动止损)
+                # 非信号日: 用当前生效 target 执行 (幂等维持 + 日频移动止损)
                 signal = {"target": self._pending_target, "insufficient": False,
                           "date": now.strftime("%Y%m%d"),
-                          "note": "日频执行 (持久化 pending_target + 移动止损)"}
+                          "note": "日频执行 (当前生效 target + 移动止损)"}
                 self._engine.put(Event(
                     type=EVENT_ROTATION, ts=self._clock(),
                     data={"signal": signal, "source": source}))
@@ -550,7 +545,6 @@ class RotationFeature:
         if stop_off:
             target_code = None
             legs = _mk_legs(None)
-            self._pending_target = None   # §八.4: 止损触发清空 pending_target, 后续守避险
             self._store.write_audit(
                 "rotation_stop", "日频移动止损触发, 切避险篮子",
                 {"entry_high": dict(self._entry_high)})
@@ -578,7 +572,8 @@ class RotationFeature:
             cash = self._buy_to(code, max(0.0, tval - cur2[code]), cash,
                                 quotes.get(code))
 
-        # 收尾: 移动止损基准对齐当前目标 (切腿清旧、同腿保最高), 随 signal 落库
+        # 收尾: 移动止损基准对齐当前目标 (切腿清旧、同腿保最高), 随 signal 落库;
+        # pending_target 统一 = 最终生效的 target (信号日=T日新目标, 止损触发=None)
         if target_code in risk_legs:
             q = quotes.get(target_code)
             last = q.get("last") if q else None
@@ -587,6 +582,8 @@ class RotationFeature:
                                     last if last and last > 0 else 0.0)}
         else:
             self._entry_high = {}
+        self._pending_target = target_code
+        self._has_target = True
         signal["entry_high"] = dict(self._entry_high)
         signal["pending_target"] = self._pending_target
         self._store.write_audit(

@@ -138,7 +138,7 @@ class RotationConfig:
     momentum_window: int = 20              # 动量窗口 (交易日, 20=4周)
     trailing_stop_pct: float = 0.15        # 日频移动止损回撤阈值 (正值)
     signal_day: str = "friday"             # 周频信号日 (monday~friday)
-    execute_time: str = "14:56"            # 每日「执行+止损检查」时点 (HH:MM, 尾盘)
+    execute_time: str = "14:54"            # 尾盘「算信号+执行+止损检查」时点 (HH:MM)
 
 
 @dataclass(frozen=True)
