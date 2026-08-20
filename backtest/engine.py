@@ -166,6 +166,14 @@ class BacktestEngine:
             raise ValueError(
                 f"entry_price_mode 非法: {self.entry_price_mode!r} "
                 f"(合法: close_t/open_t1)")
+        # 2026-08-20 审计 HIGH: open_t1 仅支持日频语义 period — "次日开盘价"在
+        # 1w (周线) 下会被静默解释成"下周开盘价" (BARS_PER_DAY[1w]=1, T+1=下一根周 bar),
+        # 语义偷换且无任何告警。构造期 fail-fast, 不许静默跑错口径。
+        if (self.entry_price_mode == "open_t1"
+                and self.period not in ("1d", "5m", "1m")):
+            raise ValueError(
+                f"entry_price_mode=open_t1 暂不支持 period={self.period!r} "
+                f"(次日开盘价仅日频语义; 支持: 1d/5m/1m)")
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为

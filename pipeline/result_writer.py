@@ -312,7 +312,8 @@ class ResultWriter:
                 "trade_count": response.get("trade_count", 0),
                 "cumulative_return": (response.get("metrics", {}) or {}).get("cumulative_return", 0),
                 "engine_version": ENGINE_VERSION,
-                "entry_price_basis": ENTRY_PRICE_BASIS,
+                # 2026-08-20 审计 LOW: meta 口径跟随 response (open_t1 时不再写死 close_t)
+                "entry_price_basis": response.get("entry_price_basis", ENTRY_PRICE_BASIS),
                 **meta_extras,
             }
             # data 顶层也加 engine_version/entry_price_basis (server.py:512-514)
