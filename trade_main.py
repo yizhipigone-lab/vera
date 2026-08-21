@@ -32,6 +32,7 @@ from core.stock_filter import get_cached_info  # noqa: E402
 from trade.auto_buy import AutoBuyFeature  # noqa: E402
 from trade.book import (  # noqa: E402
     DIRECTION_BUY,
+    DIRECTION_SELL,
     OS_JUNK,
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
@@ -1141,11 +1142,39 @@ class TradeApp:
             total_asset=total_asset,
             positions=self.book.snapshot()["positions"],
             day_baseline_equity=self._day_baseline,
-            current_equity=total_asset,
+            # 2026-08-21 修复 (卖出回款在途): QMT 卖出成交后 cash 未及时
+            # +回款 (T+1 结算延迟) 而 market_value 已扣持仓 → total_asset 低估
+            # 当日卖出额 → 日亏闸误判"当日大亏"误拒买单 (实盘: 尾盘卖创业板
+            # +黄金后买纳指被误拒, 53.5万 < 基准103万显示亏48%)。容错:
+            # current_equity 补回当日卖出成交额, 仅日亏闸用, 不写账不改账。
+            current_equity=total_asset + self._in_flight_sell_returns(),
             # D5: 接节假日日历; 日期取 app 注入时钟 (而非真实今日),
             # 保测试可注入与跨日语义一致
             is_trading_day=is_trading_day_cached(
                 _dt.date.fromtimestamp(self._clock())),
+        )
+
+    def _in_flight_sell_returns(self) -> float:
+        """今日已成交卖出、回款未计入 QMT cash 的在途金额 (日亏闸容错用, 只读)。
+
+        2026-08-21: QMT query_stock_asset 的 cash 字段对卖出回款有 T+1 结算
+        延迟 —— 卖出成交后 cash 未 + 回款, 但 market_value 已扣持仓, 导致
+        total_asset = cash+frozen+market_value 低估当日卖出额。此处从 QMT
+        成交回报 (query_trades) 汇总当日卖出成交金额作为在途回款补回。
+        回款已到账时该值会让 current_equity 略高估 (日亏闸偏松), 方向安全:
+        宁可少拦 (允许卖后补买) 不可多拦 (误拒打断换腿)。查询失败返回 0。
+        """
+        try:
+            trades = self.gateway.query_trades()
+        except Exception:
+            return 0.0
+        today = _day_str(self._clock())
+        day_start = time.mktime(time.strptime(today, "%Y%m%d"))
+        return sum(
+            float(t.get("amount") or 0.0)
+            for t in trades
+            if (t.get("ts") or 0.0) >= day_start
+            and t.get("direction") == DIRECTION_SELL
         )
 
     def _prev_close(self, code: str) -> float | None:

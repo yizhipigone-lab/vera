@@ -115,7 +115,13 @@ def format_daily_data(payload: dict) -> str:
 
 
 def build_daily_summary(payload: dict, timeout: int = 45) -> str | None:
-    """调 LLM 生成人话复盘。失败/无 key/数据空 → 返 None (调用方兜底跳过)。"""
+    """调 LLM 生成人话复盘。失败/无 key/数据空 → 返 None (调用方兜底跳过)。
+
+    2026-08-21 修复: temperature 0.0→0.7 + max_tokens 512→1024 ——
+    deepseek-v4-flash 在 temperature=0.0 + 本复盘 prompt 下对日报数据
+    "只思考不输出" (reasoning_content 一大段, content 恒空); temp0.7 下
+    max_tokens=512 仍被思考过程吃光 content=0, 1024 起正常输出 (实测表)。
+    """
     data = format_daily_data(payload)
     if not data.strip():
         return None
@@ -123,7 +129,7 @@ def build_daily_summary(payload: dict, timeout: int = 45) -> str | None:
         return get_client().chat(
             [{"role": "system", "content": _PROMPT},
              {"role": "user", "content": data}],
-            temperature=0.0, max_tokens=512, timeout=timeout,
+            temperature=0.7, max_tokens=1024, timeout=timeout,
         )
     except Exception:
         return None

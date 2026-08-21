@@ -73,20 +73,37 @@ class LLMClient:
         }
         if response_json:
             payload["response_format"] = {"type": "json_object"}
-        try:
-            r = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=timeout,
-            )
+        # 2026-08-21: DeepSeek 对相同请求输出不稳定 —— 模型可能"只思考不输出"
+        # (reasoning_content 有内容, content 空), temperature 越低概率越高。
+        # 策略: 最多重试 3 次拿 content; 全空则用 reasoning_content 兜底
+        # (思考草稿也是完整复盘), 再空返回 None。调用方按失败跳过。
+        rc_fallback: Optional[str] = None
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}",
+                             "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=timeout,
+                )
+            except Exception as e:
+                logger.warning(f"LLM chat 失败(松耦合返None): {type(e).__name__}: {e}")
+                return None
             if r.status_code != 200:
                 logger.warning(f"LLM chat HTTP {r.status_code}: {r.text[:200]}")
                 return None
-            return r.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.warning(f"LLM chat 失败(松耦合返None): {type(e).__name__}: {e}")
-            return None
+            msg = r.json()["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if content:
+                return content
+            rc = msg.get("reasoning_content") or ""
+            if rc and not rc_fallback:
+                rc_fallback = rc
+            logger.warning(
+                f"LLM chat 第 {attempt + 1} 次返回空 content (仅 reasoning_content), 重试")
+        logger.warning("LLM chat 3 次均空 content, 用 reasoning_content 兜底")
+        return rc_fallback
 
 
 _client: Optional[LLMClient] = None

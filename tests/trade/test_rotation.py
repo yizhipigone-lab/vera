@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trade.book import DIRECTION_BUY, DIRECTION_SELL
 from trade.config import PositionSizingConfig, RotationConfig, TradeConfig, load_trade_config
+from trade.risk import OrderIntent
 from trade.rotation import (
     _is_signal_day,
     compute_momentum_signal,
@@ -504,6 +505,38 @@ def test_worker_executes_pending_target(monkeypatch, tmp_path):
 # ═══════════════════════════════════════════════════════════════
 # 股票池预算帽
 # ═══════════════════════════════════════════════════════════════
+
+def test_daily_loss_tolerates_inflight_sell_returns(tmp_path, monkeypatch):
+    """2026-08-21: QMT 卖出回款在途 (cash 未+回款) 不应导致日亏闸误拒。
+
+    实盘: 尾盘轮动卖创业板+黄金成交后, QMT cash 未及时回款而 market_value
+    已扣持仓 → total_asset 少 51 万 → 日亏闸误判"当日亏 48%"拒掉买纳指。
+    修复: current_equity 补回当日卖出成交额 (在途回款容错, 只读不改账)。"""
+    clock = [_ts("14:54")]
+    app = _start(_app(_cfg(tmp_path), clock))
+    # 模拟 QMT: total_asset 被低估 (卖出回款未入账), 但 query_trades 有今日卖出
+    monkeypatch.setattr(app.gateway, "query_asset",
+                        lambda: {"cash": 534778.0, "frozen_cash": 0.0,
+                                 "market_value": 0.0,
+                                 "total_asset": 534778.0})
+    monkeypatch.setattr(app.gateway, "query_trades",
+                        lambda: [{"traded_id": "T1", "order_id": "O1",
+                                  "code": "159949.SZ",
+                                  "direction": DIRECTION_SELL,
+                                  "price": 1.676, "qty": 274700,
+                                  "amount": 460397.2, "ts": clock[0]}])
+    app._day_baseline = 1033275.0    # 盘前基准 103万, 熔断线 = 87.8万
+    # 未容错: 53.5万 < 87.8万 → 误拒; 容错后 ≈ 53.5万+46万 = 99.5万 → 放行
+    ctx = app._build_risk_ctx()
+    assert ctx.current_equity == pytest.approx(534778.0 + 460397.2, abs=1.0)
+    intent = OrderIntent(code="513100.SH", direction=DIRECTION_BUY,
+                         price=2.196, qty=8400)
+    ok, why = app.risk.check(intent, ctx)
+    assert ok, why
+    # 无今日卖出成交时容错为 0 (普通交易日口径不变)
+    monkeypatch.setattr(app.gateway, "query_trades", lambda: [])
+    ctx2 = app._build_risk_ctx()
+    assert ctx2.current_equity == pytest.approx(534778.0, abs=1.0)
 
 def test_stock_budget_cap(tmp_path):
     """轮动启用: 股票池预算 = (1-etf_ratio)×总资产 − 股票市值。"""
