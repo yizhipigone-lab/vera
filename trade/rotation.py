@@ -87,6 +87,17 @@ def _is_signal_day(d, signal_day: str) -> bool:
 _LOT = 100  # ETF 一手 = 100 份
 
 
+def _fmt_momentum(momentum: dict | None) -> str:
+    """动量 dict {代码: float|None} → 人话字符串 '159949.SZ +3.2% / 513100.SH +8.5%'。
+    空/None/全 None 返回 ''。None 表示该腿数据不足 (不参与择腿)。"""
+    if not momentum:
+        return ""
+    parts = []
+    for c, m in momentum.items():
+        parts.append(f"{c} {'—' if m is None else f'{float(m) * 100:+.1f}%'}")
+    return " / ".join(parts)
+
+
 def round_price_etf(x: float) -> float:
     """ETF 场内基金最小报价单位 0.001 元, 用千分位四舍五入。
     不能复用 executor.round_price(股票 0.01 档): 2.004 → 2.00 会挂在不成交价
@@ -534,6 +545,7 @@ class RotationFeature:
         # 日频移动止损: 当前唯一持仓风险腿从「持仓期最高收盘」回撤超阈值 → 切避险
         held = [c for c in risk_legs if _vol(qmt_pos0, c) > 0]
         stop_off = False
+        stop_leg = None
         if len(held) == 1:
             h = held[0]
             q = quotes.get(h)
@@ -542,6 +554,7 @@ class RotationFeature:
                 self._entry_high[h] = max(self._entry_high.get(h, last), last)
                 if last < self._entry_high[h] * (1.0 - cfg.trailing_stop_pct):
                     stop_off = True
+                    stop_leg = h
         if stop_off:
             target_code = None
             legs = _mk_legs(None)
@@ -549,12 +562,29 @@ class RotationFeature:
                 "rotation_stop", "日频移动止损触发, 切避险篮子",
                 {"entry_high": dict(self._entry_high)})
 
+        # 决策原因 (含动量数据 + 判断依据), 供每笔买卖 trades.reason 与审计留痕
+        momentum = signal.get("momentum")
+        if stop_off:
+            hi = self._entry_high.get(stop_leg, 0.0)
+            decision = (f"日频移动止损: {stop_leg} 从持仓期最高 {hi:.3f} 回撤超 "
+                        f"{cfg.trailing_stop_pct * 100:.0f}% → 切避险黄金")
+        elif signal.get("insufficient"):
+            decision = "数据不足 fail-safe → 切避险黄金"
+        elif target_code is None:
+            mom = _fmt_momentum(momentum)
+            decision = (f"两腿动量均≤0 ({mom}) → 空仓买黄金" if mom
+                        else "避险篮子 (无动量数据)")
+        else:
+            mom = _fmt_momentum(momentum)
+            decision = (f"动量择腿 ({mom}) → 目标 {target_code}" if mom
+                        else f"目标 {target_code}")
+
         # 卖超目标腿
         self._pending_sells.clear()
         sell_ids: list[str] = []
         for code, tval in legs:
             oid = self._sell_to(code, cur[code], tval, quotes.get(code),
-                                _can(qmt_pos0, code))
+                                _can(qmt_pos0, code), decision)
             if oid:
                 sell_ids.append(oid)
         self._wait_fills(sell_ids)
@@ -570,7 +600,7 @@ class RotationFeature:
         cash = min(cash, pool_gap)
         for code, tval in legs:
             cash = self._buy_to(code, max(0.0, tval - cur2[code]), cash,
-                                quotes.get(code))
+                                quotes.get(code), decision)
 
         # 收尾: 移动止损基准对齐当前目标 (切腿清旧、同腿保最高), 随 signal 落库;
         # pending_target 统一 = 最终生效的 target (信号日=T日新目标, 止损触发=None)
@@ -588,9 +618,11 @@ class RotationFeature:
         signal["pending_target"] = self._pending_target
         self._store.write_audit(
             "rotation_summary",
-            f"ETF 轮动: 目标 {target_code or '避险'} (池 {pool:.0f}), "
+            f"ETF 轮动: {decision} (池 {pool:.0f}), "
             f"现值 {'/'.join(f'{cur[c]:.0f}' for c in codes)}",
             {"target": target_code, "pool": round(pool, 2),
+             "decision": decision, "momentum": momentum,
+             "stop_off": stop_off, "stop_leg": stop_leg,
              "values": {c: round(cur[c], 2) for c in codes}, "signal": signal})
 
     def _etf_value(self, code: str, volume: int) -> float:
@@ -647,7 +679,7 @@ class RotationFeature:
         return float(last) if last and float(last) > 0 else None
 
     def _sell_to(self, code: str, cur_val: float, target_val: float,
-                 quote: dict | None, can_use: int) -> str | None:
+                 quote: dict | None, can_use: int, decision: str) -> str | None:
         """卖到目标市值 (仅换档时调用)。全清 (target≤0) 允许卖残余非整手。
         返回 order_id (None=本轮未卖)。"""
         if cur_val <= target_val or can_use <= 0:
@@ -665,10 +697,10 @@ class RotationFeature:
             qty = min(qty, can_use)
         if qty <= 0:
             return None
-        return self._place_order(code, DIRECTION_SELL, price, qty, "ETF轮动卖出")
+        return self._place_order(code, DIRECTION_SELL, price, qty, decision)
 
     def _buy_to(self, code: str, gap: float, cash: float,
-                quote: dict | None) -> float:
+                quote: dict | None, decision: str) -> float:
         """按缺口买入 (gap=目标市值−现值), 花掉的部分从 cash 扣掉并返回剩余。"""
         if gap <= 0 or cash <= 0:
             return cash
@@ -684,7 +716,7 @@ class RotationFeature:
         qty = int(budget / price / _LOT) * _LOT
         if qty < _LOT:
             return cash
-        if self._place_order(code, DIRECTION_BUY, price, qty, "ETF轮动买入"):
+        if self._place_order(code, DIRECTION_BUY, price, qty, decision):
             return cash - round(price * qty, 2)
         return cash
 
@@ -707,9 +739,10 @@ class RotationFeature:
             _time.sleep(self._wait_interval)
 
     def _place_order(self, code: str, direction: int, price: float, qty: int,
-                     reason: str) -> str | None:
+                     decision: str) -> str | None:
         """过风控 → 下单 → 入账 (book/store) → audit。轮动买入 rotation=True
         绕过单笔金额/持仓数上限; 急停/对账/日亏/T+1 四道闸照常。
+        decision = 本次调仓决策原因 (含动量数据), 进 trades.reason 与审计。
         返回 order_id (None=风控拒)。"""
         price = round_price_etf(price)
         intent = OrderIntent(code=code, direction=direction, price=price,
@@ -719,14 +752,15 @@ class RotationFeature:
             self._store.write_audit(
                 "rotation_risk_reject",
                 f"{code} {'买' if direction == DIRECTION_BUY else '卖'}被风控拒: {why}",
-                {"code": code, "qty": qty, "price": price, "reason": why})
+                {"code": code, "qty": qty, "price": price, "reason": why,
+                 "decision": decision})
             return None
         remark = self._executor.next_remark("R")
         order_id = self._gateway.order(code, direction, price, qty,
                                        PRICE_TYPE_LIMIT, remark)
         label = "ETF轮动买入" if direction == DIRECTION_BUY else "ETF轮动卖出"
         self._executor.register_fill_context(order_id, {"label": label,
-                                                        "detail": reason})
+                                                        "detail": f"{label}: {decision}"})
         self._book.apply_order_update(
             order_id, OS_REPORTED, code=code, direction=direction,
             price=price, qty=qty, remark=remark)
@@ -735,8 +769,9 @@ class RotationFeature:
             "direction": direction, "price": price, "qty": qty,
             "status": OS_REPORTED, "created_ts": self._clock()})
         self._store.write_audit(
-            "rotation_order", f"{label} {code} {qty}@{price}",
-            {"code": code, "qty": qty, "price": price, "order_id": order_id})
+            "rotation_order", f"{label} {code} {qty}@{price} ({decision})",
+            {"code": code, "qty": qty, "price": price, "order_id": order_id,
+             "decision": decision})
         if direction == DIRECTION_SELL:
             self._pending_sells[code] = {"order_id": order_id, "qty": qty}
         return order_id

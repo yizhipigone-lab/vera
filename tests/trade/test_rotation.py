@@ -383,6 +383,41 @@ def test_topup_same_target(tmp_path):
     assert buys[0]["qty"] == 250_000                 # 补到 50 万
 
 
+def test_rotation_order_records_decision(tmp_path):
+    """2026-08-21: 交易记录带详细决策原因 (动量数据 + 判断依据)。"""
+    import json
+    clock = [_ts("10:00")]
+    app = _start(_app(_cfg(tmp_path), clock, cash=500_000,
+                      positions={GOLD: {"volume": 250_000, "can_use": 250_000,
+                                        "avg_cost": 2.0}}))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 2.0, bid=2.0))
+    app.gateway.push_quote(CYB, _quote(CYB, 1.0, bid=1.0, ask=1.0))
+    assert _wait(lambda: app.monitor.quote_of(GOLD) is not None)
+    # 信号日择腿: 目标 cyb (带动量数据), 从避险(黄金)切到 cyb
+    app._rotation.on_signals({"signal": {
+        "target": CYB, "insufficient": False,
+        "momentum": {CYB: 0.05, NASDAQ: 0.03}}, "source": "test"})
+    # 卖出黄金的 rotation_order audit 应带 decision + 动量明细
+    ro = app.store.open_readonly()
+    try:
+        rows = ro.execute(
+            "SELECT detail_json FROM audit WHERE kind='rotation_order' "
+            "AND detail_json LIKE '%动量择腿%'").fetchall()
+    finally:
+        ro.close()
+    assert rows, "rotation_order 审计应带决策原因"
+    d = json.loads(rows[0][0])
+    assert d["decision"].startswith("动量择腿")
+    assert "159949.SZ +5.0%" in d["decision"]
+    assert "513100.SH +3.0%" in d["decision"]
+    # 卖出黄金的成交原因 (fill_context.detail) 也带决策原因, 进 trades.reason
+    _, sells = _orders_by(app)
+    assert sells, "应有一笔卖出黄金"
+    oid = sells[0]["order_id"]
+    detail = (app.executor.peek_fill_context(oid) or {}).get("detail", "")
+    assert "ETF轮动卖出" in detail and "动量择腿" in detail
+
+
 # ═══════════════════════════════════════════════════════════════
 # 日频移动止损
 # ═══════════════════════════════════════════════════════════════
