@@ -42,6 +42,7 @@ from trade.events import EVENT_ROTATION, Event
 from trade.monitor import is_trading_day_cached, trading_session
 from trade.quote_stale import is_quote_stale
 from trade.risk import OrderIntent
+from trade.shadow import SHADOW_LOG_PATH, run_shadow
 from utils.logger import get_logger
 
 _logger = get_logger("trade.rotation")
@@ -379,6 +380,7 @@ class RotationFeature:
                           "source": source, "signal_only": True}))
                 return
             cfg = self._cfg_getter().rotation
+            self._shadow_tick(today)   # 2026-08-23 P0: 影子三态每日落盘 (只记录不交易)
             if _is_signal_day(today, cfg.signal_day):
                 # 周频信号日: 算动量 → 当日尾盘直接执行 (T 日执行)
                 signal = self._compute_momentum(now)
@@ -404,6 +406,29 @@ class RotationFeature:
             self._engine.put(Event(type=EVENT_ROTATION, ts=self._clock(),
                                    data={"signal": None, "error": str(e),
                                          "source": source}))
+
+    def _shadow_tick(self, today) -> None:
+        """影子三态每日落盘 (2026-08-23 P0 影子校尺, 只记录不交易)。
+
+        拉 cyb_etf 收盘 → 复用 compute_signal (旧 MA20 三态, 单一规则源)
+        → 追加 data/shadow_rotation.jsonl; tools/shadow_compare.py 季度对比
+        影子 vs 实盘滚动 90 日收益。
+
+        **只用 QMT 快源, 不走 _fetch_closes 降级链** (2026-08-23 测试超时修复):
+        TDX/腾讯降级是秒级网络阻塞, 会把工作线程拖过交易窗口; 影子是
+        best-effort 日报, QMT 不在就跳过今天 (次日按日去重自然补),
+        历史空洞由 shadow_compare 用全量历史重放补齐, 不靠生产快照。"""
+        try:
+            cfg = self._cfg_getter().rotation
+            closes = self._gateway.query_daily_closes(cfg.cyb_etf, count=260)
+            if not closes or len(closes) < 251:
+                _logger.info("影子三态 QMT 取数不足 (%d 根), 本日跳过",
+                             len(closes or []))
+                return
+            run_shadow([float(c) for c in closes],
+                       today.strftime("%Y%m%d"), SHADOW_LOG_PATH)
+        except Exception as e:
+            _logger.warning("影子三态落盘失败 (不影响交易): %s", e)
 
     def _compute_momentum(self, now) -> dict:
         """工作线程: 拉两只风险腿收盘 → 算动量信号 (纯取数+计算, 不执行)。"""
