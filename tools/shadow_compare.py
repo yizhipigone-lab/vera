@@ -75,37 +75,45 @@ def replay(dates, px, i0):
     对应交易日 dates[i0:]。"""
     from trade.rotation import compute_momentum_signal, compute_signal
     c = {k: [px[k][d] for d in dates] for k in (CYB, NAS, GOLD)}
-    eq_s, eq_m, sw_s, sw_m = [1.0], [1.0], 0, 0
-    prev_state, tgt, hi = "", "gold", 0.0
+    # 口径 (2026-08-24 修正): T 日收盘算信号 → 仓位 T+1 生效 (先生成"意图序列",
+    # 第 j 天收益吃第 j-1 天意图)。原"当天信号吃当天涨幅"口径对日频策略有
+    # 系统性乐观偏差 (交易越勤偷到的当天涨幅越多; 对照: 日频 +17644% → 严格
+    # +587%), 且对两套规则的偏袒不均 (日频影子占便宜更多)。修正后与仓库正式
+    # 研究脚本 ("t-1 信号 → t 日收益") 同口径。
+    intent_s, intent_m = [], []
+    tgt, hi, sw_s, sw_m = "gold", 0.0, 0, 0
     for i in range(i0 + 1, len(dates)):
-        # 影子: MA20 三态 (每日, 完整前缀 → warmup 无截断)
         st = compute_signal(c[CYB][:i + 1])
         state = st["state"] or "full_gold"
-        w_cyb = {"full_cyb": 1.0, "half": 0.5}.get(state, 0.0)
-        w_gold = 1.0 - w_cyb
-        chg_s = bool(prev_state) and state != prev_state
-        if chg_s:
-            sw_s += 1
-        prev_state = state
-        r = (w_cyb * (c[CYB][i] / c[CYB][i - 1] - 1)
-             + w_gold * (c[GOLD][i] / c[GOLD][i - 1] - 1))
-        eq_s.append(eq_s[-1] * (1 + r) * (1 - FEE if chg_s else 1))
-        # 动量: 周频信号 + 日频 15% 移动止损
-        chg_m = False
+        intent_s.append({"full_cyb": (1.0, 0.0), "half": (0.5, 0.5),
+                         "full_gold": (0.0, 1.0)}[state])
         is_sig = (i == len(dates) - 1) or iso_week(dates[i]) != iso_week(dates[i + 1])
         if is_sig:
             sig = compute_momentum_signal(
                 {CYB: c[CYB][:i + 1], NAS: c[NAS][:i + 1]}, 20)
             nt = sig.get("target") or "gold"
             if nt != tgt:
-                tgt, hi, chg_m = nt, (c[nt][i] if nt != "gold" else 0.0), True
-                sw_m += 1
+                tgt, hi, sw_m = nt, (c[nt][i] if nt != "gold" else 0.0), sw_m + 1
         if tgt != "gold":
             hi = max(hi, c[tgt][i])
             if c[tgt][i] < hi * 0.85:
-                tgt, chg_m = "gold", True
-                sw_m += 1
-        leg = tgt if tgt != "gold" else GOLD
+                tgt, sw_m = "gold", sw_m + 1
+        intent_m.append(tgt)
+    eq_s, eq_m = [1.0], [1.0]
+    prev_s, prev_m = None, None
+    for j in range(len(intent_s)):
+        i = i0 + 1 + j
+        eff_s = intent_s[j - 1] if j >= 1 else (0.0, 1.0)
+        eff_m = intent_m[j - 1] if j >= 1 else "gold"
+        chg_s = prev_s is not None and eff_s != prev_s
+        chg_m = prev_m is not None and eff_m != prev_m
+        if chg_s:
+            sw_s += 1
+        prev_s, prev_m = eff_s, eff_m
+        r = (eff_s[0] * (c[CYB][i] / c[CYB][i - 1] - 1)
+             + eff_s[1] * (c[GOLD][i] / c[GOLD][i - 1] - 1))
+        eq_s.append(eq_s[-1] * (1 + r) * (1 - FEE if chg_s else 1))
+        leg = eff_m if eff_m != "gold" else GOLD
         eq_m.append(eq_m[-1] * (c[leg][i] / c[leg][i - 1]) * (1 - FEE if chg_m else 1))
     return eq_s, eq_m, sw_s, sw_m
 
