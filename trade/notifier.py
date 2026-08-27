@@ -147,12 +147,17 @@ class FeishuNotifier:
     # ── 股票名 (worker 线程惰性加载, 不阻塞交易线程) ────────────
 
     def _name_of(self, code: str) -> str:
+        # 2026-08-27 修复 (页面简称全丢事件): 失败/空表不缓存, 下次重试;
+        # 拿到非空表才缓存 (旧逻辑把 {} 永久缓存, TDX 恢复后也一直是空)。
         if self._name_map is None:
             try:
                 from core.data_fetcher import DataFetcher
-                self._name_map = DataFetcher.get_name_map() or {}
+                m = DataFetcher.get_name_map() or {}
             except Exception:
-                self._name_map = {}
+                return ""
+            if not m:
+                return ""
+            self._name_map = m
         return self._name_map.get(code, "")
 
     def _warn_no_url_once(self) -> None:

@@ -27,14 +27,22 @@ _name_map: dict[str, str] | None = None
 
 
 def name_of(code: str) -> str:
-    """股票代码 → 简称。惰性加载, 查不到返回空串。"""
+    """股票代码 → 简称。惰性加载, 查不到返回空串。
+
+    2026-08-27 修复 (页面简称全丢事件): 加载失败时**不缓存空表**。
+    旧逻辑在 TDX 未启动的窗口把 {} 永久缓存, 之后即使 TDX 恢复,
+    进程存活期内所有页面简称都是空。现在失败返回空串但不落缓存,
+    下次调用重试; 拿到非空表才缓存 (进程级)。"""
     global _name_map
     if _name_map is None:
         try:
             from core.data_fetcher import DataFetcher
-            _name_map = DataFetcher.get_name_map() or {}
+            m = DataFetcher.get_name_map() or {}
         except Exception:
-            _name_map = {}
+            return ""            # 失败不缓存, 下次调用重试
+        if not m:
+            return ""            # 空表同上 (TDX 刚启动未就绪)
+        _name_map = m
     return _name_map.get(code, "")
 
 
