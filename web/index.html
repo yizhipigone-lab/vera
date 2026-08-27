@@ -193,6 +193,9 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 /* 2026-07-28 P1.5: 概念标签 list 渲染 (一票多概念) */
 .concept-list{display:flex;flex-wrap:wrap;gap:2px;max-width:150px}
 .concept-tag{display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--text);white-space:nowrap}
+/* 2026-08-26: 股票代码/简称 → 同花顺跳转链接 (stock_link.js) */
+.stock-link{color:inherit;text-decoration:none;border-bottom:1px dashed color-mix(in srgb,var(--accent) 55%,transparent)}
+.stock-link:hover{color:var(--accent);border-bottom-style:solid}
 .concept-more{font-size:11px;color:var(--text2);align-self:center}
 
 /* P4-1: 交易筛选工具栏 */
@@ -1345,13 +1348,14 @@ input:focus-visible,select:focus-visible{outline:none}
 
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
-<script src="/web/js/trade.js?v=20260816a"></script>
+<script src="/web/js/stock_link.js?v=20260826a"></script>
+<script src="/web/js/trade.js?v=20260826a"></script>
 <script src="/web/js/research.js?v=20260728a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_chat.js?v=20260731a"></script>
 <script src="/web/js/data_cache.js?v=20260814b"></script>
-<script type="module" src="/web/js/analysis.js?v=20260814a"></script>
+<script type="module" src="/web/js/analysis.js?v=20260826a"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260814c"></script>
 </body>
 </html>

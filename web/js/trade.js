@@ -39,6 +39,11 @@ function esc(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+// 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (web/js/stock_link.js, 先于本文件加载)。
+// stock_link.js 缺失时降级为纯文本, 不炸。
+function thsLink(code, text) {
+  return window.stockLink ? window.stockLink(code, text) : esc(text != null && text !== '' ? text : (code || ''));
+}
 function fmtTs(ts) {
   if (!ts) return '';
   var d = new Date(ts * 1000);
@@ -201,8 +206,8 @@ function renderPositions(d) {
     if (p.closed === true && p.exit_ts) {
       entryCell += '<div style="color:var(--text2)">→ ' + fmtTs(p.exit_ts) + '</div>';
     }
-    html += '<tr' + rowStyle + '><td>' + esc(p.code) + tag + '</td>'
-      + '<td>' + esc(p.name || '—') + '</td>'
+    html += '<tr' + rowStyle + '><td>' + thsLink(p.code) + tag + '</td>'
+      + '<td>' + (p.name ? thsLink(p.code, p.name) : '—') + '</td>'
       + '<td>' + qtyCell + '</td><td>' + (p.closed === true ? '—' : p.can_use)
       + '</td><td>' + (p.avg_cost === null ? '—' : p.avg_cost.toFixed(2))
       + '</td><td>' + priceCell
@@ -232,7 +237,7 @@ function renderPositions(d) {
       + '<th>持仓天数</th><th>入场时间</th><th>出场时间</th></tr>';
     _histClosed.forEach(function (c) {
       var cColor = c.realized_pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
-      html += '<tr><td>' + esc(c.code) + '</td><td>' + esc(c.name || '—') + '</td>'
+      html += '<tr><td>' + thsLink(c.code) + '</td><td>' + (c.name ? thsLink(c.code, c.name) : '—') + '</td>'
         + '<td>' + c.qty + '</td>'
         + '<td>' + (c.buy_avg != null ? c.buy_avg.toFixed(2) : '—') + '</td>'
         + '<td>' + (c.sell_avg != null ? c.sell_avg.toFixed(2) : '—') + '</td>'
@@ -310,7 +315,7 @@ function renderOrders(d) {
     // 2026-07-30: remark 为空 = 手工单 (券商端/手机端委托, 同步认领进表)
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
     html += '<tr><td>' + fmtTs(o.created_ts || o.updated_ts) + '</td><td>' + remark + '</td><td>'
-      + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
+      + thsLink(o.code) + '</td><td>' + (o.name ? thsLink(o.code, o.name) : '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + st + '</td><td>' + orderStatusHtml(st, o.status_msg || '') + '</td><td>'
       + (canCancel
@@ -342,7 +347,7 @@ function renderReconciles(d) {
     var detail = '';
     try { detail = JSON.parse(r.detail_json || '{}').reason || ''; } catch (e) {}
     html += '<tr><td>' + fmtTs(r.ts) + '</td><td style="' + color + '">' + esc(r.level)
-      + '</td><td>' + esc(r.code || '—') + '</td><td>' + esc(r.name || '')
+      + '</td><td>' + (r.code ? thsLink(r.code) : '—') + '</td><td>' + (r.name ? thsLink(r.code, r.name) : '')
       + '</td><td>' + esc(r.expected) + '</td><td>'
       + esc(r.actual) + '</td><td style="text-align:left">' + esc(detail) + '</td></tr>';
   });
@@ -385,8 +390,8 @@ function renderDeals(d) {
       pnlAmt = (t.pnl_amount >= 0 ? '+' : '') + t.pnl_amount.toLocaleString('zh-CN', {maximumFractionDigits: 2});
       pnlPct = (t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct.toFixed(2) + '%';
     }
-    html += '<tr><td>' + fmtTs(t.ts) + '</td><td>' + esc(t.code) + '</td><td>'
-      + esc(t.name || '—') + '</td><td style="color:'
+    html += '<tr><td>' + fmtTs(t.ts) + '</td><td>' + thsLink(t.code) + '</td><td>'
+      + (t.name ? thsLink(t.code, t.name) : '—') + '</td><td style="color:'
       + (isBuy ? 'var(--up)' : 'var(--ok)') + '">' + (isBuy ? '买' : '卖') + '</td><td>'
       + src + '</td><td>' + (t.reason ? esc(t.reason) : '—') + '</td><td>'
       + Number(t.price).toFixed(2) + '</td><td>' + Number(t.qty) + '</td><td>'
@@ -409,7 +414,7 @@ function renderHistoryOrders(d) {
   d.orders.forEach(function (o) {
     var remark = o.remark ? esc(o.remark) : '<span class="trade-badge wait">手工</span>';
     html += '<tr><td>' + fmtTs(o.created_ts || o.updated_ts) + '</td><td>' + remark + '</td><td>'
-      + esc(o.code) + '</td><td>' + esc(o.name || '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
+      + thsLink(o.code) + '</td><td>' + (o.name ? thsLink(o.code, o.name) : '—') + '</td><td>' + (Number(o.direction) === 23 ? '买' : '卖') + '</td><td>'
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + Number(o.status) + '</td><td>'
       + orderStatusHtml(Number(o.status), o.status_msg || '') + '</td></tr>';
@@ -695,7 +700,7 @@ function renderAutoBuy(d) {
     html += '<table class="td-table"><tr><th>代码</th><th>处置</th><th>价</th><th>量</th><th>状态</th><th>说明</th></tr>';
     last.dispositions.forEach(function (dp) {
       var isBuy = dp.action === 'buy';
-      html += '<tr><td>' + esc(dp.code) + '</td><td style="color:'
+      html += '<tr><td>' + thsLink(dp.code) + '</td><td style="color:'
         + (isBuy ? 'var(--up)' : 'var(--text2)') + '">'
         + (isBuy ? '已买' : '跳过') + '</td><td>'
         + (isBuy ? Number(dp.price).toFixed(2) : '—') + '</td><td>'

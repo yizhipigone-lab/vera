@@ -10,6 +10,14 @@ export function esc(s) {
 }
 export const escAttr = esc;
 
+// 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (web/js/stock_link.js 提供 window.stockLink)。
+// Node 测试环境无 window.stockLink → 降级为纯文本 (tests/web/test_stock_link.mjs 锁死)。
+function stockLink(code, text) {
+  return (typeof window !== 'undefined' && window.stockLink)
+    ? window.stockLink(code, text)
+    : esc(text != null && text !== '' ? text : (code || ''));
+}
+
 // ── 颜色工具 ──
 
 export function hexToRgba(color, alpha) {
@@ -331,8 +339,8 @@ export function renderTradeTable(trades, allTradesCount) {
     const tidx = totalTrades - 1 - (start + i);   // Phase 3: 行在传入 trades 数组中的索引 (pageRows 经过倒序+分页), 回放点击定位用
     return '<tr data-tidx="' + tidx + '" style="cursor:pointer" title="点击查看 K 线回放">' +
       '<td class="hint">' + (totalTrades - (start + i)) + '</td>' +
-      '<td style="font-family:var(--mono);font-size:10px">' + code + '</td>' +
-      '<td title="' + code + '">' + name + '</td>' +
+      '<td style="font-family:var(--mono);font-size:10px">' + stockLink(t.stock_code) + '</td>' +
+      '<td>' + stockLink(t.stock_code, t.stock_name) + '</td>' +
       '<td>' + conceptTags(t.stock_code) + '</td>' +
       '<td>' + policyBadge(t.stock_code) + '</td>' +
       '<td>' + eDate + '</td>' +
@@ -775,8 +783,8 @@ export function renderAllCharts(data) {
       const pct = (p.unrealized_pct || 0) * 100;
       const cls = pct > 0 ? 'td-up' : pct < 0 ? 'td-down' : '';
       return '<tr><td>' + (i + 1) + '</td>'
-        + '<td>' + esc(p.stock_code || '') + '</td>'
-        + '<td>' + esc(p.stock_name || '') + '</td>'
+        + '<td>' + stockLink(p.stock_code) + '</td>'
+        + '<td>' + stockLink(p.stock_code, p.stock_name) + '</td>'
         + '<td>' + conceptTags(p.stock_code) + '</td>'
         + '<td>' + policyBadge(p.stock_code) + '</td>'
         + '<td>' + esc(String(p.entry_date || '').slice(0, 10)) + '</td>'

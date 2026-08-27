@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0a0e14">
+<title>VERA 移动版</title>
+<script src="/web/marked.min.js"></script>
+<script src="/web/purify.min.js"></script>
+<script src="/web/js/stock_link.js?v=20260826a"></script>
+<style>
+:root{
+  --bg:#0a0e14; --surface:#11161f; --card:#161c28; --border:#232b3a;
+  --text:#e8ecf4; --text2:#7a8499;
+  --up:#ff4d5a; --down:#2ec27e; --accent:#f0b429; --accent2:#4cc9d4;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+  font-size:15px;line-height:1.5;display:flex;flex-direction:column;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+
+/* ===== 顶栏 ===== */
+.topbar{
+  position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;
+  padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top));
+  background:var(--surface);border-bottom:1px solid var(--border);
+}
+.brand{font-weight:800;letter-spacing:1px;font-size:17px;color:var(--accent);font-family:'JetBrains Mono',ui-monospace,monospace}
+.status{flex:1;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--text2);flex-shrink:0}
+.status .dot.on{background:var(--down);box-shadow:0 0 6px var(--down)}
+.status .dot.off{background:var(--up)}
+.status .dot.busy{background:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.kill{
+  padding:8px 16px;border-radius:10px;font-size:14px;font-weight:700;letter-spacing:1px;
+  background:var(--up);color:#fff;flex-shrink:0;
+}
+.kill.armed{background:var(--down)}
+
+/* ===== 主体 ===== */
+main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px}
+.tab{display:none}
+.tab.active{display:block}
+
+/* ===== 资产卡 ===== */
+.asset-card{
+  background:linear-gradient(135deg,var(--card),color-mix(in srgb,var(--accent) 8%,var(--card)));
+  border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:14px;
+}
+.asset-label{font-size:12px;color:var(--text2)}
+.asset-total{font-size:34px;font-weight:800;font-family:'JetBrains Mono',ui-monospace,monospace;margin:4px 0;letter-spacing:-.5px}
+.asset-pnl{font-size:16px;font-weight:700;font-family:'JetBrains Mono',ui-monospace,monospace;margin-bottom:12px}
+.asset-sub{display:flex;gap:8px}
+.asset-sub>div{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.asset-sub .k{font-size:11px;color:var(--text2)}
+.asset-sub .v{font-size:15px;font-weight:600;font-family:'JetBrains Mono',ui-monospace,monospace;margin-top:2px}
+
+/* ===== 区块标题 ===== */
+.sec-title{font-size:13px;color:var(--text2);font-weight:600;margin:18px 0 8px;display:flex;align-items:center;gap:6px}
+.sec-title::before{content:'';width:3px;height:12px;background:var(--accent);border-radius:2px}
+
+/* ===== 持仓列表 ===== */
+.pos-list,.deal-list,.daily-list{display:flex;flex-direction:column;gap:8px}
+.pos-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+.pos-top{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.pos-name{font-weight:600;font-size:15px}
+.pos-code{font-size:11px;color:var(--text2);font-family:'JetBrains Mono',ui-monospace,monospace}
+.pos-badge{font-size:10px;padding:1px 7px;border-radius:8px;background:var(--surface);color:var(--text2);margin-left:auto}
+.pos-badge.etf{background:color-mix(in srgb,var(--accent2) 16%,transparent);color:var(--accent2)}
+.pos-row{display:flex;justify-content:space-between;font-size:13px;margin:2px 0}
+.pos-row .l{color:var(--text2)}
+.pos-row .v{font-family:'JetBrains Mono',ui-monospace,monospace}
+.up{color:var(--up)} .down{color:var(--down)}
+
+/* 成交/每日盈亏条目 */
+.deal-row,.daily-row{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;font-size:13px}
+.deal-row .n,.daily-row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 2026-08-26: 股票代码/简称 → 同花顺跳转链接 */
+.stock-link{color:inherit;text-decoration:none;border-bottom:1px dashed color-mix(in srgb,var(--accent) 55%,transparent)}
+.stock-link:hover,.stock-link:active{color:var(--accent);border-bottom-style:solid}
+.deal-row .t,.daily-row .t{color:var(--text2);font-size:11px}
+.deal-row .amt{font-family:'JetBrains Mono',ui-monospace,monospace;font-weight:600}
+.tag-buy{color:var(--up)} .tag-sell{color:var(--down)}
+
+/* ===== KPI 网格 ===== */
+.kpi-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+.kpi-card .k{font-size:11px;color:var(--text2)}
+.kpi-card .v{font-size:22px;font-weight:700;font-family:'JetBrains Mono',ui-monospace,monospace;margin-top:4px}
+
+/* ===== 研究聊天 ===== */
+.chat-box{display:flex;flex-direction:column;gap:10px;padding-bottom:10px}
+.msg{max-width:92%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.6;word-wrap:break-word}
+.msg.user{align-self:flex-end;background:var(--accent);color:#1a1d24;border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.ai p{margin:6px 0} .msg.ai pre{background:var(--bg);padding:8px;border-radius:8px;overflow-x:auto;font-size:12px}
+.msg.ai code{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;background:var(--surface);padding:1px 5px;border-radius:4px}
+.msg.ai ul,.msg.ai ol{padding-left:20px}
+.msg.ai blockquote{border-left:3px solid var(--accent);padding-left:10px;color:var(--text2);margin:6px 0}
+.msg.warn{align-self:flex-start;background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up);font-size:13px}
+.chat-input{position:sticky;bottom:0;display:flex;gap:8px;padding:10px;background:var(--surface);border-top:1px solid var(--border)}
+.chat-input input{flex:1;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;color:var(--text);font-size:15px;outline:none}
+.chat-input input:focus{border-color:var(--accent)}
+.chat-input button{padding:12px 18px;background:var(--accent);color:#1a1d24;border-radius:12px;font-size:15px;font-weight:700;flex-shrink:0}
+.chat-input button:disabled{opacity:.5}
+.chat-tools{display:flex;gap:8px;margin-bottom:8px}
+.chat-tools button{font-size:12px;padding:6px 12px;border-radius:8px;border:1px solid var(--border);color:var(--text2)}
+
+/* ===== 底部页签栏 ===== */
+.tabbar{
+  position:sticky;bottom:0;z-index:10;display:flex;
+  background:var(--surface);border-top:1px solid var(--border);
+}
+.tabbar .tab-btn{flex:1;padding:12px 0;font-size:14px;font-weight:600;color:var(--text2);text-align:center}
+.tabbar .tab-btn.active{color:var(--accent)}
+.tabbar .tab-btn.active::before{content:'';display:block;width:24px;height:3px;background:var(--accent);border-radius:2px;margin:0 auto 4px}
+
+/* 空态 */
+.empty{color:var(--text2);text-align:center;padding:24px;font-size:13px}
+.refresh-btn{font-size:12px;padding:5px 12px;border-radius:8px;border:1px solid var(--border);color:var(--text2)}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">VERA</div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">连接中…</span></div>
+  <button class="kill" id="killBtn">急停</button>
+</header>
+
+<main>
+  <!-- 交易监控 -->
+  <section class="tab active" id="tab-trade">
+    <div class="asset-card">
+      <div class="asset-label">总资产</div>
+      <div class="asset-total" id="totalAsset">--</div>
+      <div class="asset-pnl" id="dayPnl">--</div>
+      <div class="asset-sub">
+        <div><div class="k">可用现金</div><div class="v" id="cash">--</div></div>
+        <div><div class="k">持仓市值</div><div class="v" id="mktval">--</div></div>
+      </div>
+    </div>
+    <div class="sec-title">持仓 <button class="refresh-btn" id="refreshTrade" style="margin-left:auto">刷新</button></div>
+    <div class="pos-list" id="posList"><div class="empty">加载中…</div></div>
+    <div class="sec-title">最近成交</div>
+    <div class="deal-list" id="dealList"><div class="empty">加载中…</div></div>
+  </section>
+
+  <!-- 盈亏分析 -->
+  <section class="tab" id="tab-analysis">
+    <div class="kpi-grid" id="kpiGrid"><div class="empty">加载中…</div></div>
+    <div class="sec-title">每日盈亏（近30个交易日）</div>
+    <div class="daily-list" id="dailyPnlList"><div class="empty">加载中…</div></div>
+  </section>
+
+  <!-- 研究大脑 -->
+  <section class="tab" id="tab-research">
+    <div class="chat-tools">
+      <button id="btnReset">清空会话</button>
+      <span style="font-size:11px;color:var(--text2);align-self:center">个股诊断 / 大盘 / 盘面 都能问</span>
+    </div>
+    <div class="chat-box" id="chatBox"></div>
+    <div class="chat-input">
+      <input id="chatInput" placeholder="问点什么…（回车发送）" enterkeyhint="send">
+      <button id="chatSend">发送</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button class="tab-btn active" data-tab="trade">交易</button>
+  <button class="tab-btn" data-tab="analysis">分析</button>
+  <button class="tab-btn" data-tab="research">研究</button>
+</nav>
+
+<script>
+(function(){
+'use strict';
+var TRADE_BASE = 'http://' + location.hostname + ':8081';
+var CONV = 'mobile';   // 研究大脑固定会话号
+
+// ── 工具 ────────────────────────────────────────────
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+// 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (stock_link.js, stock_link.js 缺失时降级纯文本)
+function thsLink(code,text){ return window.stockLink ? window.stockLink(code,text) : esc(text!=null&&text!==''?text:(code||'')); }
+function fmtMoney(n){
+  if(n==null||isNaN(n)) return '--';
+  var neg = n<0; n = Math.abs(n);
+  var s;
+  if(n>=1e8) s = (n/1e8).toFixed(2)+'亿';
+  else if(n>=1e4) s = (n/1e4).toFixed(2)+'万';
+  else s = n.toFixed(0);
+  return (neg?'-':'')+s;
+}
+function fmtPct(n){
+  if(n==null||isNaN(n)) return '--';
+  return (n>=0?'+':'')+(n*100).toFixed(2)+'%';
+}
+// 已乘过 100 的百分比字段 (如持仓 pnl_pct 后端已 ×100), 直接拼 %, 别再 ×100
+function fmtPctVal(n){
+  if(n==null||isNaN(n)) return '--';
+  return (n>=0?'+':'')+n.toFixed(2)+'%';
+}
+function cls(n){ return n>0?'up':(n<0?'down':''); }
+
+// ── 页签切换 ─────────────────────────────────────────
+var tabs = {trade:true, analysis:false, research:false};
+document.querySelectorAll('.tabbar .tab-btn').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var t = btn.dataset.tab;
+    document.querySelectorAll('.tabbar .tab-btn').forEach(function(b){ b.classList.toggle('active', b===btn); });
+    document.querySelectorAll('.tab').forEach(function(sec){ sec.classList.toggle('active', sec.id==='tab-'+t); });
+    if(t==='trade') refreshTrade();
+    if(t==='analysis') refreshAnalysis();
+  });
+});
+
+// ── 交易监控 ─────────────────────────────────────────
+var pollTimer = null;
+function tradeGet(u){
+  return fetch(TRADE_BASE + u).then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); });
+}
+function tradePost(u){
+  return fetch(TRADE_BASE + u, {method:'POST'}).then(function(r){ return r.json(); });
+}
+
+function setStatus(ok, text){
+  $('statusDot').className = 'dot ' + (ok===null?'busy':(ok?'on':'off'));
+  $('statusText').textContent = text;
+}
+
+function refreshTrade(){
+  // 状态 + 资产 + 持仓 + 成交 并行拉
+  Promise.allSettled([
+    tradeGet('/api/trade/status'),
+    tradeGet('/api/trade/asset'),
+    tradeGet('/api/trade/positions'),
+    tradeGet('/api/trade/deals?limit=15'),
+  ]).then(function(rs){
+    var st = rs[0].status==='fulfilled' ? rs[0].value : null;
+    var as = rs[1].status==='fulfilled' ? rs[1].value : null;
+    var ps = rs[2].status==='fulfilled' ? rs[2].value : null;
+    var ds = rs[3].status==='fulfilled' ? rs[3].value : null;
+
+    if(!st || !as || !ps){
+      setStatus(false, '交易服务未连接');
+      return;
+    }
+    // 状态: 连接 + 对账 + 急停
+    var ok = st.connected && st.reconciled;
+    var label = st.kill_active ? '已急停' : (ok ? '运行中' : '异常');
+    setStatus(ok, label + (st.monitor_reason ? ' · '+st.monitor_reason : ''));
+    $('killBtn').classList.toggle('armed', !!st.kill_active);
+    $('killBtn').textContent = st.kill_active ? '解除急停' : '急停';
+
+    // 资产卡
+    var total = as.total_asset, cash = as.cash, mkt = as.market_value;
+    $('totalAsset').textContent = fmtMoney(total);
+    $('cash').textContent = fmtMoney(cash);
+    $('mktval').textContent = fmtMoney(mkt);
+    if(as.prev_day_asset){
+      var dp = total - as.prev_day_asset;
+      var dpct = as.prev_day_asset>0 ? dp/as.prev_day_asset : 0;
+      var dpEl = $('dayPnl');
+      dpEl.textContent = '当日 ' + (dp>=0?'+':'') + fmtMoney(dp) + ' (' + fmtPct(dpct) + ')';
+      dpEl.className = 'asset-pnl ' + cls(dp);
+    } else {
+      $('dayPnl').textContent = '';
+    }
+
+    // 持仓
+    renderPositions(ps.positions || []);
+    // 成交
+    renderDeals(ds && ds.deals || []);
+  });
+}
+
+function renderPositions(list){
+  var el = $('posList');
+  if(!list.length){ el.innerHTML = '<div class="empty">暂无持仓</div>'; return; }
+  el.innerHTML = list.map(function(p){
+    var pnlCls = cls(p.pnl);
+    var dayCls = cls(p.day_chg_amt);
+    return '<div class="pos-card">'
+      + '<div class="pos-top"><span class="pos-name">'+(p.name?thsLink(p.code,p.name):esc(p.code))+'</span>'
+      + '<span class="pos-code">'+thsLink(p.code)+'</span>'
+      + (p.etf?'<span class="pos-badge etf">ETF</span>':'')
+      + '</div>'
+      + '<div class="pos-row"><span class="l">现价 · 持仓</span><span class="v">'+fmtMoney(p.last)+' · '+p.volume+'股</span></div>'
+      + '<div class="pos-row"><span class="l">当日盈亏</span><span class="v '+dayCls+'">'+(p.day_chg_amt!=null?(p.day_chg_amt>=0?'+':'')+fmtMoney(p.day_chg_amt):'--')+'</span></div>'
+      + '<div class="pos-row"><span class="l">浮盈亏</span><span class="v '+pnlCls+'">'+(p.pnl!=null?(p.pnl>=0?'+':'')+fmtMoney(p.pnl)+' ('+fmtPctVal(p.pnl_pct)+')':'--')+'</span></div>'
+      + '</div>';
+  }).join('');
+}
+
+function renderDeals(list){
+  var el = $('dealList');
+  if(!list.length){ el.innerHTML = '<div class="empty">暂无成交</div>'; return; }
+  el.innerHTML = list.map(function(d){
+    var buy = d.direction===23;  // 23=买 24=卖
+    var tag = buy ? '<span class="tag-buy">买</span>' : '<span class="tag-sell">卖</span>';
+    var pnl = (d.pnl_amount!=null && !buy) ? ('<span class="amt '+(d.pnl_amount>=0?'up':'down')+'">'+(d.pnl_amount>=0?'+':'')+fmtMoney(d.pnl_amount)+'</span>') : '';
+    return '<div class="deal-row">'+tag
+      + '<span class="n">'+(d.name?thsLink(d.code,d.name):thsLink(d.code))+'</span>'
+      + '<span class="t">'+thsLink(d.code)+' '+d.qty+'@'+d.price+'</span>'
+      + pnl + '</div>';
+  }).join('');
+}
+
+$('killBtn').addEventListener('click', function(){
+  var armed = $('killBtn').classList.contains('armed');
+  tradePost(armed ? '/api/trade/unkill' : '/api/trade/kill').then(function(){ refreshTrade(); });
+});
+$('refreshTrade').addEventListener('click', refreshTrade);
+
+// 交易页 5 秒轮询
+pollTimer = setInterval(function(){
+  if(document.getElementById('tab-trade').classList.contains('active')) refreshTrade();
+}, 5000);
+
+// ── 盈亏分析 ─────────────────────────────────────────
+var analysisLoaded = false;
+function refreshAnalysis(){
+  if(analysisLoaded) return;
+  analysisLoaded = true;
+  Promise.allSettled([
+    fetch(TRADE_BASE + '/api/trade/analysis/summary').then(function(r){return r.json();}),
+    fetch(TRADE_BASE + '/api/trade/analysis/daily_pnl').then(function(r){return r.json();}),
+  ]).then(function(rs){
+    var s = rs[0].status==='fulfilled' ? rs[0].value : null;
+    var d = rs[1].status==='fulfilled' ? rs[1].value : null;
+    renderSummary(s);
+    renderDailyPnl(d);
+  });
+}
+
+function renderSummary(s){
+  var el = $('kpiGrid');
+  if(!s){ el.innerHTML = '<div class="empty">分析服务未连接</div>'; return; }
+  var kpis = [
+    ['累计收益', fmtPct(s.cumulative_return), cls(s.cumulative_return)],
+    ['年化收益', fmtPct(s.annualized_return), cls(s.annualized_return)],
+    ['最大回撤', (s.max_drawdown!=null?fmtPct(s.max_drawdown):'--'), cls(s.max_drawdown)],
+    ['夏普比率', s.sharpe_ratio!=null?s.sharpe_ratio.toFixed(2):'--', ''],
+    ['胜率', (s.win_rate!=null?fmtPct(s.win_rate):'--'), ''],
+    ['盈亏比', s.profit_loss_ratio!=null?s.profit_loss_ratio.toFixed(2):'--', ''],
+  ];
+  el.innerHTML = kpis.map(function(k){
+    return '<div class="kpi-card"><div class="k">'+k[0]+'</div><div class="v '+k[2]+'">'+k[1]+'</div></div>';
+  }).join('');
+}
+
+function renderDailyPnl(d){
+  var el = $('dailyPnlList');
+  if(!d){ el.innerHTML = '<div class="empty">无数据</div>'; return; }
+  var keys = Object.keys(d).sort().reverse().slice(0, 30);
+  if(!keys.length){ el.innerHTML = '<div class="empty">暂无逐日盈亏</div>'; return; }
+  el.innerHTML = keys.map(function(k){
+    var r = d[k];
+    var c = cls(r.pnl_amount);
+    return '<div class="daily-row">'
+      + '<span class="n">'+k.slice(5)+'</span>'
+      + '<span class="t">'+r.buy_count+'买 '+r.sell_count+'卖</span>'
+      + '<span class="amt '+c+'">'+(r.pnl_amount>=0?'+':'')+fmtMoney(r.pnl_amount)+' ('+fmtPct(r.pnl_rate)+')</span>'
+      + '</div>';
+  }).join('');
+}
+
+// ── 研究大脑 ─────────────────────────────────────────
+function addMsg(role, html){
+  var box = $('chatBox');
+  var div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if(html) div.innerHTML = html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+function renderMd(text){
+  try {
+    var html = marked.parse(text || '');
+    return DOMPurify.sanitize(html);
+  } catch(e){ return esc(text); }
+}
+
+function sendChat(){
+  var input = $('chatInput');
+  var q = input.value.trim();
+  if(!q) return;
+  input.value = '';
+  addMsg('user', esc(q));
+  var ai = addMsg('ai', '<span style="color:var(--text2)">思考中…</span>');
+  $('chatSend').disabled = true;
+
+  var acc = '';
+  fetch('/api/research/chat/stream', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({question:q, conv:CONV}),
+  }).then(function(resp){
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    function pump(){
+      return reader.read().then(function(r){
+        if(r.done) return;
+        buf += decoder.decode(r.value, {stream:true});
+        var idx;
+        while((idx = buf.indexOf('\n\n')) >= 0){
+          var chunk = buf.slice(0, idx); buf = buf.slice(idx+2);
+          chunk.split('\n').forEach(function(line){
+            if(line.indexOf('data: ')!==0) return;
+            try {
+              var data = JSON.parse(line.slice(6));
+              if(data.type==='line'){ acc += data.text; ai.innerHTML = renderMd(acc); ai.scrollIntoView(false); }
+              else if(data.type==='done'){
+                if(!acc && data.answer) ai.innerHTML = renderMd(data.answer);
+                if(data.success===false && data.answer) ai.className = 'msg warn';
+              }
+            } catch(e){}
+          });
+        }
+        return pump();
+      });
+    }
+    return pump();
+  }).catch(function(e){
+    ai.className = 'msg warn';
+    ai.textContent = '调用失败: ' + e.message;
+  }).finally(function(){
+    $('chatSend').disabled = false;
+  });
+}
+
+$('chatSend').addEventListener('click', sendChat);
+$('chatInput').addEventListener('keydown', function(e){ if(e.key==='Enter') sendChat(); });
+$('btnReset').addEventListener('click', function(){
+  fetch('/api/research/chat/reset', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({conv:CONV})});
+  $('chatBox').innerHTML = '';
+});
+
+// ── 启动 ─────────────────────────────────────────────
+refreshTrade();
+})();
+</script>
+</body>
+</html>

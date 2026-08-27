@@ -8,6 +8,13 @@ const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
 const SVR_BASE = '';
 const DIR_BUY = 23, DIR_SELL = 24;
 
+// 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (web/js/stock_link.js 提供 window.stockLink)
+function stockLink(code, text) {
+  return (typeof window !== 'undefined' && window.stockLink)
+    ? window.stockLink(code, text)
+    : esc(text != null && text !== '' ? text : (code || ''));
+}
+
 let _calendarYear, _calendarMonth;
 let _selectedDate = '';
 let _dailyReportSeq = 0;  // 2026-08-07 审计 HIGH#2: showDailyReport 请求序号, 防快连点慢响应覆盖快响应
@@ -650,8 +657,8 @@ function renderDealTable(forceDate) {
     const dir = t.direction === DIR_BUY ? '买' : '卖';
     const cls = t.direction === DIR_BUY ? 'td-down' : 'td-up';
     return '<tr><td>' + (total - (_dealPage * DEAL_PAGE_SIZE + i)) + '</td>' +
-      '<td>' + esc(t.code || '') + '</td>' +
-      '<td>' + esc(t.name || '') + '</td>' +
+      '<td>' + stockLink(t.code) + '</td>' +
+      '<td>' + (t.name ? stockLink(t.code, t.name) : '') + '</td>' +
       '<td>' + ds + '</td>' +
       '<td class="' + cls + '">' + dir + '</td>' +
       '<td>' + (t.price || 0).toFixed(2) + '</td>' +
