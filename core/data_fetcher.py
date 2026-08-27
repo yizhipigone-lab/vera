@@ -480,27 +480,99 @@ class DataFetcher(ConnectorSeam):
         """
         if cls._cache.has_name_map() and not refresh:
             return cls._cache.get_name_map()
-        cls._ensure_ready()
-        tq = cls._connector().tq()
         result: dict = {}
-        # '5'=全部A股, '50'=沪深A股, '31'=ETF基金 (2026-08-15: 补 ETF 名称,
-        # 原只拉股票列表, 159949/518880 等场内基金在持仓清单里没名字)
-        for market in ('5', '50', '31'):
+        source = "TDX"
+        try:
+            cls._ensure_ready()
+            tq = cls._connector().tq()
+            # '5'=全部A股, '50'=沪深A股, '31'=ETF基金 (2026-08-15: 补 ETF 名称,
+            # 原只拉股票列表, 159949/518880 等场内基金在持仓清单里没名字)
+            for market in ('5', '50', '31'):
+                try:
+                    raw = tq.get_stock_list(market, list_type=1)
+                except Exception:
+                    continue
+                for s in raw:
+                    if not isinstance(s, dict):
+                        continue
+                    code = str(s.get("Code", "")).strip()
+                    name_raw = str(s.get("Name", "")).strip()
+                    if not code or not name_raw:
+                        continue
+                    result[code] = cls._fix_tq_name(name_raw)
+        except Exception:
+            logger.warning("TDX 拉取股票简称失败, 降级腾讯", exc_info=True)
+        if not result:
+            # 2026-08-27 腾讯降级 (页面简称全丢事件): TDX 没开/拉空时用
+            # kline_cache 清单代码全集 + 腾讯批量报价拼名称 (详见 _tencent_name_map)
+            source = "腾讯"
+            result = cls._tencent_name_map()
+        if result:
+            cls._cache.set_name_map(result)
+            logger.info(f"全量简称缓存已构建({source}): {len(result)} 条")
+        return result
+
+    @staticmethod
+    def _manifest_codes() -> list:
+        """kline_cache 清单里的去重代码全集 (腾讯降级的代码源)。
+
+        全 A + ETF 历史上都拉过日线 (选股/轮动都走 kline_cache), 实际
+        覆盖完整; 清单缺失/读取失败 → [] (降级链末端, fail-soft)。"""
+        try:
+            import sqlite3
+            from pathlib import Path
+            db = (Path(__file__).resolve().parents[1]
+                  / "data" / "kline_cache" / "manifest.db")
+            if not db.exists():
+                return []
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
             try:
-                raw = tq.get_stock_list(market, list_type=1)
+                rows = conn.execute(
+                    "SELECT DISTINCT stock_code FROM manifest").fetchall()
+            finally:
+                conn.close()
+            return [r[0] for r in rows if r and r[0]]
+        except Exception:
+            return []
+
+    @classmethod
+    def _tencent_name_map(cls) -> dict:
+        """腾讯降级 (2026-08-27): 批量走 qt.gtimg.cn 报价接口拼 {code: name}。
+
+        腾讯报价返回 GBK 文本 v_sz000001="51~平安银行~000001~...": 第 1
+        字段=名称, 第 2 字段=裸代码, v_ 前缀带市场。每批 60 只 (腾讯单
+        请求上限量级), 单批失败跳过不整单失败。仅作 TDX 不可用时的兜底。"""
+        import urllib.request
+        codes = cls._manifest_codes()
+        if not codes:
+            return {}
+        out: dict = {}
+        for i in range(0, len(codes), 60):
+            batch = codes[i:i + 60]
+            q = ",".join(c.split(".")[1].lower() + c.split(".")[0]
+                         for c in batch if "." in c)
+            if not q:
+                continue
+            try:
+                req = urllib.request.Request(
+                    "https://qt.gtimg.cn/q=" + q,
+                    headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    text = resp.read().decode("gbk", errors="ignore")
             except Exception:
                 continue
-            for s in raw:
-                if not isinstance(s, dict):
+            for line in text.split(";"):
+                line = line.strip()
+                if not line.startswith("v_") or '"' not in line:
                     continue
-                code = str(s.get("Code", "")).strip()
-                name_raw = str(s.get("Name", "")).strip()
-                if not code or not name_raw:
+                try:
+                    parts = line.split('"')[1].split("~")
+                    if len(parts) > 2 and parts[1] and parts[2]:
+                        market = line[2:4].upper()      # v_sz000001 → SZ
+                        out[f"{parts[2]}.{market}"] = parts[1]
+                except Exception:
                     continue
-                result[code] = cls._fix_tq_name(name_raw)
-        cls._cache.set_name_map(result)
-        logger.info(f"全量简称缓存已构建: {len(result)} 条")
-        return result
+        return out
 
     @classmethod
     def clear_name_cache(cls):
