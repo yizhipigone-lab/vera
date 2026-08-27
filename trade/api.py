@@ -219,13 +219,17 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                     else:
                         day_chg_amt = 0.0
                 market_value = None
-                avg_cost = s["buy_avg"]
+                # 2026-08-27 (159290 事件): 成本/数量取被平仓口径 (遗产仓
+                # 表内买入额只是零头, 用买入均价会把盈亏%分母缩错);
+                # 无 pnl 可考的历史平仓回退表内买入口径 (行为不变)。
+                avg_cost = (s["cost_avg"] if s["cost_avg"] is not None
+                            else s["buy_avg"])
                 pnl = s["realized_pnl"]
                 pnl_pct = s["realized_pnl_pct"]
                 entry_ts = s["entry_ts"]
                 exit_ts = s["exit_ts"]
                 hold = hold_days(s["entry_ts"], s["exit_ts"])
-                buy_qty = s["buy_qty"]
+                buy_qty = s["closed_qty"]
                 sell_avg = s["sell_avg"]
             else:
                 # 2026-08-12: 当日盈亏精确化 — 昨仓部分按昨收, 今日买入部分

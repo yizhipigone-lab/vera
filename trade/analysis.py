@@ -81,6 +81,15 @@ def entry_and_closed(store) -> tuple[dict, list, dict]:
 
     is_closed = 累计卖出量 > 0 且 >= 累计买入量。
     realized_pnl = Σ 卖方 pnl_amount (账本成本法, 与 deals/飞书同源)。
+
+    2026-08-27 (159290 事件) 已实现盈亏% 分母修正:
+    遗产仓 (买入早于系统上线, 成本来自 QMT 灌仓) 的买入额不在 trades
+    表内, 旧口径 pnl ÷ 表内买入额会把分母缩成零头 (159290: -46,579.53
+    ÷ 222.6 = -20,925%)。修正为 pnl ÷ 被卖股票的买入成本基数
+    (= Σ卖出额 - Σ盈亏, 只取带 pnl 的卖出行)。账本移动加权成本守恒
+    (全平仓时 Σ已卖成本 = Σ表内买入额), 全程表内的普通平仓数值不变。
+    closed_qty / cost_avg 同理取被平仓口径, 让已平仓行的
+    数量/成本/盈亏三个数字讲同一个故事。
     """
     entry_map: dict = {}
     summary: dict = {}
@@ -91,43 +100,62 @@ def entry_and_closed(store) -> tuple[dict, list, dict]:
     try:
         cur = ro.execute(
             "SELECT code, direction, MIN(ts), MAX(ts), SUM(qty), SUM(amount), "
-            "SUM(pnl_amount) FROM trades GROUP BY code, direction")
+            "SUM(pnl_amount), "
+            "SUM(CASE WHEN pnl_amount <> 0 THEN qty ELSE 0 END), "
+            "SUM(CASE WHEN pnl_amount <> 0 THEN amount ELSE 0 END) "
+            "FROM trades GROUP BY code, direction")
         per_code: dict = {}
-        for code, direction, min_ts, max_ts, qty, amount, pnl_amt in cur.fetchall():
+        for (code, direction, min_ts, max_ts, qty, amount, pnl_amt,
+             pnl_qty, pnl_turnover) in cur.fetchall():
             d = per_code.setdefault(code, {})
             d[direction] = {"min_ts": min_ts, "max_ts": max_ts,
                             "qty": qty or 0, "amount": amount or 0.0,
-                            "pnl": pnl_amt or 0.0}
+                            "pnl": pnl_amt or 0.0,
+                            "pnl_qty": pnl_qty or 0,
+                            "pnl_turnover": pnl_turnover or 0.0}
         for code, d in per_code.items():
             buy = d.get(DIRECTION_BUY)
             sell = d.get(DIRECTION_SELL)
             buy_qty = buy["qty"] if buy else 0
             buy_amount = buy["amount"] if buy else 0.0
+            buy_avg = (buy_amount / buy_qty) if buy_qty > 0 else None
             sell_qty = sell["qty"] if sell else 0
             sell_amount = sell["amount"] if sell else 0.0
+            sell_pnl = sell["pnl"] if sell else 0.0
+            # 被平仓口径: 带 pnl 的卖出行 (历史无 pnl 行成本不可考, 剔除)
+            pnl_qty = sell["pnl_qty"] if sell else 0
+            cost_basis = (sell["pnl_turnover"] - sell_pnl
+                          if sell and pnl_qty > 0 else 0.0)
+            cost_avg = (cost_basis / pnl_qty
+                        if pnl_qty > 0 and cost_basis > 0 else None)
             is_closed = bool(sell and sell_qty > 0 and sell_qty >= buy_qty)
             entry_ts = buy["min_ts"] if buy else None
             if buy:
                 entry_map[code] = entry_ts
             summary[code] = {
                 "buy_qty": buy_qty,
-                "buy_avg": (buy_amount / buy_qty) if buy_qty > 0 else None,
+                "buy_avg": buy_avg,
                 "sell_qty": sell_qty,
                 "sell_avg": (sell_amount / sell_qty) if sell_qty > 0 else None,
                 "entry_ts": entry_ts,
                 "exit_ts": sell["max_ts"] if sell else None,
-                "realized_pnl": (round(sell["pnl"], 2) if is_closed else None),
-                "realized_pnl_pct": (round(sell["pnl"] / buy_amount * 100, 2)
-                                     if is_closed and buy_amount > 0 and sell["pnl"]
+                "realized_pnl": (round(sell_pnl, 2) if is_closed else None),
+                "realized_pnl_pct": (round(sell_pnl / cost_basis * 100, 2)
+                                     if is_closed and cost_basis > 0 and sell_pnl
                                      else None),
                 "is_closed": is_closed,
+                # 被平仓口径的数量/成本 (无 pnl 可考时回退表内买入口径)
+                "closed_qty": pnl_qty if pnl_qty > 0 else buy_qty,
+                "cost_avg": cost_avg,
             }
         closed = [{
             "code": code, "name": name_of(code),
             "entry_ts": summary[code]["entry_ts"],
             "exit_ts": summary[code]["exit_ts"],
-            "qty": summary[code]["buy_qty"],
-            "buy_avg": summary[code]["buy_avg"],
+            "qty": summary[code]["closed_qty"],
+            "buy_avg": (summary[code]["cost_avg"]
+                        if summary[code]["cost_avg"] is not None
+                        else summary[code]["buy_avg"]),
             "sell_avg": summary[code]["sell_avg"],
             "realized_pnl": summary[code]["realized_pnl"],
             "realized_pnl_pct": summary[code]["realized_pnl_pct"],
