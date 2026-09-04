@@ -45,14 +45,24 @@ class _FakeProc:
 
 
 def _patch_spawn(monkeypatch, proc):
-    async def fake_spawn(task, env):
+    """假 spawn: 把 fake 子进程的固定输出写进日志文件 (对齐真实现的文件输出)。"""
+    async def fake_spawn(task, env, out_f, err_f):
+        out_f.write((proc._out or b"").decode("utf-8", "replace"))
+        err_f.write((proc._err or b"").decode("utf-8", "replace"))
+        out_f.flush()
+        err_f.flush()
         return proc
     monkeypatch.setattr(dsh, "_spawn", fake_spawn)
 
 
 def _patch_runtime(monkeypatch, tmp_path):
-    monkeypatch.setattr(dsh, "DSH_BIN", tmp_path / "dsh.cmd")
-    (tmp_path / "dsh.cmd").write_text("@echo off")
+    monkeypatch.setattr(dsh, "DSH_NODE", tmp_path / "node" / "node.exe")
+    (tmp_path / "node").mkdir()
+    (tmp_path / "node" / "node.exe").write_text("")
+    entry = tmp_path / "app" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("")
+    monkeypatch.setattr(dsh, "DSH_ENTRY", entry)
     monkeypatch.setattr(dsh, "DSH_HOME", tmp_path / "home")
     (tmp_path / "home").mkdir()
     monkeypatch.setattr(dsh, "DSH_WORKSPACE", tmp_path / "workspace")
@@ -74,8 +84,10 @@ def test_scan_leak_keyword_and_idcard():
 # ---- _pack_task 历史打包 ----
 
 def test_pack_task_no_history():
-    assert dsh._pack_task("问题", None) == "问题"
-    assert dsh._pack_task("问题", []) == "问题"
+    """任务文本必带"直接回答"指令前缀 (治出厂程序员人设跑偏, IRX 实测)。"""
+    t = dsh._pack_task("问题", None)
+    assert t.startswith(dsh._TASK_PREFIX) and t.endswith("问题")
+    assert dsh._pack_task("问题", []) == t
 
 
 def test_pack_task_packs_recent_rounds_only():
@@ -157,8 +169,9 @@ def test_run_dsh_disabled_channel(monkeypatch, tmp_path):
 
 
 def test_run_dsh_runtime_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(dsh, "DSH_BIN", tmp_path / "没有.cmd")
-    monkeypatch.setattr(dsh, "DSH_HOME", tmp_path / "也没有")
+    monkeypatch.setattr(dsh, "DSH_NODE", tmp_path / "没有node.exe")
+    monkeypatch.setattr(dsh, "DSH_ENTRY", tmp_path / "也没有bin.js")
+    monkeypatch.setattr(dsh, "DSH_HOME", tmp_path / "也没有home")
     r = run(dsh.run_dsh("q", db_path=tmp_path / "r.db"))
     assert r["success"] is False and "尚未部署" in r["answer"]
 

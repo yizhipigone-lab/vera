@@ -8,7 +8,13 @@
 
 VERA 化差异 (对照 IRX src/irx/assistant/dsh.py):
 - asyncio 子进程 (与 brain/claude_cli.py 同款), 不用同步 Popen + sleep 轮询;
-  杀进程树复用 claude_cli._kill_tree (Windows 双坑已解决: 孙进程持管道 + taskkill /T).
+  杀进程树复用 claude_cli._kill_tree (Windows 双坑已解决: 孙进程持管道 + taskkill /T)。
+- 直调 node.exe + bin.js, 不经 dsh.cmd 批处理 (IRX 2026-09-04 实测: 批处理
+  参数有截断风险, 带 5 轮对话历史的任务文本会被咬断)。
+- 子进程输出走 workspace 下日志文件, 不用 PIPE (IRX 2026-09-04 实测: Windows
+  管道缓冲约 64KB, 无人排干时子进程写阻塞挂死 — 进度轮播 4 分钟无产出)。
+- 任务文本带"直接回答"指令前缀, 人设本体在 dsh-runtime/workspace/CLAUDE.md
+  (IRX 2026-09-04 实测: 出厂是程序员人设, 裸问题会答非所问 — 问财报它聊环境)。
 - 留档落 SQLite data/brain_dsh_runs.db (VERA 无 Postgres); 留档失败 = 显性失败
   (宁可不给答案也不出无痕答案 — 检测型控制是底线不是装饰).
 - 30 分钟安全上限防僵尸 (IRX 无超时纯手动停; VERA 有无人值守场景).
@@ -37,7 +43,8 @@ logger = get_logger(__name__)
 
 _ROOT = project_root()
 DSH_RUNTIME = _ROOT / "dsh-runtime"
-DSH_BIN = DSH_RUNTIME / "dsh.cmd"
+DSH_NODE = DSH_RUNTIME / "node" / "node.exe"
+DSH_ENTRY = DSH_RUNTIME / "app" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
 DSH_HOME = DSH_RUNTIME / "home"
 DSH_WORKSPACE = DSH_RUNTIME / "workspace"
 DSH_DB = _ROOT / "data" / "brain_dsh_runs.db"
@@ -125,7 +132,7 @@ async def run_dsh(question: str, history: list[dict] | None = None,
     if not DSH_CHANNEL_ENABLED:
         result["answer"] = "深度思考通道已停用 (DSH_CHANNEL_ENABLED=False)。取消勾选可用普通模式提问。"
         return result
-    if not DSH_BIN.exists() or not DSH_HOME.is_dir():
+    if not DSH_NODE.exists() or not DSH_ENTRY.exists() or not DSH_HOME.is_dir():
         result["answer"] = ("深度思考通道尚未部署: 缺 dsh-runtime/ 便携运行时。"
                             "部署见 docs/plan/2026-09-04_研究大脑DSH深度思考通道_计划书.md Task 2。")
         return result
@@ -134,50 +141,85 @@ async def run_dsh(question: str, history: list[dict] | None = None,
     task = _pack_task(question, history)
     env = {**os.environ, "DSH_HOME": str(DSH_HOME)}
     t0 = time.monotonic()
+
+    # 子进程输出走日志文件而非 PIPE: Windows 管道缓冲约 64KB, 无人排干时
+    # 子进程写阻塞挂死 (IRX 2026-09-04 端到端实测: 进度轮播 4 分钟无产出)。
+    # 临时日志即读即删 — 取证全集在 home 会话日志, 不在这些临时文件。
+    DSH_WORKSPACE.mkdir(parents=True, exist_ok=True)
+    out_path = DSH_WORKSPACE / f"dsh-{run_id}.out.log"
+    err_path = DSH_WORKSPACE / f"dsh-{run_id}.err.log"
     try:
-        proc = await _spawn(task, env)
-    except Exception as e:
-        result["answer"] = f"深度思考通道启动失败: {type(e).__name__}: {e}"
+        out_f = out_path.open("w", encoding="utf-8", errors="replace")
+        err_f = err_path.open("w", encoding="utf-8", errors="replace")
+    except OSError as e:
+        result["answer"] = f"深度思考通道日志文件创建失败: {e}"
         return result
 
-    # 先注册进程再发任何事件 (IRX 踩坑 #5: 保证任意时刻停止都能命中)
-    _runs[run_id] = proc
-    stopped = False
     try:
-        if on_line:
-            await on_line(f"[DSH] 已摇醒深度思考进程 (run_id={run_id})，答完自动退出…")
-        while True:
-            if run_id in _stopped:
-                stopped = True
-                break
-            try:
-                # 不加 shield: wait_for 超时只取消"等待协程", 进程照跑;
-                # 加 shield 会让每个轮询周期堆积一个挂起 task
-                await asyncio.wait_for(proc.wait(), timeout=poll_seconds)
-                break  # 进程自然结束
-            except TimeoutError:
-                pass
-            if time.monotonic() - t0 > max_seconds:
-                await _kill_tree(proc)
-                _archive(run_id, question, "", None, True, t0, db_path)
-                result["answer"] = f"深度思考超时 (> {max_seconds}s)，已终止"
-                return result
-            if on_line:
-                await on_line(f"[DSH] {_tail_action()} · {int(time.monotonic() - t0)}s")
+        try:
+            proc = await _spawn(task, env, out_f, err_f)
+        except Exception as e:
+            result["answer"] = f"深度思考通道启动失败: {type(e).__name__}: {e}"
+            return result
 
-        out, err = await proc.communicate()
-        answer = (out or b"").decode("utf-8", "replace").strip()
+        # 先注册进程再发任何事件 (IRX 踩坑 #5: 保证任意时刻停止都能命中)
+        _runs[run_id] = proc
+        stopped = False
+        timed_out = False
+        try:
+            if on_line:
+                await on_line(f"[DSH] 已摇醒深度思考进程 (run_id={run_id})，答完自动退出…")
+            while True:
+                if run_id in _stopped:
+                    stopped = True
+                    break
+                try:
+                    # 不加 shield: wait_for 超时只取消"等待协程", 进程照跑;
+                    # 加 shield 会让每个轮询周期堆积一个挂起 task
+                    await asyncio.wait_for(proc.wait(), timeout=poll_seconds)
+                    break  # 进程自然结束
+                except TimeoutError:
+                    pass
+                if time.monotonic() - t0 > max_seconds:
+                    await _kill_tree(proc)
+                    timed_out = True
+                    break
+                if on_line:
+                    await on_line(f"[DSH] {_tail_action()} · {int(time.monotonic() - t0)}s")
+            await proc.communicate()  # 无管道可读, 此处仅等待退出 (停止/超时已被树杀)
+        finally:
+            out_f.close()
+            err_f.close()
+            _runs.pop(run_id, None)
+            _stopped.discard(run_id)
+
+        answer, err_text = "", ""
+        try:
+            answer = out_path.read_text(encoding="utf-8", errors="replace").strip()
+            err_text = err_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            pass
+        for p in (out_path, err_path):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
         rc = proc.returncode
-        hits = _archive(run_id, question, answer, rc, stopped, t0, db_path)  # 留档失败=抛 → 显性失败
+        hits = _archive(run_id, question, answer, rc, stopped or timed_out,
+                        t0, db_path)  # 留档失败=抛 → 显性失败
         if hits:
             result["warnings"].append(f"泄漏扫描命中 {hits}（已告警留档）")
+        if timed_out:
+            result["answer"] = f"深度思考超时 (> {max_seconds}s)，已终止"
+            return result
         if stopped:
             result["answer"] = "已停止: 本次深度思考被手动终止。"
             return result
         if rc == 0 and answer:
             result.update({"answer": answer, "success": True})
         else:
-            lines = (err or b"").decode("utf-8", "replace").strip().splitlines()
+            lines = err_text.splitlines()
             hint = lines[0][:120] if lines else "无 stderr 输出"
             result["answer"] = (f"深度思考未能完成 (exit {rc}): {hint}\n"
                                 "可稍后重试, 或取消勾选走普通模式。")
@@ -188,42 +230,53 @@ async def run_dsh(question: str, history: list[dict] | None = None,
         result["answer"] = f"深度思考异常 (含留档失败): {type(e).__name__}: {e}"
         return result
     finally:
+        for f in (out_f, err_f):  # close 幂等: 正常路径已关, 异常路径兜底
+            try:
+                f.close()
+            except Exception:
+                pass
         if channel:
             # D12: vault 对话沉淀 (铁律 2026-07-28)。archive_exchange 松耦合不抛。
             # 停止/失败也归档 —— archive.py 惯例: 失败标 [失败], 试错也是思考
             archive_exchange(channel, question, result)
-        _runs.pop(run_id, None)
-        _stopped.discard(run_id)
 
 
 # ---------------------------------------------------------------- 内部实现
 
-async def _spawn(task: str, env: dict):
+async def _spawn(task: str, env: dict, out_f, err_f):
     """起 DSH headless 子进程 (独立函数方便测试 monkeypatch)。
 
-    .cmd 经 create_subprocess_exec 可跑 (VERA 既有证据: claude CLI 在
-    Windows 同为 .cmd, claude_cli.py 生产在跑)。
+    直调 node.exe + bin.js, 不经 dsh.cmd 批处理 (IRX 实测: 批处理参数
+    有截断风险)。输出写日志文件, 不用 PIPE (IRX 实测: 64KB 缓冲挂死)。
     """
     return await asyncio.create_subprocess_exec(
-        str(DSH_BIN), "--profile", "headless", task,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        str(DSH_NODE), str(DSH_ENTRY), "--profile", "headless", task,
+        stdout=out_f, stderr=err_f,
         cwd=str(DSH_WORKSPACE), env=env)
 
 
+# 任务指令前缀 (IRX 2026-09-04 实测: 出厂程序员人设遇裸问题会答非所问,
+# 比如问财报它聊工作区环境)。人设本体在 dsh-runtime/workspace/CLAUDE.md。
+_TASK_PREFIX = ("请直接回答下面的问题：结论先行、给出依据与出处；"
+                "不要反问澄清，不要描述你的工作环境或工作区状态；"
+                "一律用中文回答。")
+
+
 def _pack_task(question: str, history: list[dict] | None) -> str:
-    """多轮记忆: 近期对话 (仅 user/assistant 轮) 打包进任务文本。
+    """任务文本 = 直接回答指令前缀 + (可选)近期对话 + 问题。
 
     先过滤再截窗 —— 窗口算的是对话轮数, 杂讯角色不占名额。"""
-    if not history:
-        return question
-    rounds = [m for m in history if m.get("role") in ("user", "assistant")]
-    lines = []
-    for m in rounds[-(DSH_HISTORY_ROUNDS * 2):]:
-        label = "用户" if m.get("role") == "user" else "助手"
-        lines.append(f"{label}: {m.get('content') or ''}")
-    if not lines:
-        return question
-    return "【对话记录】\n" + "\n".join(lines) + f"\n\n【问题】\n{question}"
+    body = question
+    if history:
+        rounds = [m for m in history if m.get("role") in ("user", "assistant")]
+        lines = []
+        for m in rounds[-(DSH_HISTORY_ROUNDS * 2):]:
+            label = "用户" if m.get("role") == "user" else "助手"
+            lines.append(f"{label}: {m.get('content') or ''}")
+        if lines:
+            body = ("【对话记录】\n" + "\n".join(lines)
+                    + f"\n\n【问题】\n{question}")
+    return _TASK_PREFIX + "\n\n" + body
 
 
 def _latest_session_log() -> Path | None:
