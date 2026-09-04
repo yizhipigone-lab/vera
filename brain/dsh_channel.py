@@ -187,6 +187,10 @@ async def run_dsh(question: str, history: list[dict] | None = None,
                 if on_line:
                     await on_line(f"[DSH] {_tail_action()} · {int(time.monotonic() - t0)}s")
             await proc.communicate()  # 无管道可读, 此处仅等待退出 (停止/超时已被树杀)
+            # 撞车修复 (2026-09-05 实测): stop_dsh 的 kill 会让 wait() 先返回,
+            # 循环走"自然结束"分支 break, stopped 漏标记 → 用户点停止却看到
+            # "未能完成 (exit 1)"。收尾前再认一次停止标记。
+            stopped = stopped or (run_id in _stopped)
         finally:
             out_f.close()
             err_f.close()

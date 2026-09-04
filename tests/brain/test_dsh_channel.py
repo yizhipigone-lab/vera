@@ -160,6 +160,32 @@ def test_stop_dsh_unknown_run_id():
     assert dsh.stop_dsh("不存在的") is False
 
 
+def test_run_dsh_stop_race_reports_stopped(monkeypatch, tmp_path):
+    """撞车场景 (2026-09-05 8080 实测): kill 让 wait() 先返回, 循环走
+    "自然结束"分支 break; 收尾时必须再认一次停止标记, 否则用户点停止
+    却看到 "未能完成 (exit 1)"。"""
+    _patch_runtime(monkeypatch, tmp_path)
+    proc = _FakeProc(hang=True)
+    _patch_spawn(monkeypatch, proc)
+
+    async def scenario():
+        t = asyncio.create_task(
+            dsh.run_dsh("q", run_id="race1",
+                        db_path=tmp_path / "r.db", poll_seconds=0.01))
+        await asyncio.sleep(0.03)
+        proc._rc = 1
+        proc._hang = False           # wait() 下个轮次就返回 1 ("自然"退出)
+        dsh._stopped.add("race1")    # 停止标记几乎同时落地 (等价 stop_dsh)
+        return await t
+
+    r = run(scenario())
+    assert r["success"] is False and "已停止" in r["answer"]
+    import sqlite3
+    stopped = sqlite3.connect(str(tmp_path / "r.db")).execute(
+        "SELECT stopped FROM brain_dsh_runs WHERE run_id='race1'").fetchone()
+    assert stopped[0] == 1
+
+
 def test_run_dsh_disabled_channel(monkeypatch, tmp_path):
     monkeypatch.setattr(dsh, "DSH_CHANNEL_ENABLED", False)
     r = run(dsh.run_dsh("q", db_path=tmp_path / "r.db"))
