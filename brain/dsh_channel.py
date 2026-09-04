@@ -1,0 +1,301 @@
+"""brain/dsh_channel.py — DSH 深度思考通道 (复刻 IRX ADR-011 架构, VERA 化).
+
+外部接口仅 3 个符号: run_dsh / stop_dsh / scan_leak. research_api 是唯一调用方;
+子进程生命周期 / 会话日志取证 / 留档落库全藏在内部.
+
+"摇醒"机制 (IRX 手册 §3): DSH headless 是一次性程序, 每问摇醒一个新进程,
+答完即灭; 多轮记忆靠调用方把近期对话打包进任务文本 (headless 无会话续接).
+
+VERA 化差异 (对照 IRX src/irx/assistant/dsh.py):
+- asyncio 子进程 (与 brain/claude_cli.py 同款), 不用同步 Popen + sleep 轮询;
+  杀进程树复用 claude_cli._kill_tree (Windows 双坑已解决: 孙进程持管道 + taskkill /T).
+- 留档落 SQLite data/brain_dsh_runs.db (VERA 无 Postgres); 留档失败 = 显性失败
+  (宁可不给答案也不出无痕答案 — 检测型控制是底线不是装饰).
+- 30 分钟安全上限防僵尸 (IRX 无超时纯手动停; VERA 有无人值守场景).
+- 传 channel 时调用 brain.archive.archive_exchange 沉淀 vault 对话归档
+  (2026-07-28 用户拍板铁律; 该调用原本藏在 ask_brain 内部, 本通道绕过它必须自补).
+失败一律返 {"success": False, ...}, 不抛 (松耦合: DSH 挂了主大脑零感知).
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+
+from brain.archive import archive_exchange  # 对话沉淀 (松耦合, 自身不抛)
+from brain.claude_cli import _kill_tree     # 复用: Windows 进程树双坑已解决
+from utils.logger import get_logger
+from utils.sysutil import project_root
+
+logger = get_logger(__name__)
+
+_ROOT = project_root()
+DSH_RUNTIME = _ROOT / "dsh-runtime"
+DSH_BIN = DSH_RUNTIME / "dsh.cmd"
+DSH_HOME = DSH_RUNTIME / "home"
+DSH_WORKSPACE = DSH_RUNTIME / "workspace"
+DSH_DB = _ROOT / "data" / "brain_dsh_runs.db"
+
+DSH_CHANNEL_ENABLED = True   # 应急总开关: False 一键停用, 主大脑零影响
+DSH_PROGRESS_SECONDS = 2.0   # 等待动作提示轮询间隔
+DSH_MAX_SECONDS = 1800       # 安全上限 (防僵尸; 正常深度思考 1-5 分钟)
+DSH_HISTORY_ROUNDS = 5       # 多轮记忆打包轮数 (打进任务文本, headless 无会话续接)
+
+# 泄漏扫描关键词 (单一来源): 命中 = 出网上下文含敏感域特征 → 告警记录
+DSH_LEAK_KEYWORDS = ("资金账号", "股东账号", "交易密码", "trade.db")
+_ID_CARD_RE = re.compile(r"\b\d{17}[\dXx]\b")
+
+# 会话日志尾部事件 → 等待 UI 动作提示 (IRX 同款人话翻译)
+_ACTION_HINTS = (
+    ("user/message", "正在思考"),
+    ("tool/call", "正在调用工具"),
+    ("tool/result", "正在整理工具结果"),
+    ("assistant/chunk", "正在撰写答复"),
+    ("assistant/message", "正在撰写答复"),
+    ("step/start", "正在推进"),
+)
+
+_runs: dict[str, asyncio.subprocess.Process] = {}
+_stopped: set[str] = set()
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS brain_dsh_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id           TEXT NOT NULL,
+    question         TEXT NOT NULL,
+    answer           TEXT,
+    exit_code        INTEGER,
+    stopped          INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms       INTEGER,
+    session_log_path TEXT,
+    context_sha256   TEXT,
+    context_chars    INTEGER,
+    leak_hits        TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_brain_dsh_runs_ts ON brain_dsh_runs (created_at DESC);
+"""
+
+
+# ---------------------------------------------------------------- 公开接口
+
+def scan_leak(content: str) -> list[str]:
+    """纯函数: 扫描文本, 返回命中的敏感域特征列表 (关键词 + 证件号模式)。"""
+    hits = [kw for kw in DSH_LEAK_KEYWORDS if kw.lower() in content.lower()]
+    if _ID_CARD_RE.search(content):
+        hits.append("证件号模式")
+    return hits
+
+
+def stop_dsh(run_id: str) -> bool:
+    """终止一次运行 (杀进程树)。返回是否找到了该运行。"""
+    proc = _runs.get(run_id)
+    if proc is None:
+        return False
+    _stopped.add(run_id)
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    return True
+
+
+async def run_dsh(question: str, history: list[dict] | None = None,
+                  run_id: str | None = None, on_line=None,
+                  channel: str | None = None,
+                  db_path: Path | None = None,
+                  poll_seconds: float = DSH_PROGRESS_SECONDS,
+                  max_seconds: int = DSH_MAX_SECONDS) -> dict:
+    """摇醒一次 DSH 深度思考: 子进程执行 → 周期动作提示 → 收尾留档。
+
+    返回与 brain.claude_cli.ask_brain 同款契约
+    {answer, success, low_confidence, warnings, session_id}, 路由层/前端零适配。
+    history 为 [{role, content}] (仅 user/assistant 轮被打包进任务文本)。
+    on_line: async callable(line:str), SSE 进度回调; None=静默。
+    channel: 传了就把问答沉淀进 vault 对话归档 (archive_exchange); None=不归档。
+    """
+    result = {"answer": "", "success": False, "low_confidence": False,
+              "warnings": [], "session_id": None}
+    if not DSH_CHANNEL_ENABLED:
+        result["answer"] = "深度思考通道已停用 (DSH_CHANNEL_ENABLED=False)。取消勾选可用普通模式提问。"
+        return result
+    if not DSH_BIN.exists() or not DSH_HOME.is_dir():
+        result["answer"] = ("深度思考通道尚未部署: 缺 dsh-runtime/ 便携运行时。"
+                            "部署见 docs/plan/2026-09-04_研究大脑DSH深度思考通道_计划书.md Task 2。")
+        return result
+
+    run_id = run_id or uuid.uuid4().hex[:12]
+    task = _pack_task(question, history)
+    env = {**os.environ, "DSH_HOME": str(DSH_HOME)}
+    t0 = time.monotonic()
+    try:
+        proc = await _spawn(task, env)
+    except Exception as e:
+        result["answer"] = f"深度思考通道启动失败: {type(e).__name__}: {e}"
+        return result
+
+    # 先注册进程再发任何事件 (IRX 踩坑 #5: 保证任意时刻停止都能命中)
+    _runs[run_id] = proc
+    stopped = False
+    try:
+        if on_line:
+            await on_line(f"[DSH] 已摇醒深度思考进程 (run_id={run_id})，答完自动退出…")
+        while True:
+            if run_id in _stopped:
+                stopped = True
+                break
+            try:
+                # 不加 shield: wait_for 超时只取消"等待协程", 进程照跑;
+                # 加 shield 会让每个轮询周期堆积一个挂起 task
+                await asyncio.wait_for(proc.wait(), timeout=poll_seconds)
+                break  # 进程自然结束
+            except TimeoutError:
+                pass
+            if time.monotonic() - t0 > max_seconds:
+                await _kill_tree(proc)
+                _archive(run_id, question, "", None, True, t0, db_path)
+                result["answer"] = f"深度思考超时 (> {max_seconds}s)，已终止"
+                return result
+            if on_line:
+                await on_line(f"[DSH] {_tail_action()} · {int(time.monotonic() - t0)}s")
+
+        out, err = await proc.communicate()
+        answer = (out or b"").decode("utf-8", "replace").strip()
+        rc = proc.returncode
+        hits = _archive(run_id, question, answer, rc, stopped, t0, db_path)  # 留档失败=抛 → 显性失败
+        if hits:
+            result["warnings"].append(f"泄漏扫描命中 {hits}（已告警留档）")
+        if stopped:
+            result["answer"] = "已停止: 本次深度思考被手动终止。"
+            return result
+        if rc == 0 and answer:
+            result.update({"answer": answer, "success": True})
+        else:
+            lines = (err or b"").decode("utf-8", "replace").strip().splitlines()
+            hint = lines[0][:120] if lines else "无 stderr 输出"
+            result["answer"] = (f"深度思考未能完成 (exit {rc}): {hint}\n"
+                                "可稍后重试, 或取消勾选走普通模式。")
+        return result
+    except Exception as e:
+        # 留档失败等异常 → 显性失败 (不出无痕答案), 仍松耦合不炸 server
+        logger.warning(f"DSH 通道异常: {e}", exc_info=True)
+        result["answer"] = f"深度思考异常 (含留档失败): {type(e).__name__}: {e}"
+        return result
+    finally:
+        if channel:
+            # D12: vault 对话沉淀 (铁律 2026-07-28)。archive_exchange 松耦合不抛。
+            # 停止/失败也归档 —— archive.py 惯例: 失败标 [失败], 试错也是思考
+            archive_exchange(channel, question, result)
+        _runs.pop(run_id, None)
+        _stopped.discard(run_id)
+
+
+# ---------------------------------------------------------------- 内部实现
+
+async def _spawn(task: str, env: dict):
+    """起 DSH headless 子进程 (独立函数方便测试 monkeypatch)。
+
+    .cmd 经 create_subprocess_exec 可跑 (VERA 既有证据: claude CLI 在
+    Windows 同为 .cmd, claude_cli.py 生产在跑)。
+    """
+    return await asyncio.create_subprocess_exec(
+        str(DSH_BIN), "--profile", "headless", task,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        cwd=str(DSH_WORKSPACE), env=env)
+
+
+def _pack_task(question: str, history: list[dict] | None) -> str:
+    """多轮记忆: 近期对话 (仅 user/assistant 轮) 打包进任务文本。
+
+    先过滤再截窗 —— 窗口算的是对话轮数, 杂讯角色不占名额。"""
+    if not history:
+        return question
+    rounds = [m for m in history if m.get("role") in ("user", "assistant")]
+    lines = []
+    for m in rounds[-(DSH_HISTORY_ROUNDS * 2):]:
+        label = "用户" if m.get("role") == "user" else "助手"
+        lines.append(f"{label}: {m.get('content') or ''}")
+    if not lines:
+        return question
+    return "【对话记录】\n" + "\n".join(lines) + f"\n\n【问题】\n{question}"
+
+
+def _latest_session_log() -> Path | None:
+    """定位 DSH home 下最新会话日志 (= 本次运行的出网上下文全集)。
+
+    .jsonl 与 .jsonl.zstd 都认 (IRX 仓实测为 zstd 压缩, 其 glob 只认
+    .jsonl —— 本实现修正该疑点)。
+    """
+    d = DSH_HOME / "sessions"
+    if not d.is_dir():
+        return None
+    logs = [p for p in d.rglob("*")
+            if p.is_file() and (p.name.endswith(".jsonl")
+                                or p.name.endswith(".jsonl.zstd"))]
+    return max(logs, key=lambda p: p.stat().st_mtime) if logs else None
+
+
+def _log_text(raw: bytes, path: Path) -> str:
+    """会话日志 bytes → 文本 (zstd 压缩则解压; 缺 zstandard 包且真遇到才报错)。"""
+    if path.name.endswith(".zstd"):
+        import zstandard  # 可选依赖: 仅压缩日志需要
+        raw = zstandard.ZstdDecompressor().stream_reader(raw).read()
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _tail_action() -> str:
+    """读会话日志尾部, 把最近事件翻译成等待 UI 动作提示 (zstd 压缩时退化为"工作中")。"""
+    log = _latest_session_log()
+    if log is None:
+        return "启动中"
+    try:
+        with log.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 4096))
+            tail = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return "工作中"
+    for marker, hint in _ACTION_HINTS:
+        if marker in tail:
+            return hint
+    return "工作中"
+
+
+def _archive(run_id: str, question: str, answer: str, exit_code: int | None,
+             stopped: bool, t0: float, db_path: Path | None = None) -> list:
+    """每问全量留档: 会话日志哈希 + 泄漏扫描 + 落 SQLite。
+
+    失败直接抛 (显性失败)。返回泄漏命中列表 (供调用方写进 warnings 让前端可见)。"""
+    db = db_path or DSH_DB
+    log = _latest_session_log()
+    ctx_hash, ctx_chars, hits = None, None, []
+    if log is not None:
+        raw = log.read_bytes()
+        ctx_hash = hashlib.sha256(raw).hexdigest()
+        ctx_chars = len(raw)
+        hits = scan_leak(_log_text(raw, log))
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(_DDL)
+        conn.execute(
+            "INSERT INTO brain_dsh_runs (run_id, question, answer, exit_code,"
+            " stopped, elapsed_ms, session_log_path, context_sha256,"
+            " context_chars, leak_hits) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (run_id, question[:500], answer[:20000], exit_code, int(stopped),
+             int((time.monotonic() - t0) * 1000),
+             str(log) if log else None, ctx_hash, ctx_chars,
+             json.dumps(hits, ensure_ascii=False) if hits else None))
+        conn.commit()
+    finally:
+        conn.close()
+    if hits:
+        logger.warning(f"DSH 泄漏告警 run={run_id}: 命中 {hits}")
+    return hits
