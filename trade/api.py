@@ -600,27 +600,32 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         return result
 
     @app.get("/api/trade/analysis/daily_pnl")
-    def analysis_daily_pnl(year: int = Query(default=0),
-                           month: int = Query(default=0)):
-        """逐日盈亏 (日历格子数据源)。year/month=0 默认当前年月。"""
+    def analysis_daily_pnl(year: int = Query(default=0, ge=0, le=3000),
+                           month: int = Query(default=0, ge=0, le=12)):
+        """逐日盈亏 (日历格子数据源)。year/month=0 默认当前年月。
+
+        2026-09-04: 响应追加 "_month" 月度汇总 (日历月收益行数据源),
+        键以 "_" 开头与日期键 (YYYY-MM-DD) 无碰撞, 按日期键查找的老
+        消费方自动忽略。同时修复首日基准 bug: 旧代码把前月基准行切掉、
+        且仅 i>0 才算盈亏, 每月首个交易日恒显 0.00%。
+        同日对手审计+复验修复: ① 基准行改 store.load_prev 单查 (无窗口
+        概念, 前月整月停机也取得到真基准); ② 月买卖笔数按整月成交聚合
+        (快照洞日成交不丢); ③ year/month 上界收紧 (3000/12, 手输越界
+        原为 500, 现 422; 0=缺省当月哨兵保留; le=3000 取 Windows
+        mktime64 平台上限)。"""
         if year <= 0 or month <= 0:
             now = datetime.now()
             year = year if year > 0 else now.year
             month = month if month > 0 else now.month
         prefix = f"{year}-{month:02d}"
-        # 拉前月最后一行做首日基准 (避免首日盈亏恒为0)
-        rows_all = trade_app.store.daily_asset.get(
-            start=f"{year - 1 if month == 1 else year}-{(month - 1) if month > 1 else 12:02d}-25",
-            end=f"{prefix}-31")
-        # 只保留当月行; 但前月最后一行用于 i>0 计算
-        first_month_idx = 0
-        for idx, r in enumerate(rows_all):
-            if r["date"].startswith(prefix):
-                first_month_idx = idx
-                break
-        else:
-            first_month_idx = len(rows_all)
-        rows = rows_all[first_month_idx:]
+        # 当月行 + 基准行分开取 (2026-09-04 复验遗留①根治):
+        # 基准 = store.load_prev 单查「当月1号前最后一行」——无窗口概念,
+        # 任意长度停机 (哪怕前月整月黑) 都能取到真实基准, 不再误判
+        # "账户首月"; 且自带 total_asset>0 过滤, 零资产脏行不做基准。
+        # 旧窗口法 (起点放多早, 总有更长的停机逃出去) 至此废弃。
+        rows = trade_app.store.daily_asset.get(
+            start=f"{prefix}-01", end=f"{prefix}-31")
+        prev_month_row = trade_app.store.daily_asset.load_prev(f"{prefix}-01")
         result: dict = {}
         # 批量加载当月全部成交 (单次查询, 避免 N+1)
         month_start = datetime(year, month, 1).timestamp()
@@ -644,13 +649,21 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                     daily_trades[d]["sell"].add(traded_id)
         finally:
             ro.close()
+        win_days = loss_days = 0
         for i, r in enumerate(rows):
+            # 首日基准 = 前月最后一行 (2026-09-04 修复: 旧代码 i==0 恒 0);
+            # 账户首月无前月行 → prev=None, 首日盈亏不可算, 如实给 0
+            prev = rows[i - 1] if i > 0 else prev_month_row
             pnl_amount = 0.0
             pnl_rate = 0.0
-            if i > 0:
-                pnl_amount = r["total_asset"] - rows[i - 1]["total_asset"]
-                prev = rows[i - 1]["total_asset"]
-                pnl_rate = pnl_amount / prev if prev > 0 else 0.0
+            if prev is not None:
+                pnl_amount = r["total_asset"] - prev["total_asset"]
+                prev_asset = prev["total_asset"]
+                pnl_rate = pnl_amount / prev_asset if prev_asset > 0 else 0.0
+            if pnl_rate > 0:
+                win_days += 1
+            elif pnl_rate < 0:
+                loss_days += 1
             date_str = r["date"]
             tinfo = daily_trades.get(date_str, {"buy": set(), "sell": set()})
             result[date_str] = {
@@ -659,6 +672,33 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
                 "buy_count": len(tinfo["buy"]),
                 "sell_count": len(tinfo["sell"]),
             }
+        # 月买卖笔数按整月成交聚合, 不随快照行累加 —— 快照洞日 (停机缺
+        # 资产行) 的成交同样计入月汇总 (对手审计 2026-09-04 修复)
+        buy_total = sum(len(v["buy"]) for v in daily_trades.values())
+        sell_total = sum(len(v["sell"]) for v in daily_trades.values())
+        # 月度汇总: 期末资产相对基准行资产的总涨跌 (与逐日链复利合成等价,
+        # 但用原值一次除法, 无连乘舍入)。基准 = 前月最后交易日资产;
+        # 账户首月无前月行 → 回退当月首行 (汇总自次个交易日起算,
+        # baseline_is_prev_month=False 供前端区分提示)。空月 → None。
+        # trading_days 为快照口径: 缺快照日的涨跌并入下一有行日。
+        if rows:
+            baseline = prev_month_row if prev_month_row is not None else rows[0]
+            base_asset = baseline["total_asset"]
+            m_amount = rows[-1]["total_asset"] - base_asset
+            m_rate = m_amount / base_asset if base_asset > 0 else 0.0
+            result["_month"] = {
+                "pnl_rate": round(m_rate, 6),
+                "pnl_amount": round(m_amount, 2),
+                "baseline_date": baseline["date"],
+                "baseline_is_prev_month": prev_month_row is not None,
+                "trading_days": len(rows),
+                "win_days": win_days,
+                "loss_days": loss_days,
+                "buy_count": buy_total,
+                "sell_count": sell_total,
+            }
+        else:
+            result["_month"] = None
         return result
 
     @app.get("/api/trade/analysis/daily_report")

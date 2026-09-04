@@ -360,7 +360,9 @@ function renderSummary(s){
 function renderDailyPnl(d){
   var el = $('dailyPnlList');
   if(!d){ el.innerHTML = '<div class="empty">无数据</div>'; return; }
-  var keys = Object.keys(d).sort().reverse().slice(0, 30);
+  // 2026-09-04: 过滤非日期键 — daily_pnl 响应新增 "_month" 月度汇总键,
+  // 字典序排在日期键之后、reverse 后排最前, 不过滤会渲染出一行幽灵数据
+  var keys = Object.keys(d).filter(function(k){return /^\d{4}-\d{2}-\d{2}$/.test(k);}).sort().reverse().slice(0, 30);
   if(!keys.length){ el.innerHTML = '<div class="empty">暂无逐日盈亏</div>'; return; }
   el.innerHTML = keys.map(function(k){
     var r = d[k];

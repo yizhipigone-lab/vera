@@ -18,6 +18,7 @@ function stockLink(code, text) {
 let _calendarYear, _calendarMonth;
 let _selectedDate = '';
 let _dailyReportSeq = 0;  // 2026-08-07 审计 HIGH#2: showDailyReport 请求序号, 防快连点慢响应覆盖快响应
+let _calLoadSeq = 0;      // 2026-09-04 对手审计: 日历月度数据请求序号, 防切月/进页竞态 (慢的旧月响应后到覆盖新月渲染)
 let _allDeals = [];
 let _dealPage = 0;
 const DEAL_PAGE_SIZE = 200;
@@ -34,6 +35,7 @@ window.analysisPageEnter = async function() {
 async function loadAnalysisData() {
   const emptyEl = document.getElementById('analysisEmpty');
   const contentEl = document.getElementById('analysisContent');
+  const calSeq = ++_calLoadSeq;  // 进页加载也占一个序号: 与切月路径互斥, 谁最后发起谁有渲染权
   let fetchError = false;
   try {
     const results = await Promise.allSettled([
@@ -66,7 +68,8 @@ async function loadAnalysisData() {
     renderKpiCards(summary);
 
     // Render calendar
-    renderCalendar(calData, dailyPnl);
+    // 序号守卫: 加载期间用户已切月 (序号变) → 本次渲染放弃, 避免旧月数据覆盖新月视图
+    if (calSeq === _calLoadSeq) renderCalendar(calData, dailyPnl);
 
     // Render equity curve
     if (equity && equity.equity && equity.equity.length > 0) {
@@ -170,6 +173,8 @@ function renderCalendar(calData, dailyPnl) {
   const title = document.getElementById('calTitle');
   if (!grid) return;
   title.textContent = _calendarYear + '年' + _calendarMonth + '月';
+  // 2026-09-04: 月度收益行随日历一起渲染 — 首载/切月/今天按钮三条路径都走这里
+  renderMonthSummary(dailyPnl);
 
   // Get days in month
   const daysInMonth = new Date(_calendarYear, _calendarMonth, 0).getDate();
@@ -228,6 +233,38 @@ function renderCalendar(calData, dailyPnl) {
       filterDealsByDate(_selectedDate);
     });
   });
+}
+
+// ── 月度收益汇总行 (2026-09-04): 随月份导航动态刷新 ──
+// 数据源 = daily_pnl 响应的 "_month" 键 (后端以「上月最后交易日总资产」为
+// 基准一次除法算出, 与逐日链复利合成等价、无连乘舍入)。老响应无该键
+// (trade 服务未重启) 或请求失败 → 显示"该月无交易数据", 不报错。
+function renderMonthSummary(dailyPnl) {
+  const el = document.getElementById('calMonthSummary');
+  if (!el) return;
+  const m = dailyPnl ? dailyPnl['_month'] : null;
+  if (!m || !m.trading_days) {
+    el.innerHTML = '<span style="color:var(--text2)">该月无交易数据</span>';
+    return;
+  }
+  const cls = m.pnl_rate > 0 ? 'var(--up)' : m.pnl_rate < 0 ? 'var(--down)' : 'var(--text)';
+  const rateStr = (m.pnl_rate >= 0 ? '+' : '') + (m.pnl_rate * 100).toFixed(2) + '%';
+  const amtStr = (m.pnl_amount >= 0 ? '+¥' : '-¥') + Math.abs(m.pnl_amount).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+  const baseTxt = m.baseline_is_prev_month
+    ? '基准 = 上月最后一个交易日 (' + esc(m.baseline_date || '') + ') 的日终总资产'
+    : '账户首月无上月基准, 自当月首个交易日 (' + esc(m.baseline_date || '') + ') 起算';
+  const tip = '本月所有交易日涨跌合成后的总收益率 (复利口径, 不是每日百分比简单相加)。' + baseTxt +
+    ', 截止本月最后一个有数据的交易日 (当月未过完 = 月至今)。' +
+    '注意: 月内入金/出金会被当作盈亏计入, 与日历格子、权益曲线同口径。';
+  const sep = '<span style="color:var(--border)">|</span>';
+  el.innerHTML =
+    '<span style="color:var(--text2)">本月收益 <span style="cursor:help;color:var(--text2);font-size:10px" title="' + tip + '">?</span></span>' +
+    '<span style="font-size:18px;font-weight:700;color:' + cls + ';font-family:var(--mono)">' + rateStr + '</span>' +
+    '<span style="font-weight:600;color:' + cls + '">' + amtStr + '</span>' +
+    sep +
+    '<span>交易日 <b>' + m.trading_days + '</b> 天 · 盈 <span style="color:var(--up)">' + m.win_days + '</span> · 亏 <span style="color:var(--down)">' + m.loss_days + '</span></span>' +
+    sep +
+    '<span>买 <b>' + m.buy_count + '</b> · 卖 <b>' + m.sell_count + '</b></span>';
 }
 
 // ── 盘后日报详情 (2026-08-07): 点击日历格子展示当日全明细 ──
@@ -388,6 +425,11 @@ function wireCalendarNav() {
 }
 
 async function refreshCalendarMonth() {
+  // 2026-09-04 对手审计: 请求序号守卫 (同 showDailyReport 的 _dailyReportSeq
+  // 模式) — 快速连点切月时, 慢的旧月响应后到必须丢弃, 否则渲染成
+  // "新月标题 + 旧月日历和月度收益行" 的错配视图
+  const seq = ++_calLoadSeq;
+  _dailyReportSeq++;  // 2026-09-04 复验遗留③: 切月作废在途日报请求 —— 否则慢响应回来 renderDailyReport 会把刚 hideDailyReport 的旧月卡片复活 (2026-08-07 起的相邻既有缺陷)
   // 2026-08-07 自检: 切月后若选中日不在新视图月份, 清选中 + 隐藏日报卡片,
   // 防止 8 月选 8/7 看完日报切到 9 月时, 卡片仍停留 8/7 陈旧数据误导用户。
   // "今天"按钮(选中日=当月)与"收起"按钮(已清空)不受误伤。
@@ -398,6 +440,7 @@ async function refreshCalendarMonth() {
   }
   const calData = await fetch(SVR_BASE + '/api/calendar?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
   const dailyPnl = await fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
+  if (seq !== _calLoadSeq) return;  // 已有更新的切月请求, 丢弃本次陈旧响应
   renderCalendar(calData, dailyPnl);
 }
 

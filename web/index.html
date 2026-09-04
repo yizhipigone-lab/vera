@@ -905,6 +905,8 @@ input:focus-visible,select:focus-visible{outline:none}
         </div>
       </div>
       <div class="chart-box-body tall" style="height:auto;padding:8px">
+        <!-- 2026-09-04: 月度收益汇总行 — 随月份导航动态刷新, 数据源 daily_pnl 响应 _month 键 -->
+        <div id="calMonthSummary" style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding:6px 8px 8px;margin-bottom:4px;border-bottom:1px dashed var(--border);font-size:12px;color:var(--text)"></div>
         <div class="weekdays-header" style="display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:11px;color:var(--text2);font-weight:600;padding:4px 0 8px">
           <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
         </div>
@@ -1355,7 +1357,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_chat.js?v=20260731a"></script>
 <script src="/web/js/data_cache.js?v=20260814b"></script>
-<script type="module" src="/web/js/analysis.js?v=20260826a"></script>
+<script type="module" src="/web/js/analysis.js?v=20260904c"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260814c"></script>
 </body>
 </html>
