@@ -6,6 +6,7 @@
 卸载 = 删本路由注册 + index.html 卡片 + web/js/brain_chat.js。
 """
 import re
+import uuid
 
 from fastapi import APIRouter
 
@@ -101,12 +102,28 @@ async def research_chat_stream(body: dict):
     if err:
         return err
 
+    deep = bool(body.get("deep"))
+    run_id = uuid.uuid4().hex[:12] if deep else None
+    history = body.get("history") if deep else None
+
     async def generate():
         queue: _aio.Queue = _aio.Queue()
         async def on_line(line: str):
             await queue.put(line)
 
+        if run_id:
+            # 先发 channel 事件 (前端拿 run_id 才能点停止);
+            # 此刻 dsh_channel.run_dsh 内部已先注册进程 (IRX 踩坑 #5)
+            yield f"data: {_json.dumps({'type': 'channel', 'channel': 'dsh', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+
         async def _run():
+            if deep:
+                # 深度思考通道: 勾选即走 DSH, 跳过 fastpath/claude 大脑;
+                # channel 照传 (D12: run_dsh 内部据此沉淀 vault 对话归档)
+                from brain import dsh_channel
+                return await dsh_channel.run_dsh(
+                    question, history=history, run_id=run_id, on_line=on_line,
+                    channel=_channel_of(body))
             # 2026-08-13 提速: 个股诊断→大盘/盘面 依次走快路径（流式同样生效），
             # 返 None 回落原 agent loop
             fast = await fastpath.try_stock_diagnosis(
@@ -162,3 +179,11 @@ async def research_chat_reset(body: dict):
     from brain import memory
     memory.reset_session(_channel_of(body))
     return {"success": True}
+
+
+@router.post("/api/research/chat/stop")
+async def research_chat_stop(body: dict):
+    """停止一次深度思考 (杀进程树)。run_id 非法/不存在 → success=False。"""
+    from brain import dsh_channel
+    run_id = (body.get("run_id") or "")[:12]
+    return {"success": bool(run_id) and dsh_channel.stop_dsh(run_id)}

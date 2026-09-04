@@ -27,7 +27,7 @@ def client():
 
 def _mock_brain(monkeypatch, resp=None, capture=None):
     async def fake_ask(question, session_id=None, timeout=120, max_turns=8,
-                       channel="default"):
+                       channel="default", on_line=None):
         if capture is not None:
             capture.update({"question": question, "channel": channel,
                             "timeout": timeout, "max_turns": max_turns})
@@ -77,3 +77,64 @@ def test_reset_calls_memory(client, monkeypatch):
     r = client.post("/api/research/chat/reset", json={"conv": "c9"})
     assert r.json()["success"] is True
     assert called["ch"] == "research_tab_c9"
+
+
+# ---------------------------------------------------------------- DSH 深度思考通道
+
+def test_chat_stream_deep_routes_to_dsh(client, monkeypatch):
+    import re as _re
+
+    import brain.dsh_channel as dsh
+    cap = {}
+
+    async def fake_run(question, history=None, run_id=None, on_line=None,
+                       channel=None, **kw):
+        cap.update({"question": question, "history": history,
+                    "run_id": run_id, "channel": channel})
+        return {"answer": "DSH 答", "success": True, "low_confidence": False,
+                "warnings": [], "session_id": None}
+
+    monkeypatch.setattr(dsh, "run_dsh", fake_run)
+    r = client.post("/api/research/chat/stream", json={
+        "question": "深度问题", "conv": "c1", "deep": True,
+        "history": [{"role": "user", "content": "上一问"}]})
+    assert r.status_code == 200
+    assert cap["history"] == [{"role": "user", "content": "上一问"}]
+    assert cap["channel"] == "research_tab_c1"      # D12: vault 沉淀要用
+    assert _re.fullmatch(r"[0-9a-f]{12}", cap["run_id"])  # 服务端生成 12 位 hex
+    assert f'"run_id": "{cap["run_id"]}"' in r.text       # channel 事件带同一 run_id
+    assert "DSH 答" in r.text
+
+
+def test_chat_stream_no_deep_ignores_dsh(client, monkeypatch):
+    """不勾选 = 现有路径零改动 (fastpath/ask_brain), DSH 不被触碰。"""
+    import brain.dsh_channel as dsh
+
+    async def boom(*a, **k):
+        raise AssertionError("不该调 DSH")
+
+    monkeypatch.setattr(dsh, "run_dsh", boom)
+    _mock_brain(monkeypatch)
+    import brain.fastpath as fp
+
+    async def no_fast(*a, **k):
+        return None
+
+    monkeypatch.setattr(fp, "try_stock_diagnosis", no_fast)
+    monkeypatch.setattr(fp, "try_market_brief", no_fast)
+    r = client.post("/api/research/chat/stream",
+                    json={"question": "普通问题", "conv": "c1"})
+    assert r.status_code == 200 and "答:" in r.text
+
+
+def test_chat_stop_calls_dsh(client, monkeypatch):
+    import brain.dsh_channel as dsh
+    called = {}
+
+    def fake_stop(rid):
+        called["rid"] = rid
+        return True
+
+    monkeypatch.setattr(dsh, "stop_dsh", fake_stop)
+    r = client.post("/api/research/chat/stop", json={"run_id": "abc123"})
+    assert r.json()["success"] is True and called["rid"] == "abc123"
