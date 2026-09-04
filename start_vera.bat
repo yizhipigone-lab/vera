@@ -27,4 +27,5 @@ echo   交易进程 API:      http://localhost:8081
 echo   定时调度(飞书舆情): python -m scheduler
 echo.
 echo 关闭对应窗口即停止对应进程。
+if exist "%~dp0dsh-runtime\dsh.cmd" (echo [体检] DSH 深度思考通道: 已部署) else (echo [体检] DSH 深度思考通道: 未部署, 研究 TAB 勾选框不可用)
 pause

@@ -35,7 +35,7 @@ import uuid
 from pathlib import Path
 
 from brain.archive import archive_exchange  # 对话沉淀 (松耦合, 自身不抛)
-from brain.claude_cli import _kill_tree     # 复用: Windows 进程树双坑已解决
+from brain.claude_cli import _kill_tree  # 复用: Windows 进程树双坑已解决
 from utils.logger import get_logger
 from utils.sysutil import project_root
 

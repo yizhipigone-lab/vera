@@ -131,6 +131,31 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 研究大脑 DSH 深度思考通道
+
+**决策入口**: [docs/adr/0002-dsh-deep-thinking-channel.md](docs/adr/0002-dsh-deep-thinking-channel.md)
+**计划书**: [docs/plan/2026-09-04_研究大脑DSH深度思考通道_计划书.md](docs/plan/2026-09-04_研究大脑DSH深度思考通道_计划书.md)
+
+### 关键改动一览
+
+| 主题 | 关键改动 | 影响 |
+|---|---|---|
+| DSH 深度思考通道 | 新建 `brain/dsh_channel.py` (run_dsh/stop_dsh/scan_leak) + 便携运行时 `dsh-runtime/` (不入 git) | 研究 TAB 勾选「🧠 深度思考」走独立 DSH 子进程 (deepseek-v4-flash, 全工具面) |
+| 路由 + 停止 | `research_api.py` stream 端点 deep 分流 + `/api/research/chat/stop` | 未勾选路径零改动; 跑飞了可手动杀进程树 |
+| 检测型控制 | 每问全量留档 `data/brain_dsh_runs.db` (会话日志 SHA-256 + 泄漏关键词扫描), 留档失败=显性失败 | 出网上下文全部记账, 敏感信息出网即告警 |
+| 对话沉淀 | run_dsh 传 channel 时调 archive_exchange | DSH 回答同样进 vault, 不破 2026-07-28 铁律 |
+| 防答非所问 | `dsh-runtime/workspace/CLAUDE.md` 岗前手册 + 任务指令前缀 (IRX 会话实测教训: 出厂程序员人设遇裸问题会聊环境) | 深度思考直接答题, 结论先行, 大白话 |
+| 防挂死 | 子进程输出走日志文件不用 PIPE (IRX 实测 64KB 管道缓冲挂死) + 直调 node 绕批处理截断 + server.py reload 排除 dsh-runtime | 长答案不挂死; reload 模式不再 wedge |
+| 测试 | +16 (tests/brain/test_dsh_channel.py 13 + tests/test_research_chat_api.py 3) | 全离线, 不碰真 DSH/真 DB |
+
+### 剩余风险 / 已知债
+
+- `dsh-runtime/` 含 DeepSeek API 凭据 (home/.credentials.yaml), 绝不外发/上传; .gitignore 整目录兜底。
+- 多轮记忆靠打包最近 5 轮对话进任务文本 (headless 无会话续接), 超长上下文有 CreateProcess 32767 字符天花板。
+- server.py / web/index.html / web/js/brain_chat.js 与前序在途改动 (BrainViz/热加载/proactor 循环) 同文件交织, 待用户确认后一并入库。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:

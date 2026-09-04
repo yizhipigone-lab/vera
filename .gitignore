@@ -61,3 +61,12 @@ docs/research/
 # A5 parity snapshots must be versioned (regression baseline, overrides *.json above)
 !tests/snapshots/
 !tests/snapshots/*.json
+
+# DSH 深度思考便携运行时 (含 node 二进制/凭据/会话日志, 不入 git;
+# 重建: 从 IRX 拷贝或 python scripts/setup_dsh_home.py --apply) — 2026-09-04
+# 例外: workspace/CLAUDE.md 是岗前手册 (治"答非所问"的人设本体), 要版本化
+dsh-runtime/*
+!dsh-runtime/workspace/
+dsh-runtime/workspace/*
+!dsh-runtime/workspace/CLAUDE.md
+data/brain_dsh_runs.db
