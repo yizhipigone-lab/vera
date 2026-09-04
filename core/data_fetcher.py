@@ -590,7 +590,9 @@ class DataFetcher(ConnectorSeam):
 
         【raw 版】: 直接透传 tq.get_trading_dates, 异常上抛 (不吞), 不排序去重。
         与 get_trading_days (robust 版, 异常返空 + 排序去重) 语义不同, 别混用 ——
-        server.py 的 /api/calendar 依赖本方法异常上抛去降级本地 JSON 兜底, 别改成吞异常。
+        注意: 本方法派生自上证指数盘后数据, 只含已收盘的日子 (盘中缺当天、
+        未来为空), 2026-09-04 起 server.py /api/calendar 已改用
+        scheduler.trading_calendar 精确历, 不再依赖本方法。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()

@@ -447,56 +447,32 @@ async def favicon():
 
 @app.get("/api/calendar")
 async def api_calendar(year: int = 0, month: int = 0):
-    """交易日历 (TDX 数据源, 降级本地 JSON)。"""
+    """交易日历 (scheduler.trading_calendar 精确历, 2026-09-04 修复)。
+
+    旧数据源 TDX get_trading_dates 派生自上证指数盘后数据 —— 只含
+    "已收盘且已下载"的日子: 盘中永远缺当天、未来整月空白, 周五盘中
+    也会被标"休市" (实测 9 月只返回 1/2/3 号、10 月 0 天)。现改用与
+    实盘时段感知同源的精确历 (exchange_calendars XSHG 上交所历, 缺库
+    时内置 2026 假日表), 今天/未来/法定节假日全部正确, 显示与实盘
+    判断同源。注意: 超出精确历覆盖 (2026-12-31 后) 降级为周末规则,
+    法定节假日不再可辨。"""
     from datetime import date as _date
+    from scheduler.trading_calendar import is_trading_day as _is_trading_day
     now = _date.today()
     y = year if year > 0 else now.year
     m = month if 1 <= month <= 12 else now.month
-    # 当月天数
     import calendar as _cal
     days_in_month = _cal.monthrange(y, m)[1]
-    # YYYYMMDD 格式 (匹配 TDX 全仓约定)
-    start_ym = f"{y}{m:02d}01"
-    end_ym = f"{y}{m:02d}{days_in_month}"
-    # 尝试 TDX (带 5s 超时)
-    trading_dates: set = set()
-    source = "tdx"
-    try:
-        from core.data_fetcher import DataFetcher
-        dates_list = DataFetcher.get_trading_dates(
-            "SH", start_time=start_ym, end_time=end_ym)
-        # TDX 返回 YYYYMMDD, 归一化到 YYYY-MM-DD
-        trading_dates = set()
-        for d in dates_list:
-            ds = str(d)
-            if len(ds) == 8:
-                trading_dates.add(f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}")
-            elif len(ds) == 10:
-                trading_dates.add(ds.replace("-", "")[0:4] + "-" + ds.replace("-", "")[4:6] + "-" + ds.replace("-", "")[6:8])
-    except Exception:
-        # 降级: 本地 JSON
-        source = "local_json"
-        cal_path = _PROJECT_ROOT / "data" / "trading_calendar.json"
-        if cal_path.exists():
-            try:
-                cal_data = json.loads(cal_path.read_text("utf-8"))
-                dates = cal_data.get("dates", [])
-                # 过滤当月日期
-                prefix = f"{y}-{m:02d}-"
-                trading_dates = {d for d in dates if d.startswith(prefix)}
-            except Exception:
-                trading_dates = set()
-    # 构造当月全部日期
     result = {}
     for d in range(1, days_in_month + 1):
         date_str = f"{y}-{m:02d}-{d:02d}"
         dt = _date(y, m, d)
-        is_trading = date_str in trading_dates
         result[date_str] = {
-            "is_trading": is_trading,
+            "is_trading": bool(_is_trading_day(dt)),
             "weekday": dt.weekday(),  # 0=Mon
         }
-    return {"year": y, "month": m, "trading_calendar": result, "data_source": source}
+    return {"year": y, "month": m, "trading_calendar": result,
+            "data_source": "xshg_precise"}
 
 
 @app.get("/api/benchmark/history")
