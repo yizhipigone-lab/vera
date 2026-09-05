@@ -33,7 +33,6 @@ from trade.auto_buy import AutoBuyFeature  # noqa: E402
 from trade.book import (  # noqa: E402
     DIRECTION_BUY,
     OS_JUNK,
-    PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
     Book,
 )
@@ -61,7 +60,7 @@ from trade.events import (  # noqa: E402
     Event,
     EventEngine,
 )
-from trade.executor import Executor  # noqa: E402
+from trade.executor import Executor, PlaceRequest  # noqa: E402
 from trade.gateway import FakeGateway, RealGateway  # noqa: E402
 from trade.monitor import SESSION_NAMES, Monitor, is_trading_day_cached, trading_session  # noqa: E402
 from trade.notifier import FeishuNotifier  # noqa: E402
@@ -71,7 +70,7 @@ from trade.pool_money import (  # noqa: E402 (2026-09-05 治理III W2-1: 资金�
     stock_pool_value,
 )
 from trade.reconciler import Reconciler  # noqa: E402
-from trade.risk import KillSwitch, OrderIntent, RiskContext, RiskGate  # noqa: E402
+from trade.risk import KillSwitch, RiskContext, RiskGate  # noqa: E402
 from trade.rotation import RotationFeature  # noqa: E402
 from trade.store import TradeStore  # noqa: E402
 from utils.logger import get_logger  # noqa: E402
@@ -1085,22 +1084,24 @@ class TradeApp:
                     "buy_fail_closed", f"{code} 无行情, 人工买入被拒", cmd)
                 return
             price = quote["last"]
-        intent = OrderIntent(code=code, direction=DIRECTION_BUY,
-                             price=float(price), qty=qty, manual=True)
-        ok, reason = self.risk.check(intent, self._build_risk_ctx())
-        if not ok:
+        # 唯一下单口 (计划书 T5): 人工买 = manual 风控标记 + 不立即入账。
+        # 审计M1修复: remark 走 executor 单调发号器 (随 place_order 脊柱),
+        # 不再自造 V{mmdd}-B{qty} (同量两笔必重号, 破坏对账唯一性)。
+        # audit extra 的 "price" 保持原始值 (可能为字符串, 审计 P11)。
+        order_id, reason = self.executor.place_order(PlaceRequest(
+            code=code, direction=DIRECTION_BUY, price=float(price), qty=qty,
+            intent_flags={"manual": True}, account_immediately=False,
+            remark_prefix="B", fill_payload={"label": "人工买入"},
+            audit_kind="manual_buy",
+            audit_message=f"人工买入 {code} {qty}@{price}",
+            audit_extra={"code": code, "qty": qty, "price": price,
+                         "order_id": None}),
+            risk_ctx=self._build_risk_ctx())
+        if order_id is None:
             _logger.warning("人工买入被风控拒绝: %s %s", code, reason)
             return  # 拒绝审计 risk 层已写
-        # 审计M1修复: 人工买入 remark 也走 executor 的单调发号器,
-        # 不再自造 V{mmdd}-B{qty} (同量两笔必重号, 破坏对账唯一性)
-        remark = self.executor.next_remark("B")
-        order_id = self.gateway.order(code, DIRECTION_BUY, float(price), qty,
-                                      PRICE_TYPE_LIMIT, remark)
-        self.executor.fill_ctx.register(order_id, {"label": "人工买入"})
-        self.store.write_audit(
-            "manual_buy", f"人工买入 {code} {qty}@{price}",
-            {"code": code, "qty": qty, "price": price, "order_id": order_id})
-        # 回报会经事件链自然入账, 这里只留人工动作痕迹
+        # 回报会经事件链自然入账, 这里只留人工动作痕迹。
+        # 与四路"立即入账"的分叉已登记 CHANGELOG, 待单独立项 (计划书 §二.1)。
 
     def _fetch_quote_once(self, code: str) -> dict | None:
         """一次性取价兜底 (消费者线程, 2026-08-25 人工买入 ETF 支持)。
