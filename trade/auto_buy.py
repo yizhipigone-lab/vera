@@ -26,16 +26,14 @@ import time
 
 from trade.book import (
     DIRECTION_BUY,
-    OS_REPORTED,
     OS_SUCCEEDED,
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
     is_etf,
 )
 from trade.events import EVENT_SIGNALS, Event
-from trade.executor import limit_ratio, round_price
+from trade.executor import PlaceRequest, limit_ratio, round_price
 from trade.regime import index_above_ma
-from trade.risk import OrderIntent
 from utils.logger import get_logger
 
 _logger = get_logger("trade.auto_buy")
@@ -268,12 +266,8 @@ class AutoBuyFeature:
                 else:
                     _skip(code, "现金不足一手")
                 continue
-            intent = OrderIntent(code=code, direction=DIRECTION_BUY,
-                                 price=price, qty=qty)
-            ok, why = self._risk.check(intent, self._build_risk_ctx())
-            if not ok:
-                _skip(code, f"风控拒: {why}")
-                continue
+            # 风控检查移入唯一下单口 (计划书 T4): risk_price=price 参考价,
+            # 现状语义"风控先于定价吃参考价"经 risk_price 字段保持 (审计 P1)。
             # 定价 (2026-07-27 实测驱动, 市场感知; 2026-08-01 P0-2 修复):
             # - ≥force_market_after: **全板块禁市价单** —— 深市 14:57-15:00
             #   收盘集合竞价只收限价单 (07-31 实测 5 张"对手最优"全废单),
@@ -312,35 +306,28 @@ class AutoBuyFeature:
                 order_price = price
                 order_type = PRICE_TYPE_LIMIT
                 price_kind = "卖一价"
-            remark = self._executor.next_remark("B")
-            order_id = self._gateway.order(
-                code, DIRECTION_BUY, order_price, qty, order_type, remark)
-            self._executor.fill_ctx.register(order_id, {"label": "TDX买入"})
-            # P0-6: apply_order_update 和 save_order 用实际委托价 order_price,
-            # 非参考价 price —— 收盘竞价挂涨停/笼子上限时两者不同,
-            # 原用 price 导致页面"成交价>委托价"矛盾记录
-            self._book.apply_order_update(
-                order_id, OS_REPORTED, code=code, direction=DIRECTION_BUY,
-                price=order_price, qty=qty, remark=remark)
-            self._store.save_order({
-                "order_id": order_id, "remark": remark, "code": code,
-                "direction": DIRECTION_BUY, "price": order_price, "qty": qty,
-                "status": OS_REPORTED,
-                # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
-                # 新单不继承旧 created_ts (泰山石油事件)
-                "created_ts": self._clock()})
+            # 唯一下单口 (计划书 T4): 七步脊柱收口。
+            # price=order_price 实际委托价 (P0-6 入账/发单口径, 原注释收编);
+            # risk_price=price 参考价 (风控金额闸口径, 审计 P1)。
+            order_id, why = self._executor.place_order(PlaceRequest(
+                code=code, direction=DIRECTION_BUY, price=order_price, qty=qty,
+                risk_price=price, price_type=order_type, remark_prefix="B",
+                fill_payload={"label": "TDX买入"},
+                audit_kind="auto_buy",
+                audit_message=f"尾盘买入 {code} {qty}@{order_price or price} ({price_kind})",
+                audit_extra={"code": code, "qty": qty,
+                             "price": order_price or price, "order_id": None,
+                             "source": source, "price_kind": price_kind}),
+                risk_ctx=self._build_risk_ctx())
+            if order_id is None:
+                _skip(code, f"风控拒: {why}")
+                continue
             placed_codes.add(code)
             cash -= qty * price
             bought += 1
             dispositions.append({"code": code, "action": "buy",
                                  "price": order_price or price, "qty": qty,
                                  "order_id": order_id, "reason": price_kind})
-            self._store.write_audit(
-                "auto_buy",
-                f"尾盘买入 {code} {qty}@{order_price or price} ({price_kind})",
-                {"code": code, "qty": qty, "price": order_price or price,
-                 "order_id": order_id, "source": source,
-                 "price_kind": price_kind})
 
         self._await_and_fill_dispositions(dispositions)
         summary = {
