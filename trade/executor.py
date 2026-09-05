@@ -188,6 +188,10 @@ class Executor:
         self._on_pending_died = on_pending_died
         self.lock = ClearLock(env, config.account_id, clock=clock)
         self._pending: dict[str, dict] = {}  # code -> {order_id, ts, qty, reason}
+        # 外部卖单登记 (治理III W2-5): rotation 等绕过本类撤单流水线的
+        # 直连卖单, 只借用 in_flight 暴露槽, 不进 _pending 操作链
+        # (避免被 pending_check 追价/逃生误触发双卖)
+        self._external_sells: dict[str, dict] = {}  # code -> {order_id, qty}
         # 成交通知上下文: order_id -> {label, tier, sell_ratio...}, 下单记成交取
         self._fill_context: dict[str, dict] = {}
         # 审计M1修复: remark 序号进程生命周期单调递增, 不再按日/调用方
@@ -496,9 +500,22 @@ class Executor:
                 # 升级卖出失败 (如风控拒绝): 放锁, 由下一轮监控重新触发
                 self.lock.release(code)
 
+    def register_external_sell(self, code: str, order_id: str, qty: int) -> None:
+        """外部卖单登记 (治理III W2-5): 绕过本类流水线的直连卖单 (如轮动)
+        挂出时借暴露槽, 让对账 in_flight 降级网覆盖它 —— 单源读, 组合根
+        不再手拼两路。不进 _pending (防 pending_check 追价/逃生误触发双卖)。"""
+        self._external_sells[code] = {"order_id": order_id, "qty": qty}
+
+    def clear_external_sells(self) -> None:
+        """清空外部卖单登记 (轮动每次调仓起手调用, 语义同旧 _pending_sells.clear)。"""
+        self._external_sells.clear()
+
     def in_flight_sells(self) -> dict[str, int]:
-        """在途卖单数量 {code: qty} —— 对账差异降级用 (注入 reconciler)。"""
-        return {code: p["qty"] for code, p in self._pending.items()}
+        """在途卖单数量 {code: qty} —— 对账差异降级用 (注入 reconciler)。
+        含本类 _pending (预埋/监控/逃生链) + 外部登记 (轮动直连卖单,
+        审计 M4, 治理III W2-5 单源收口)。"""
+        return {code: p["qty"] for code, p in
+                {**self._pending, **self._external_sells}.items()}
 
     # ── 成交通知上下文 (下单记, 成交取) ───────────────────────────
 

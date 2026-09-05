@@ -302,11 +302,10 @@ class TradeApp:
         self.reconciler = Reconciler(
             self.gateway, self.book, self.store, self.kill,
             quote_price=lambda code: (q := self.monitor.quote_of(code)) and q["last"],
-            # 2026-08-15 (审计 M4): 轮动卖单也纳入对账 in_flight 降级网 ——
-            # 轮动卖单绕过 executor._pending, 回调丢失时若只查 executor 会漏
-            # 掉这票差异 → 误判 CRITICAL 急停
-            in_flight_sells=lambda: {**self.executor.in_flight_sells(),
-                                     **self._rotation.in_flight_sells()},
+            # 2026-08-15 (审计 M4) + 治理III W2-5: 轮动卖单登记已收口进
+            # executor 共享槽 (register_external_sell), in_flight 单源读,
+            # 组合根不再手拼 executor+rotation 两路
+            in_flight_sells=lambda: self.executor.in_flight_sells(),
             # 2026-07-31: 回调丢失走补记时同样读 fill ctx 落成交原因 +
             # 飞书通知。peek 不删 (部成多笔共享原因), 终态由
             # on_order_terminal 回收 (lambda 延迟取 self.executor —— 构造序在后)

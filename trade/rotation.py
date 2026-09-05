@@ -167,9 +167,9 @@ class RotationFeature:
         # 唯一写者阻塞, 等不到也放行由次日自愈)
         self._wait_timeout = 3.0
         self._wait_interval = 0.1
-        # 当日已挂出的在途卖单 {code: {order_id, qty}} —— 对账 in_flight 降级网用
-        # (审计 M4: 轮动卖单绕过 executor._pending, 回调丢失时对账误判 CRITICAL)
-        self._pending_sells: dict[str, dict] = {}
+        # 外部卖单登记走 executor 共享槽 (治理III W2-5): 轮动直连卖单
+        # 借 executor.in_flight_sells 暴露给对账降级网, 单源读不再手拼两路
+        # (审计 M4: 回调丢失时对账不再误判 CRITICAL; 不进 _pending 操作链)
         # 日频移动止损基准: 当前持仓风险腿的「持仓期最高收盘」{代码: 最高价}
         # (2026-08-20 动量改造; 随 signal 一起落 rotation_state, 重启不丢)
         self._entry_high: dict[str, float] = {}
@@ -201,10 +201,6 @@ class RotationFeature:
     def running(self) -> bool:
         """信号工作线程是否在跑 (防重入, 只读)。"""
         return self._running
-
-    def in_flight_sells(self) -> dict[str, int]:
-        """当日已挂出的在途卖单 {code: qty} (对账 in_flight 降级网用, 审计 M4)。"""
-        return {code: int(p["qty"]) for code, p in self._pending_sells.items()}
 
     def start(self, source: str) -> None:
         """发起一次「算信号 + 调仓」(消费者线程内只开线程)。
@@ -522,7 +518,8 @@ class RotationFeature:
         # 超配漂移是用户接受的代价(换低手续费); 再平衡只用自由资金补低配(买入侧)。
         # 2026-08-25 修复: 2026-08-20 动量改造(c08b43b)误删 state_changed 守卫,
         # 导致每日削超配腿(8-25 纳指腿超池 3936 元被削 1700 股), 违反模型B。
-        self._pending_sells.clear()
+        # 治理III W2-5: 起手清外部卖单登记 (原 self._pending_sells.clear())
+        self._executor.clear_external_sells()
         sell_ids: list[str] = []
         for code, tval in legs:
             if tval > 0:
@@ -716,5 +713,6 @@ class RotationFeature:
             {"code": code, "qty": qty, "price": price, "order_id": order_id,
              "decision": decision})
         if direction == DIRECTION_SELL:
-            self._pending_sells[code] = {"order_id": order_id, "qty": qty}
+            # 治理III W2-5: 卖单登记借 executor 共享槽 (对账 in_flight 单源读)
+            self._executor.register_external_sell(code, order_id, qty)
         return order_id
