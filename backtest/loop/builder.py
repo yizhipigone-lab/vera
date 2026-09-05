@@ -65,6 +65,8 @@ def build_backtest_loop(
     # 配合 entry_next_open.py 平移后的信号使用; 提供时 EntryEngine 自动
     # 声明 EntryPath.BACKTEST_T1_OPEN (entry.py 构造期校验配对)。
     buy_price_np: Optional[np.ndarray] = None,
+    # 2026-08-28: 流动性约束 — 单笔 ≤ 当日成交额×此比例 (1.0=不约束, 老行为)
+    max_turnover_pct: float = 1.0,
 ) -> BacktestLoop:
     """从原 _simulate_core_v3 壳的参数构造 BacktestLoop。
 
@@ -84,6 +86,7 @@ def build_backtest_loop(
         max_total_exposure=max_total_exposure,
         loss_streak_halt_n=loss_streak_halt_n,
         loss_streak_halt_bars=loss_streak_halt_bars,
+        max_turnover_pct=max_turnover_pct,
     )
 
     # ── capability gating: 按 enabled 过滤策略 ──

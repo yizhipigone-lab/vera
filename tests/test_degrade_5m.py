@@ -357,7 +357,7 @@ def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
     class _MockLoop:
         def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
                 tradable_np=None, last_tradable_idx=None, formula_exit_np=None,
-                degraded_np=None):
+                degraded_np=None, turnover_day_np=None):
             if capture is not None:
                 capture['price_np'] = price_np
                 capture['entry_np'] = entry_np

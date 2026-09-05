@@ -68,7 +68,8 @@ class EntryEngine:
                 last_exit_bar: Optional[np.ndarray] = None,
                 cur_mkt_value: float = 0.0,
                 total_equity: float = 0.0,
-                halt_until_bar: Optional[int] = None) -> float:
+                halt_until_bar: Optional[int] = None,
+                turnover_day_np: Optional[np.ndarray] = None) -> float:
         """_simulate_core_v3_legacy 买入块的移植。返回更新后的 cash。
 
         sig_cis: 本 bar 有信号的股票列索引(升序)。None 时按旧路径全列扫描
@@ -129,6 +130,15 @@ class EntryEngine:
             buy_amount = min(cash, p.max_buy_amount)
             if p.max_position_pct < 1.0:
                 buy_amount = min(buy_amount, prev_equity * p.max_position_pct)
+            # 2026-08-28: 流动性约束 — 单笔 ≤ 当日成交额 × max_turnover_pct。
+            # turnover NaN → min(x, nan)=x 约束跳过; 0 → 拒买 (当日无真实成交额)。
+            if p.max_turnover_pct < 1.0 and turnover_day_np is not None:
+                day_turnover = turnover_day_np[i // p.bpday, ci]
+                if day_turnover <= 0.0 or np.isnan(day_turnover):
+                    if day_turnover == 0.0:
+                        continue  # 当日无成交额 → 拒买 (保守)
+                else:
+                    buy_amount = min(buy_amount, day_turnover * p.max_turnover_pct)
             if buy_amount < p.min_buy_amount:
                 continue
             raw_sh = int(buy_amount / bp)

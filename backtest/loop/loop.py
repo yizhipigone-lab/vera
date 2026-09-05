@@ -70,7 +70,8 @@ class BacktestLoop:
             tradable_np: Optional[np.ndarray],
             last_tradable_idx: Optional[np.ndarray],
             formula_exit_np: Optional[np.ndarray],
-            degraded_np: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+            degraded_np: Optional[np.ndarray] = None,
+            turnover_day_np: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
         """跑完整回测, 返回 (equity_arr, raw_trades)。
 
         formula_exit_np: 信号已存于 FormulaSellStrategy(absolutes), 此参数保留作
@@ -150,7 +151,8 @@ class BacktestLoop:
                                              last_exit_bar=self._last_exit_bar,
                                              cur_mkt_value=cur_mkt_value,
                                              total_equity=total_equity,
-                                             halt_until_bar=halt_ub)
+                                             halt_until_bar=halt_ub,
+                                             turnover_day_np=turnover_day_np)
             # ── 3. 权益 ──
             equity.update(i, cash, price_np, book)
 

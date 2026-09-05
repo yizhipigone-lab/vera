@@ -85,6 +85,16 @@ def get_stop_config_summary(stop_loss_config: dict) -> str:
     仅做配置展示，无交易逻辑。
     """
     lines = []
+    # 优先级 (2026-08-20: 历史回测卡片需展示同 bar 多规则触发时的判定顺序;
+    # 顺序语义对齐 backtest/loop/exit_engine.py 的 _PRIORITY_ORDER)。
+    priority = stop_loss_config.get("priority", DEFAULT_PRIORITY)
+    priority_label = {
+        "stop_first": "止损优先 (成本止损 > 阶梯止盈 > 移动止盈)",
+        "ladder_tp_first": "阶梯止盈优先 (阶梯止盈 > 成本止损 > 移动止盈)",
+        "trailing_first": "移动止盈优先 (盘中锁利, 阶梯部分卖不阻塞)",
+    }.get(priority, priority)
+    lines.append(f"优先级: {priority_label}")
+
     cost = stop_loss_config.get("cost_stop", {})
     if cost.get("enabled", True):
         lines.append(f"成本止损: {cost.get('threshold', -0.12):.1%}（Low触发, stop_price执行）")

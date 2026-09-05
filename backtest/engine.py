@@ -138,6 +138,11 @@ class BacktestEngine:
         self.min_lots = int(ps.get("min_lots", 1))
         # 2026-07-09: 单票仓位占比上限 (<1.0 启用, 基于上一bar总权益; 默认1.0=不约束, 老脚本零变化)
         self.max_position_pct = float(ps.get("max_position_pct", 1.0))
+        # 2026-08-28: 流动性约束 — 单笔买入 ≤ 当日成交额 × max_turnover_pct
+        # (<1.0 启用, 如 0.01 = 单笔 ≤ 当日成交额 1%; 默认 1.0=不约束, 零行为变化)。
+        # 启用时矩阵缓存自动绕过 (prep 需含 turnover_day 字段, 旧缓存无此字段会
+        # 静默失效约束 → 必须重新取数, 见 run() 的 use_mc 条件)。
+        self.max_turnover_pct = float(ps.get("max_turnover_pct", 1.0))
         # 2026-07-17: 本地 K 线 parquet 缓存开关 (Phase 1, 默认 True 启用; 配置 use_kline_cache:false 回退 TDX 直拉)
         self.use_kline_cache = bool(config.get("use_kline_cache", True))
         # 2026-07-18: 5m 数据层降级 (计划书 2026-07-18, 默认关 G4)。缺 5m 的股-天
@@ -288,6 +293,28 @@ class BacktestEngine:
             degraded_np = degraded_df.reindex(
                 index=idx, columns=cols, fill_value=False).values.astype(bool)
 
+        # 2026-08-28: 流动性约束 — 当日成交额矩阵 (元, 天×股)。
+        # 供 entry 约束 单笔 ≤ 当日成交额×max_turnover_pct。成交额 = Σ(volume×close)
+        # 按日聚合 (不用 kline 的 Amount 字段 — 5m/1d Amount 单位是「万元」,
+        # 直接当元用会缩小 10000 倍, 2026-08-28 踩坑实录)。停牌日 volume=NaN/0
+        # → 乘积 0 → 当日成交额 0 → entry 拒买 (保守, 不会虚假放大买入)。
+        turnover_day_np = None
+        if self.max_turnover_pct < 1.0:
+            vol_df = kline.get("Volume")
+            if vol_df is not None:
+                vols = vol_df.reindex(index=idx, columns=cols)
+                amt = vols * close  # close 已 ffill; 停牌日 volume NaN → NaN
+                day_sum = amt.groupby(amt.index.date).sum()
+                turnover_day_np = day_sum.values.astype(np.float64)
+                _nz = np.count_nonzero(~np.isnan(turnover_day_np) & (turnover_day_np > 0))
+                logger.info(
+                    "流动性约束: 成交额矩阵 %s 天×%s 股, 非零格 %d (%.2f%%)",
+                    turnover_day_np.shape[0], turnover_day_np.shape[1],
+                    _nz, 100.0 * _nz / max(1, turnover_day_np.size))
+            else:
+                logger.warning(
+                    "max_turnover_pct<1.0 但 K 线数据无 Volume 字段, 流动性约束跳过")
+
         # 候选 A 审计 M1 修复: 改用公用 _build_tradable_from_raw helper
         # 消除 run 与 run_cached 的 drift (close_raw 是 line 671 重索引后的 DataFrame, helper 对 DataFrame 等价)
         tradable_np, last_tradable_idx = _build_tradable_from_raw(close_raw, close)
@@ -313,6 +340,7 @@ class BacktestEngine:
             "tradable": tradable_np, "last_tradable_idx": last_tradable_idx,
             "idx": idx, "cols": cols,
             "degraded_np": degraded_np, "degrade_res": degrade_res,
+            "turnover_day": turnover_day_np,
         }
 
     def _resolve_stop_and_build_loop(self, stop, close, entry_np,
@@ -322,7 +350,8 @@ class BacktestEngine:
                                      formula_exit_np, formula_exit_ratio,
                                      formula_exit_lag_bars=1,
                                      degraded_np=None,
-                                     buy_price_np=None):
+                                     buy_price_np=None,
+                                     turnover_day_np=None):
         """run()/run_cached() 共享段 (2026-08-01 批次 3b C2 合并)。
 
         priority 校验 → trailing 缺省 → 时间参数 ×bpday 缩放 → ATR →
@@ -417,6 +446,7 @@ class BacktestEngine:
             loss_streak_halt_n=self.loss_streak_halt_n,
             loss_streak_halt_bars=self.loss_streak_halt_days * bpday,
             buy_price_np=buy_price_np,
+            max_turnover_pct=float(self.max_turnover_pct),
         )
         self._last_loop = loop
         equity_arr, raw_trades = loop.run(
@@ -425,6 +455,7 @@ class BacktestEngine:
             tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
             formula_exit_np=formula_exit_np,
             degraded_np=degraded_np,
+            turnover_day_np=turnover_day_np,
         )
         resolved = {
             "trailing_activation": float(trailing_activation),
@@ -509,7 +540,8 @@ class BacktestEngine:
         #   (degrade_res 含非序列化对象, 见 backtest/matrix_cache.py docstring)。
         win_td = self._resolve_window_td(stop)
         use_mc = (self.matrix_cache
-                  and not (self.degrade_5m and self.bars_per_day == 48))
+                  and not (self.degrade_5m and self.bars_per_day == 48)
+                  and not (self.max_turnover_pct < 1.0 and self.bars_per_day == 48))
         from core import progress as _progress
         _progress.report("fetch", 0.0, "准备取数...")  # 2026-07-26
         prep = None
@@ -637,6 +669,7 @@ class BacktestEngine:
             formula_exit_np, formula_exit_ratio,
             degraded_np=degraded_np,
             buy_price_np=buy_price_np,
+            turnover_day_np=prep.get("turnover_day"),
         )
         # ENGINE_DEBUG 日志的缩放值仅作展示, 从 resolved 读 (2026-08-01 批次 3b C2;
         # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化)。
@@ -823,6 +856,7 @@ class BacktestEngine:
             formula_exit_np, formula_exit_ratio,
             formula_exit_lag_bars=formula_exit_lag_bars,
             buy_price_np=buy_price_np,
+            turnover_day_np=getattr(prepared, "turnover_day_np", None),
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）

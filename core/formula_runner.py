@@ -11,6 +11,9 @@ import pandas as pd
 from core import progress as _progress
 from core.connector import ConnectorSeam
 from core.dividend_type import to_formula_int
+# 2026-08-26: 协作式停止 (web「停止回测」按钮) — 批次循环每轮检查,
+# 停止响应从"等选股阶段跑完(~105批×1s)"缩到当前批结束(~1s)。
+from core.stop_flag import raise_if_stopped
 from utils.code_normalizer import extract_codes
 from utils.logger import get_logger
 
@@ -119,6 +122,10 @@ class FormulaRunner(ConnectorSeam):
         total_batches = (len(str_codes) - 1) // BATCH_SIZE + 1
 
         for batch_start in range(0, len(str_codes), BATCH_SIZE):
+            # 2026-08-26: 停止回测按钮 — 选股批次是管线最长无检查点阶段
+            # (~105 批×~1s), 此前停止后线程要跑完整个选股阶段才退出,
+            # 期间 /api/run 409 拒新回测, 用户体感"要等几十秒"。逐批检查。
+            raise_if_stopped()
             batch = str_codes[batch_start:batch_start + BATCH_SIZE]
             batch_num = batch_start // BATCH_SIZE + 1
             logger.info(f"  批次 {batch_num}/{total_batches} ({len(batch)} stocks)")

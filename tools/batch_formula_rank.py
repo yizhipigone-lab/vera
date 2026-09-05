@@ -52,6 +52,7 @@ from core.data_fetcher import DataFetcher  # noqa: E402
 from selection.selector import StockSelector  # noqa: E402
 from selection.signal_rules import filter_first_signal_in_window  # noqa: E402
 from utils.config_loader import ConfigLoader  # noqa: E402
+from utils import parquet_cache as pcu  # noqa: E402  (AV 安全原子写, 照 kline_cache 范式)
 
 DEFAULT_FORMULA_FILE = r"E:\1target\MQ\MQ\x-tdxqmt\_logs\valid_formulas_clean.txt"
 
@@ -140,6 +141,27 @@ def run_one(formula: str, stocks: list, calendar: list, args,
         rec["error"] = f"{type(e).__name__}: {e}"[:500]
     rec["elapsed_s"] = round(time.time() - t0, 1)
     return rec
+
+
+def _save_result(jp: Path, rec: dict) -> bool:
+    """AV 安全写结果 JSON: 唯一 tmp → os.replace 退避重试 (照 kline_cache 范式)。
+
+    杀软/索引器常在 write→replace 间隙短暂锁文件 → PermissionError(WinError 5)。
+    原代码 `tmp.replace(jp)` 无重试, 一旦被杀软锁住整批直接崩 (GS0005 即此死法)。
+    返回 True=落盘成功, False=重试耗尽仍失败 (调用方标记本条失败但不中断整批)。
+    """
+    payload = json.dumps(rec, ensure_ascii=False, indent=1)
+    tmp = pcu.tmp_path_for(jp)           # pid+uuid 唯一 tmp, 避免跨进程/重跑碰撞
+    def _rewrite(t):
+        t.write_text(payload, encoding="utf-8")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        pcu.atomic_replace(tmp, jp, rewrite=_rewrite, attempts=6, backoff=0.7)
+        return True
+    except Exception as e:
+        print(f"[WARN] 结果写盘失败 {jp.name}: {type(e).__name__}: {e} "
+              f"(本条结果丢失, 下次重跑将重试)")
+        return False
 
 
 def _pct(v, digits=2):
@@ -347,10 +369,11 @@ def main() -> None:
             print(f"[{idx}/{len(formulas)}] {formula} — 已有结果, 跳过")
             continue
         rec = run_one(formula, stocks, calendar, args, bt_cfg, stop_config)
-        tmp = jp.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
-        tmp.replace(jp)
+        saved = _save_result(jp, rec)
+        if not saved:
+            n_fail += 1
+            print(f"[{idx}/{len(formulas)}] {formula} — 写盘失败(已重试), 下次重跑")
+            continue
         tag = {"ok": "OK", "no_signals": "无信号"}.get(rec["status"], "失败")
         if rec["status"] == "ok":
             n_done += 1

@@ -62,6 +62,11 @@ class BacktestParams:
     loss_streak_halt_n: int = 0
     # 连亏触发后停止开新仓的 bar 数 (0=关闭, 默认)。engine 传交易日×bpday。
     loss_streak_halt_bars: int = 0
+    max_turnover_pct: float = 1.0  # 2026-08-28: 单笔 ≤ 当日成交额×此比例
+    # 2026-08-28: 流动性约束 — 单笔买入 ≤ 当日成交额 × max_turnover_pct
+    # (1.0=不约束, 默认零行为变化)。turnover_day_np 由 engine 构建 (5m Amount
+    # 按日聚合), entry 在买入时取当日行约束; 成交额 NaN → 约束跳过 (退化为
+    # 其余约束), 0 → 拒买 (当日无真实成交额)。
 
     def __post_init__(self):
         # M2: 启动期 fail-fast, 防 bpday=0 除零

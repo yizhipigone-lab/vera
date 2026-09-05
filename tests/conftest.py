@@ -232,7 +232,7 @@ class FakeLoop:
 
     def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
             tradable_np=None, last_tradable_idx=None, formula_exit_np=None,
-            degraded_np=None):
+            degraded_np=None, turnover_day_np=None):
         import numpy as np
         self.captured = dict(price_np=price_np, entry_np=entry_np,
                              high_np=high_np, tradable_np=tradable_np,

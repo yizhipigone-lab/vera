@@ -102,7 +102,8 @@ def gen_coarse_combos():
 # 关键扩展 vs COARSE:
 #   ① cost 加宽到 -50% (5m 冠军区; COARSE 只有 -8%/-12% 漏了它)
 #   ② drawdown 降到 0.3% (冠军区; COARSE 最小 0.5%)
-#   ③ time_days 加到 60 (冠军区)
+#   ③ time_days 加到 45 (窗口铁律上限: WINDOW_TD=60 → max_hold_days≤45;
+#      冠军的 60 天需 WINDOW_TD≥75 另跑, 本次不测)
 #   ④ 新增 priority 三档 (止损优先/阶梯优先/移动优先) —— COARSE 固定 trailing_first
 # 3×4×4×4×3×3×2 = 3456 组合 (COARSE 的 10.7 倍)
 WIDE = {
