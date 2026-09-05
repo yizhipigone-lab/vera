@@ -176,8 +176,33 @@ def test_metrics_67_actual_code_has_as_e():
 
 ### 剩余风险 / 已知债
 
-- Wave 2~4 未动: 实盘正确性三件套 (rotation 迁出/资金口径下沉/卖单登记收口) 按 08-28 治理 II 原卡执行, 见计划书 §五。
-- 工作区仍有大量未提交改动 (trade_main/rotation/reconciler/server 等), Wave 2 动 rotation 前需先处置。
+- Wave 1 未覆盖: data_tools 杂物间分家 / api.py 拆分 / api.js 前端收口 等结构任务, 按治理 III 计划书 Wave 4 条件触发。
+- (2026-09-05 同日补记) Wave 2 实盘正确性三件套已执行完毕, 见下条; 在途改动已分 9 组提交, 工作区恢复干净。
+
+---
+
+## 2026-09-05 — 深模块浅模块治理 III · Wave 2 实盘正确性
+
+**计划书**: [docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md](docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md)（引用 08-28 治理 II P0 原卡）
+
+### 关键改动一览
+
+| 主题 | 关键改动 | 影响 |
+|---|---|---|
+| W2-④ rotation 三态迁出 | deprecated 三态整体搬 `trade/legacy_three_state.py` (零依赖纯函数); rotation.py 811→约 720 行只留动量规则; shadow.py 惰性 import 改顶层 import **破 rotation↔shadow 循环**; research×10 + tools/shadow_compare + 测试改指新位置 | 生产文件不再误导; 规则源放对地方 |
+| W2-① 资金口径下沉 | 新建 `trade/pool_money.py` 纯函数层 (pool_split/position_value/stock_pool_value/stock_budget_cap/in_flight_sell_returns) + 13 单测 (含 8-21 现场 orders-领先场景); trade_main 三件套删除改委托 (1314→1279 行); rotation._etf_value 委托消灭 D1 市值重复; **热更改统一 apply 契约** (monitor/executor/timer/risk 各加 apply(), _apply_config 不再直改 4 模块私有字段) | 三道保命闸读同一份口径; 8-21 型 bug 进测试网当场抓住 |
+| W2-⑤ 卖单登记收口 | rotation 直连卖单改走 executor 共享槽 (register_external_sell / clear_external_sells, 不进 _pending 防追价双卖); executor.in_flight_sells 单源含两路; trade_main 组合根不再手拼 executor+rotation | 对账隐性契约消除, reconciler 读单一真相源 |
+
+### 测试
+
+- 全量 `pytest tests/` 绿 (退出码 0); tests/trade/ 覆盖 rotation/executor/reconciler/api/auto_buy/monitor/risk 热更契约回归。
+- 验收 grep: trade_main 无 `def _stock_budget/_stock_pool_value/_in_flight_sell_returns`; rotation 无 `_pending_sells` 代码引用与 deprecated 定义; rotation.in_flight_sells 已删、组合根单源读。
+
+### 剩余风险 / 已知债
+
+- `round_price_etf` (ETF 0.001 档) 仍留在 rotation.py:102 —— W1-c 原计划随 W2 rotation 动刀迁入 book.py, 因动刀时点该文件改动面已大, 迁入顺延 Wave 3 (低风险纯搬家)。
+- rotation 外部卖单登记在"卖出已成交→次日"窗口仍保留在 executor._external_sells (与旧 _pending_sells 语义一致), 由每次调仓起手 clear —— 行为不变, 不引入新债。
+- Wave 3/4 未动: data_fetcher 双胞胎 / BatchResult / get_or / schema 上移 / api 拆分 / 前端收口 (计划书 §五)。
 
 ---
 
