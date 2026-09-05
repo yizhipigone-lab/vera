@@ -130,6 +130,45 @@ class TestMonthlyJob:
             sched.add_monthly("m", lambda: None, day=31)
 
 
+class TestWeeklyJob:
+    """add_weekly (2026-09-05 体检 P0-2): 每周日触发, 不看交易日。
+
+    背景: 周度进化/sgpjbg 周报原用 daily+内部 weekday 检查 —— daily 要求
+    交易日而周日休市, 周日分支永远不可达。weekly 语义按星期几直接触发。
+    """
+
+    def test_fires_on_sunday_ignoring_trading_day(self, fake_weekday_calendar):
+        """2026-06-07 是周日 (非交易日) → 18:00 仍应触发。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_weekly("w", lambda: calls.append(1), weekday=6, hhmm="18:00")
+        assert sched.run_pending(_at(2026, 6, 7, 17, 59)) == 0
+        assert sched.run_pending(_at(2026, 6, 7, 18, 0)) == 1
+        assert calls == [1]
+
+    def test_not_due_other_weekdays(self, fake_weekday_calendar):
+        sched = vs.VeraScheduler()
+        sched.add_weekly("w", lambda: None, weekday=6, hhmm="18:00")
+        assert sched.run_pending(_at(2026, 6, 6, 18, 30)) == 0  # 周六
+        assert sched.run_pending(_at(2026, 6, 8, 18, 30)) == 0  # 周一
+
+    def test_no_double_fire_same_week_then_next_week(self,
+                                                     fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_weekly("w", lambda: calls.append(1), weekday=6, hhmm="18:00")
+        sched.run_pending(_at(2026, 6, 7, 18, 30))    # 第一个周日
+        sched.run_pending(_at(2026, 6, 7, 23, 0))     # 同日再扫不重复
+        sched.run_pending(_at(2026, 6, 9, 18, 30))    # 周中不触发
+        sched.run_pending(_at(2026, 6, 14, 18, 0))    # 第二个周日再触发
+        assert calls == [1, 1]
+
+    def test_invalid_weekday_rejected(self):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_weekly("w", lambda: None, weekday=7)
+
+
 class TestFaultIsolation:
     def test_one_job_crash_does_not_block_others(self, fake_weekday_calendar):
         calls = []

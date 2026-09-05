@@ -3,16 +3,17 @@
 独立进程 = 后台周期 job 容器: 月度笔记 / 周度进化 / 盘中舆情扫描。
 不碰 VERA 主程序: 只读 trade.db (notes_gen); 舆情模块物理隔离 trade/ (AST 断言
 绝不 import trade, 守业务铁律 1: 情绪/舆情只报告显示, 不联入任何交易决策)。
+进程日志落盘 output/logs/scheduler.log (2026-09-05 体检 P0-1, 见 main 内 attach)。
 注册 job:
     - 每月 1 日 (顺延到下一交易日) 08:30 生成上月月度笔记 (notes_gen)
-    - 每交易日 18:00 检查, 只在周日真正执行周度自进化 (evolution)
+    - 每周日 18:00 周度自进化 (evolution; weekly 语义不看交易日, P0-2 修复)
     - 盘中每 interval_min 分钟一轮舆情扫描 (brain.sentiment_pipeline,
       仅交易日+交易时段触发; 配置 config/sentiment.yaml, 注册失败不影响前两个 job)
     - 每交易日盘后 (默认 15:05) 舆情日报聚合推送 (run_daily_report)
     - 每交易日盘后 15:45 K 线缓存补尾段 (5m→1d→1m, 子进程 fire-and-forget,
       防"缓存过期→回测全量重拉"集中爆发, 2026-08-14 5M 回测超时事故)
     - 每日 17:30 sgpjbg 研究热度雷达抓取 (免费元数据落库, 2026-09-04 决策)
-    - 每日 18:30 检查, 只在周日生成机构研究动向周报 (独立周报)
+    - 每周日 18:30 机构研究动向周报 (独立周报; weekly 语义不看交易日, P0-2 修复)
 
 优雅停机: SIGTERM/SIGINT → graceful_shutdown 的 Event → stop() + 关 dedup。
 """
@@ -24,7 +25,7 @@ from dotenv import load_dotenv
 
 from scheduler.graceful_shutdown import install
 from scheduler.vera_scheduler import VeraScheduler
-from utils.logger import get_logger
+from utils.logger import attach_file_logger, get_logger
 from utils.sysutil import project_root
 
 # 加载项目根 .env → FEISHU_WEBHOOK_URL 等 (舆情推送 webhook)。
@@ -47,10 +48,7 @@ def _job_monthly_note() -> None:
 
 
 def _job_weekly_evolution() -> None:
-    """周度自进化 job: 每日检查, 只在周日真正执行 (复盘+教训入 playbook)。"""
-    import datetime as dt
-    if dt.date.today().weekday() != 6:  # 6 = 周日
-        return
+    """周度自进化 job: 每周日 18:00 由 weekly 调度触发 (复盘+教训入 playbook)。"""
     from evolution.weekly import run_weekly_evolution
     path = run_weekly_evolution()
     if path is None:
@@ -104,10 +102,7 @@ def _job_sgpjbg_fetch() -> None:
 
 
 def _job_sgpjbg_weekly() -> None:
-    """每日检查, 只在周日生成机构研究动向周报 (独立周报, 用户拍板)。"""
-    import datetime as dt
-    if dt.date.today().weekday() != 6:  # 6 = 周日
-        return
+    """机构研究动向周报 job: 每周日 18:30 由 weekly 调度触发 (独立周报)。"""
     from brain.sgpjbg_radar import weekly_report
     path = weekly_report()
     if path is None:
@@ -149,15 +144,27 @@ def main(argv: list[str] | None = None) -> int:
 
     stop_event = install()
 
+    # 进程日志落盘 (2026-09-05 体检 P0-1): 此前日志只进控制台窗口,
+    # 关窗即丢 → 调度停摆/内部错误无从复查。挂到 root, 各模块沿
+    # propagate 一并落文件; 幂等, 重复启动不双写。
+    attach_file_logger(str(project_root() / "output" / "logs"
+                          / "scheduler.log"))
+    _logger.info("scheduler 文件日志: %s", project_root() / "output" / "logs"
+                 / "scheduler.log")
+
     # 触发记录持久化 (2026-08-27 双发事件修复): 重启记得"今天发过了",
     # 过了点的 daily job 真没发过才补发, 发过不重发。
     sched = VeraScheduler(
         state_path=str(project_root() / "data" / "scheduler_state.json"))
     sched.add_monthly("monthly_note", _job_monthly_note, day=1, hhmm="08:30")
-    sched.add_daily("weekly_evolution", _job_weekly_evolution, hhmm="18:00")
+    # 周度 job 用 add_weekly (不看交易日, 周日休市也要跑) —
+    # 2026-09-05 体检 P0-2: daily+weekday 检查组合下周日分支不可达
+    sched.add_weekly("weekly_evolution", _job_weekly_evolution,
+                     weekday=6, hhmm="18:00")
     sched.add_daily("kline_cache_refresh", _job_kline_cache_refresh, hhmm="15:45")
     sched.add_daily("sgpjbg_fetch", _job_sgpjbg_fetch, hhmm="17:30")
-    sched.add_daily("sgpjbg_weekly", _job_sgpjbg_weekly, hhmm="18:30")
+    sched.add_weekly("sgpjbg_weekly", _job_sgpjbg_weekly,
+                     weekday=6, hhmm="18:30")
     _register_sentiment(sched)
     sched.start(block=False)
 

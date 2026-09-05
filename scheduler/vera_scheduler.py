@@ -36,10 +36,11 @@ class _Job:
     name: str
     func: Callable[[], None]
     hhmm: str                    # "HH:MM" 触发时刻
-    kind: str = "daily"          # "daily" | "monthly"
+    kind: str = "daily"          # "daily" | "monthly" | "weekly"
     month_day: int = 1           # monthly: 每月第几日 (顺延到下一交易日)
-    last_fired: str = ""         # daily/monthly: 最近触发的周期键 (防重复)
-    # interval 专用 (daily/monthly 不用):
+    weekday: int = 6             # weekly: 星期几触发 (0=周一 .. 6=周日)
+    last_fired: str = ""         # daily/monthly/weekly: 最近触发的周期键 (防重复)
+    # interval 专用 (其余 kind 不用):
     last_fire_ts: float = 0.0    # 上次触发的墙钟时间 (0=从未; 进程内状态, 重启归零)
     interval_sec: float = 0.0    # 触发间隔 (秒)
     trading_hours: tuple = ()    # 交易时段约束 ("09:30-11:30", ...), 空则全天
@@ -57,8 +58,13 @@ def monthly_fire_date(year: int, month: int, day: int) -> dt.date:
 
 
 def _period_key(job: _Job, d: dt.date) -> str:
-    """防重键: daily 按天, monthly 按月。"""
-    return d.isoformat() if job.kind == "daily" else d.strftime("%Y-%m")
+    """防重键: daily 按天, monthly 按月, weekly 按 ISO 周。"""
+    if job.kind == "daily":
+        return d.isoformat()
+    if job.kind == "monthly":
+        return d.strftime("%Y-%m")
+    y, week, _ = d.isocalendar()
+    return f"{y}-W{week:02d}"
 
 
 def _in_trading_window(now: dt.datetime, windows: tuple[str, ...]) -> bool:
@@ -107,8 +113,11 @@ def is_due(job: _Job, now: dt.datetime) -> bool:
     if job.kind == "daily":
         if not is_trading_day(today):
             return False
-    else:  # monthly: 只在"顺延后的触发日"当天触发
+    elif job.kind == "monthly":  # 只在"顺延后的触发日"当天触发
         if monthly_fire_date(today.year, today.month, job.month_day) != today:
+            return False
+    elif job.kind == "weekly":   # 只在指定星期几触发; 不看交易日 (周报周日可跑)
+        if today.weekday() != job.weekday:
             return False
     return _period_key(job, today) != job.last_fired
 
@@ -181,6 +190,24 @@ class VeraScheduler:
         if not 1 <= day <= 28:
             raise ValueError(f"monthly day 限 1~28 (避免月末天数不齐): {day}")
         job = _Job(name=name, func=func, hhmm=hhmm, kind="monthly", month_day=day)
+        job.last_fired = self._persisted.get(name, "")  # 恢复上次进程的触发记录
+        with self._lock:
+            self._jobs.append(job)
+        return job
+
+    def add_weekly(self, name: str, func: Callable[[], None],
+                   weekday: int = 6, hhmm: str = "18:00") -> _Job:
+        """注册周度 job: 每周 weekday (0=周一 .. 6=周日) 的 hhmm 过后触发一次。
+
+        与 daily 的区别: **不看交易日** —— 周报/自进化这类分析任务周日
+        休市也要跑; daily 的交易日门槛会让"周日执行"的任务永远不可达
+        (2026-09-05 体检 P0-2 修复)。按 ISO 周防重, 状态持久化同
+        daily/monthly (重启记得"本周发过了", 不重复补发)。"""
+        _parse_hhmm(hhmm)
+        if not 0 <= weekday <= 6:
+            raise ValueError(f"weekday 限 0~6 (0=周一 .. 6=周日): {weekday}")
+        job = _Job(name=name, func=func, hhmm=hhmm, kind="weekly",
+                   weekday=weekday)
         job.last_fired = self._persisted.get(name, "")  # 恢复上次进程的触发记录
         with self._lock:
             self._jobs.append(job)
