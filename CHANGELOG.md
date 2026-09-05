@@ -206,6 +206,33 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 深模块浅模块治理 III · Wave 3 接口债
+
+**计划书**: [docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md](docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md)
+
+### 关键改动一览
+
+| 主题 | 关键改动 | 影响 |
+|---|---|---|
+| W3-rpe (审计顺延清零) | `round_price_etf` (ETF 0.001 档) 迁 `trade/book.py`, 与股票 0.01 档同居; rotation import + 删本地 def; 测试改指 book | 价格档位口径 100% 单点 |
+| W3-③ data_fetcher 反义双胞胎 | raw 版 `get_trading_dates` 更名 `get_calendar_days` (点名"字符串日历", 行为零变); robust 版 `get_trading_days` 定为回测窗口数学唯一入口; 8 工具/缓存/测试调用方改指, 双方法 docstring 交叉讲分工。08-16 "不合并" 拦阻已随 09-04 server 切精确历解除 | 09-04 交易日历事故类陷阱的命名根除 |
+| W3-BatchResult | 新建 `SelectionBatchResult` (df + batch_errors + failed_all, DataFrame 透明委托老调用方零改动); 删 `FormulaRunner.last_batch_errors` 类属性 (并发选股写-读竞态); L2 缓存改读返回值区分真空/失败空 | "失败空不缓存"正确性随结果走, 不会漏判 |
+| W3-get_or | DataCache 增 sector_list/sector_stocks/name_map 的 `*_or` 单方法 (判过期→回源→回填, TTL 语义一处); DataFetcher 三处手动 has/get/set 折叠 (失败不缓存防毒化); stock_filter `_INFO_CACHE` 补 24h TTL (常量 import data_cache 同源, auto_iter 预填兼容) | 样板消灭; ST 判定不再进程内永不过期 |
+| W3-schema | KlineCache 增 `cached_last_date`/`manifest_stats` 只读方法; kline_cache_maintenance 不再裸开 manifest.db (schema/列名知识单点, db 不存在仍返 None 无副作用) | schema 双写点合一 |
+
+### 测试
+
+- 全量 `pytest tests/` 绿 (退出码 0); 定向覆盖 data_cache/kline_cache(+maintenance)/signal_day_cache/sector/concept/filter_limit_up。
+- 验收 grep: `DataFetcher.get_trading_dates` 0 引用; `last_batch_errors` 仅 docstring 提及; maintenance 无 `sqlite3.connect`。
+
+### 剩余风险 / 已知债
+
+- `compute_window_bounds` 薄委托保留 (core/window + calendar_fetcher 注入契约), 未做"折叠"——因两个生产调用方依赖它喂入日历注入, 折叠会把该知识散回调用方; 本次以消灭事故源 (双胞胎) 为实, 不为了接口计数而移动真接缝。
+- stock_filter 缓存收编为"TTL 同源"而非并入 DataCache 实例 (auto_iter 直接写 `_INFO_CACHE` 的预填 hack 兼容考虑), 记录为可选后续。
+- Wave 4 未动: data_tools 杂物间分家 / api.py 拆分 / api.js 前端收口 / P2-3/4/5 (计划书 §五)。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
