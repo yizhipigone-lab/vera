@@ -11,6 +11,8 @@
     - 每交易日盘后 (默认 15:05) 舆情日报聚合推送 (run_daily_report)
     - 每交易日盘后 15:45 K 线缓存补尾段 (5m→1d→1m, 子进程 fire-and-forget,
       防"缓存过期→回测全量重拉"集中爆发, 2026-08-14 5M 回测超时事故)
+    - 每日 17:30 sgpjbg 研究热度雷达抓取 (免费元数据落库, 2026-09-04 决策)
+    - 每日 18:30 检查, 只在周日生成机构研究动向周报 (独立周报)
 
 优雅停机: SIGTERM/SIGINT → graceful_shutdown 的 Event → stop() + 关 dedup。
 """
@@ -90,6 +92,30 @@ def _job_kline_cache_refresh() -> None:
     _logger.info("盘后缓存检查: %s", r)
 
 
+# ── sgpjbg 研究热度雷达 (2026-09-04 决策记录第二批) ─────────────────────
+# 只抓免费元数据落库 + 周日生成独立周报; 绝不联入交易决策（同舆情铁律）。
+
+
+def _job_sgpjbg_fetch() -> None:
+    """每日抓 sgpjbg 最新报告元数据落库（模块内部全程 fail-soft）。"""
+    from brain.sgpjbg_radar import fetch_latest
+    stats = fetch_latest()
+    _logger.info("sgpjbg 抓取: %s", stats)
+
+
+def _job_sgpjbg_weekly() -> None:
+    """每日检查, 只在周日生成机构研究动向周报 (独立周报, 用户拍板)。"""
+    import datetime as dt
+    if dt.date.today().weekday() != 6:  # 6 = 周日
+        return
+    from brain.sgpjbg_radar import weekly_report
+    path = weekly_report()
+    if path is None:
+        _logger.warning("sgpjbg 周报生成跳过 (近 7 天无数据)")
+    else:
+        _logger.info("sgpjbg 周报已生成: %s", path)
+
+
 def _register_sentiment(sched: VeraScheduler) -> None:
     """注册盘中舆情扫描 interval job。
 
@@ -123,10 +149,15 @@ def main(argv: list[str] | None = None) -> int:
 
     stop_event = install()
 
-    sched = VeraScheduler()
+    # 触发记录持久化 (2026-08-27 双发事件修复): 重启记得"今天发过了",
+    # 过了点的 daily job 真没发过才补发, 发过不重发。
+    sched = VeraScheduler(
+        state_path=str(project_root() / "data" / "scheduler_state.json"))
     sched.add_monthly("monthly_note", _job_monthly_note, day=1, hhmm="08:30")
     sched.add_daily("weekly_evolution", _job_weekly_evolution, hhmm="18:00")
     sched.add_daily("kline_cache_refresh", _job_kline_cache_refresh, hhmm="15:45")
+    sched.add_daily("sgpjbg_fetch", _job_sgpjbg_fetch, hhmm="17:30")
+    sched.add_daily("sgpjbg_weekly", _job_sgpjbg_weekly, hhmm="18:30")
     _register_sentiment(sched)
     sched.start(block=False)
 

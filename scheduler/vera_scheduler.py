@@ -9,12 +9,19 @@
     - 只在交易日触发 (trading_calendar 判断); 月度 job 顺延到下一交易日。
     - 每个 job 独立 try/except: 单个 job 崩了记日志继续跑 (松耦合)。
     - 触发判定与时间源解耦: run_pending(now=...) 可注入时间, 便于测试。
+    - daily/monthly 的触发记录可选持久化 (state_path): 进程重启后记得
+      "今天发过了", 不重复补发; 真没发过才补发 (2026-08-27 双发事件修复,
+      用户裁决: 没发要补发, 发过别重发)。interval job 仍纯内存 (盘中轮询
+      无需跨日续接)。
 """
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from scheduler.trading_calendar import is_trading_day, next_trading_day
@@ -107,14 +114,54 @@ def is_due(job: _Job, now: dt.datetime) -> bool:
 
 
 class VeraScheduler:
-    """轻量定时器。注册 job → start 后台轮询 → stop 优雅停。"""
+    """轻量定时器。注册 job → start 后台轮询 → stop 优雅停。
 
-    def __init__(self, tick_seconds: float = 1.0):
+    state_path: 可选, daily/monthly 触发记录 (job 名 → 周期键) 的 JSON 落盘
+    路径。给了 → 重启不重复补发; 不给 → 纯内存 (旧行为, 测试用)。
+    状态文件损坏/读取失败 → 当作没发过 (宁可补发不可漏发); 写入失败只记
+    warning, 不影响调度循环。
+    """
+
+    def __init__(self, tick_seconds: float = 1.0,
+                 state_path: str | None = None):
         self._jobs: list[_Job] = []
         self._tick = tick_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._state_path = state_path
+        self._persisted: dict[str, str] = self._load_state()
+
+    # ── 触发记录持久化 ──────────────────────────────────────
+
+    def _load_state(self) -> dict[str, str]:
+        """读状态文件; 不存在/损坏一律返空表 (fail-open: 宁可补发不可漏发)。"""
+        if not self._state_path:
+            return {}
+        try:
+            data = json.loads(Path(self._state_path).read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("状态文件根不是 dict")
+            return {str(k): str(v) for k, v in data.items()}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            _logger.warning("调度状态文件读取失败, 当作全部未触发 (fail-open): %s", e)
+            return {}
+
+    def _save_state(self) -> None:
+        """原子落盘 (tmp + replace, 防崩溃写半个文件); 失败只告警不抛。"""
+        if not self._state_path:
+            return
+        try:
+            p = Path(self._state_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(self._persisted, ensure_ascii=False),
+                           encoding="utf-8")
+            os.replace(tmp, p)
+        except Exception as e:
+            _logger.warning("调度状态文件写入失败 (下次重启可能补发): %s", e)
 
     # ── 注册 ─────────────────────────────────────────────────
 
@@ -122,6 +169,7 @@ class VeraScheduler:
         """注册每日 job: 每个交易日 hhmm 过后触发一次。"""
         _parse_hhmm(hhmm)  # 提前校验格式
         job = _Job(name=name, func=func, hhmm=hhmm, kind="daily")
+        job.last_fired = self._persisted.get(name, "")  # 恢复上次进程的触发记录
         with self._lock:
             self._jobs.append(job)
         return job
@@ -133,6 +181,7 @@ class VeraScheduler:
         if not 1 <= day <= 28:
             raise ValueError(f"monthly day 限 1~28 (避免月末天数不齐): {day}")
         job = _Job(name=name, func=func, hhmm=hhmm, kind="monthly", month_day=day)
+        job.last_fired = self._persisted.get(name, "")  # 恢复上次进程的触发记录
         with self._lock:
             self._jobs.append(job)
         return job
@@ -174,6 +223,8 @@ class VeraScheduler:
                 job.last_fire_ts = now.timestamp()
             else:
                 job.last_fired = _period_key(job, now.date())
+                self._persisted[job.name] = job.last_fired
+                self._save_state()
             fired += 1
             try:
                 _logger.info("job [%s] 触发 (%s %s)", job.name,

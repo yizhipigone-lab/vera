@@ -255,3 +255,60 @@ class TestGracefulShutdown:
             assert ev.is_set()
         finally:
             signal.signal(signal.SIGINT, prev)  # 恢复默认, 不污染其他测试
+
+
+# ── 触发记录持久化 (2026-08-27 事件) ─────────────────────────
+# 事件: 22:07 / 22:42 两次启动 VERA, 各补发一条舆情日报。
+# 根因: last_fired 是进程内存态, 重启失忆 → 过了 hhmm 的 daily job 全补触发。
+# 裁决 (用户): "没发要补发, 发过别重发" → state_path 持久化 last_fired。
+
+class TestPersistentFiredState:
+    def test_restart_does_not_refire_daily(self, tmp_path, fake_weekday_calendar):
+        state = str(tmp_path / "scheduler_state.json")
+        fired = []
+        s1 = vs.VeraScheduler(state_path=state)
+        s1.add_daily("sentiment_daily", lambda: fired.append(1), "15:05")
+        # 2026-06-01 周一 22:07 (过了 15:05): 首次启动, 今天没发过 → 补发
+        assert s1.run_pending(_at(2026, 6, 1, 22, 7)) == 1
+        assert fired == [1]
+        # 同进程内不重复
+        assert s1.run_pending(_at(2026, 6, 1, 22, 30)) == 0
+        # 模拟重启: 新实例读同一状态文件 → 今天已发过, 不再补发
+        s2 = vs.VeraScheduler(state_path=state)
+        s2.add_daily("sentiment_daily", lambda: fired.append(1), "15:05")
+        assert s2.run_pending(_at(2026, 6, 1, 22, 42)) == 0
+        assert fired == [1]
+        # 次日 (周二) 重启: 新的一天, 照常触发
+        s3 = vs.VeraScheduler(state_path=state)
+        s3.add_daily("sentiment_daily", lambda: fired.append(1), "15:05")
+        assert s3.run_pending(_at(2026, 6, 2, 22, 42)) == 1
+        assert fired == [1, 1]
+
+    def test_monthly_state_also_persisted(self, tmp_path, fake_weekday_calendar):
+        state = str(tmp_path / "scheduler_state.json")
+        fired = []
+        s1 = vs.VeraScheduler(state_path=state)
+        s1.add_monthly("monthly_note", lambda: fired.append(1), day=1, hhmm="08:30")
+        assert s1.run_pending(_at(2026, 6, 1, 9, 0)) == 1
+        s2 = vs.VeraScheduler(state_path=state)
+        s2.add_monthly("monthly_note", lambda: fired.append(1), day=1, hhmm="08:30")
+        assert s2.run_pending(_at(2026, 6, 1, 12, 0)) == 0  # 重启不补发
+        assert fired == [1]
+
+    def test_corrupt_state_fails_open(self, tmp_path, fake_weekday_calendar):
+        """状态文件损坏 → 当作没发过 (宁可补发不可漏发, 用户裁决)。"""
+        state = tmp_path / "scheduler_state.json"
+        state.write_text("{broken json", encoding="utf-8")
+        fired = []
+        s = vs.VeraScheduler(state_path=str(state))
+        s.add_daily("j", lambda: fired.append(1), "15:05")
+        assert s.run_pending(_at(2026, 6, 1, 22, 7)) == 1
+
+    def test_no_state_path_keeps_memory_only(self, fake_weekday_calendar):
+        """不传 state_path: 行为与旧版完全一致 (纯内存防重)。"""
+        fired = []
+        s = vs.VeraScheduler()
+        s.add_daily("j", lambda: fired.append(1), "15:05")
+        assert s.run_pending(_at(2026, 6, 1, 22, 7)) == 1
+        assert s.run_pending(_at(2026, 6, 1, 22, 42)) == 0
+        assert fired == [1]
