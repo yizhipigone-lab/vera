@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from core.data_fetcher import DataFetcher
-from trade.rotation import STATE_RATIOS, compute_signal
+from trade.legacy_three_state import STATE_RATIOS, compute_signal
 
 MA, HIGH, DD = 20, 250, 0.20
 START = "20140618"   # 统一窗口起点 (399673 数据起点)

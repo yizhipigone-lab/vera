@@ -73,8 +73,8 @@ def test_run_shadow_insufficient_not_logged(tmp_path):
 
 
 def test_run_shadow_fail_soft(tmp_path, monkeypatch):
-    import trade.rotation as rot
-    monkeypatch.setattr(rot, "compute_signal",
+    import trade.shadow as shadow_mod
+    monkeypatch.setattr(shadow_mod, "compute_signal",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     st = run_shadow(_series("rising"), "20260821", str(tmp_path / "s.jsonl"))
     assert st is None                          # 炸了也不抛出, 只返 None

@@ -2,14 +2,14 @@
 
 设计意图:
     2026-08-23《MA20三态vs动量轮动多维研判》结论: 动量为骨、三态为皮。
-    旧三态规则 (trade/rotation.py::compute_signal, deprecated 未删) 改作
-    **影子策略**: 每个交易日与实跑动量并行算出三态状态, 追加 JSONL 落盘,
+    旧三态规则 (已迁 trade/legacy_three_state.py, 2026-09-05 治理 III P0-2)
+    改作 **影子策略**: 每个交易日与实跑动量并行算出三态状态, 追加 JSONL 落盘,
     **只记录不交易**; tools/shadow_compare.py 按季度对比滚动 90 日收益,
     连续两季显著跑赢 → 提示人工复审换规则。规则之争用数据自动裁决。
 
     铁律: 全函数 fail-soft —— 任何异常只记日志, 绝不影响交易链路;
-    三态判断**复用** rotation.compute_signal (惰性 import 防循环引用),
-    不写第二份规则 (实盘铁律 4)。
+    三态判断**复用** legacy_three_state.compute_signal (该模块零依赖,
+    shadow→legacy 单向, rotation↔shadow 循环已随之破除), 不写第二份规则。
 
 公开接口 (≤8):
     - compute_shadow_state(closes) -> dict        纯函数: 收盘序列 → 三态状态 dict
@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 
+from trade.legacy_three_state import compute_signal  # 旧三态单一规则源 (零依赖, 无环)
 from utils.logger import get_logger
 
 _logger = get_logger("trade.shadow")
@@ -30,12 +31,11 @@ SHADOW_LOG_PATH = os.path.join("data", "shadow_rotation.jsonl")
 
 
 def compute_shadow_state(closes: list[float]) -> dict:
-    """收盘序列 → MA20 三态状态 dict (复用 rotation.compute_signal, 单一规则源)。
+    """收盘序列 → MA20 三态状态 dict (复用 legacy_three_state.compute_signal, 单一规则源)。
 
     返回 compute_signal 原样 dict: {"state": "full_cyb"|"half"|"full_gold"|None, ...}
     state=None 表示数据不足 (fail-closed 语义由调用方处理: 不落盘)。
     """
-    from trade.rotation import compute_signal   # 惰性 import: 防 rotation↔shadow 循环
     return compute_signal(list(closes or []))
 
 

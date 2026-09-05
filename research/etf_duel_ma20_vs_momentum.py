@@ -44,7 +44,7 @@ for _s in (sys.stdout, sys.stderr):
 import numpy as np
 import pandas as pd
 
-from trade.rotation import STATE_RATIOS, compute_signal
+from trade.legacy_three_state import STATE_RATIOS, compute_signal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(HERE, "etf_duel_ma20_vs_momentum")

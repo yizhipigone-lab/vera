@@ -4,7 +4,7 @@
 
 做什么:
     从 TDX 拉三只 ETF (创50/纳指/黄金) 前复权日线, 在同一价格序列上重放
-    两套规则——影子 MA20 三态 (复用 trade.rotation.compute_signal) vs
+    两套规则——影子 MA20 三态 (复用 trade/legacy_three_state.compute_signal) vs
     实跑动量择腿 (复用 trade.rotation.compute_momentum_signal + 周频信号日
     + 日频 15% 移动止损)——换腿成本双边 0.1%, 输出滚动 90 交易日收益对比。
     裁决规则 (2026-08-23 研判报告): 影子滚动 90 日收益连续两个季度

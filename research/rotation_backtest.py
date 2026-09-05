@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import ListedColormap
 
-from trade.rotation import (
+from trade.legacy_three_state import (
     STATE_RATIOS, compute_signal,
     STATE_FULL_CYB, STATE_HALF, STATE_FULL_GOLD,
 )

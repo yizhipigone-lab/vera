@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from core.data_fetcher import DataFetcher
-from trade.rotation import STATE_RATIOS, compute_signal
+from trade.legacy_three_state import STATE_RATIOS, compute_signal
 
 CYB = "159949.SZ"        # 创业板50ETF (风险腿, 固定)
 GOLD = "518880.SH"       # 黄金ETF (现役避险腿, 基准)

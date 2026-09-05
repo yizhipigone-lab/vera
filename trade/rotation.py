@@ -47,23 +47,6 @@ from utils.logger import get_logger
 
 _logger = get_logger("trade.rotation")
 
-# ══════════════════════════════════════════════════════════════════
-# 旧 MA20 三态 (2026-08-20 动量改造后已弃用, 生产路径不再调用)。
-# 保留仅为 research/*.py 历史回测脚本仍 import 它们 (改名必改引用,
-# 一次性清理这些脚本属独立任务)。compute_signal / STATE_RATIOS /
-# target_values / _derive_state / 三态常量 全部标 deprecated。
-# ══════════════════════════════════════════════════════════════════
-STATE_FULL_CYB = "full_cyb"    # 满仓创业板50ETF (deprecated)
-STATE_HALF = "half"            # 半仓 (创业板 + 避险腿各半) (deprecated)
-STATE_FULL_GOLD = "full_gold"  # 满仓避险腿 (deprecated)
-
-# 三态 → (主腿比例, 避险腿总比例)。避险腿内部再按 hedge_ratio 拆两只 (见 target_values)。
-STATE_RATIOS = {
-    STATE_FULL_CYB: (1.0, 0.0),
-    STATE_HALF: (0.5, 0.5),
-    STATE_FULL_GOLD: (0.0, 1.0),
-}
-
 # 周频信号日锚定 weekday (config.signal_day → datetime.weekday() 0=周一)。
 _SIGNAL_DAY_WEEKDAY = {"monday": 0, "tuesday": 1, "wednesday": 2,
                        "thursday": 3, "friday": 4}
@@ -106,54 +89,13 @@ def round_price_etf(x: float) -> float:
     return int(x * 1000 + 0.5) / 1000
 
 
-def compute_signal(closes: list[float], ma_window: int = 20,
-                   high_window: int = 250,
-                   drawdown_threshold: float = 0.20) -> dict:
-    """(deprecated, 2026-08-20) 旧 MA20 三态信号纯函数。生产已切动量规则
-    compute_momentum_signal, 此函数仅 research/*.py 历史回测脚本仍调用。
-
-    返回 state (三态之一) 或 None (数据不足, fail-closed 不动作);
-    其余字段为明细 (ma20 方向/250日高点/回撤率/最新收盘), 供 UI 展示。
-    """
-    need = max(high_window, ma_window + 1)
-    if not closes or len(closes) < need:
-        return {
-            "state": None,
-            "reason": f"数据不足: 需要 {need} 根, 实际 {len(closes)} 根",
-            "ma20_today": None, "ma20_yesterday": None,
-            "ma20_direction": None, "high_250": None,
-            "drawdown": None, "close": None,
-        }
-    ma20_today = sum(closes[-ma_window:]) / ma_window
-    ma20_yesterday = sum(closes[-ma_window - 1:-1]) / ma_window
-    # 审计 L2: 手册只定义今>昨/今<昨, 未定义今==昨; 用严格 > , 相等归 down
-    # (→ 满仓黄金, 风险回避方向, 保守 fail-safe)。浮点均值精确相等属测度零。
-    direction = "up" if ma20_today > ma20_yesterday else "down"
-    high_250 = max(closes[-high_window:])
-    close = closes[-1]
-    drawdown = (close / high_250 - 1.0) if high_250 > 0 else 0.0
-    if direction == "up":
-        state = STATE_FULL_CYB if drawdown >= -drawdown_threshold else STATE_HALF
-    else:
-        state = STATE_FULL_GOLD
-    return {
-        "state": state,
-        "ma20_today": round(ma20_today, 4),
-        "ma20_yesterday": round(ma20_yesterday, 4),
-        "ma20_direction": direction,
-        "high_250": round(high_250, 4),
-        "drawdown": round(drawdown, 4),
-        "close": round(close, 4),
-    }
-
-
 def compute_momentum_signal(closes_by_leg: dict, momentum_window: int = 20) -> dict:
     """纯函数: {腿代码: 收盘序列(交易日升序)} → 动量择腿信号 dict (2026-08-20 动量改造)。
 
     逐腿算动量 m = 末收盘 / momentum_window 日前收盘 − 1，取动量最高 且 > 0 的腿为目标；
     两腿都 ≤ 0 → target=None (切避险篮子, "空仓买黄金")。
     数据不足的腿 (closes 长度 ≤ momentum_window 或 N日前收盘 ≤ 0) 不参与择腿;
-    两腿都不足 → target=None + reason (fail-safe 切避险, 同 compute_signal 口径)。
+    两腿都不足 → target=None + reason (fail-safe 切避险, 同旧三态口径)。
     """
     momentum: dict = {}
     for code, closes in closes_by_leg.items():
@@ -198,38 +140,6 @@ def momentum_target_values(cyb_etf: str, risk_etf2: str, gold_etf: str,
         legs.append((gold_etf, ratio * pool))
         if hedge_etf2:
             legs.append((hedge_etf2, (1.0 - ratio) * pool))
-    return legs
-
-
-def _derive_state(v_cyb: float, v_hedge: float) -> str | None:
-    """从主腿市值 + 避险腿总市值派生当前状态 (自愈: 换档半途失败次日自然补齐)。
-    None = 主腿与避险腿都空仓 (首日未建仓)。阈值 90%/10% 容差防碎仓误判。"""
-    total = v_cyb + v_hedge
-    if total <= 0:
-        return None
-    ratio = v_cyb / total
-    if ratio >= 0.9:
-        return STATE_FULL_CYB
-    if ratio <= 0.1:
-        return STATE_FULL_GOLD
-    return STATE_HALF
-
-
-def target_values(cyb_etf: str, gold_etf: str, hedge_etf2: str,
-                  hedge_ratio: float, target_state: str,
-                  pool: float) -> list[tuple[str, float]]:
-    """三态 + 避险两腿配置 → [(代码, 目标市值)] (主腿在前, 避险腿在后)。
-
-    避险腿总权重 = STATE_RATIOS[state] 第二项; 再按 hedge_ratio 拆两只:
-      黄金 = hedge_ratio × 避险总,  避险ETF2 = (1-hedge_ratio) × 避险总。
-    hedge_etf2 为空时 hedge_ratio 视为 1.0 (单避险, 与旧口径逐字节一致)。
-    """
-    cyb_w, hedge_w = STATE_RATIOS[target_state]
-    ratio = hedge_ratio if hedge_etf2 else 1.0
-    hedge_pool = hedge_w * pool
-    legs = [(cyb_etf, cyb_w * pool), (gold_etf, ratio * hedge_pool)]
-    if hedge_etf2:
-        legs.append((hedge_etf2, (1.0 - ratio) * hedge_pool))
     return legs
 
 
@@ -410,7 +320,8 @@ class RotationFeature:
     def _shadow_tick(self, today) -> None:
         """影子三态每日落盘 (2026-08-23 P0 影子校尺, 只记录不交易)。
 
-        拉 cyb_etf 收盘 → 复用 compute_signal (旧 MA20 三态, 单一规则源)
+        拉 cyb_etf 收盘 → 复用旧 MA20 三态规则 (已迁 trade/legacy_three_state,
+        单一规则源, 经 shadow.run_shadow 落盘)
         → 追加 data/shadow_rotation.jsonl; tools/shadow_compare.py 季度对比
         影子 vs 实盘滚动 90 日收益。
 

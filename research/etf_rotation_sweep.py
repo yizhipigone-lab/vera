@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from core.data_fetcher import DataFetcher
-from trade.rotation import STATE_RATIOS, compute_signal
+from trade.legacy_three_state import STATE_RATIOS, compute_signal
 
 GOLD = "518880.SH"
 START = "20190701"
