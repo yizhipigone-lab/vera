@@ -110,3 +110,24 @@ def test_get_name_map_includes_etf():
     assert "31" in mock.tq_obj.markets       # 确实拉了 ETF 列表
     assert names["159949.SZ"] == "创业板50"  # ETF 名称纳入
     assert names["600519.SH"] == "贵州茅台"
+
+
+def test_fmt_tdx_error_带文本():
+    """ErrorId 非 0 且带 Error 文本 → 原样带出, 不再"未知错误"。"""
+    from core.data_fetcher import _fmt_tdx_error
+    assert _fmt_tdx_error({"ErrorId": "2", "Error": "超出数据范围"}) == \
+        "ErrorId=2 超出数据范围"
+
+
+def test_fmt_tdx_error_无文本列键名():
+    """只有 ErrorId 无文本 → 列出返回键, 供事后定位 (7250 条未知错误的根)。"""
+    from core.data_fetcher import _fmt_tdx_error
+    out = _fmt_tdx_error({"ErrorId": "1", "TradingState": 3})
+    assert out.startswith("ErrorId=1")
+    assert "ErrorId" in out or "ErrorMsg" in out  # 键名被带出
+
+
+def test_fmt_tdx_error_空返回():
+    from core.data_fetcher import _fmt_tdx_error
+    assert "空返回" in _fmt_tdx_error(None)
+    assert "空返回" in _fmt_tdx_error({})

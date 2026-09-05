@@ -19,6 +19,24 @@ from .stop_flag import raise_if_stopped
 logger = get_logger(__name__)
 
 
+def _fmt_tdx_error(result) -> str:
+    """把 TDX get_market_data 的错误返回渲染成可诊断文本 (2026-09-05 体检 P1)。
+
+    此前一律 `result.get('Error', '未知错误')` —— TDX 只回 ErrorId 不带文本时
+    全池日志打成一串"未知错误", 无法区分"源站故障/无该区间/需登录"。现尽量
+    带出 ErrorId + 文本; 确无文本时列出返回键名供事后定位, 不再吞成未知。
+    """
+    if not result:
+        return "空返回 (无结果对象)"
+    eid = result.get("ErrorId", "?")
+    msg = (result.get("Error") or result.get("ErrorMsg")
+           or result.get("Message") or "").strip()
+    if msg:
+        return f"ErrorId={eid} {msg[:200]}"
+    keys = [str(k) for k in list(result)[:8]]
+    return f"ErrorId={eid} (TDX 无错误文本; 返回键={keys})"
+
+
 class DataFetcher(ConnectorSeam):
     """TDX 数据获取统一门面。所有调用前自动确保连接就绪。
 
@@ -112,7 +130,10 @@ class DataFetcher(ConnectorSeam):
         )
 
         if not result or ("ErrorId" in result and result.get("ErrorId") != "0"):
-            logger.error(f"获取K线数据失败: {result.get('Error', '未知错误')}")
+            logger.error(
+                "获取K线数据失败: %s (codes=%s %s %s~%s)",
+                _fmt_tdx_error(result), codes[:5],
+                period, start_time or "全部", end_time or "最新")
             return {}
 
         logger.info(f"获取到 {len(result)} 个字段的数据")
