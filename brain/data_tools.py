@@ -156,6 +156,44 @@ def _call_with_timeout(fn, timeout: float = 25.0):
     return box.get("v")
 
 
+def _fetch_resilient(ak_call, hosts, timeout: float, what: str) -> object:
+    """DNS 预检 + 重试的数据调用（治理补丁，2026-09-05）。
+
+    背景: 2026-09-02/03 五只票"公告源+互动易源"齐报
+    [Errno 11001] getaddrinfo failed —— 环境性 DNS 对巨潮 cninfo.com.cn
+    主域解析瞬时失败（Windows WSAHOST_NOT_FOUND，连 TCP 都没建立），
+    与个股无关。原链路无重试、无预检，失败即标【缺】，且报错不落盘。
+
+    本函数: ① 先 socket.gethostbyname 预检各 host（DNS 挂则秒败，不等
+    akshare 内部无 timeout 的请求干等）; ② 解析/调用失败重试 3 次
+    （间隔递增）; ③ 全败抛 RuntimeError（含 host 与末次原因），调用方
+    据此渲染可诊断的【缺】文案; ④ 落一行 data/brain_model_cache/
+    _collect_errors.log（此前采集错误只进控制台窗口，关窗即丢）。
+    """
+    import socket
+    import time
+    last = None
+    for attempt in range(3):
+        try:
+            for h in hosts:
+                socket.gethostbyname(h)          # DNS 预检: 秒败秒知
+            return _call_with_timeout(ak_call, timeout=timeout)
+        except Exception as e:
+            last = e
+            time.sleep(0.5 + attempt)            # 间隔递增, 给 DNS/网络自愈
+    err = (f"{what} 连续 3 次失败（host={','.join(hosts)}），"
+            f"末次: {last!r}")
+    try:
+        log_dir = project_root() / "data" / "brain_model_cache"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "_collect_errors.log", "a",
+                  encoding="utf-8") as f:
+            f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M:%S} {err}\n")
+    except Exception:
+        pass                                     # 落盘失败不影响主流程
+    raise RuntimeError(err)
+
+
 def _section(title: str, body: str) -> str:
     return f"## {title}\n\n{body}"
 
@@ -464,10 +502,11 @@ def stock_notices(code: str, days: int = 90) -> str:
         ak = _ak()
         start = (dt.datetime.now() - dt.timedelta(days=days)).strftime("%Y%m%d")
         end = dt.datetime.now().strftime("%Y%m%d")
-        df = _call_with_timeout(
+        df = _fetch_resilient(
             lambda: ak.stock_zh_a_disclosure_report_cninfo(
                 symbol=c, market="沪深京", start_date=start, end_date=end),
-            timeout=40)
+            ("www.cninfo.com.cn",), timeout=40,
+            what="公告源（巨潮 www.cninfo.com.cn）")
         if df is None or df.empty:
             body = f"近 {days} 天无公告记录"
         else:
@@ -480,7 +519,9 @@ def stock_notices(code: str, days: int = 90) -> str:
     # ② 互动易问答（巨潮：投资者提问 + 公司回复，个股特有舆情）
     try:
         ak = _ak()
-        qa = _call_with_timeout(lambda: ak.stock_irm_cninfo(symbol=c), timeout=40)
+        qa = _fetch_resilient(lambda: ak.stock_irm_cninfo(symbol=c),
+                              ("irm.cninfo.com.cn",), timeout=40,
+                              what="互动易源（巨潮 irm.cninfo.com.cn）")
         if qa is None or qa.empty:
             body = "无互动易问答记录"
         else:
@@ -501,11 +542,15 @@ def stock_notices(code: str, days: int = 90) -> str:
     # ③ 快讯按公司名过滤（新浪主源、同花顺兜底；没有公司名就跳过）
     if name:
         got, src = None, ""
-        for src_name, attr in (("新浪", "stock_info_global_sina"),
-                               ("同花顺", "stock_info_global_ths")):
+        # host 清单: 新浪快讯 / 同花顺快讯 (DNS 预检随 _fetch_resilient)
+        for src_name, attr, hosts in (("新浪", "stock_info_global_sina",
+                                       ("zhibo.sina.com.cn",)),
+                                      ("同花顺", "stock_info_global_ths",
+                                       ("news.10jqka.com.cn",))):
             try:
                 ak = _ak()
-                got = _call_with_timeout(getattr(ak, attr), timeout=20)
+                got = _fetch_resilient(getattr(ak, attr), hosts,
+                                       timeout=20, what=f"{src_name}快讯源")
                 if got is not None and not got.empty:
                     src = src_name
                     break
