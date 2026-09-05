@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 from trade.book import (
@@ -179,6 +180,34 @@ class FillContext:
         self._ctx.pop(order_id, None)
 
 
+@dataclass(frozen=True)
+class PlaceRequest:
+    """唯一下单口请求 (计划书 2026-09-05 §3.1): 五路下单的合法差异, 逐字段表达。
+
+    price = 实际委托价 (发单/订单簿/落库, auto_buy 传 order_price ——
+    P0-6 口径); risk_price = 风控口径价 (auto_buy 传参考价 —— 现状风控
+    先于定价, 金额闸吃参考价, 审计 P1 不得混用), None 时用 price。
+    audit_extra 需含 order_id 的路径以 "order_id": None 占位放历史键位,
+    place_order 回填 (键序与收口前逐字节一致, 审计 P2)。
+    account_immediately=False 现状仅人工买 (回报经事件链入账; 与四路
+    立即入账的分叉已登记 CHANGELOG 待单独立项, 不得改默认)。
+    """
+
+    code: str
+    direction: int
+    price: float
+    qty: int
+    price_type: object = PRICE_TYPE_LIMIT
+    risk_price: float | None = None
+    intent_flags: dict | None = None   # {"rotation": True} / {"manual": True} / None
+    remark_prefix: str = ""            # "L1"/"X"/"R"/"B" (进 V{mmdd}-{seq}{前缀})
+    fill_payload: dict | None = None   # fill_ctx.register 的 {label, detail, ...}
+    audit_kind: str = ""
+    audit_message: str = ""
+    audit_extra: dict | None = None
+    account_immediately: bool = True
+
+
 class Executor:
     """卖出执行。只有消费者线程调用, 无并发设计。"""
 
@@ -231,6 +260,57 @@ class Executor:
     def apply(self, cfg) -> None:
         """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
         self._cfg = cfg
+
+    # ── 唯一下单口 (计划书 2026-09-05 唯一下单口收口) ──────────
+
+    def place_order(self, req: PlaceRequest,
+                    *, risk_ctx: object | None = None
+                    ) -> tuple[str | None, str | None]:
+        """下单七步脊柱: 风控→取号→发单→登记成交原因→订单簿→落库→审计。
+
+        五路下单 (预埋/_sell/轮动/自动买/人工买) 的唯一入口 (计划书 §3.2):
+        - 风控拒: **静默**返回 (None, why) —— 风控层每道拒绝已自写
+          audit (risk.py), 调用方各自留痕 (warning/审计/_skip), 本方法
+          不再加一份, 否则预埋/人工买会双倍告警。
+        - 风控价口径: OrderIntent 用 req.risk_price (None 时用 req.price);
+          发单/订单簿/落库一律 req.price (委托价, P0-6 口径)。
+        - account_immediately=False (人工买): 跳过订单簿+落库, 回报经
+          事件链自然入账 (分叉已登记 CHANGELOG, 统一前不得改默认)。
+        - audit_extra 含 "order_id": None 占位时回填, 键位保持调用方
+          构造序 —— 落库 detail_json 键序与收口前逐字节一致。
+        - created_ts 显式下单时刻单点收口于此 (2026-08-10 泰山石油:
+          order_id 被 QMT 复用时新单不继承旧 created_ts)。
+        - 回填可用 (_refresh_can_use) 不在脊柱: executor 内部两路作为
+          调用方尾巴自做 (保崩溃窗口与 pending 超时起点语义, 计划书 §五.3)。
+        """
+        intent = OrderIntent(
+            code=req.code, direction=req.direction,
+            price=req.risk_price if req.risk_price is not None else req.price,
+            qty=req.qty, **(req.intent_flags or {}))
+        ok, why = self._risk.check(intent, risk_ctx or self._build_ctx())
+        if not ok:
+            return None, why
+        remark = self._next_remark(req.remark_prefix)
+        order_id = self._gw.order(req.code, req.direction, req.price,
+                                  req.qty, req.price_type, remark)
+        self.fill_ctx.register(order_id, req.fill_payload)
+        if req.account_immediately:
+            self._book.apply_order_update(
+                order_id, OS_REPORTED, code=req.code,
+                direction=req.direction, price=req.price, qty=req.qty,
+                remark=remark)
+            self._store.save_order({
+                "order_id": order_id, "remark": remark, "code": req.code,
+                "direction": req.direction, "price": req.price,
+                "qty": req.qty, "status": OS_REPORTED,
+                # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
+                # 新单不继承旧 created_ts (泰山石油事件)
+                "created_ts": self._clock()})
+        extra = dict(req.audit_extra or {})
+        if extra.get("order_id", "__missing__") is None:
+            extra["order_id"] = order_id
+        self._store.write_audit(req.audit_kind, req.audit_message, extra)
+        return order_id, None
 
     # ── 预埋单 ──────────────────────────────────────────────────
 
@@ -308,44 +388,32 @@ class Executor:
                 qty = lots * 100
                 if qty <= 0:
                     continue
-                remark = self.next_remark(f"L{tier}")
-                intent = OrderIntent(code=code, direction=DIRECTION_SELL,
-                                     price=price, qty=qty)
-                ok, reason = self._risk.check(intent, self._build_ctx())
-                if not ok:
+                # 唯一下单口 (计划书 T2): 七步脊柱收口, 合法差异经 PlaceRequest 表达
+                order_id, reason = self.place_order(PlaceRequest(
+                    code=code, direction=DIRECTION_SELL, price=price, qty=qty,
+                    remark_prefix=f"L{tier}",
+                    fill_payload={
+                        "label": "阶梯止盈", "tier": tier,
+                        "profit": profit, "sell_ratio": ratio,
+                        # 2026-07-31: 自然语言成交原因 (成交记录页全文展示)
+                        "detail": f"阶梯止盈·档{tier + 1}: 预埋价 {price} "
+                                  f"(成本 {pos.avg_cost:.2f} {profit:+.0%}), "
+                                  f"卖 {ratio:.0%}"},
+                    audit_kind="ladder_place",
+                    audit_message=f"{code} 档{tier} 预埋 {qty}@{price}",
+                    audit_extra={"code": code, "tier": tier, "order_id": None,
+                                 "price": price, "qty": qty}))
+                if order_id is None:
                     # 风控拒绝已写 audit (risk 层), 该档今日不挂;
                     # 不占 remaining —— 没挂出去的量不算花掉
                     _logger.warning("预埋单被风控拒绝: %s 档%d %s", code, tier, reason)
                     continue
                 remaining -= qty
-                order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
-                                          PRICE_TYPE_LIMIT, remark)
-                self.fill_ctx.register(order_id, {
-                    "label": "阶梯止盈", "tier": tier,
-                    "profit": profit, "sell_ratio": ratio,
-                    # 2026-07-31: 自然语言成交原因 (成交记录页全文展示)
-                    "detail": f"阶梯止盈·档{tier + 1}: 预埋价 {price} "
-                              f"(成本 {pos.avg_cost:.2f} {profit:+.0%}), "
-                              f"卖 {ratio:.0%}"})
                 # 乐观标记: 提交成功即标记 (QP 做法) —— 废单也不重复卖,
                 # 误标漏卖的损失 < 重复卖的损失。审计C1修复: 带当日日期
                 self._book.mark_tier(code, tier, date_str)
                 self._store.tier_state.save(
                     code, sorted(self._book.tier_done(code, date_str)), date_str)
-                self._book.apply_order_update(
-                    order_id, OS_REPORTED, code=code, direction=DIRECTION_SELL,
-                    price=price, qty=qty, remark=remark)
-                self._store.save_order({
-                    "order_id": order_id, "remark": remark, "code": code,
-                    "direction": DIRECTION_SELL, "price": price, "qty": qty,
-                    "status": OS_REPORTED,
-                    # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
-                    # 新单不继承旧 created_ts (泰山石油事件)
-                    "created_ts": self._clock()})
-                self._store.write_audit(
-                    "ladder_place", f"{code} 档{tier} 预埋 {qty}@{price}",
-                    {"code": code, "tier": tier, "order_id": order_id,
-                     "price": price, "qty": qty})
                 # 2026-07-30: 预埋成功后立即从 QMT 回填可用 — 券商挂单即冻结,
                 # 页面"可用"应与冻结同步 (原只在成交/撤单后刷新, 显示滞后)。
                 # 刷新失败不阻断预埋 (可用由下次对账兜底)。
@@ -550,31 +618,24 @@ class Executor:
 
     def _sell(self, code: str, qty: int, price: float, price_type,
               reason: str, audit_kind: str) -> bool:
-        """过风控 → 下单 → 登记待查 → 锁 rebind。各级卖出共用。"""
-        intent = OrderIntent(code=code, direction=DIRECTION_SELL,
-                             price=price, qty=qty)
-        ok, why = self._risk.check(intent, self._build_ctx())
-        if not ok:
+        """过风控 → 下单 → 登记待查 → 锁 rebind。各级卖出共用。
+        下单七步脊柱走唯一下单口 place_order (计划书 T2); _pending/锁/
+        回填可用为调用方尾巴 (顺序语义见计划书 §五.3)。"""
+        order_id, why = self.place_order(PlaceRequest(
+            code=code, direction=DIRECTION_SELL, price=price, qty=qty,
+            price_type=price_type, remark_prefix="X",
+            fill_payload={"label": _label_from_reason(reason),
+                          "detail": _detail_from_reason(reason)},
+            audit_kind=audit_kind,
+            audit_message=f"{code} 卖出 {qty}@{price or '对手最优'} ({reason})",
+            audit_extra={"code": code, "order_id": None, "price": price,
+                         "qty": qty, "price_type": str(price_type),
+                         "reason": reason}))
+        if order_id is None:
             self._store.write_audit(
                 "exit_risk_reject", f"{code} 卖出被风控拒绝: {why}",
                 {"code": code, "qty": qty, "reason": reason})
             return False
-        remark = self.next_remark("X")
-        order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
-                                  price_type, remark)
-        self.fill_ctx.register(order_id, {
-            "label": _label_from_reason(reason),
-            "detail": _detail_from_reason(reason)})
-        self._book.apply_order_update(
-            order_id, OS_REPORTED, code=code, direction=DIRECTION_SELL,
-            price=price, qty=qty, remark=remark)
-        self._store.save_order({
-            "order_id": order_id, "remark": remark, "code": code,
-            "direction": DIRECTION_SELL, "price": price, "qty": qty,
-            "status": OS_REPORTED,
-            # 2026-08-10: 显式下单时刻 — order_id 被 QMT 复用时
-            # 新单不继承旧 created_ts (泰山石油事件)
-            "created_ts": self._clock()})
         self._pending[code] = {"order_id": order_id, "ts": self._clock(),
                                "qty": qty, "reason": reason}
         self.lock.rebind_order_id(code, order_id)
@@ -584,10 +645,6 @@ class Executor:
             self._refresh_can_use(code)
         except Exception as e:
             _logger.warning("卖单后回填可用失败 (下次对账兜底): %s: %s", code, e)
-        self._store.write_audit(
-            audit_kind, f"{code} 卖出 {qty}@{price or '对手最优'} ({reason})",
-            {"code": code, "order_id": order_id, "price": price,
-             "qty": qty, "price_type": str(price_type), "reason": reason})
         return True
 
     def _cancel_open_orders(self, code: str) -> None:
@@ -657,8 +714,9 @@ class Executor:
             if p is not None:
                 self._book.set_can_use(code, p["can_use"])
 
-    def next_remark(self, rule_code: str) -> str:
+    def _next_remark(self, rule_code: str) -> str:
         """策略侧单号发号器 (审计M1修复): V{mmdd}-{seq}{规则码} ≤24 字符。
+        (2026-09-05 唯一下单口收口: 转私有 —— 外部调用方已全走 place_order)
         seq 进程生命周期单调递增、不重置 —— 预埋/卖出/人工买入共用此
         发号器 (人工买入在 trade_main 也调这里), "盘后按 remark 对账"
         的唯一性才成立。跨日 mmdd 变了 seq 也不回零 (对账按全串匹配,
