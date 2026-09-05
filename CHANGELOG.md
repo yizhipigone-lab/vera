@@ -249,9 +249,9 @@ def test_metrics_67_actual_code_has_as_e():
 
 ### 已知债 / 诚实边界
 
-- **api.js 页面 fetch 全面迁移未做** (只加了 client, 未改页面): web 区 ~5800 行手写 JS、无自动化测试, 批量替换 20+ fetch 调用点在本环境无法 UI 验证 —— 照项目审计纪律 (web 区改动需人工核对), 页面切换列为需 UI QA 的后续任务, 不静默盲改。
-- **TradeStore 续拆 (旧 P2-5) 未做**: 769 行/21 方法按表域再拆子 store 属高风险低即时收益的重构, 已在 08-28 计划标"可选/随后", 建议等真实 store 改动需求出现时同车做。
-- tdx_tq 悬空: 维持"预留"标注, 待市场面下一需求消费 (06 已把体检迁 market_panel, 数据源未切换, 行为不变)。
+- **api.js 页面 fetch 收敛（2026-09-05 二次推进后）**：client 能力已齐全（benchmark 带参/chat body/data_cache 三端点/put 助手/跨源 8081 `createTradeClient` 工厂）；**module 页 analysis.js 三处同源 fetch 已切统一 client**（calendar×2 + benchmark，SVR_BASE 死常量删除，node --check 绿）。仍留待 **UI 人工回归** 的一组：classic 页（data_cache.js 3 点 / brain_chat.js 普通 POST 4 点——需经 vera-ui 全局桥）、跨源 8081 大组（trade.js 助手层语义已自洽、analysis.js 8081 端点、mobile.html）、研究 SSE 流式（brain_chat:221）、charts_replay 422/502 状态分支——这些在无浏览器环境盲改违背项目 web 区审计纪律，保持不动并记录。
+- **TradeStore 续拆（2026-09-05 完成）**：`_RawLogWriter` 端出独立 `trade/raw_log.py`（re-export 兼容）+ tier_state 表域拆 `TierStateStore` 子 store（写方 executor/读方 trade_main 改指 `store.tier_state`）→ store.py 769→678 行。orders/trades/audit"承重墙"按侦察结论不动（不为行数把 769 行风险换成 600 行风险）。
+- tdx_tq 悬空: 维持"预留"标注, 待市场面下一需求消费。
 
 ### 测试
 
