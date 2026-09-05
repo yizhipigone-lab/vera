@@ -11,12 +11,15 @@
   比（收盘后=今天，盘中/非交易日=上一交易日），stale 才动手；
 - 补拉很贵（全池 1-2 小时）→ 后台 daemon 线程 + 子进程，调用方秒回；
 - 跨进程防重入靠锁文件（server 和 scheduler 是两个进程，进程内变量没用）：
-  refresh.lock 4 小时内有效，崩溃遗留的锁超时自动失效；
+  refresh.lock 4 小时内有效，崩溃遗留的锁超时自动失效；进行中的补拉由
+  回填子进程心跳续命 mtime（不续则长任务会被 TTL 误收尸 → 双补拉，2026-09-05 体检 P1）；
 - backfill 幂等（已缓存部分零重拉），重复触发无害。
 """
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import threading
 from pathlib import Path
 
@@ -137,10 +140,34 @@ def _lock_held() -> bool:
         age = dt.datetime.now() - dt.datetime.fromtimestamp(_LOCK.stat().st_mtime)
         if age < _LOCK_TTL:
             return True
-        _LOCK.unlink(missing_ok=True)  # 超时锁：上届进程已死，收尸
+        _LOCK.unlink(missing_ok=True)  # 超时锁：上届进程已死（心跳也停了），收尸
         return False
     except Exception:
         return False  # 锁判断本身出错就当没锁（补拉幂等，最坏多跑一遍）
+
+
+def _lock_owner() -> dict | None:
+    """读锁内容（{pid, trigger, ts}），读不出返 None（旧版/被占用半截）。"""
+    try:
+        data = json.loads(_LOCK.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _lock_held_by() -> str:
+    """锁持有者的可读描述（"谁在补拉、何时开始"），无锁返空串。
+
+    体检 P1: 此前锁只是时间戳, 被跳过方只知道"有锁", 不知谁在拉、
+    何时开始 —— 归属不可见。改为 JSON 后 skip 原因能带出持有者。
+    """
+    owner = _lock_owner()
+    if not owner:
+        return ""
+    pid = owner.get("pid", "?")
+    trigger = owner.get("trigger", "?")
+    ts = owner.get("ts", "")
+    return f" (持有者 pid={pid} trigger={trigger} 自 {ts})"
 
 
 def _run_refresh(trigger: str, segments: list[tuple],
@@ -184,11 +211,17 @@ def start_backfill(segments: list[tuple] | None = None, trigger: str = "manual",
     if _thread is not None and _thread.is_alive():
         return {"started": False, "reason": "本进程补拉进行中"}
     if _lock_held():
-        return {"started": False, "reason": "其他进程补拉进行中（refresh.lock）"}
+        return {"started": False,
+                "reason": f"其他进程补拉进行中（refresh.lock）{_lock_held_by()}"}
     segs = list(segments or _SEGMENTS)
     universe = universe or _DEFAULT_UNIVERSE
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _LOCK.write_text(dt.datetime.now().isoformat(), encoding="utf-8")
+    # 锁内容 {pid, trigger, ts}: 供"谁在拉/何时开始"归属查询 (体检 P1);
+    # 活跃锁的 mtime 由回填子进程心跳续命, 长任务不会过期被误收尸。
+    _LOCK.write_text(json.dumps(
+        {"pid": os.getpid(), "trigger": trigger,
+         "ts": dt.datetime.now().isoformat(timespec="seconds")},
+        ensure_ascii=False), encoding="utf-8")
     _thread = threading.Thread(
         target=_run_refresh, args=(trigger, segs, universe, end, limit),
         name="kline-cache-refresh", daemon=True)

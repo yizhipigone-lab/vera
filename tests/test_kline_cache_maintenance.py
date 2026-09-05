@@ -153,3 +153,51 @@ class TestEnsureCacheFresh:
         m._run_refresh("test", [("5m", "20240627")], "50", "", 0)
         assert "--universe" in calls[0]
         assert calls[0][calls[0].index("--universe") + 1] == "50"
+
+
+class TestLockOwnership:
+    """锁 JSON 归属 (2026-09-05 体检 P1): 谁在拉/何时开始, 不再只留时间戳。"""
+
+    def _patch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(m, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(m, "_LOCK", tmp_path / "refresh.lock")
+
+    def test_start_backfill写JSON归属(self, monkeypatch, tmp_path):
+        self._patch(monkeypatch, tmp_path)
+        started = []
+
+        class FakeThread:
+            def __init__(self, target=None, args=(), name=None, daemon=None):
+                started.append(args)
+            def start(self):
+                pass
+            def is_alive(self):
+                return False
+        monkeypatch.setattr(m.threading, "Thread", FakeThread)
+        monkeypatch.setattr(m, "_lock_held", lambda: False)
+        m.start_backfill(trigger="scheduler_daily")
+        owner = m._lock_owner()
+        assert owner is not None
+        assert owner["trigger"] == "scheduler_daily"
+        assert owner["pid"] == __import__("os").getpid()
+        assert owner["ts"]
+
+    def test_held_by返回持有者描述(self, monkeypatch, tmp_path):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "refresh.lock").write_text(
+            __import__("json").dumps(
+                {"pid": 123, "trigger": "server_startup", "ts": "2026-09-05T10:00:00"}),
+            encoding="utf-8")
+        desc = m._lock_held_by()
+        assert "123" in desc and "server_startup" in desc and "10:00" in desc
+
+    def test_无锁时描述为空(self, monkeypatch, tmp_path):
+        self._patch(monkeypatch, tmp_path)
+        assert m._lock_held_by() == ""
+
+    def test_坏内容归属可读不炸(self, monkeypatch, tmp_path):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "refresh.lock").write_text("old style raw text",
+                                               encoding="utf-8")
+        assert m._lock_owner() is None      # 旧版纯文本锁 → 归属未知
+        assert m._lock_held_by() == ""      # 但读锁不炸
