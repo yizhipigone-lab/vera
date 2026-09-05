@@ -53,8 +53,8 @@ def test_tier_state_migration_rebuilds_old_table(tmp_path):
     try:
         cols = [r[1] for r in s._conn.execute("PRAGMA table_info(tier_state)")]
         assert "trade_date" in cols
-        s.save_tier_state("600519.SH", [0], "20260726")  # 重建后可正常写
-        assert s.load_tier_states("20260726") == {"600519.SH": [0]}
+        s.tier_state.save("600519.SH", [0], "20260726")  # 重建后可正常写
+        assert s.tier_state.load("20260726") == {"600519.SH": [0]}
     finally:
         s.close()
 
@@ -130,17 +130,17 @@ def test_traded_id_unique_constraint(store):
 def test_tier_state_roundtrip(store):
     """档位状态落库/读回 (按当日过滤); 重存覆盖, 读回升序。
     审计C1修复: 昨日标记不混入当日查询 (日期维度)。"""
-    store.save_tier_state("600519.SH", {2, 0}, "20260726")
-    store.save_tier_state("000001.SZ", [1], "20260726")
-    assert store.load_tier_states("20260726") == {
+    store.tier_state.save("600519.SH", {2, 0}, "20260726")
+    store.tier_state.save("000001.SZ", [1], "20260726")
+    assert store.tier_state.load("20260726") == {
         "600519.SH": [0, 2], "000001.SZ": [1],
     }
-    store.save_tier_state("600519.SH", [0, 1, 2], "20260726")
-    assert store.load_tier_states("20260726")["600519.SH"] == [0, 1, 2]
+    store.tier_state.save("600519.SH", [0, 1, 2], "20260726")
+    assert store.tier_state.load("20260726")["600519.SH"] == [0, 1, 2]
     # 昨日标记留痕但不出现在当日查询里
-    store.save_tier_state("600519.SH", [0], "20260725")
-    assert store.load_tier_states("20260726")["600519.SH"] == [0, 1, 2]
-    assert store.load_tier_states("20260725") == {"600519.SH": [0]}
+    store.tier_state.save("600519.SH", [0], "20260725")
+    assert store.tier_state.load("20260726")["600519.SH"] == [0, 1, 2]
+    assert store.tier_state.load("20260725") == {"600519.SH": [0]}
 
 
 def test_load_today_trade_ids(store):

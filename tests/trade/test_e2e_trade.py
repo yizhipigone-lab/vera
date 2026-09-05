@@ -131,7 +131,7 @@ def test_e2e_full_day(app, cfg, clock):
 
     assert _wait(lambda: app.book.snapshot()["positions"][CYB].volume == 700)
     assert app.book.tier_done(CYB, today) == frozenset({0, 1, 2})   # 乐观标记
-    assert app.store.load_tier_states(today)[CYB] == [0, 1, 2]
+    assert app.store.tier_state.load(today)[CYB] == [0, 1, 2]
     row = app.store._conn.execute(
         "SELECT qty, price FROM trades WHERE traded_id=?",
         (trade["traded_id"],)).fetchone()

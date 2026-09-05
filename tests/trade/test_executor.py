@@ -164,7 +164,7 @@ def test_place_ladder_optimistic_tier_mark(store, kill):
                         prev_closes={CODE: 10.0})
     ex.place_ladder("20260726")
     assert book.tier_done(CODE, "20260726") == frozenset({0, 1})
-    assert store.load_tier_states("20260726")[CODE] == [0, 1]
+    assert store.tier_state.load("20260726")[CODE] == [0, 1]
     assert ex.place_ladder("20260726") == []  # 当日全部已标记, 无新单
 
 

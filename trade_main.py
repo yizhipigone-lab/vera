@@ -459,7 +459,7 @@ class TradeApp:
         # ② 档位标记只恢复当日 (审计C1: 昨日标记留痕不阻碍今日预埋);
         # ③ 当日成交回报幂等集合
         tiers_today = {(code, today): tiers
-                       for code, tiers in self.store.load_tier_states(today).items()}
+                       for code, tiers in self.store.tier_state.load(today).items()}
         self.book.restore(
             positions=self.gateway.query_positions(),
             tiers=tiers_today,
@@ -506,7 +506,7 @@ class TradeApp:
         - 15:05 后启动且当日无 EOD 快照 → 补 EOD (对账 C 方次日基准)。
         """
         hhmm = _hhmm(self._clock())
-        tiers_today = self.store.load_tier_states(today)
+        tiers_today = self.store.tier_state.load(today)
         # 2026-08-10: enabled=false 不补预埋 (与 place_ladder / 盘中兜底同步关);
         # 时间窗下限 09:25→09:15 —— 覆盖"9:15 后启动错过 09:15 定时器"场景,
         # 9:15-09:25 挂的限价单参与开盘集合竞价撮合, 无副作用。

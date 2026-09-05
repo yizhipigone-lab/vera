@@ -330,7 +330,7 @@ class Executor:
                 # 乐观标记: 提交成功即标记 (QP 做法) —— 废单也不重复卖,
                 # 误标漏卖的损失 < 重复卖的损失。审计C1修复: 带当日日期
                 self._book.mark_tier(code, tier, date_str)
-                self._store.save_tier_state(
+                self._store.tier_state.save(
                     code, sorted(self._book.tier_done(code, date_str)), date_str)
                 self._book.apply_order_update(
                     order_id, OS_REPORTED, code=code, direction=DIRECTION_SELL,
