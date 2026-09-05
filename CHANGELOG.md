@@ -156,6 +156,31 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 深模块浅模块治理 III · Wave 1 止血包
+
+**计划书**: [docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md](docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md)
+**背景**: 2026-09-05 逐项核实治理 II 13 项中 12 项未动; 同期产生牛熊口径分叉 (250 vs 60) 新债。四波重排 (止血/实盘正确性/接口债/结构), 本条为 Wave 1。
+
+### 关键改动一览
+
+| 主题 | 关键改动 | 影响 |
+|---|---|---|
+| W1-a 清理闸 | 删根目录 17 个 .log + _tmp 垃圾; 寻优 json×3/预览 txt/一次性脚本移 `scratch/` (gitignored); PS1 助手 (kill/tun helper) 归 `tools/`; `.gitignore` 增 `/_tmp_*`+`scratch/` | 根目录恢复可导航; 防堆积机制建立 |
+| W1-b 牛熊口径收口 | 新建 `core/index_regime.py` 单一真相源 (MA250/门槛200/斜率20 用户拍板) + 7 测试; `brain/data_tools.market_health` 内联数学换真调用 (含 09-04 体检表本体入库); `research/index_regime.py` 改委托 (年头不足段标 range) | 消灭"同一件事两块手表"口径分叉; 门槛常量有测试锚定, 不许悄悄漂移 |
+| W1-c 常量/舍入收口 | `DIRECTION_BUY` 两处副本 (notifier/llm_review) 改 import book 唯一真相源 ("防环"注释理由经核实不成立); `round_price` 迁 `trade/book.py` (executor/auto_buy 经模块属性无感切换) | 全库方向常量与股票价格档位各只剩一份 |
+
+### 测试
+
+- 新增 `tests/test_index_regime.py` 7 个 (先红后绿); 回归 tests/brain/ 144 绿 + tests/trade/ 相关 109 绿。
+- 验收 grep: `DIRECTION_BUY = 23` 全库只剩 book.py; `def round_price` 只剩 book.py (ETF 版随 Wave 2 rotation 动刀迁入)。
+
+### 剩余风险 / 已知债
+
+- Wave 2~4 未动: 实盘正确性三件套 (rotation 迁出/资金口径下沉/卖单登记收口) 按 08-28 治理 II 原卡执行, 见计划书 §五。
+- 工作区仍有大量未提交改动 (trade_main/rotation/reconciler/server 等), Wave 2 动 rotation 前需先处置。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
