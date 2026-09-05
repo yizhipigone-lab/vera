@@ -58,15 +58,59 @@ def _empty_selection_df() -> pd.DataFrame:
     return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
 
 
+class SelectionBatchResult:
+    """选股批次结果: df + 批次失败统计 (治理III W3-BatchResult, 2026-09-05)。
+
+    替代旧类属性 last_batch_errors 侧信道 (并发选股写-读竞态, 08-06 审计
+    MEDIUM): "真空无信号" vs "批次失败空" 的区分随结果返回, 调用方不会
+    漏判 (L2 按日缓存只在 batch_errors==0 时落盘, 失败区段下次重试)。
+
+    对老调用方透明: 未用失败统计的调用方 (engine/selector/测试) 直接当
+    DataFrame 用 —— 非自有属性经 __getattr__ 委托给 df, 常用容器协议
+    (len/[]/iter) 一并转发。新调用方读 .df/.batch_errors/.failed_all 即可。
+    """
+
+    __slots__ = ("df", "batch_errors", "total_batches")
+
+    def __init__(self, df, batch_errors: int = 0, total_batches: int = 0):
+        self.df = df
+        self.batch_errors = batch_errors
+        self.total_batches = total_batches
+
+    @property
+    def any_failed(self) -> bool:
+        return self.batch_errors > 0
+
+    @property
+    def failed_all(self) -> bool:
+        return self.total_batches > 0 and self.batch_errors >= self.total_batches
+
+    # ── DataFrame 委托 (老调用方零改动) ──
+    def __getattr__(self, name):
+        return getattr(self.df, name)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, key):
+        return self.df[key]
+
+    def __iter__(self):
+        return iter(self.df)
+
+    def __repr__(self):
+        return (f"SelectionBatchResult(df=<{type(self.df).__name__} "
+                f"rows={len(self.df)}>, batch_errors={self.batch_errors}/"
+                f"{self.total_batches})")
+
+
 class FormulaRunner(ConnectorSeam):
     """TDX 公式执行封装。支持条件选股 (XG) 和指标计算 (ZB)。
 
     T-H-2 connector 缝隙五成员 2026-08-01 收编为 core.connector.ConnectorSeam。
+    批次失败统计随 SelectionBatchResult 返回 (治理III W3-BatchResult),
+    类属性 last_batch_errors 已删 (并发竞态 + 侧信道)。
     """
-
-    # 2026-07-26: 上次 run_stock_selection_with_dates 的批次失败数 (L2 按日缓存
-    # 区分"真空无信号" vs "失败空" — 失败区段不缓存; 每次 run 重置, 不改签名)
-    last_batch_errors = 0
 
     @classmethod
     def run_stock_selection_with_dates(
@@ -101,7 +145,7 @@ class FormulaRunner(ConnectorSeam):
         str_codes = extract_codes(stock_list)
 
         if not str_codes:
-            return _empty_selection_df()
+            return SelectionBatchResult(_empty_selection_df())
 
         logger.info(
             f"选股 [{formula_name}] arg={formula_arg} "
@@ -207,17 +251,19 @@ class FormulaRunner(ConnectorSeam):
                         })
                     break
 
-        cls.last_batch_errors = batch_errors  # 2026-07-26 (L2 用)
         if not all_records:
             if batch_errors >= total_batches:
                 logger.error(f"所有 {total_batches} 批次均失败，请检查公式名称 [{formula_name}] 是否存在")
             else:
                 logger.warning("选股结果解析后为空")
-            return _empty_selection_df()
+            return SelectionBatchResult(_empty_selection_df(),
+                                        batch_errors=batch_errors,
+                                        total_batches=total_batches)
 
         df = pd.DataFrame(all_records)
         df["select_date"] = pd.to_datetime(df["select_date"])
         df = df.drop_duplicates(subset=["stock_code", "select_date"])
         df = df.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
         logger.info(f"选股完成: {len(df)} 条记录, {df['stock_code'].nunique()} 只股票")
-        return df
+        return SelectionBatchResult(df, batch_errors=batch_errors,
+                                    total_batches=total_batches)

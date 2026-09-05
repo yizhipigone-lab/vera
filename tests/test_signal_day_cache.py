@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.data_fetcher import DataFetcher
-from core.formula_runner import FormulaRunner
+from core.formula_runner import FormulaRunner, SelectionBatchResult
 from selection import signal_day_cache as sdc
 from selection.selector import StockSelector
 
@@ -45,19 +45,20 @@ def _env(tmp_path, monkeypatch):
 
 
 def _fake_runner(calls, signal_fn, errors=0):
-    """signal_fn(d, pool) -> [codes]; 记录调用区段; 同步 last_batch_errors。"""
+    """signal_fn(d, pool) -> [codes]; 记录调用区段; 失败统计随 BatchResult 返回。"""
     def run(formula_name, formula_arg, stock_list, start_time, end_time,
             stock_period, dividend_type):
         calls.append((start_time, end_time))
-        FormulaRunner.last_batch_errors = errors
         recs = [{"stock_code": c, "select_date": d, "formula_name": formula_name}
                 for d in pd.bdate_range(start_time, end_time)
                 for c in signal_fn(d, stock_list)]
         if not recs:
-            return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
+            return SelectionBatchResult(
+                pd.DataFrame(columns=["stock_code", "select_date", "formula_name"]),
+                batch_errors=errors, total_batches=1)
         df = pd.DataFrame(recs)
         df["select_date"] = pd.to_datetime(df["select_date"])
-        return df
+        return SelectionBatchResult(df, batch_errors=errors, total_batches=1)
     return run
 
 

@@ -16,7 +16,7 @@
   仅当日命中 (当日数据已 settled), 跨日自动重算
 - 超过 MAX_AGE_DAYS=60 天的旧信号重算 — 前复权除权漂移
 - 空信号日缓存 (稀疏公式多数天无信号), 但批次失败区段不落盘
-  (FormulaRunner.last_batch_errors 区分"真空" vs "失败空")
+  (SelectionBatchResult.batch_errors 区分"真空" vs "失败空", 治理III W3-BatchResult)
 - period != 1d 不走本模块 (粒度不匹配, 调用方守卫)
 - 缓存异常一律当未命中/只警告, 绝不中断选股
 """
@@ -224,7 +224,8 @@ def get_or_compute(formula_name: str, formula_arg: str, period: str,
             stock_period=period,
             dividend_type=dividend_type,
         )
-        if FormulaRunner.last_batch_errors == 0:
+        # 治理III W3-BatchResult: 失败统计随返回值走, 不再读类属性 (并发竞态)
+        if df.batch_errors == 0:
             for (_, d, ds, kind) in missing:
                 if kind == "today":
                     continue                    # 当日永不落盘; fresh/miss/stale 均落
