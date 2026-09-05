@@ -5,6 +5,7 @@ brain.claude_cli.ask_brain 全 mock (不碰 claude CLI/网络)。
 覆盖: 正常问答 (channel 映射)、空问题、非法会话号归 default (防注入)、
 大脑异常不炸 server (松耦合)、reset 调对 channel。
 """
+import re
 import sys
 from pathlib import Path
 
@@ -79,7 +80,109 @@ def test_reset_calls_memory(client, monkeypatch):
     assert called["ch"] == "research_tab_c9"
 
 
-# ---------------------------------------------------------------- DSH 深度思考通道
+# ---------------------------------------------------------------- 三态对话 (2026-09-05)
+
+def test_chat_stream_fast_mode_uses_quick_chat(client, monkeypatch):
+    """mode=fast: 只走 quick_chat (DeepSeek 直答), 不碰 claude/DSH/fastpath。"""
+    import brain.dsh_channel as dsh
+    import brain.fastpath as fp
+
+    async def boom(*a, **k):
+        raise AssertionError("fast 档不该调 DSH / ask_brain")
+
+    monkeypatch.setattr(dsh, "run_dsh", boom)
+    monkeypatch.setattr(brain_cli, "ask_brain", boom)
+
+    async def no_fast(*a, **k):
+        raise AssertionError("fast 档不该碰 fastpath (个股诊断是重活, 留标准/深度档)")
+
+    monkeypatch.setattr(fp, "try_stock_diagnosis", no_fast)
+    monkeypatch.setattr(fp, "try_market_brief", no_fast)
+
+    cap = {}
+
+    async def fake_quick(question, history=None, on_line=None, channel=None):
+        cap.update({"q": question, "channel": channel})
+        return {"answer": "秒回答", "success": True, "low_confidence": False,
+                "warnings": [], "session_id": None}
+
+    import brain.quick_chat as qc
+    monkeypatch.setattr(qc, "quick_answer", fake_quick)
+    r = client.post("/api/research/chat/stream",
+                    json={"question": "什么是均线", "conv": "c1", "mode": "fast"})
+    assert r.status_code == 200 and "秒回答" in r.text
+    assert cap["channel"] == "research_tab_c1"   # 快速档也走 vault 沉淀
+
+
+def test_chat_fast_mode_ignores_stock_diagnosis_question(client, monkeypatch):
+    """mode=fast 边界: 个股诊断是重活 (取数几十秒+八段报告), 不进快速档。
+
+    (2026-09-05 实测校正: 把 fastpath 的 agent 式成文指令喂给 DeepSeek 直答
+    会输出"写作计划"而非成品; 问个股/大盘请用标准或深度档。)
+    """
+    import brain.fastpath as fp
+    import brain.quick_chat as qc
+
+    async def fake_diag(*a, **k):
+        raise AssertionError("fast 档不该碰 fastpath 个股诊断")
+
+    monkeypatch.setattr(fp, "try_stock_diagnosis", fake_diag)
+    monkeypatch.setattr(fp, "try_market_brief", fake_diag)
+
+    async def fake_quick(question, history=None, on_line=None, channel=None):
+        return {"answer": "快速知识答", "success": True, "low_confidence": False,
+                "warnings": [], "session_id": None}
+
+    monkeypatch.setattr(qc, "quick_answer", fake_quick)
+    r = client.post("/api/research/chat/stream",
+                    json={"question": "宁德时代怎么样", "conv": "c1", "mode": "fast"})
+    assert r.status_code == 200 and "快速知识答" in r.text
+
+
+def test_chat_mode_standard_falls_to_ask_brain(client, monkeypatch):
+    """mode=standard: 快路径不命中 → claude ask_brain (原标准大脑)。"""
+    import brain.fastpath as fp
+    cap = {}
+
+    async def fake_ask(question, session_id=None, timeout=480, max_turns=40,
+                       channel="default", on_line=None):
+        cap.update({"q": question, "timeout": timeout, "max_turns": max_turns})
+        return {"answer": "标准答", "success": True, "low_confidence": False,
+                "warnings": [], "session_id": "s-2"}
+
+    monkeypatch.setattr(brain_cli, "ask_brain", fake_ask)
+
+    async def no_fast(*a, **k):
+        return None
+
+    monkeypatch.setattr(fp, "try_stock_diagnosis", no_fast)
+    monkeypatch.setattr(fp, "try_market_brief", no_fast)
+    r = client.post("/api/research/chat/stream",
+                    json={"question": "复杂问题", "conv": "c1", "mode": "standard"})
+    assert r.status_code == 200 and "标准答" in r.text
+    assert cap["timeout"] == 480 and cap["max_turns"] == 40
+
+
+def test_chat_mode_deep_routes_to_dsh_with_run_id(client, monkeypatch):
+    """mode=deep 显式 → DSH; channel 事件带同 run_id (与旧 deep:true 等价)。"""
+    import brain.dsh_channel as dsh  # noqa: E402  (本地 import 惯例: 靠近使用)
+    cap = {}
+
+    async def fake_run(question, history=None, run_id=None, on_line=None,
+                       channel=None, **kw):
+        cap["run_id"] = run_id
+        return {"answer": "深答", "success": True, "low_confidence": False,
+                "warnings": [], "session_id": None}
+
+    monkeypatch.setattr(dsh, "run_dsh", fake_run)
+    r = client.post("/api/research/chat/stream", json={
+        "question": "深问", "conv": "c1", "mode": "deep",
+        "history": [{"role": "user", "content": "上一问"}]})
+    assert r.status_code == 200
+    assert re.fullmatch(r"[0-9a-f]{12}", cap["run_id"])
+    assert f'"run_id": "{cap["run_id"]}"' in r.text
+    assert "深答" in r.text
+
 
 def test_chat_stream_deep_routes_to_dsh(client, monkeypatch):
     import re as _re

@@ -187,7 +187,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
         except FileNotFoundError:
             return None, b"", "claude CLI 启动失败（找不到可执行文件）"
         except Exception as e:
-            return None, b"", f"大脑调用失败: {e}"
+            # 同流式分支 (2026-09-04): 带异常类型名, 空消息异常不再打出空白
+            return None, b"", f"大脑调用失败: {type(e).__name__}: {e}"
         try:
             out, serr = await asyncio.wait_for(
                 proc.communicate(prompt), timeout=timeout)
@@ -212,15 +213,22 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
         只看 stderr 会把瞬时网络抖动误判成未知硬错误。"""
         tail: deque = deque(maxlen=30)
         try:
+            # limit=8MB: 默认 64KB 行上限会让超长 stream-json 行抛
+            # "Separator is found, but chunk is longer than limit" 崩整条流
+            # (2026-09-05 实测: claude CLI 大文本块单行超 64KB → SSE wedge)。
             sproc = await asyncio.create_subprocess_exec(
                 *command, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                limit=8 * 1024 * 1024,
                 cwd=str(VERA_ROOT), env=CLI_ENV)
         except FileNotFoundError:
             await on_line("[系统] claude CLI 启动失败（找不到可执行文件）")
             return None, b"", ""
         except Exception as e:
-            await on_line(f"[系统] 大脑启动失败: {e}")
+            # 2026-09-04: 带异常类型名 —— 空消息异常 (实测 NotImplementedError,
+            # uvicorn reload 把循环换成 Selector 不支持子进程) 不带类型名时
+            # 前端只见"大脑启动失败: "冒号后空白, 完全无法定位
+            await on_line(f"[系统] 大脑启动失败: {type(e).__name__}: {e}")
             return None, b"", ""
         sproc.stdin.write(prompt)
         await sproc.stdin.drain()

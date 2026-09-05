@@ -47,6 +47,7 @@ DSH_NODE = DSH_RUNTIME / "node" / "node.exe"
 DSH_ENTRY = DSH_RUNTIME / "app" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
 DSH_HOME = DSH_RUNTIME / "home"
 DSH_WORKSPACE = DSH_RUNTIME / "workspace"
+DSH_CWD = _ROOT  # 2026-09-05 B 方案: 深度档工作目录=VERA 项目根, 能读写项目代码
 DSH_DB = _ROOT / "data" / "brain_dsh_runs.db"
 
 DSH_CHANNEL_ENABLED = True   # 应急总开关: False 一键停用, 主大脑零影响
@@ -252,18 +253,27 @@ async def _spawn(task: str, env: dict, out_f, err_f):
 
     直调 node.exe + bin.js, 不经 dsh.cmd 批处理 (IRX 实测: 批处理参数
     有截断风险)。输出写日志文件, 不用 PIPE (IRX 实测: 64KB 缓冲挂死)。
+    cwd = VERA 项目根 (B 方案): 深度档能读写项目代码; 临时日志仍写
+    workspace (不入项目根, 避免污染 reload 监视)。DSH 会话日志取证的
+    出网上下文会含根 CLAUDE.md(已核实无泄漏词, 不误报)。
     """
     return await asyncio.create_subprocess_exec(
         str(DSH_NODE), str(DSH_ENTRY), "--profile", "headless", task,
         stdout=out_f, stderr=err_f,
-        cwd=str(DSH_WORKSPACE), env=env)
+        cwd=str(DSH_CWD), env=env)
 
 
 # 任务指令前缀 (IRX 2026-09-04 实测: 出厂程序员人设遇裸问题会答非所问,
-# 比如问财报它聊工作区环境)。人设本体在 dsh-runtime/workspace/CLAUDE.md。
-_TASK_PREFIX = ("请直接回答下面的问题：结论先行、给出依据与出处；"
-                "不要反问澄清，不要描述你的工作环境或工作区状态；"
-                "一律用中文回答。")
+# 比如问财报它聊工作区环境)。cwd 是 VERA 项目根 (2026-09-05 B 方案),
+# 根 CLAUDE.md 是工程铁律全集 (会诱导聊工程), 人设必须在前缀里压住:
+# 默认直接答题; 用户点名要读/改项目文件时才动手, 且只动点名的。
+_TASK_PREFIX = (
+    "请直接回答下面的问题：结论先行、给出依据与出处；用大白话"
+    "（术语首次出现配一句通俗解释）；不要反问澄清。\n"
+    "工作说明：你当前在 VERA 量化项目根目录（可读写其代码，但默认不要"
+    "翻阅项目文件）；除非用户明确要求你读取/修改某个具体项目文件，否则"
+    "直接凭已有知识与联网回答；涉及需要实时数据的具体数字时如实说明"
+    "『该数字需查证』。一律用中文回答。")
 
 
 def _pack_task(question: str, history: list[dict] | None) -> str:
