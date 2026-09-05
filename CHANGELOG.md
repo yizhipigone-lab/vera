@@ -340,6 +340,27 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 体检 P2 修复（监控审计降噪 / 月度笔记补发）
+
+**体检报告**: [docs/audit/2026-09-05_实盘稳健性_体检报告.md](docs/audit/2026-09-05_实盘稳健性_体检报告.md)
+**背景**: monitor_no_quote 14 天 7070 条刷库淹没真告警；9 月月度笔记因 09-01 断档错过触发日即永久丢失。
+
+### 改动
+
+- **trade/monitor.py（P2-1 降噪）**: `monitor_no_quote` / `monitor_stale_quote` 改走 `_write_throttled` —— 同 code 同类 15 分钟最多落一条，首现立即写；持续无价/陈旧是**稳态**不是新事件，恢复/触发等真状态翻转不经过此口，信号不丢。预计从约 505 条/日降到单票稳态至多 ~16 条/日。
+- **scheduler/vera_scheduler.py + __main__.py（P2-2 补发）**: `add_monthly` 新增 `catchup_days` 参数 —— 触发日错过（机器/调度断档）后，触发日起 N 天内本周期仍未触发则补发一次；超窗/已发不补。`monthly_note` 注册 `catchup_days=7`（9/1 断档丢失教训的直接对策）。默认 0 = 旧行为不变。
+
+### 测试
+
+- test_monitor.py 新增节流用例（首现写/窗口内跳/过窗再记）；test_scheduler.py TestMonthlyJob 新增 4 例（宽限内补发、窗前不提前/超窗不补、0 不补、参数校验）；全量 `pytest tests/` 绿。提交 77bf143 / 2a91770。
+
+### 生效提醒 / 剩余
+
+- 生效：P2-1 需**重启交易进程**（trade_main，8081 窗口）；P2-2 需**重启调度进程**（start_vera.bat 一键全启即可）。
+- 剩余：M18 `fetch_documents.py` 告警归属仍待用户确认（仓库外来源）；至此体检 P0/P1/P2 建议已全部落地。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
