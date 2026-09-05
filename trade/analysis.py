@@ -13,8 +13,45 @@ api.py 路由闭包里埋的计算函数搬到这里, 变模块级纯函数, 可
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 
 from trade.book import DIRECTION_BUY, DIRECTION_SELL
+
+
+_SECONDS_PER_DAY = 86400
+
+
+def _today_range() -> tuple[float, float]:
+    """当日 [00:00, 次日 00:00) epoch 秒。"""
+    start = datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp()
+    return start, start + _SECONDS_PER_DAY
+
+
+def _last_trading_day_range(now: float | None = None) -> tuple[float, float]:
+    """最近一个交易日 (≤ now) 的 [00:00, 次日 00:00) epoch 秒。
+
+    持仓页"当日盈亏"的锚点 —— 尾盘新买的票要按买入均价算当日盈亏,
+    不该把买入前当天的涨幅算成盈利; 而"今天"在周末/节假日是非交易日,
+    若仍用墙钟今天, 上一交易日 (如周五) 的尾盘买入会被误判成过夜仓,
+    把周五全天涨幅算进"当日盈亏" (2026-08-16 中捷精工/联检科技/蓝箭
+    电子事件: 尾盘买入却显示当日盈亏 +1770)。
+
+    最多回退 15 天 (法定长假 + 日历异常兜底); 连续 15 天都判不到
+    交易日则退回墙钟今天 (旧行为, 不阻塞页面)。now 缺省取当前。
+
+    2026-09-02: 从 trade/api.py 移入 (单一实现 —— positions 计算体
+    下沉 view_calc 后 api 与 view_calc 共用; api.py re-import 兼容)。
+    """
+    from trade.monitor import is_trading_day_cached
+    cur = datetime.fromtimestamp(now) if now is not None else datetime.now()
+    d = cur.date()
+    for _ in range(15):
+        if is_trading_day_cached(d):
+            start = datetime(d.year, d.month, d.day).timestamp()
+            return start, start + _SECONDS_PER_DAY
+        d -= timedelta(days=1)
+    return _today_range()
 
 
 def rows_to_dicts(cursor) -> list[dict]:

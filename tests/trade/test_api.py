@@ -59,11 +59,20 @@ def _pin_trading_day(monkeypatch, y, m, d):
 
     当日盈亏测试据此脱离真实"今天" —— 用 time.time() 灌买点会在周末/
     节假日落不进锚定日 (真实今天不是交易日), 导致当日盈亏误按昨收算。
+
+    2026-09-02: positions 计算体下沉 trade/view_calc.py (热加载层),
+    _last_trading_day_range 单一实现移到 trade.analysis —— patch 两处
+    (analysis 是实现处, api 是历史兼容), 所有既有测试语义不变。
     """
     start = _dt.datetime(y, m, d).timestamp()
     end = (_dt.datetime(y, m, d) + _dt.timedelta(days=1)).timestamp()
-    monkeypatch.setattr("trade.api._last_trading_day_range",
-                        lambda now=None: (start, end))
+    for target in ("trade.analysis._last_trading_day_range",
+                   "trade.api._last_trading_day_range"):
+        try:
+            monkeypatch.setattr(target, lambda now=None: (start, end),
+                                raising=False)
+        except (AttributeError, ImportError):
+            pass
     return start, end
 
 
@@ -242,6 +251,143 @@ def test_positions_closed_realized_pnl(monkeypatch, client):
     assert p["day_chg_amt"] == 500.0      # 当日盈亏=(11-10.5)×1000, ≠已实现 1000
 
 
+def test_positions_closed_day_pnl_multi_day_sells(monkeypatch, client):
+    """2026-09-02 (518880 事件) 回归: 平仓票跨日分批卖出时, 当日盈亏只能算
+    最近交易日实际卖出的那部分, 不能用整周期累计卖出均价×累计卖出量。
+
+    真实事件: 518880 于 08-21 卖 5600@9.385, 09-02 (最近交易日) 又卖
+    遗产仓 200@8.892, 昨收 9.118。旧代码拿累计卖均 9.368 × 累计量 5800
+    得 (9.368-9.118)*5800 = +1450 (页面显示"当日盈亏 +1450"); 黄金当日
+    实际跌 -2.37%, 正确答案是今日卖出腿 (8.892-9.118)*200 = -45.2。"""
+    c, app = client
+    ETF = "518880.SH"
+    day_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 14)
+    # 买入 5600@9.05 (锚定日前一周) → book 持仓
+    app.store.save_trade({"traded_id": "tg_b", "order_id": "og_b", "code": ETF,
+        "direction": DIRECTION_BUY, "price": 9.05, "qty": 5600,
+        "amount": 50680.0, "ts": day_start - 6 * 86400})
+    app.book.apply_trade("tg_b", "og_b", ETF, DIRECTION_BUY, 9.05, 5600,
+                         strategy="测试")
+    # 锚定日前一天: 卖出 5600@9.385 (历史卖出, 与"当日"无关)
+    app.store.save_trade({"traded_id": "tg_s1", "order_id": "og_s1", "code": ETF,
+        "direction": DIRECTION_SELL, "price": 9.385, "qty": 5600,
+        "amount": 52556.0, "pnl_amount": 1869.1, "pnl_pct": 3.69,
+        "ts": day_start - 86400})
+    app.book.apply_trade("tg_s1", "og_s1", ETF, DIRECTION_SELL, 9.385, 5600)
+    assert app.book.snapshot()["positions"][ETF].volume == 0
+    # 锚定日当天 14:54: 卖出遗产仓 200@8.892 (只进 trades, book volume 保持 0)
+    app.store.save_trade({"traded_id": "tg_s2", "order_id": "og_s2", "code": ETF,
+        "direction": DIRECTION_SELL, "price": 8.892, "qty": 200,
+        "amount": 1778.4, "pnl_amount": -58.6, "pnl_pct": -3.19,
+        "ts": day_start + 14 * 3600 + 54 * 60})
+    # 现价 8.902 / 昨收 9.118 (2026-09-02 真实行情感值)
+    app.monitor.on_quote(ETF, {"last": 8.902, "bid1": 8.90, "prev_close": 9.118})
+
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[ETF]
+    assert p["closed"] is True
+    assert p["volume"] == 0
+    # 已实现盈亏是整周期口径, 不受本修复影响: 1869.1 + (-58.6) = 1810.5
+    assert p["pnl"] == 1810.5
+    # 当日盈亏只算今日卖出的 200 股: 1778.4 - 9.118*200 = -45.2
+    # (旧代码: 累计卖均 9.368*5800 → +1450.0, 红色断言)
+    assert p["day_chg_amt"] == -45.2
+
+
+def test_positions_closed_day_pnl_no_sell_today(monkeypatch, client):
+    """2026-09-02 修复补充: 平仓票最近交易日无卖出 (全部卖在更早) →
+    当日盈亏 = 0, 不受历史卖出均价影响。"""
+    c, app = client
+    SZ = "000002.SZ"
+    day_start, _ = _pin_trading_day(monkeypatch, 2026, 8, 14)
+    app.store.save_trade({"traded_id": "tb_n", "order_id": "ob_n", "code": SZ,
+        "direction": DIRECTION_BUY, "price": 10.0, "qty": 1000,
+        "amount": 10000.0, "ts": day_start - 3 * 86400})
+    app.store.save_trade({"traded_id": "ts_n", "order_id": "os_n", "code": SZ,
+        "direction": DIRECTION_SELL, "price": 11.0, "qty": 1000,
+        "amount": 11000.0, "pnl_amount": 1000.0, "pnl_pct": 10.0,
+        "ts": day_start - 2 * 86400})      # 卖在锚定日前两天
+    app.book.apply_trade("tb_n", "ob_n", SZ, DIRECTION_BUY, 10.0, 1000,
+                         strategy="测试")
+    app.book.apply_trade("ts_n", "os_n", SZ, DIRECTION_SELL, 11.0, 1000)
+    app.monitor.on_quote(SZ, {"last": 11.0, "bid1": 10.9, "prev_close": 10.5})
+    d = c.get("/api/trade/positions").json()
+    p = {x["code"]: x for x in d["positions"]}[SZ]
+    assert p["closed"] is True
+    assert p["day_chg_amt"] == 0.0         # 非当日卖出 → 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-09-02: 展示层热加载 — /api/trade/positions 计算体下沉
+# trade/view_calc.py, POST /api/trade/reload_view 非交易时段重载
+# ═══════════════════════════════════════════════════════════════
+
+def test_positions_uses_latest_view_calc(monkeypatch, client):
+    """热生效机制: 路由函数内 import 每次请求从 sys.modules 取最新
+    view_calc —— reload 之后的新代码即刻生效。本测试用假模块替换
+    sys.modules['trade.view_calc'] 模拟 reload 的结果, 断言页面输出
+    立刻跟着变 (不重启进程)。"""
+    import sys
+    import types
+    c, _ = client
+    fake = types.ModuleType("trade.view_calc")
+
+    def build_positions_view(trade_app):
+        return {"positions": [{"code": "FAKE.SH", "marker": 1}],
+                "closed": [], "ts": 1.0}
+
+    fake.build_positions_view = build_positions_view
+    monkeypatch.setitem(sys.modules, "trade.view_calc", fake)
+    d = c.get("/api/trade/positions").json()
+    assert d["positions"][0]["code"] == "FAKE.SH"
+    assert d["positions"][0]["marker"] == 1
+
+
+def test_reload_view_rejected_in_continuous(client):
+    """连续竞价时段调 reload 端点 → 403 拒绝 + audit 留痕, 模块不动。
+    (client fixture 已把 trading_session 钉为 continuous)"""
+    c, app = client
+    r = c.post("/api/trade/reload_view")
+    assert r.status_code == 403
+    assert app.store._conn.execute(
+        "SELECT COUNT(*) FROM audit WHERE kind='view_reload_rejected'"
+    ).fetchone()[0] >= 1
+
+
+def test_reload_view_ok_when_closed(monkeypatch, client):
+    """收盘后时段 (closed) 调 reload 端点 → 200 + 重载真实 view_calc
+    + 烟测通过 + audit 留痕 view_reload。"""
+    c, app = client
+    monkeypatch.setattr("trade.monitor.trading_session",
+                        lambda now=None: "closed")
+    r = c.post("/api/trade/reload_view")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["module"] == "trade.view_calc"
+    assert app.store._conn.execute(
+        "SELECT COUNT(*) FROM audit WHERE kind='view_reload'"
+    ).fetchone()[0] >= 1
+
+
+def test_reload_view_syntax_error_422(monkeypatch, client, tmp_path):
+    """view_calc 源文件语法坏了 → 422 拒绝重载 (进程内保持旧版可用),
+    audit 留痕 view_reload_syntax_error。"""
+    c, app = client
+    monkeypatch.setattr("trade.monitor.trading_session",
+                        lambda now=None: "closed")
+    import trade.view_calc as vc
+    bad = tmp_path / "bad_view_calc.py"
+    bad.write_text("def broken(:\n", encoding="utf-8")
+    monkeypatch.setattr(vc, "__file__", str(bad))
+    r = c.post("/api/trade/reload_view")
+    assert r.status_code == 422
+    assert app.store._conn.execute(
+        "SELECT COUNT(*) FROM audit WHERE kind='view_reload_syntax_error'"
+    ).fetchone()[0] >= 1
+    # 模块未被重载: 原函数仍可用
+    assert callable(vc.build_positions_view)
+
+
 def test_read_endpoints_200(client):
     c, _ = client
     for url in ("/api/trade/orders", "/api/trade/reconciles",
@@ -253,6 +399,40 @@ def test_buy_valid_code_accepted(client):
     c, _ = client
     r = c.post("/api/trade/buy", json={"code": SH, "qty": 100, "price": 10.0})
     assert r.status_code == 200 and r.json()["accepted"] is True
+
+
+def test_buy_etf_without_price_quote_fallback(client):
+    """2026-08-25 人工买入 ETF 支持: 未持仓 ETF 不在行情订阅名单,
+    monitor 缓存必无价; 限价留空时先走 query_quotes 一次性取价
+    (回填缓存 + 顺带订阅), 不再直接 buy_fail_closed 拒单。"""
+    c, app = client
+    ETF = "518880.SH"
+    # 网关侧有价但 monitor 缓存无 (直接塞快照不 fire 事件, 模拟未订阅代码)
+    app.gateway._quotes[ETF] = {"last": 5.6, "bid1": 5.59, "ask1": 5.61,
+                                "high": 5.65, "prev_close": 5.58}
+    r = c.post("/api/trade/buy", json={"code": ETF, "qty": 400})
+    assert r.status_code == 200
+    # 等消费者线程执行: 按取到的 5.6 下单 (400×5.6=2240 ≥ 2000 金额下限)
+    assert _wait(lambda: any(
+        o["code"] == ETF and o["direction"] == DIRECTION_BUY
+        for o in app.gateway.query_orders()))
+    order = [o for o in app.gateway.query_orders() if o["code"] == ETF][0]
+    assert order["price"] == 5.6 and order["qty"] == 400
+    # 一次性取价已回填 monitor 缓存 (后续监控/卖出链有价可用)
+    assert app.monitor.quote_of(ETF)["last"] == 5.6
+
+
+def test_buy_without_price_no_quote_still_fail_closed(client):
+    """一次性取价也取不到 → 维持 fail-closed 拒单 (行为不变)。"""
+    c, app = client
+    GHOST = "512000.SH"
+    r = c.post("/api/trade/buy", json={"code": GHOST, "qty": 400})
+    assert r.status_code == 200
+    assert _wait(lambda: app.store._conn.execute(
+        "SELECT COUNT(*) FROM audit WHERE kind='buy_fail_closed'")
+        .fetchone()[0] > 0)
+    assert not [o for o in app.gateway.query_orders()
+                if o["code"] == GHOST]
 
 
 def test_buy_malformed_code_rejected_422(client):

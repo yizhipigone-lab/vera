@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from trade.book import is_etf, DIRECTION_BUY, DIRECTION_SELL
 from trade.analysis import (  # 2026-08-19 深模块治理: 计算逻辑下沉
+    _last_trading_day_range,  # 2026-09-02: 单一实现移 analysis (兼容 re-import)
     calc_drawdowns,
     deep_merge,
     diff_dicts,
@@ -70,29 +71,6 @@ def _today_range() -> tuple[float, float]:
     start = datetime.now().replace(
         hour=0, minute=0, second=0, microsecond=0).timestamp()
     return start, start + _SECONDS_PER_DAY
-
-
-def _last_trading_day_range(now: float | None = None) -> tuple[float, float]:
-    """最近一个交易日 (≤ now) 的 [00:00, 次日 00:00) epoch 秒。
-
-    持仓页"当日盈亏"的锚点 —— 尾盘新买的票要按买入均价算当日盈亏,
-    不该把买入前当天的涨幅算成盈利; 而"今天"在周末/节假日是非交易日,
-    若仍用墙钟今天, 上一交易日 (如周五) 的尾盘买入会被误判成过夜仓,
-    把周五全天涨幅算进"当日盈亏" (2026-08-16 中捷精工/联检科技/蓝箭
-    电子事件: 尾盘买入却显示当日盈亏 +1770)。
-
-    最多回退 15 天 (法定长假 + 日历异常兜底); 连续 15 天都判不到
-    交易日则退回墙钟今天 (旧行为, 不阻塞页面)。now 缺省取当前。
-    """
-    from trade.monitor import is_trading_day_cached
-    cur = datetime.fromtimestamp(now) if now is not None else datetime.now()
-    d = cur.date()
-    for _ in range(15):
-        if is_trading_day_cached(d):
-            start = datetime(d.year, d.month, d.day).timestamp()
-            return start, start + _SECONDS_PER_DAY
-        d -= timedelta(days=1)
-    return _today_range()
 
 
 def _day_range(date: str) -> tuple[float, float]:
@@ -155,141 +133,57 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
 
     @app.get("/api/trade/positions")
     def positions():
-        snap = trade_app.book.snapshot()
-        # 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例/已平仓。
-        # 名称表惰性加载一次 (DataFetcher.get_name_map, 失败回退空 → 前端显示代码)。
-        # 2026-08-11: 数量=0 的幽灵持仓 (已卖光但 book key 未删) 改用真实已实现
-        # 盈亏展示 —— 留在持仓表灰显 + "已平仓"徽标, 不再显示一堆 0, 也不另开
-        # 分区 (用户裁决)。平仓票的 avg_cost/pnl/pnl_pct 由 summary 覆盖。
-        entry_map, closed, summary = entry_and_closed(trade_app.store)
-        # 2026-08-12: 当日盈亏精确化 — 昨仓按昨收、今买按买入均价。
-        # 先汇总"最近一个交易日"的买入 (尾盘新买的票不该把买入前当天
-        # 的涨幅算成盈利)。2026-08-16 修复: 锚点从墙钟今天改成最近
-        # 交易日 —— 周末/节假日墙钟今天不是交易日, 周五尾盘买入会被
-        # 误判成过夜仓, 把周五全天涨幅算成"当日盈亏"。
-        today_buys: dict = {}
-        try:
-            ro = trade_app.store.open_readonly()
-            try:
-                lo, hi = _last_trading_day_range()
-                for code_, qty, amount in ro.execute(
-                    "SELECT code, SUM(qty), SUM(amount) FROM trades "
-                    "WHERE direction=? AND ts>=? AND ts<? GROUP BY code",
-                    (DIRECTION_BUY, lo, hi)):
-                    today_buys[code_] = {"qty": qty or 0, "amount": amount or 0.0}
-            finally:
-                ro.close()
-        except Exception:
-            today_buys = {}
-        # 2026-08-18: 盘前(还没开盘)判定一次。QMT 的 prev_close 尚未翻日
-        # (仍是"前前一个交易日"的收盘价), 直接 (last-prev_close) 会把前一交易日
-        # 全天涨幅算成"当日盈亏" (159949: 08-17 尾盘买入, 08-18 盘前显示 +13950)。
-        # 盘前"今日"无任何变动 → 当日盈亏应为 0。
+        # 2026-09-02: 计算体下沉 trade/view_calc.py (热加载层)。函数内
+        # import 每次请求从 sys.modules 取最新模块 —— POST /api/trade/
+        # reload_view 重载后即刻生效, 改展示口径不再重启 trade_main。
+        from trade.view_calc import build_positions_view
+        return build_positions_view(trade_app)
+
+    @app.post("/api/trade/reload_view")
+    def reload_view():
+        """非交易时段热重载 trade.view_calc (持仓页展示计算层)。
+
+        流程: 时段校验 → 源码语法预检 → importlib.reload → 烟测调用
+        → audit 留痕。放行时段: 盘前(<09:15)/午休(11:30-13:00)/
+        收盘后(≥15:00)/非交易日 (用户 2026-09-02 拍板); 开盘竞价与
+        连续竞价一律 403 —— 展示层虽无交易副作用, 但"盘中换代码"的
+        操作习惯必须杜绝。
+
+        边界: 烟测失败时模块已是新版 (半坏状态, positions 端点会跟着
+        抛错) —— 修复文件后再次 reload, 或重启 trade_main 兜底。
+        语法预检挡住最常见的坏文件 (SyntaxError 不 reload, 进程内
+        保持旧版可用)。只允许重载 view_calc 这一个模块 —— 交易核心
+        (book/executor/monitor/risk/gateway/store) 永不热加载。
+        """
         from trade.monitor import trading_session
-        pre_open = trading_session() == "pre_open"
-        result = []
-        for code, p in sorted(snap["positions"].items()):
-            quote = trade_app.monitor.quote_of(code)
-            last = quote["last"] if quote else None
-            prev_close = (quote.get("prev_close") or None) if quote else None
-            # 当日涨幅 = 客观价格口径 (现价/昨收-1), 与是否持仓/何时买入无关:
-            # 盘中实时、收盘/周末为最近交易日涨跌。2026-08-16 澄清 (尾盘买入不
-            # 清零) + 2026-08-17 (已平仓票也要显示 —— 客观事实不因平仓消失)。
-            day_chg_pct = (round((last / prev_close - 1) * 100, 2)
-                           if last and prev_close else None)
-            s = summary.get(code)
-            # 平仓票: volume=0 且 trades 证明确已整周期闭环
-            is_closed_pos = (p.volume == 0 and s is not None and s["is_closed"])
-            etf = is_etf(code)
-            if is_closed_pos:
-                # 成本→买入均价; 浮盈→已实现盈亏; 盈亏%→已实现%; 市值无意义→None。
-                # 当日涨幅(客观)已在上方算出, 保留。
-                # 当日盈亏 = 今日价格变动 × 卖出量 = (卖出均价 - 昨收) × 卖出量。
-                # T+1 下今日卖出的必然全是昨仓 (无今买今卖), 故无"今买"腿。
-                # 仅卖出发生在最近交易日才非零, 否则当日已不持有 → 0。
-                # (用户 2026-08-17 澄清: 当日盈亏≠已实现盈亏, 前者锚昨收、后者锚买入均价)
-                day_chg_amt = None
-                sell_avg = s["sell_avg"]
-                exit_ts = s["exit_ts"]
-                if sell_avg and prev_close and exit_ts:
-                    lo, hi = _last_trading_day_range()
-                    if lo <= exit_ts < hi:
-                        day_chg_amt = round(
-                            (sell_avg - prev_close) * s["sell_qty"], 2)
-                    else:
-                        day_chg_amt = 0.0
-                market_value = None
-                # 2026-08-27 (159290 事件): 成本/数量取被平仓口径 (遗产仓
-                # 表内买入额只是零头, 用买入均价会把盈亏%分母缩错);
-                # 无 pnl 可考的历史平仓回退表内买入口径 (行为不变)。
-                avg_cost = (s["cost_avg"] if s["cost_avg"] is not None
-                            else s["buy_avg"])
-                pnl = s["realized_pnl"]
-                pnl_pct = s["realized_pnl_pct"]
-                entry_ts = s["entry_ts"]
-                exit_ts = s["exit_ts"]
-                hold = hold_days(s["entry_ts"], s["exit_ts"])
-                buy_qty = s["closed_qty"]
-                sell_avg = s["sell_avg"]
-            else:
-                # 2026-08-12: 当日盈亏精确化 — 昨仓部分按昨收, 今日买入部分
-                # 按今日买入均价 (尾盘新买的票不该把买入前今天的涨幅算成盈利;
-                # 300119 事件)。今买量从 trades 今日买入汇总取, 与持仓量取小
-                # (今日卖了部分则剩余额按买入均价近似)。
-                tb = today_buys.get(code, {})
-                tb_qty = min(tb.get("qty", 0), p.volume)
-                tb_avg = (tb["amount"] / tb["qty"]
-                          if tb.get("qty") and tb["qty"] > 0 else None)
-                yest_qty = max(0, p.volume - tb_qty)
-                if last:
-                    if pre_open:
-                        # 盘前: 今日无变动, 当日盈亏 = 0 (见上方 2026-08-18 注)
-                        day_chg_amt = 0.0
-                    else:
-                        yest_amt = ((last - prev_close) * yest_qty
-                                    if yest_qty > 0 and prev_close else 0.0)
-                        tb_amt = ((last - tb_avg) * tb_qty
-                                  if tb_qty > 0 and tb_avg else 0.0)
-                        base = ((prev_close or 0.0) * yest_qty
-                                + (tb_avg or 0.0) * tb_qty)
-                        day_chg_amt = round(yest_amt + tb_amt, 2) if base else None
-                else:
-                    day_chg_amt = None
-                market_value = round(last * p.volume, 2) if last else None
-                avg_cost = p.avg_cost
-                pnl = round((last - p.avg_cost) * p.volume, 2) if last else None
-                pnl_pct = (round((last / p.avg_cost - 1) * 100, 2)
-                           if last and p.avg_cost > 0 else None)
-                entry_ts = entry_map.get(code)
-                exit_ts = None
-                hold = hold_days(entry_ts)
-                buy_qty = None
-                sell_avg = None
-            result.append({
-                "code": code, "name": name_of(code),
-                "volume": p.volume, "can_use": p.can_use,
-                "avg_cost": round(avg_cost, 2) if avg_cost is not None else None,
-                "strategy": p.strategy,
-                "last": last,
-                "day_chg_pct": day_chg_pct,
-                "day_chg_amt": day_chg_amt,
-                "market_value": market_value,
-                "pnl": pnl,
-                "pnl_pct": pnl_pct,
-                "entry_ts": entry_ts,
-                "exit_ts": exit_ts,
-                "hold_days": hold,
-                # 2026-08-11: 平仓票的买入量与卖出均价 (持仓票为 None)
-                "buy_qty": buy_qty,
-                "sell_avg": round(sell_avg, 2) if sell_avg is not None else None,
-                "closed": is_closed_pos,
-                "tiers_done": sorted(snap["tiers"].get(code, {}).get(
-                    time.strftime("%Y%m%d"), ())),
-                # 2026-07-27 裁决③: ETF 明示不纳入自动管理
-                "etf": etf,
-                "managed": not (etf and trade_app.config.exclude_etf),
-            })
-        return {"positions": result, "closed": closed, "ts": time.time()}
+        sess = trading_session()
+        if sess in ("continuous", "auction"):
+            trade_app.store.write_audit(
+                "view_reload_rejected", f"盘中拒绝热加载 (session={sess})")
+            raise HTTPException(
+                403, f"盘中 ({sess}) 禁止热加载, 请在盘前/午休/收盘后操作")
+        import trade.view_calc as vc
+        try:
+            src = open(vc.__file__, encoding="utf-8").read()
+            compile(src, vc.__file__, "exec")
+        except Exception as e:
+            trade_app.store.write_audit(
+                "view_reload_syntax_error", f"语法预检失败, 未重载: {e}")
+            raise HTTPException(
+                422, f"view_calc 语法错误, 未重载 (进程内保持旧版): {e}")
+        import importlib
+        try:
+            importlib.reload(vc)
+            vc.build_positions_view(trade_app)   # 烟测: 新代码能算出视图
+        except Exception as e:
+            trade_app.store.write_audit(
+                "view_reload_failed", f"重载后烟测失败: {e}")
+            raise HTTPException(
+                500, f"重载成功但烟测失败, 请修复文件后再次 reload "
+                     f"或重启 trade_main 兜底: {e}")
+        trade_app.store.write_audit(
+            "view_reload", f"view_calc 重载成功 (session={sess})")
+        return {"ok": True, "module": "trade.view_calc", "session": sess}
 
     @app.get("/api/trade/orders")
     def orders(date: str = Query(default=""),
