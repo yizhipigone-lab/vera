@@ -4,7 +4,7 @@
 输出 JSON 到 stdout, 供撰写研究报告使用 (一次性脚本)。
 用法: python -X utf8 auto_iter/extract_report_data.py
 """
-import sys, os, json, copy
+import sys, os, json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

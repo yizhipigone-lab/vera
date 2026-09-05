@@ -6,7 +6,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from collections import Counter
 
 if sys.platform == "win32":
     try:
@@ -43,12 +42,10 @@ def gen_html(results: list, excluded: list, args) -> str:
 
     # 汇总统计
     n_ok = len(ok)
-    n_total = n_ok + len(excluded)
     returns = [r["metrics"]["cumulative_return"] for r in ok]
     win_rates = [r["metrics"]["win_rate"] for r in ok]
     sharpes = [r["metrics"].get("sharpe_ratio", 0) for r in ok]
     max_dds = [r["metrics"]["max_drawdown"] for r in ok]
-    n_trades_list = [r["n_trades"] for r in ok]
     ann_returns = [r["metrics"].get("annualized_return", 0) for r in ok]
 
     # Top20 表

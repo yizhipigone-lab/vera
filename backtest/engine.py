@@ -22,7 +22,6 @@ from backtest.degrade_5m import (
 )
 from backtest.loop import build_backtest_loop
 from backtest.metrics import MetricsCalculator
-from backtest.prepared import PreparedMatrix
 from backtest.result import BacktestResult
 from backtest.stop_config import (
     DEFAULT_PRIORITY,

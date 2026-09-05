@@ -51,7 +51,6 @@ def _shift(x: np.ndarray, n: int) -> np.ndarray:
 
 def _roll_diff(c: np.ndarray, n: int) -> np.ndarray:
     """w[t] = c[t] - c[t-n] (t<n 时按 c 负下标=0)。标准滚动和技巧。"""
-    T = c.shape[0]
     cm = np.concatenate([np.zeros((n,) + c.shape[1:], dtype=c.dtype), c], axis=0)
     return cm[n:] - cm[:-n] if n else c.copy()
 

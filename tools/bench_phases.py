@@ -58,7 +58,7 @@ def run_once(yaml_path, label):
     t = time.perf_counter(); bt = pipe.step2_backtest(sel); b = time.perf_counter() - t
     f = fetch_t[0]; lp = loop_t[0]
     t = time.perf_counter(); bm = pipe.step3_benchmark(bt); bm_t = time.perf_counter() - t
-    t = time.perf_counter(); rp = pipe.step4_report(bt, bm); r = time.perf_counter() - t
+    t = time.perf_counter(); pipe.step4_report(bt, bm); r = time.perf_counter() - t
     tot = time.perf_counter() - T0
     other = b - f - lp
     print("\n  ---- phase timing (seconds) ----", flush=True)

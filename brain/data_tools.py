@@ -37,7 +37,6 @@ import argparse
 import datetime as dt
 import importlib.util
 import os
-import time
 
 from utils.sysutil import ensure_utf8_stdout, project_root
 

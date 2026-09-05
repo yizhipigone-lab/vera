@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 允许直接 
 from auto_iter.common import (  # noqa: E402
     BT_START, BT_END, DATA_START, DEFAULT_BT_CFG, LEFT_FACTORS, MARKET_FACTORS,
     RIGHT_FACTORS, REPO_ROOT, build_entries_and_bear, build_pool_candidates,
-    build_signals, enforce_offline, filter_pool, load_panel, run_backtest,
+    enforce_offline, filter_pool, load_panel, run_backtest,
     seed_stock_info, shrink_panel,
 )
 

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from brain.alert_rules import (
-    Alert, DEFAULT_CONFIG, apply_push_suppression, load_config,
+    Alert, apply_push_suppression, load_config,
     rule_index_move, rule_sector_cluster, rule_stock_sentiment,
     rule_volume_anomaly,
 )

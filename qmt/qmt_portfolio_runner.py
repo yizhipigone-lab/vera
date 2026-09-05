@@ -28,7 +28,6 @@ import time
 import logging
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 # 复用 VERA 项目的信号生成代码 (因子与回测完全同源, 防"两套信号各说各话")

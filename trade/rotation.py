@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from trade.book import (
     DIRECTION_BUY,

@@ -15,7 +15,6 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -32,7 +31,7 @@ from tools.formula_pipeline.bootstrap import (  # noqa: E402
 from tools.formula_pipeline.common import (  # noqa: E402
     GS_DIR, load_json, read_formula_txt, save_json)
 from tools.formula_pipeline.stage_d1 import (  # noqa: E402
-    ENGINE_CFG, S2_RANGE, bench_annual, filter_first_signal,
+    ENGINE_CFG, filter_first_signal,
     load_calendar, signal_to_selections, stock_pool)
 from tools.formula_pipeline.interpreter.runner import (  # noqa: E402
     run_formula_batch)

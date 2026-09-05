@@ -14,7 +14,6 @@
     python tools/formula_pipeline/stage_d1.py --run-dir <dir> [--formula 名字]
 """
 import argparse
-import json
 import os
 import sys
 import time
@@ -385,7 +384,6 @@ def main():
             save_json(state_fp, state)
             done_count += 1
             avg = (time.time() - t0) / done_count
-            eta_min = avg * (len(todo) - done_count) / 60 / nproc * nproc
             print(f"[d1 {done_count}/{len(todo)}] {rec['name']}: "
                   f"{rec['status']} ({rec['elapsed_s']}s, "
                   f"ETA {avg * (len(todo) - done_count) / nproc / 60:.0f}min)",

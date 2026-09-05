@@ -174,11 +174,6 @@ def build(run_dir: Path) -> Path:
         diffs = []
         for k, v in ok5.items():
             ar5 = (v.get("metrics", {}).get("annualized_return") or 0) * 100
-            s2ar = 0.0
-            for r in survivors:
-                if r["name"] == k:
-                    s2ar = (r.get("s2", {}).get("metrics", {})
-                            .get("annualized_return") or 0) * 100
             diffs.append(ar5)
         avg5 = sum(diffs) / len(diffs) if diffs else 0
         better = sum(1 for k, v in ok5.items()

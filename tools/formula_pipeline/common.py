@@ -5,7 +5,6 @@
 项目级依赖仅限: core/tdx_path (TDX_HOME 定位)。
 """
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -149,8 +148,3 @@ def save_json(path: Path, obj) -> None:
 def load_json(path: Path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
-
-
-def gs1_files() -> list:
-    """gs_1 批全部 txt 路径 (排序稳定)。"""
-    return sorted(p for p in GS_DIR.glob(GS_PREFIX + "*.txt") if p.is_file())

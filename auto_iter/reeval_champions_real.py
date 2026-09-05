@@ -4,7 +4,7 @@
 用法: python -X utf8 auto_iter/reeval_champions_real.py
 口径与主循环完全一致 (同股票池/费用/滑点), 仅 trailing_stop.confirm 不同。
 """
-import sys, os, json, copy
+import sys, os, copy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

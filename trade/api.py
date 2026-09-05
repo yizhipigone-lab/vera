@@ -14,15 +14,14 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from trade.book import is_etf, DIRECTION_BUY, DIRECTION_SELL
 from trade.analysis import (  # 2026-08-19 深模块治理: 计算逻辑下沉
-    _last_trading_day_range,  # 2026-09-02: 单一实现移 analysis (兼容 re-import)
+    _last_trading_day_range,  # 2026-09-02: 单一实现移 analysis (兼容 re-import, 测试按历史双 patch)  # noqa: F401
     deep_merge,
     diff_dicts,
     name_of,

@@ -13,8 +13,6 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -30,7 +28,7 @@ from tools.formula_pipeline.bootstrap import (  # noqa: E402
 from tools.formula_pipeline.common import (  # noqa: E402
     GS_DIR, load_json, read_formula_txt, save_json)
 from tools.formula_pipeline.stage_d1 import (  # noqa: E402
-    ENGINE_CFG, S2_RANGE, bench_annual, filter_first_signal,
+    S2_RANGE, bench_annual, filter_first_signal,
     load_calendar, run_backtest, signal_to_selections)
 from tools.formula_pipeline.interpreter.runner import (  # noqa: E402
     run_formula_batch)
@@ -152,7 +150,6 @@ def _worker_pools(rec):
     import os as _os
     import pandas as _pd
     _os.environ.setdefault("VERA_KLINE_READONLY", "1")
-    from tools.formula_pipeline.stage_d1 import run_backtest
     g = _PG
     bench = _pd.read_parquet(g["bench_fp"])
     calendar = _pd.DatetimeIndex(g["calendar"])

@@ -46,7 +46,7 @@ def load_stocks(refresh=False) -> dict:
     stocks = {}
     try:
         from core.data_fetcher import DataFetcher
-        raw = DataFetcher._ensure_ready() or True
+        DataFetcher._ensure_ready()
         tq = DataFetcher._connector().tq()
         resp = tq.get_stock_list("50", list_type=1)  # 50 = 沪深A股
         for s in resp:
