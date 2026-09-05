@@ -32,7 +32,6 @@ from core.stock_filter import get_cached_info  # noqa: E402
 from trade.auto_buy import AutoBuyFeature  # noqa: E402
 from trade.book import (  # noqa: E402
     DIRECTION_BUY,
-    DIRECTION_SELL,
     OS_JUNK,
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
@@ -66,6 +65,11 @@ from trade.executor import Executor  # noqa: E402
 from trade.gateway import FakeGateway, RealGateway  # noqa: E402
 from trade.monitor import SESSION_NAMES, Monitor, is_trading_day_cached, trading_session  # noqa: E402
 from trade.notifier import FeishuNotifier  # noqa: E402
+from trade.pool_money import (  # noqa: E402 (2026-09-05 治理III W2-1: 资金口径单一真相源)
+    in_flight_sell_returns,
+    stock_budget_cap,
+    stock_pool_value,
+)
 from trade.reconciler import Reconciler  # noqa: E402
 from trade.risk import KillSwitch, OrderIntent, RiskContext, RiskGate  # noqa: E402
 from trade.rotation import RotationFeature  # noqa: E402
@@ -119,6 +123,10 @@ class _DailyTimer:
         self._fired: set[tuple[str, str]] = set()   # (标签, 日期) 当日不重复
         self._last_scan = 0.0
         self._last_sync = 0.0
+
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换配置引用。扫描/同步/执行时刻用时读。"""
+        self._cfg = cfg
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -418,8 +426,9 @@ class TradeApp:
             build_risk_ctx=self._build_risk_ctx,
             get_prev_close=self._prev_close,
             # 2026-08-14: 双池预算帽 —— 轮动启用时选股系统买入被
-            # 股票池预算 (S_target − 股票市值) 封顶, 不花 ETF 池的钱
-            budget_provider=self._stock_budget,
+            # 股票池预算 (S_target − 股票市值) 封顶, 不花 ETF 池的钱;
+            # 计算委托 trade/pool_money (治理III W2-1 口径单点)
+            budget_provider=self._stock_budget_cap,
             clock=clock)
         # 2026-08-14: ETF 轮动特性 (双池资金分配)。cfg 传 getter 热更穿透;
         # 信号在工作线程算, 调仓在消费者线程执行 (与 auto_buy 同纪律)。
@@ -602,11 +611,11 @@ class TradeApp:
         if self._config_path:
             save_trade_config(new_cfg, self._config_path)
         self._cfg = new_cfg
-        self.monitor._cfg = new_cfg
-        self.executor._cfg = new_cfg
-        self.timer._cfg = new_cfg
-        self.risk._loss_limit = new_cfg.daily_loss_limit
-        self.risk._sizing = new_cfg.position_sizing
+        # 热更契约 (治理III W2-1): 各模块统一 apply(), 不再直改私有字段
+        self.monitor.apply(new_cfg)
+        self.executor.apply(new_cfg)
+        self.timer.apply(new_cfg)
+        self.risk.apply(new_cfg)
         self.store.write_audit(
             "config_update", f"配置已热更新: {', '.join(changed) or '(无差异)'}",
             {"changed": changed,
@@ -1117,43 +1126,23 @@ class TradeApp:
                             code, e)
         return self.monitor.quote_of(code)
 
-    def _stock_budget(self) -> float | None:
-        """股票池买入预算帽 (2026-08-14, 轮动启用时生效)。
+    def _stock_budget_cap(self) -> float | None:
+        """股票池买入预算帽 (计算委托 trade/pool_money, 治理III W2-1 口径单点)。
 
-        返回股票池还能花的钱 = max(0, (1−etf_ratio)×总资产 − 股票市值)。
-        轮动关闭返回 None (auto_buy 走原 cash×0.95, 行为不变)。
-        查询失败返回 None (fail-open 回退原口径, 预算帽是软隔离非安全闸)。"""
+        None 语义 (轮动关闭 / 查资产失败) = auto_buy fail-open 走原口径,
+        预算帽是软隔离非安全闸 (2026-08-14 手册), 与 pool_money.stock_budget_cap
+        一致。股票市值口径 = pool_money.stock_pool_value (最新价优先, 无价回退成本)。"""
         cfg = self._cfg.rotation
         if not cfg.enabled:
             return None
         try:
-            asset = self.gateway.query_asset()
-            total = float(asset.get("total_asset", 0.0) or 0.0)
+            total = float(self.gateway.query_asset().get("total_asset", 0.0) or 0.0)
         except Exception:
             return None
-        if total <= 0:
-            return None
-        return max(0.0, (1.0 - cfg.etf_ratio) * total - self._stock_pool_value())
-
-    def _stock_pool_value(self) -> float:
-        """非轮动 ETF 的持仓市值 (股票池)。无行情回退成本价。"""
-        rot = self._cfg.rotation
-        rot_codes = {rot.cyb_etf, rot.gold_etf}
-        if rot.risk_etf2:          # 2026-08-20 动量改造: 第二风险腿也属轮动池
-            rot_codes.add(rot.risk_etf2)
-        if rot.hedge_etf2:
-            rot_codes.add(rot.hedge_etf2)
-        total = 0.0
-        for code, pos in self.book.snapshot()["positions"].items():
-            if code in rot_codes or pos.volume <= 0:
-                continue
-            q = self.monitor.quote_of(code)
-            last = q.get("last") if q else None
-            if last and last > 0:
-                total += float(last) * pos.volume
-            elif pos.avg_cost > 0:
-                total += pos.avg_cost * pos.volume
-        return total
+        return stock_budget_cap(
+            cfg, total,
+            stock_pool_value(cfg, self.book.snapshot()["positions"],
+                             self.monitor.quote_of))
 
     def _rotation_ran_today(self, today: str) -> bool:
         """当日是否已跑过轮动 (启动补偿 L4 判重: 读 rotation.last 的 ts)。"""
@@ -1178,31 +1167,19 @@ class TradeApp:
             # 当日卖出额 → 日亏闸误判"当日大亏"误拒买单 (实盘: 尾盘卖创业板
             # +黄金后买纳指被误拒, 53.5万 < 基准103万显示亏48%)。容错:
             # current_equity 补回当日卖出成交额, 仅日亏闸用, 不写账不改账。
-            current_equity=total_asset + self._in_flight_sell_returns(),
+            current_equity=total_asset + self._in_flight_returns(),
             # D5: 接节假日日历; 日期取 app 注入时钟 (而非真实今日),
             # 保测试可注入与跨日语义一致
             is_trading_day=is_trading_day_cached(
                 _dt.date.fromtimestamp(self._clock())),
         )
 
-    def _in_flight_sell_returns(self) -> float:
-        """今日已成交卖出、回款未计入 QMT cash 的在途金额 (日亏闸容错用, 只读)。
+    def _in_flight_returns(self) -> float:
+        """今日在途回款 (计算委托 trade/pool_money.in_flight_sell_returns, 治理III W2-1)。
 
-        2026-08-21: QMT query_stock_asset 的 cash 字段对卖出回款有 T+1 结算
-        延迟 —— 卖出成交后 cash 未 + 回款, 但 market_value 已扣持仓, 导致
-        total_asset = cash+frozen+market_value 低估当日卖出额。此处从 QMT
-        成交回报 (query_trades) 汇总当日卖出成交金额作为在途回款补回。
-        回款已到账时该值会让 current_equity 略高估 (日亏闸偏松), 方向安全:
-        宁可少拦 (允许卖后补买) 不可多拦 (误拒打断换腿)。查询失败返回 0。
-
-        2026-08-24 (实盘 8-21 现场复现): query_trades 成交回报在成交瞬间比
-        query_orders 委托终态晚 ~1 秒 —— 轮动 14:54:00.9 挂卖单,
-        _wait_fills 从 orders 见终态放行, 14:54:01.96 买 513100 时 trades
-        尚无当日卖出 → 补回 = 0 → 534778 < 87.8万 再次误拒, 52 万空仓过周末。
-        改为 trades 金额与 orders「当日卖出已成交量×委托价」取 max: 两路
-        回报都齐时二者一致不重复计 (方向安全偏松), orders 领先的窗口内用
-        orders 值兜住低估。仍只读不改账。
-        """
+        只读查询 gateway 两路回报后交纯函数; max 语义与 8-21/8-24 现场修复
+        详述见 trade/pool_money.py 模块卡。查询失败返回 0 (方向安全: 宁可
+        少拦不可多拦, 误拒打断换腿)。"""
         try:
             trades = self.gateway.query_trades()
             orders = self.gateway.query_orders()
@@ -1210,19 +1187,7 @@ class TradeApp:
             return 0.0
         today = _day_str(self._clock())
         day_start = time.mktime(time.strptime(today, "%Y%m%d"))
-        from_trades = sum(
-            float(t.get("amount") or 0.0)
-            for t in trades
-            if (t.get("ts") or 0.0) >= day_start
-            and t.get("direction") == DIRECTION_SELL
-        )
-        from_orders = sum(
-            float(o.get("price") or 0.0) * float(o.get("filled_qty") or 0.0)
-            for o in orders
-            if (o.get("ts") or 0.0) >= day_start
-            and o.get("direction") == DIRECTION_SELL
-        )
-        return max(from_orders, from_trades)
+        return in_flight_sell_returns(trades, orders, day_start)
 
     def _prev_close(self, code: str) -> float | None:
         """昨收来源: 优先行情快照 prev_close 字段, 无则查网关快照。

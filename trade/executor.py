@@ -195,6 +195,10 @@ class Executor:
         # 对账"的唯一性前提就破了。mmdd 前缀仍保留 (人读友好)。
         self._seq = 0
 
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
+        self._cfg = cfg
+
     # ── 预埋单 ──────────────────────────────────────────────────
 
     def place_ladder(self, date_str: str) -> list[str]:

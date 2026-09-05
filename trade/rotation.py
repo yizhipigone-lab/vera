@@ -38,6 +38,7 @@ from trade.book import (
     TERMINAL_STATUSES,
 )
 from scheduler.trading_calendar import next_trading_day
+from trade import pool_money  # 市值口径单一真相源 (治理III W2-1)
 from trade.events import EVENT_ROTATION, Event
 from trade.monitor import is_trading_day_cached, trading_session
 from trade.quote_stale import is_quote_stale
@@ -569,16 +570,13 @@ class RotationFeature:
              "values": {c: round(cur[c], 2) for c in codes}, "signal": signal})
 
     def _etf_value(self, code: str, volume: int) -> float:
-        """持仓市值 = 股数 × 最新价; 无行情回退成本价 (与对账同口径)。"""
-        if volume <= 0:
-            return 0.0
-        q = self._monitor.quote_of(code)
-        last = q.get("last") if q else None
-        if last and last > 0:
-            return float(last) * volume
-        pos = self._book.snapshot()["positions"].get(code)
-        cost = getattr(pos, "avg_cost", 0.0) if pos else 0.0
-        return cost * volume if cost > 0 else 0.0
+        """持仓市值 = 股数 × 最新价; 无行情回退成本价。
+
+        口径单一真相源 trade/pool_money.position_value (治理III W2-1,
+        与 trade_main 股票池市值/对账同口径, 消灭 D1 重复)。"""
+        return pool_money.position_value(
+            code, volume, self._monitor.quote_of,
+            self._book.snapshot()["positions"])
 
     def _fetch_quotes(self, codes: list[str]) -> dict:
         """两只 ETF 的行情: 订阅 + 缓存兜底 + 轮询补查 (单条腿一个口径)。

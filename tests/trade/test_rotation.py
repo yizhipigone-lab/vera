@@ -613,7 +613,7 @@ def test_stock_budget_cap(tmp_path):
     app.gateway.push_quote(STOCK, _quote(STOCK, 10.0))
     assert _wait(lambda: app.monitor.quote_of(STOCK) is not None)
     # total = 990k + 1000×10 = 1M; S_target = 0.5M; stock_val = 10k
-    assert app._stock_budget() == pytest.approx(490_000.0, abs=1.0)
+    assert app._stock_budget_cap() == pytest.approx(490_000.0, abs=1.0)
 
 
 def test_stock_budget_disabled(tmp_path):
@@ -621,7 +621,7 @@ def test_stock_budget_disabled(tmp_path):
     clock = [_ts("10:00")]
     cfg = _cfg(tmp_path, enabled=False)
     app = _start(_app(cfg, clock))
-    assert app._stock_budget() is None
+    assert app._stock_budget_cap() is None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -701,7 +701,12 @@ def test_stock_pool_excludes_rotation_etfs(tmp_path):
     app.gateway.push_quote(STOCK, _quote(STOCK, 10.0))
     assert _wait(lambda: app.monitor.quote_of(STOCK) is not None)
     # 只算股票池 (STOCK 1000×10=1 万), 三只轮动 ETF 都不计入
-    assert app._stock_pool_value() == pytest.approx(10_000.0, abs=1.0)
+    # (口径单一真相源 pool_money, 治理III W2-1)
+    from trade.pool_money import stock_pool_value
+    spv = stock_pool_value(app._cfg.rotation,
+                           app.book.snapshot()["positions"],
+                           app.monitor.quote_of)
+    assert spv == pytest.approx(10_000.0, abs=1.0)
 
 
 def test_api_rotation_endpoints(tmp_path):

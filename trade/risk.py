@@ -126,6 +126,12 @@ class RiskGate:
         # sizing = PositionSizingConfig (None 表示不校验, 测试最小装配用)
         self._sizing = sizing
 
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换 loss 上限与 sizing 快照。
+        RiskGate 是构造时标量快照, 热更只能逐字段替换 (frozen 对象换引用)。"""
+        self._loss_limit = cfg.daily_loss_limit
+        self._sizing = cfg.position_sizing
+
     def check(self, intent: OrderIntent, ctx: RiskContext) -> tuple[bool, str]:
         """过闸。返回 (是否放行, 拒绝原因)。"""
         # 闸 1: 急停 (三重态任一生效, 买卖全拒 —— 铁律 7, 没有例外)

@@ -123,6 +123,10 @@ class Monitor:
         # 审计H2修复: _triggered 的日期戳, scan_once 跨日清空
         self._triggered_date = time.strftime("%Y%m%d", time.localtime(self._clock()))
 
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
+        self._cfg = cfg
+
     # ── 行情入口 ────────────────────────────────────────────────
 
     def on_quote(self, code: str, quote: dict,
