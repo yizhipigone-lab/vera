@@ -311,6 +311,35 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 体检 P1 修复（K线回填失败治理 / 错误留痕 / 锁归属）
+
+**体检报告**: [docs/audit/2026-09-05_实盘稳健性_体检报告.md](docs/audit/2026-09-05_实盘稳健性_体检报告.md)
+**背景**: refresh.log 近两周 7250 条 "获取K线数据失败: 未知错误" + 8/26 一轮 5303 条源站故障硬刷 + refresh.lock 归属不可见。
+
+### 根因（取证）
+
+- TDX 对次新股/停牌/无该区间请求返回 `ErrorId≠0` 但常**不带错误文本** → 一律记"未知错误"（明细被吞）。
+- 回填工具判定 bug：**有旧缓存的公司延伸拉取无进展时，`manifest` 存在即算成功** → 永不进 no_data，每轮调度刷新重复打同一批失败。
+- 源站整体故障（8/26 03:20 全池 5303 次/37 分钟）无熔断，硬刷到底。
+
+### 改动
+
+- **utils/kline_backfill_policy.py（新增，纯函数可单测）** + **tools/backfill_kline_cache.py**：停滞（延伸无进展）记 `stalled{code: ts, err}`，72h 冷却内跳过、到期自动再试；无记录却拉空仍走 no_data；最近 80 次判定失败占比 ≥60% → 熔断中止并**回滚本轮新增停滞**（不把源站故障误记成个股停滞）；补拉子进程每段进度心跳续命 refresh.lock mtime（长任务不会被 TTL 误收尸 → 双补拉）。
+- **core/data_fetcher.py**：错误渲染 `_fmt_tdx_error` —— 带出 ErrorId + Error/ErrorMsg/Message 文本；确无文本时列出返回键名；日志附带 codes/period/窗口。
+- **core/kline_cache_maintenance.py**：refresh.lock 改 JSON `{pid, trigger, ts}`；跳过原因带持有者描述（谁在拉、何时开始）；`_lock_held_by()`/`_lock_owner()` 归属查询，旧版纯文本锁读不出返回 None 不炸。
+- **已核实无需改动**：8/27 GS 批跑 `tmp.replace` 崩溃与 L2 保存 WinError5 噪声 —— 源码事故后已改用 `pcu.atomic_replace`（退避重试），当前代码即修复态。
+
+### 测试
+
+- 新增 tests/test_kline_backfill_policy.py（15 例：有进展判定/冷却/熔断）+ test_kline_cache_maintenance.py TestLockOwnership（4 例）+ data_fetcher fmt 3 例；全量 `pytest tests/` 绿。提交 e5bf66b / e2bceff / f6fb8ec。
+
+### 剩余风险 / 已知债
+
+- P2：monitor_no_quote 高频审计降噪；月度笔记补发语义。
+- 未决：M18 `fetch_documents.py` 告警归属（仓库外来源，待用户确认）。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
