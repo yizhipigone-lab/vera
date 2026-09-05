@@ -280,6 +280,37 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 实盘稳健性体检 + 调度 P0 修复（日志落盘 / weekly 语义）
+
+**体检报告**: [docs/audit/2026-09-05_实盘稳健性_体检报告.md](docs/audit/2026-09-05_实盘稳健性_体检报告.md)（只读，三轴：告警现状 / 调度与采集 / 对账链路）
+**体检结论**: 交易主链路健康（对账每日"三方一致"、无 CRITICAL、急停未触发）；调度层两个大窟窿已按 P0 修复如下。
+
+### P0-1：调度进程日志落盘
+
+- **背景**: `python -m scheduler` 独立进程日志只进控制台窗口，关窗即丢 → 8/29~9/1 静默窗口（含 9/1 整日漏跑、9 月月度笔记永久错过）根因无从复查，11001 事件也同源同类。
+- **改动**: `utils/logger.py` 新增幂等 `attach_file_logger()`（给 root 挂 RotatingFileHandler，各子 logger 沿 propagate 落盘，同文件不双写）；`scheduler/__main__.py` 启动即挂 `output/logs/scheduler.log`。
+- **测试**: `tests/test_logger_attach.py`（落盘 / 幂等 / 多子 logger 不重复）。
+
+### P0-2：weekly job 语义（修"周日 job 结构性死锁"）
+
+- **背景**: `weekly_evolution`/`sgpjbg_weekly` 原注册为 daily + 函数内判周日 —— daily 强制交易日而周日休市，周日分支**代码上不可达**，周报从未自动跑成。
+- **改动**: `vera_scheduler` 新增 `add_weekly()`（按星期几触发、不看交易日，ISO 周防重，状态持久化同 daily/monthly）；`__main__` 两个周度 job 改 weekly（周日 18:00/18:30），删函数内冗余 weekday 守卫。
+- **测试**: `tests/test_scheduler.py` 新增 TestWeeklyJob（周日触发/其他日不触发/同周防重跨周再触发/参数校验）。
+
+### 测试
+
+- `tests/test_scheduler.py` + `tests/test_logger_attach.py` + `tests/brain/test_data_tools_resilience.py` 全绿；`import scheduler.__main__` 冒烟 OK。提交 f5ea331 / 5a117af。
+
+### 剩余风险 / 已知债（见体检报告）
+
+- P1：K 线补拉 7250 条 ERROR 根因（异常吞成"未知错误"）+ refresh.lock 超时清理。
+- P1：结果文件替换失败兜底（8/27 GS 批跑中断同类）。
+- P2：monitor_no_quote 高频审计降噪；月度笔记补发语义。
+- 未决：M18 `fetch_documents.py` 退出码 1 告警归属（仓库内无对应任务，来源待用户确认）。
+- 待观察：sgpjbg_fetch/sentiment_tick 需在下一交易日确认当前调度进程已重启到新代码。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
