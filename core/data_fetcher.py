@@ -420,16 +420,14 @@ class DataFetcher(ConnectorSeam):
         Returns:
             [{"code": "881319.SH", "name": "半导体"}, ...]
         """
-        if cls._cache.has_sector_list():
-            return cls._cache.get_sector_list()
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        raw = tq.get_stock_list('11', list_type=1)
-        cls._cache.set_sector_list([
-            {"code": s["Code"], "name": s["Name"].strip()}
-            for s in raw if isinstance(s, dict) and s.get("Code")
-        ])
-        return cls._cache.get_sector_list()
+        def _fetch():
+            cls._ensure_ready()
+            tq = cls._connector().tq()
+            raw = tq.get_stock_list('11', list_type=1)
+            return [{"code": s["Code"], "name": s["Name"].strip()}
+                    for s in raw if isinstance(s, dict) and s.get("Code")]
+        # 判过期→回源→回填 (治理III W3-get_or, TTL 语义在 DataCache)
+        return cls._cache.sector_list_or(_fetch)
 
     @classmethod
     def get_sector_stocks(cls, sector_code: str) -> List[str]:
@@ -438,15 +436,16 @@ class DataFetcher(ConnectorSeam):
 
         Returns: 纯代码字符串列表, 失败返回空列表不抛异常.
         """
-        if cls._cache.has_sector_stocks(sector_code):
-            return cls._cache.get_sector_stocks(sector_code)
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        try:
+        def _fetch():
+            cls._ensure_ready()
+            tq = cls._connector().tq()
             raw = tq.get_stock_list_in_sector(sector_code, list_type=0)
-            stocks = extract_codes(raw)
-            cls._cache.set_sector_stocks(sector_code, stocks)
-            return stocks
+            return extract_codes(raw)
+        # 判过期→回源→回填 (治理III W3-get_or)。失败**不缓存**: 异常在
+        # _or 外接住返 [], 下次调用仍会重试 (旧代码同语义, 防瞬时失败
+        # 毒化 24h 缓存)。
+        try:
+            return cls._cache.sector_stocks_or(sector_code, _fetch)
         except Exception as e:
             logger.warning(f"拉板块成份股失败 [{sector_code}]: {e}")
             return []
@@ -479,39 +478,42 @@ class DataFetcher(ConnectorSeam):
         Returns:
             {'601872.SH': '招商轮船', ...} 共约 5200 条
         """
-        if cls._cache.has_name_map() and not refresh:
-            return cls._cache.get_name_map()
-        result: dict = {}
-        source = "TDX"
-        try:
-            cls._ensure_ready()
-            tq = cls._connector().tq()
-            # '5'=全部A股, '50'=沪深A股, '31'=ETF基金 (2026-08-15: 补 ETF 名称,
-            # 原只拉股票列表, 159949/518880 等场内基金在持仓清单里没名字)
-            for market in ('5', '50', '31'):
-                try:
-                    raw = tq.get_stock_list(market, list_type=1)
-                except Exception:
-                    continue
-                for s in raw:
-                    if not isinstance(s, dict):
+        def _fetch():
+            result: dict = {}
+            source = "TDX"
+            try:
+                cls._ensure_ready()
+                tq = cls._connector().tq()
+                # '5'=全部A股, '50'=沪深A股, '31'=ETF基金 (2026-08-15: 补 ETF 名称,
+                # 原只拉股票列表, 159949/518880 等场内基金在持仓清单里没名字)
+                for market in ('5', '50', '31'):
+                    try:
+                        raw = tq.get_stock_list(market, list_type=1)
+                    except Exception:
                         continue
-                    code = str(s.get("Code", "")).strip()
-                    name_raw = str(s.get("Name", "")).strip()
-                    if not code or not name_raw:
-                        continue
-                    result[code] = cls._fix_tq_name(name_raw)
-        except Exception:
-            logger.warning("TDX 拉取股票简称失败, 降级腾讯", exc_info=True)
-        if not result:
-            # 2026-08-27 腾讯降级 (页面简称全丢事件): TDX 没开/拉空时用
-            # kline_cache 清单代码全集 + 腾讯批量报价拼名称 (详见 _tencent_name_map)
-            source = "腾讯"
-            result = cls._tencent_name_map()
-        if result:
-            cls._cache.set_name_map(result)
-            logger.info(f"全量简称缓存已构建({source}): {len(result)} 条")
-        return result
+                    for s in raw:
+                        if not isinstance(s, dict):
+                            continue
+                        code = str(s.get("Code", "")).strip()
+                        name_raw = str(s.get("Name", "")).strip()
+                        if not code or not name_raw:
+                            continue
+                        result[code] = cls._fix_tq_name(name_raw)
+            except Exception:
+                logger.warning("TDX 拉取股票简称失败, 降级腾讯", exc_info=True)
+            if not result:
+                # 2026-08-27 腾讯降级 (页面简称全丢事件): TDX 没开/拉空时用
+                # kline_cache 清单代码全集 + 腾讯批量报价拼名称 (详见 _tencent_name_map)
+                source = "腾讯"
+                result = cls._tencent_name_map()
+            if result:
+                logger.info(f"全量简称缓存已构建({source}): {len(result)} 条")
+            return result
+        # 判过期→回源→回填; force_refresh 强制回源 (治理III W3-get_or)。
+        # 空结果 (TDX+腾讯全挂) 不缓存 —— fetcher 返回 {} 时 set 存空,
+        # 下次 has_name_map 见空不命中会重试 (与旧行为一致)。
+        value = cls._cache.name_map_or(_fetch, force_refresh=refresh)
+        return value
 
     @staticmethod
     def _manifest_codes() -> list:

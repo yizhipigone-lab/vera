@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from core import progress as _progress
 from core.connector import TdxConnector
+from core.data_cache import SECTOR_TTL_SEC as _STOCK_INFO_TTL_SEC  # TTL 语义同源 (治理III W3-get_or)
 
 
 def _get_info_safe(code: str) -> dict:
@@ -103,16 +104,23 @@ def filter_stocks(
 
 
 # 便捷: 模块级缓存 (复用 TDX 连接, 避免重复 get_stock_info)
+# 治理III W3-get_or: 补 TTL (24h, 与 data_cache SECTOR_TTL 同频) ——
+# ST 标记日频更新, 24h 内不重查足够; auto_iter 等预填 (setdefault 无 ts)
+# 视为新鲜 (ts None → 不判过期), 老行为不破。
 _INFO_CACHE: Dict[str, dict] = {}
+_INFO_TS: Dict[str, float] = {}
 
 
 def get_cached_info(code: str) -> dict:
-    """获取单只股票信息 (带进程级缓存)"""
-    if code in _INFO_CACHE:
+    """获取单只股票信息 (带进程级缓存 + 24h TTL, 治理III W3-get_or)。"""
+    now = time.time()
+    ts = _INFO_TS.get(code)
+    if code in _INFO_CACHE and (ts is None or now - ts <= _STOCK_INFO_TTL_SEC):
         return _INFO_CACHE[code]
     info = _get_info_safe(code)
     if info:
         _INFO_CACHE[code] = info
+        _INFO_TS[code] = now
     return info
 
 
