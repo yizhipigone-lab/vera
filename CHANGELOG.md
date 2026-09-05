@@ -259,6 +259,27 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 舆情/公告采集链路 DNS 故障加固（11001 事件修复）
+
+**背景**: 2026-09-02/03 五只票"公告源+互动易源"齐报 `[Errno 11001] getaddrinfo failed` —— 环境性 DNS 对巨潮 cninfo.com.cn 主域瞬时解析失败（Windows WSAHOST_NOT_FOUND），与个股无关。原链路无 DNS 预检、无重试、失败即标【缺】且报错不落盘。
+
+### 关键改动一览
+
+- **brain/data_tools.py** 新增 `_fetch_resilient(ak_call, hosts, timeout, what)`：① `socket.gethostbyname` 预检（DNS 挂则秒败，不等 akshare 内部无超时请求干等）；② 解析/调用失败重试 3 次（间隔递增 0.5/1.5/2.5s）；③ 全败抛 RuntimeError（含 host 与末次原因），调用方渲染可诊断的【缺】文案；④ 落一行 `data/brain_model_cache/_collect_errors.log`（此前采集错误只进控制台窗口，关窗即丢）。
+- **接入三处**：公告源 `www.cninfo.com.cn` / 互动易源 `irm.cninfo.com.cn`（均 timeout=40）/ 快讯新浪主源 + 同花顺兜底（timeout=20）。
+- **tests/brain/test_data_tools_resilience.py**（新增 4 测）：DNS 一次成功 / gaierror 前两次失败第三次自愈 / 全败抛 RuntimeError 含 host 并落盘 / 调用异常重试后成功。
+- 实现期顺手修复：`time` 缺失导入（重试路径原会 NameError）+ 落盘块缩进损坏 + 未用 `Path` 导入。
+
+### 测试
+
+- `pytest tests/brain/` 全绿（含新增 4 测），提交 2be1f5f。
+
+### 剩余风险 / 已知债
+
+- **M18 告警归属未决**：`fetch_documents.py` 09-04 02:01 退出码 1 的日志与仓库内任何任务/脚本不对应，主机与命名来源待向用户核实后再排查，不臆断。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
