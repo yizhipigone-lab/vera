@@ -75,3 +75,11 @@ data/brain_dsh_runs.db
 # tools/ 下的 PS1 助手 (kill/tun helper) 不受影响; scratch/ 存放有残留价值的临时产物
 /_tmp_*
 scratch/
+
+# 运行时数据库/流水产物 (治理III 2026-09-05 收尾): 研报雷达库 + 影子轮动流水
+data/sgpjbg_radar.db
+data/shadow_rotation.jsonl
+# DSH 视觉路由会话截图 (工具产物, 可再生成)
+.dsh-vision-router/
+# WorkBuddy 助手记忆 (工具产物)
+.workbuddy/
