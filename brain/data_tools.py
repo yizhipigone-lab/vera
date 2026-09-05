@@ -19,7 +19,8 @@
   新闻接口，实测全挂）。
 
 用法：
-    python -m brain.data_tools market_snapshot [YYYYMMDD] [--fresh]  # 指数+南向资金+涨停池（缓存 2h）
+    python -m brain.data_tools market_snapshot [YYYYMMDD] [--fresh]  # 指数+南向资金+涨停池+市场体检（缓存 2h）
+    python -m brain.data_tools market_health                        # 市场体检表（4指数×4窗口，TDX）
     python -m brain.data_tools stock_news [N]                        # 财新要闻 N 条（默认 15）
     python -m brain.data_tools zt_pool [YYYYMMDD]                    # 涨停池（非交易日自动回退）
     python -m brain.data_tools stock_technicals <代码>               # 个股 MA/MACD/RSI/BOLL
@@ -216,8 +217,69 @@ def stock_news(n: int = 15) -> str:
         return _section("财新要闻", f"【缺】{e}")
 
 
+_HEALTH_INDEXES = (("shanghai", "上证指数"), ("hs300", "沪深300"),
+                   ("zz500", "中证500"), ("chuangyeban", "创业板指"))
+_HEALTH_WINDOWS = (("近1月", 21), ("近3月", 63), ("近半年", 126), ("近1年", 252))
+
+
+def market_health() -> str:
+    """市场体检表：4 指数 × 4 窗口收益 + MA250 牛熊状态 → Markdown 段。
+
+    只读参考（2026-09-04 决策记录 docs/plan/2026-09-04_市场体检表与研究雷达_决策记录.md：
+    Q1 只读参考 / Q2 四指数并行不合成）——不进交易闸门、不合成总分。
+    牛熊口径走 core/index_regime.py 单一真相源（治理III W1-b 收口，门槛
+    min_periods=200 用户拍板）：价>MA250 且 MA250 的 20 日斜率>0 为牛，
+    价<MA250 且斜率<0 为熊，其余为震荡。数据源 TDX 指数日线；
+    单指数失败只标【缺】不拖死其他（本模块既有 fail-soft 风格）。
+    """
+    try:
+        from core.data_fetcher import DataFetcher
+        from core.index_regime import classify  # 牛熊口径单一真相源 (治理III W1-b)
+    except Exception as e:
+        return _section("市场体检（只读参考）", f"【缺】TDX 数据层不可用（{e}）")
+    start = (dt.datetime.now() - dt.timedelta(days=800)).strftime("%Y%m%d")
+    end = dt.datetime.now().strftime("%Y%m%d")
+    head = ("| 指数 | 近1月 | 近3月 | 近半年 | 近1年 | vs MA250 | 牛熊 |\n"
+            "|---|---|---|---|---|---|---|")
+    rows, last_dates = [], []
+    import pandas as pd
+    for key, name in _HEALTH_INDEXES:
+        try:
+            df = DataFetcher.get_index_data(key, start, end,
+                                            dividend_type="none", period="1d")
+            if df is None or len(df) == 0:
+                raise RuntimeError("无数据")
+            if "date" not in df.columns:
+                df = df.reset_index().rename(
+                    columns={df.index.name or "index": "date"})
+            df = df.sort_values("date").reset_index(drop=True)
+            last_dates.append(str(df["date"].iloc[-1])[:10])
+            c = pd.Series([float(x) for x in df["close"]
+                           if x == x and float(x) > 0])  # 排 NaN/0/负价
+            if len(c) < 2:
+                raise RuntimeError("有效收盘价不足")
+            price = float(c.iloc[-1])
+            rets = [f"{(price / c.iloc[-1 - n] - 1) * 100:+.1f}%"
+                    if len(c) > n else "【缺】" for _, n in _HEALTH_WINDOWS]
+            state_en, ma_now, _sl = classify(c)  # 单一真相源, 门槛 min_periods=200
+            if state_en is None:  # 样本不足门槛 → 短样本不冒充
+                pos, state = "【缺】", "【缺】"
+            else:
+                pos = f"{(price / ma_now - 1) * 100:+.1f}%"
+                state = {"bull": "牛", "bear": "熊", "range": "震荡"}[state_en]
+            rows.append(f"| {name} | {' | '.join(rets)} | {pos} | {state} |")
+        except Exception as e:
+            rows.append(f"| {name} | 【缺】 | 【缺】 | 【缺】 | 【缺】 | 【缺】 | 【缺】（{e}） |")
+    foot = (f"数据截至 {max(last_dates) if last_dates else '缺'}，TDX 指数日线。"
+            "牛熊口径（core/index_regime.py 单一真相源）：价>MA250（门槛200）"
+            " 且 MA250 的 20 日斜率>0 为牛，价<MA250 且斜率<0 为熊，"
+            "其余为震荡（猴市）。只读参考，不影响 MA200 交易闸门。")
+    return _section("市场体检（只读参考）", head + "\n" + "\n".join(rows)
+                    + "\n\n" + foot)
+
+
 def market_snapshot(trade_date: str | None = None, fresh: bool = False) -> str:
-    """A股/港股/美股指数 + 南向资金 + 涨停池 → Markdown 数据包（2h 缓存）。"""
+    """A股/港股/美股指数 + 南向资金 + 涨停池 + 市场体检 → Markdown 数据包（2h 缓存）。"""
     key = trade_date or "today"
     cache_file = _CACHE_DIR / f"market_snapshot_{key}.txt"
     if not fresh and cache_file.exists():
@@ -227,7 +289,9 @@ def market_snapshot(trade_date: str | None = None, fresh: bool = False) -> str:
                     + f"\n\n（以上为缓存，取数于 {age / 60:.0f} 分钟前；"
                       "加 --fresh 强制重取）")
     if not _HAS_AK:
-        return _no_ak()
+        # 体检表只依赖 TDX，不随 akshare 缺失连坐隐藏（2026-09-04 审计修复）
+        return ("# 市场快照数据包\n\n"
+                + _section("A股主要指数", _no_ak()) + "\n\n" + market_health())
     ak = _ak()
     out = ["# 市场快照数据包",
            f"（生成时间 {dt.datetime.now():%Y-%m-%d %H:%M}，akshare 直取，权威数字）"]
@@ -248,6 +312,8 @@ def market_snapshot(trade_date: str | None = None, fresh: bool = False) -> str:
                                 "\n".join(rows)))
         except Exception as e2:
             out.append(_section("A股主要指数", f"【缺】新浪 {e}；腾讯 {e2}"))
+    # 市场体检（2026-09-04 决策：只读参考，4 指数并行不合成）
+    out.append(market_health())
     # 港股指数（只看恒生系）
     try:
         h = ak.stock_hk_index_spot_sina()
@@ -680,7 +746,8 @@ def main(argv: list[str] | None = None) -> int:
     ensure_utf8_stdout()  # Windows GBK 控制台打 emoji/特殊字符会炸
     ap = argparse.ArgumentParser(prog="python -m brain.data_tools",
                                  description="对话大脑统一取数工具层")
-    ap.add_argument("cmd", choices=["market_snapshot", "stock_news", "zt_pool",
+    ap.add_argument("cmd", choices=["market_snapshot", "market_health",
+                                    "stock_news", "zt_pool",
                                     "stock_technicals", "stock_fundamentals",
                                     "stock_notices", "stock_diagnosis"])
     ap.add_argument("arg", nargs="?", default=None,
@@ -693,6 +760,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "market_snapshot":
         print(market_snapshot(args.arg, fresh=args.fresh))
+    elif args.cmd == "market_health":
+        print(market_health())
     elif args.cmd == "stock_news":
         print(stock_news(int(args.arg) if args.arg else 15))
     elif args.cmd == "zt_pool":
