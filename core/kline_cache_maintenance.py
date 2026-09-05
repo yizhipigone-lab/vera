@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import sqlite3
 import threading
 from pathlib import Path
 
@@ -56,20 +55,31 @@ def expected_last_trading_day(now: dt.datetime | None = None) -> dt.date:
     return d
 
 
-def cached_last_date(period: str, cache_dir: Path | None = None) -> str | None:
-    """manifest 里该 period 的 MAX(last_date)（'YYYYMMDD'），无记录返 None。"""
+def _cache_handle(cache_dir: Path | None):
+    """manifest.db 存在时返回共享 KlineCache 实例 (读统计经接口, 治理III W3-schema)。
+
+    db 不存在返 None (调用方按"无缓存/全缺"处理)。db 存在时构造只会走
+    _init_db (表已存在 → no-op), 不产生副作用; 持久连接由实例持有。
+    """
+    from core.kline_cache import KlineCache
     db = (cache_dir or _CACHE_DIR) / "manifest.db"
     if not db.exists():
         return None
+    return KlineCache(cache_dir or _CACHE_DIR,
+                      tdx_fetcher=lambda *a, **k: {},
+                      calendar_fetcher=lambda: [])
+
+
+def cached_last_date(period: str, cache_dir: Path | None = None) -> str | None:
+    """manifest 里该 period 的 MAX(last_date)（'YYYYMMDD'），无记录返 None。
+
+    读操作经 KlineCache.cached_last_date 接口 (schema 单点, 治理III W3-schema);
+    异常按"不新鲜"处理 (返回 None → 上层判定 stale 触发补拉, 方向安全)。"""
+    kc = _cache_handle(cache_dir)
+    if kc is None:
+        return None
     try:
-        conn = sqlite3.connect(str(db))
-        try:
-            row = conn.execute(
-                "SELECT MAX(last_date) FROM manifest WHERE period=?",
-                (period,)).fetchone()
-        finally:
-            conn.close()
-        return row[0] if row and row[0] else None
+        return kc.cached_last_date(period)
     except Exception as e:
         _logger.warning("读 manifest 失败（按不新鲜处理）: %s", e)
         return None
@@ -84,23 +94,16 @@ def stale_periods(now: dt.datetime | None = None,
 
 
 def period_stats(period: str, cache_dir: Path | None = None) -> dict:
-    """单个 period 的缓存概览（数据准备 TAB 用）。"""
-    db = (cache_dir or _CACHE_DIR) / "manifest.db"
+    """单个 period 的缓存概览（数据准备 TAB 用）。
+
+    读操作经 KlineCache.manifest_stats 接口 (schema 单点, 治理III W3-schema)。"""
     stats = {"period": period, "stocks": 0, "first_date": None,
              "last_date": None, "not_intact": 0}
-    if not db.exists():
+    kc = _cache_handle(cache_dir)
+    if kc is None:
         return stats
     try:
-        conn = sqlite3.connect(str(db))
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*), MIN(first_date), MAX(last_date), "
-                "SUM(CASE WHEN intact=0 THEN 1 ELSE 0 END) "
-                "FROM manifest WHERE period=?", (period,)).fetchone()
-        finally:
-            conn.close()
-        stats.update({"stocks": row[0] or 0, "first_date": row[1],
-                      "last_date": row[2], "not_intact": row[3] or 0})
+        stats.update(kc.manifest_stats(period))
     except Exception as e:
         _logger.warning("读 manifest 统计失败 (%s): %s", period, e)
     return stats

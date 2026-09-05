@@ -127,6 +127,28 @@ class KlineCache:
                 (code, period, first_date, last_date, last_close, rows,
                  datetime.now().isoformat(), 1 if intact else 0))
 
+    # ───────────────────── 只读统计 (治理III W3-schema) ───────────
+    # 维护工具 (kline_cache_maintenance) 经本接口访问, 不再裸开 manifest.db ——
+    # 列名/schema 知识只在 kline_cache.py 定义 (DDL 在 _init_db, 读查询在此)。
+
+    def cached_last_date(self, period: str) -> Optional[str]:
+        """该 period 的缓存 MAX(last_date) ('YYYYMMDD'), 无记录返 None。"""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT MAX(last_date) FROM manifest WHERE period=?",
+                (period,)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def manifest_stats(self, period: str) -> dict:
+        """单个 period 概览 {stocks, first_date, last_date, not_intact}。"""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*), MIN(first_date), MAX(last_date), "
+                "SUM(CASE WHEN intact=0 THEN 1 ELSE 0 END) "
+                "FROM manifest WHERE period=?", (period,)).fetchone()
+        return {"stocks": row[0] or 0, "first_date": row[1],
+                "last_date": row[2], "not_intact": row[3] or 0}
+
     # ───────────────────── trading calendar ─────────────────────
 
     def _calendar_path(self) -> Path:
