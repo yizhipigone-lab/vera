@@ -157,7 +157,7 @@ def main() -> int:
     cache = KlineCache(
         str(Path(__file__).resolve().parent.parent / "data" / "kline_cache"),
         tdx_fetcher=lambda *a, **k: {},   # 本脚本不经过 miss-fetch
-        calendar_fetcher=lambda: DataFetcher.get_trading_dates("SH", "20100101", "20991231"))
+        calendar_fetcher=lambda: DataFetcher.get_calendar_days("SH", "20100101", "20991231"))
 
     files = sorted(SRC.glob("*/*.lc5"))
     if args.codes:

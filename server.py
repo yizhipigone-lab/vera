@@ -457,11 +457,11 @@ async def favicon():
 async def api_calendar(year: int = 0, month: int = 0):
     """交易日历 (scheduler.trading_calendar 精确历, 2026-09-04 修复)。
 
-    旧数据源 TDX get_trading_dates 派生自上证指数盘后数据 —— 只含
-    "已收盘且已下载"的日子: 盘中永远缺当天、未来整月空白, 周五盘中
-    也会被标"休市" (实测 9 月只返回 1/2/3 号、10 月 0 天)。现改用与
-    实盘时段感知同源的精确历 (exchange_calendars XSHG 上交所历, 缺库
-    时内置 2026 假日表), 今天/未来/法定节假日全部正确, 显示与实盘
+    旧数据源 TDX get_calendar_days (原 get_trading_dates) 派生自上证指数
+    盘后数据 —— 只含 "已收盘且已下载" 的日子: 盘中永远缺当天、未来整月空白,
+    周五盘中也会被标"休市" (实测 9 月只返回 1/2/3 号、10 月 0 天)。
+    现改用与实盘时段感知同源的精确历 (exchange_calendars XSHG 上交所历,
+    缺库时内置 2026 假日表), 今天/未来/法定节假日全部正确, 显示与实盘
     判断同源。注意: 超出精确历覆盖 (2026-12-31 后) 降级为周末规则,
     法定节假日不再可辨。"""
     from datetime import date as _date

@@ -317,7 +317,7 @@ def main():
     pools = {{"主板": (uni["50"] - uni["51"] - uni["52"]) & u_set,
              "创业板": uni["51"] & u_set, "科创板": uni["52"] & u_set, "北交所": uni["53"] & u_set}}
     closes = {{n: get_index_close(idx, padded, END) for n, idx in BOARD_INDEX.items()}}
-    calendar = pd.DatetimeIndex(pd.to_datetime(DataFetcher.get_trading_dates("SH", start_time=padded, end_time=END)))
+    calendar = pd.DatetimeIndex(pd.to_datetime(DataFetcher.get_calendar_days("SH", start_time=padded, end_time=END)))
     win_days = [d for d in calendar if pd.Timestamp(START) <= d <= pd.Timestamp(END)]
     kl = DataFetcher.get_kline(stocks, START, END, period="1d", dividend_type="front", use_cache=True)
     close = kl["Close"]; high = kl.get("High"); low = kl.get("Low"); vol = kl.get("Volume")
@@ -447,7 +447,7 @@ def main():
     logger.info("板指数就绪 %d/%d", n_ok, len(closes))
 
     calendar = pd.DatetimeIndex(pd.to_datetime(
-        DataFetcher.get_trading_dates("SH", start_time=padded_start, end_time=END)))
+        DataFetcher.get_calendar_days("SH", start_time=padded_start, end_time=END)))
     win_days = [d for d in calendar if pd.Timestamp(START) <= d <= pd.Timestamp(END)]
     logger.info("交易日历: %d 个交易日 (区间内)", len(win_days))
 

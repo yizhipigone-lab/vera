@@ -235,7 +235,7 @@ def test_get_kline_use_cache_true_routes_via_cache(monkeypatch, tmp_path):
     from core.data_fetcher import DataFetcher
     monkeypatch.setattr(DataFetcher, "_KLINE_CACHE_DIR", str(tmp_path / "kc"))
     monkeypatch.setattr(DataFetcher, "_ensure_ready", classmethod(lambda cls: None))
-    monkeypatch.setattr(DataFetcher, "get_trading_dates", classmethod(
+    monkeypatch.setattr(DataFetcher, "get_calendar_days", classmethod(
         lambda cls, *a, **k: _fake_calendar()))
 
     calls = {"n": 0}

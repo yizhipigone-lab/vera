@@ -44,7 +44,7 @@ def _build_cache() -> KlineCache:
                                                dividend_type=dividend_type, fill_data=False)
 
     def _calendar_fetcher():
-        return DataFetcher.get_trading_dates("SH", "20100101", "20991231")
+        return DataFetcher.get_calendar_days("SH", "20100101", "20991231")
 
     return KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
                       calendar_fetcher=_calendar_fetcher)

@@ -141,7 +141,7 @@ class DataFetcher(ConnectorSeam):
                                            dividend_type=dividend_type, fill_data=False)
 
         def _calendar_fetcher():
-            return cls.get_trading_dates("SH", "20100101", "20991231")
+            return cls.get_calendar_days("SH", "20100101", "20991231")
 
         cache = KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
                            calendar_fetcher=_calendar_fetcher)
@@ -165,9 +165,10 @@ class DataFetcher(ConnectorSeam):
         用于稀疏窗口拉取 (get_kline_windowed) 按交易日推进窗口, 避免自然日误差
         (周末/节假日)。底层调 tq.get_trading_dates, 失败时返回空列表。
 
-        【robust 版】: 异常吞掉返空 + 排序去重。与 get_trading_dates (raw 版,
-        异常上抛、不排序) 语义不同, 别混用 —— 窗口数学依赖有序, 用本方法;
-        server.py 依赖异常兜底, 用 get_trading_dates。
+        【robust 版】: 异常吞掉返空 + 排序去重 —— 回测/选股窗口数学的
+        唯一公开入口 (engine / signal_day_cache / window)。窗口数学依赖
+        有序, 用本方法。字符串版日历 (raw, 工具/缓存用) 走 get_calendar_days;
+        UI 展示用精确历在 scheduler.trading_calendar (2026-09-04 起 server 已切)。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()
@@ -580,19 +581,22 @@ class DataFetcher(ConnectorSeam):
         cls._cache.clear_name()
 
     @classmethod
-    def get_trading_dates(
+    def get_calendar_days(
         cls,
         market: str = "SH",
         start_time: str = "",
         end_time: str = "",
     ) -> List[str]:
-        """获取交易日列表 (str, 原始顺序)。
+        """获取交易日字符串列表 (YYYYMMDD, TDX 原始顺序) —— 缓存/工具的日历源。
 
-        【raw 版】: 直接透传 tq.get_trading_dates, 异常上抛 (不吞), 不排序去重。
-        与 get_trading_days (robust 版, 异常返空 + 排序去重) 语义不同, 别混用 ——
-        注意: 本方法派生自上证指数盘后数据, 只含已收盘的日子 (盘中缺当天、
-        未来为空), 2026-09-04 起 server.py /api/calendar 已改用
-        scheduler.trading_calendar 精确历, 不再依赖本方法。
+        【raw 版, 治理III W3-③ 由 get_trading_dates 更名】: 直接透传
+        tq.get_trading_dates, 异常上抛 (不吞), 不排序去重 —— 本方法是
+        KlineCache calendar_fetcher 与离线工具 (backfill/import_lc5/
+        重绘检查/未来函数检查等) 的契约: 要真失败就大声失败, 不静默空表。
+
+        与 get_trading_days (robust, Timestamp, 回测窗口数学) 刻意**不同名**:
+        名字点明"字符串日历", 防误选。展示用精确历已迁
+        scheduler.trading_calendar (2026-09-04), 本方法仅供工具/缓存。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()

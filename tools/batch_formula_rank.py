@@ -334,7 +334,7 @@ def main() -> None:
     # 2. 交易日历 (30 日窗口距离度量), 覆盖 padded 区间
     padded_start = (pd.Timestamp(args.start) - pd.Timedelta(days=PAD_DAYS)
                     ).strftime("%Y%m%d")
-    calendar = DataFetcher.get_trading_dates(
+    calendar = DataFetcher.get_calendar_days(
         "SH", start_time=padded_start, end_time=args.end)
     print(f"[INFO] 交易日历 {len(calendar)} 天 ({calendar[0] if calendar else '?'} "
           f"~ {calendar[-1] if calendar else '?'})")

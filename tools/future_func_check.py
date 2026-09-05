@@ -109,7 +109,7 @@ def main() -> None:
     padded_start = (pd.Timestamp(args.start) - pd.Timedelta(days=PAD_DAYS)
                     ).strftime("%Y%m%d")
     calendar = pd.DatetimeIndex(pd.to_datetime(
-        DataFetcher.get_trading_dates("SH", start_time=padded_start,
+        DataFetcher.get_calendar_days("SH", start_time=padded_start,
                                       end_time=args.end)))
 
     defaults = ConfigLoader.load_defaults()
