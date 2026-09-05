@@ -24,6 +24,7 @@ from trade.book import (
     PRICE_TYPE_SZ_5LEVEL_CANCEL,
     TERMINAL_STATUSES,
     is_etf,
+    round_price,  # 治理III W1-c: 唯一真相源迁 book.py (本模块内部+auto_buy 经此引用)
 )
 from trade.quote_stale import is_quote_stale
 from trade.risk import OrderIntent
@@ -73,12 +74,6 @@ def _detail_from_reason(reason: str) -> str:
 # 2026-08-01 P1: limit_ratio 统一到 core/limit_ratio.py
 # (全项目唯一真相源, 消除回测/实盘两份实现的 ST 口径漂移风险)
 from core.limit_ratio import limit_ratio  # noqa: E402 (re-export for callers)
-
-
-def round_price(x: float) -> float:
-    """价格 0.01 对齐, 四舍五入 (审计L10: round() 银行家舍入在
-    x.xx5 边界与交易所价格档位差 1 分)。涨停/跌停价与档位价共用。"""
-    return int(x * 100 + 0.5) / 100
 
 
 def _is_sz(code: str) -> bool:

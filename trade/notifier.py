@@ -30,7 +30,7 @@ _WEBHOOK_ENV = "FEISHU_WEBHOOK_URL"
 _POST_TIMEOUT_SEC = 5.0
 _QUEUE_MAXSIZE = 1000
 
-DIRECTION_BUY = 23   # 与 trade.book 同值 (不 import book, 避免环)
+from trade.book import DIRECTION_BUY  # 治理III W1-c: 唯一真相源 (旧"防环"理由不成立, book 只依赖标准库+logger)
 
 
 class FeishuNotifier:

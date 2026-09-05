@@ -17,8 +17,7 @@ from __future__ import annotations
 
 from llm.providers import get_client
 
-# 与 trade.book.DIRECTION_BUY 同值 (不 import book, 保持本模块零交易依赖、可独立测)
-_DIRECTION_BUY = 23
+from trade.book import DIRECTION_BUY as _DIRECTION_BUY  # 治理III W1-c: 唯一真相源 (book 只依赖标准库+logger, 无环可防)
 
 # 成文模板 (system prompt): 人话铁律 (结论先行/大白话/报数字给参照/禁英文缩写)
 _PROMPT = """你是 VERA 量化实盘系统的盘后复盘助手, 读者是量化入门者。

@@ -54,6 +54,16 @@ PRICE_TYPE_MARKET_PEER_FIRST = "MARKET_PEER_FIRST"
 PRICE_TYPE_SZ_5LEVEL_CANCEL = "SZ_5LEVEL_CANCEL"
 
 
+def round_price(x: float) -> float:
+    """股票价格 0.01 档对齐, 四舍五入 (审计L10: round() 银行家舍入在
+    x.xx5 边界与交易所价格档位差 1 分)。涨停/跌停价与档位价共用。
+
+    价格档位口径唯一真相源 (治理III W1-c, 2026-09-05 自 executor 迁入);
+    ETF 0.001 档的 round_price_etf 暂留 trade/rotation.py, 随治理III
+    Wave2 rotation 动刀时迁来与此同居。"""
+    return int(x * 100 + 0.5) / 100
+
+
 def is_etf(code: str) -> bool:
     """场内 ETF 判定 (2026-07-27 ETF 误卖事件裁决③): 沪市 51/56/58、
     深市 15/16/18 前缀 (取 '.' 前段)。覆盖场内基金; LOF 501/508 类
