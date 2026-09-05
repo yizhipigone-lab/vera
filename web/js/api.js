@@ -72,8 +72,10 @@ export const submitDataCacheBackfill = body => post('/api/data_cache/backfill', 
 
 export const postResearchChat = body => post('/api/research/chat', body);
 export const postResearchChatStream = body => post('/api/research/chat/stream', body);
-export const resetResearchChat = body => post('/api/research/chat/reset', body);
-export const stopResearchChat = body => post('/api/research/chat/stop', body);
+// 后端 reset/stop 均为必填 body (dict); 缺省 {} 防无 body 调用 422,
+// 调用方仍需按其契约带 conv / {run_id} (brain_chat 迁移时)。
+export const resetResearchChat = (body = {}) => post('/api/research/chat/reset', body);
+export const stopResearchChat = (body = {}) => post('/api/research/chat/stop', body);
 // 8081 交易 API (跨源): 基址工厂 + 预置客户端 (analysis.js/trade.js 迁移用)。
 // 页面由 8080 serve、打 8081 属跨源, 依赖后端 CORS 放行 (同既有裸 fetch)。
 export const createTradeClient = (base) => ({
