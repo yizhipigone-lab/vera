@@ -134,6 +134,13 @@ class Monitor:
         """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
         self._cfg = cfg
 
+    def clear_trigger(self, code: str) -> None:
+        """解除当日触发标记 (2026-08-01 P0-3): executor pending 终态为
+        废单/已撤且持仓仍在时回调, 该票下轮扫描重新评估。
+        (2026-09-05 唯一下单口收口 T6: 转公开 —— 组合根接线不再摸
+        _triggered 私有集合)"""
+        self._triggered.discard(code)
+
     def _write_throttled(self, kind: str, key: str, message: str,
                          detail: dict | None = None) -> None:
         """按 (kind, key) 节流写审计: 首现即写, 窗口内同 key 跳过。

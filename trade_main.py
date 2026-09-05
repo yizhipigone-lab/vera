@@ -412,8 +412,12 @@ class TradeApp:
             clock=clock,
         )
         # 2026-08-01 P0-3 (H1): executor pending 终态废单/已撤时,
-        # 通知 monitor 解除 _triggered —— 该票下轮扫描重新评估
-        self.executor._on_pending_died = lambda code: self.monitor._triggered.discard(code)
+        # 通知 monitor 解除 _triggered —— 该票下轮扫描重新评估。
+        # (2026-09-05 唯一下单口收口 T6: 公开方法引用替代 lambda 摸私有。
+        # 构造顺序约束: Monitor 构造需要 executor(monitor.py 形参),
+        # 故 Executor 的 on_pending_died 构造器形参在此用不上, 延迟接线;
+        # 测试同款用法见 test_executor.py _make。)
+        self.executor._on_pending_died = self.monitor.clear_trigger
         # 2026-08-01 批次4 瘦身: 尾盘自动买入特性 (实现全在 trade/auto_buy.py)。
         # cfg 传 getter 不传值 —— _apply_config 换 self._cfg 引用即热更穿透
         # (评审 ⚠ 点); build_risk_ctx/get_prev_close 读组合根状态, callable 注入。

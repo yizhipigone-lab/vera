@@ -244,6 +244,21 @@ def test_triggered_code_not_retriggered(store):
     assert len(stub.exits) == 1
 
 
+def test_clear_trigger_re_arms_same_day(store):
+    """公开解除口 (计划书 T6): clear_trigger 后同票当日可再次触发 ——
+    executor pending 废单/已撤时经 _on_pending_died 调它解除, 下轮重评。"""
+    t = [_T0]
+    stub = StubExecutor()
+    mon, _ = _make_monitor(store, _book_with(), stub, t)
+    mon.on_quote(CODE, {"last": 8.7, "bid1": 8.6, "high": 8.7})
+    mon.scan_once()
+    assert mon.scan_once() == []              # 已触发 → 当日不再触发
+    mon.clear_trigger(CODE)                   # 公开解除 (P0-3 语义)
+    triggers = mon.scan_once()
+    assert len(triggers) == 1
+    assert len(stub.exits) == 2               # 解除后重新执行
+
+
 def test_h1_failed_exit_not_armed_and_retried(store):
     """审计H1修复: 执行返回 False → 不入 _triggered, 写 WARN, 下轮再评
     (旧实现先标记 = 一跳行情延迟换一整天无保护)。"""
