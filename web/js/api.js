@@ -10,6 +10,11 @@ const post = (u, body, extra) => json(fetch(u, {
   ...extra,
 }));
 const del = u => json(fetch(u, { method: 'DELETE' }));
+const put = (u, body, extra) => json(fetch(u, {
+  method: 'PUT',
+  ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  ...extra,
+}));
 
 // ── 回测管线 ──
 
@@ -44,17 +49,35 @@ export const fetchLabReport = formula => get('/api/lab/report?formula=' + encode
 
 export const fetchCalendar = (year = 0, month = 0) =>
   get('/api/calendar?year=' + year + '&month=' + month);
-export const fetchBenchmarkHistory = () => get('/api/benchmark/history');
+export const fetchBenchmarkHistory = (params) => {
+  const qs = Object.entries(params || {}).map(
+    ([k, v]) => k + '=' + encodeURIComponent(String(v))).join('&');
+  return get('/api/benchmark/history' + (qs ? '?' + qs : ''));
+};
 export const fetchStockKline = params => {
   const qs = Object.entries(params || {}).map(
     ([k, v]) => k + '=' + encodeURIComponent(String(v))).join('&');
   return get('/api/stock/kline' + (qs ? '?' + qs : ''));
 };
 
+// ── 数据准备 TAB (data_cache.js classic 页经全局桥用) ──
+
+export const fetchDataCacheStatus = () => get('/api/data_cache/status');
+export const fetchDataCacheLog = (tail = 60) =>
+  get('/api/data_cache/log?tail=' + tail);
+export const submitDataCacheBackfill = body => post('/api/data_cache/backfill', body);
+
 // ── 研究对话 (研究 TAB; stream 端点走 fetch 流式, 此处给 stop/reset/
 // 标准 chat —— brain_chat.js 迁流式时保留) ──
 
 export const postResearchChat = body => post('/api/research/chat', body);
 export const postResearchChatStream = body => post('/api/research/chat/stream', body);
-export const resetResearchChat = () => post('/api/research/chat/reset');
-export const stopResearchChat = () => post('/api/research/chat/stop');
+export const resetResearchChat = body => post('/api/research/chat/reset', body);
+export const stopResearchChat = body => post('/api/research/chat/stop', body);
+// 8081 交易 API (跨源): 基址工厂 + 预置客户端 (analysis.js/trade.js 迁移用)。
+// 页面由 8080 serve、打 8081 属跨源, 依赖后端 CORS 放行 (同既有裸 fetch)。
+export const createTradeClient = (base) => ({
+  get: u => get(base + u),
+  post: (u, body) => post(base + u, body),
+  put: (u, body) => put(base + u, body),
+});

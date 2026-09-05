@@ -2,10 +2,11 @@
 import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc } from './charts.js';
 import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260814';
 import { bucketReason, isKnownReason } from './reason_util.mjs';
+// 2026-09-05 (治理III W4-e): 同源取数收敛到统一 client
+import { fetchBenchmarkHistory, fetchCalendar } from './api.js';
 
 const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
 const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
-const SVR_BASE = '';
 const DIR_BUY = 23, DIR_SELL = 24;
 
 // 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (web/js/stock_link.js 提供 window.stockLink)
@@ -60,8 +61,11 @@ async function loadAnalysisData() {
     const startDate = summary.start_date || '';
     const endDate = summary.end_date || '';
     const [benchData, calData] = await Promise.all([
-      startDate ? fetch(SVR_BASE + '/api/benchmark/history?indices=shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500&start=' + startDate + '&end=' + endDate).then(r => r.json()).catch(() => null) : null,
-      fetch(SVR_BASE + '/api/calendar?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null),
+      startDate ? fetchBenchmarkHistory({
+        indices: 'shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500',
+        start: startDate, end: endDate,
+      }).catch(() => null) : null,
+      fetchCalendar(_calendarYear, _calendarMonth).catch(() => null),
     ]);
 
     // Render KPI
@@ -438,7 +442,7 @@ async function refreshCalendarMonth() {
     _selectedDate = '';
     hideDailyReport();
   }
-  const calData = await fetch(SVR_BASE + '/api/calendar?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
+  const calData = await fetchCalendar(_calendarYear, _calendarMonth).catch(() => null);
   const dailyPnl = await fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
   if (seq !== _calLoadSeq) return;  // 已有更新的切月请求, 丢弃本次陈旧响应
   renderCalendar(calData, dailyPnl);
