@@ -629,7 +629,7 @@ def test_stock_budget_disabled(tmp_path):
 # ═══════════════════════════════════════════════════════════════
 
 def test_round_price_etf_three_decimals():
-    from trade.rotation import round_price_etf
+    from trade.book import round_price_etf  # 价格档位单一真相源 (治理III W3 迁入)
     assert round_price_etf(2.004) == 2.004          # ETF 0.001 档, 不被压到 0.01
     assert round_price_etf(2.009) == 2.009
     assert round_price_etf(1.2345) == 1.235         # 千分位四舍五入

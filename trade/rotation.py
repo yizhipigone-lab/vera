@@ -36,6 +36,7 @@ from trade.book import (
     OS_REPORTED,
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
+    round_price_etf,  # 价格档位单一真相源 (治理III W3 自本模块迁入 book.py)
 )
 from scheduler.trading_calendar import next_trading_day
 from trade import pool_money  # 市值口径单一真相源 (治理III W2-1)
@@ -81,13 +82,6 @@ def _fmt_momentum(momentum: dict | None) -> str:
     for c, m in momentum.items():
         parts.append(f"{c} {'—' if m is None else f'{float(m) * 100:+.1f}%'}")
     return " / ".join(parts)
-
-
-def round_price_etf(x: float) -> float:
-    """ETF 场内基金最小报价单位 0.001 元, 用千分位四舍五入。
-    不能复用 executor.round_price(股票 0.01 档): 2.004 → 2.00 会挂在不成交价
-    (审计 HIGH#1)。"""
-    return int(x * 1000 + 0.5) / 1000
 
 
 def compute_momentum_signal(closes_by_leg: dict, momentum_window: int = 20) -> dict:

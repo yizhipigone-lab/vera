@@ -58,10 +58,16 @@ def round_price(x: float) -> float:
     """股票价格 0.01 档对齐, 四舍五入 (审计L10: round() 银行家舍入在
     x.xx5 边界与交易所价格档位差 1 分)。涨停/跌停价与档位价共用。
 
-    价格档位口径唯一真相源 (治理III W1-c, 2026-09-05 自 executor 迁入);
-    ETF 0.001 档的 round_price_etf 暂留 trade/rotation.py, 随治理III
-    Wave2 rotation 动刀时迁来与此同居。"""
+    价格档位口径唯一真相源 (治理III W1-c 迁股票档, W3 迁 ETF 档同居)。"""
     return int(x * 100 + 0.5) / 100
+
+
+def round_price_etf(x: float) -> float:
+    """ETF 场内基金最小报价单位 0.001 元, 用千分位四舍五入 (治理III W3 迁入)。
+
+    不能复用 round_price (股票 0.01 档): 2.004 → 2.00 会挂在不成交价
+    (审计 HIGH#1)。原在 trade/rotation.py, 2026-09-05 迁此与股票档同居。"""
+    return int(x * 1000 + 0.5) / 1000
 
 
 def is_etf(code: str) -> bool:
