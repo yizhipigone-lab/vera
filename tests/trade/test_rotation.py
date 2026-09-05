@@ -384,6 +384,28 @@ def test_topup_same_target(tmp_path):
     assert buys[0]["qty"] == 250_000                 # 补到 50 万
 
 
+def test_overweight_target_leg_no_trim(tmp_path):
+    """模型B回归 (2026-08-25 纳指削腿事件): 目标腿超配 → 不削不卖, 漂移被接受。
+
+    2026-08-20 动量改造(c08b43b)误删 state_changed 守卫后, 每日 _execute 会把
+    超出池上限的当前目标腿削回比例 (8-25 实盘: 纳指腿市值 527,140 > 池 523,204,
+    被削 1700 股) — 违反模型B铁律「绝不主动卖来凑比例, 比例是上限不是强制目标」。
+    修复后: 超配只影响买入侧 (pool_gap=0 → 不补买), 卖出零动作。"""
+    clock = [_ts("10:00")]
+    # 总资产 = 现金 50万 + 纳指市值 55万 = 105万 → 池 = 52.5万 < 持仓 55万 (超配)
+    app = _start(_app(_cfg(tmp_path), clock, cash=500_000,
+                      positions={NASDAQ: {"volume": 550_000, "can_use": 550_000,
+                                          "avg_cost": 1.0}}))
+    app.gateway.push_quote(NASDAQ, _quote(NASDAQ, 1.0, bid=1.0, ask=1.0))
+    app.gateway.push_quote(CYB, _quote(CYB, 1.0, bid=1.0, ask=1.0))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 2.0, bid=2.0, ask=2.0))
+    assert _wait(lambda: app.monitor.quote_of(NASDAQ) is not None)
+    app._rotation.on_signals({"signal": {"target": NASDAQ}, "source": "test"})
+    buys, sells = _orders_by(app)
+    assert sells == []    # 模型B: 超配不削 (修复前会卖 25,000 份凑回池)
+    assert buys == []     # pool_gap = max(0, 52.5万-55万) = 0 → 不补买
+
+
 def test_rotation_order_records_decision(tmp_path):
     """2026-08-21: 交易记录带详细决策原因 (动量数据 + 判断依据)。"""
     import json
@@ -537,6 +559,50 @@ def test_daily_loss_tolerates_inflight_sell_returns(tmp_path, monkeypatch):
     monkeypatch.setattr(app.gateway, "query_trades", lambda: [])
     ctx2 = app._build_risk_ctx()
     assert ctx2.current_equity == pytest.approx(534778.0, abs=1.0)
+
+
+def test_daily_loss_tolerates_sell_orders_ahead_of_trades(tmp_path, monkeypatch):
+    """2026-08-24 (实盘 8-21 现场复现): query_orders 已见卖单终态而 query_trades
+    成交回报晚 ~1s 时, 日亏闸补回必须用 orders 的已成交量兜住。
+
+    实盘时序: 14:54:00.9 轮动挂卖 159949+518880, _wait_fills 从 orders 见终态
+    放行, 14:54:01.96 买 513100 时 query_trades 尚无当日卖出 → 补回 = 0 →
+    534778 < 87.8万 误拒, 52 万现金空仓过周末。修复: 补回取
+    max(trades 金额, orders 当日卖出已成交量×委托价)。"""
+    clock = [_ts("14:54")]
+    app = _start(_app(_cfg(tmp_path), clock))
+    # QMT total_asset 被低估 (卖出回款 T+1 未入账), trades 回报尚未到
+    monkeypatch.setattr(app.gateway, "query_asset",
+                        lambda: {"cash": 534778.0, "frozen_cash": 0.0,
+                                 "market_value": 0.0,
+                                 "total_asset": 534778.0})
+    monkeypatch.setattr(app.gateway, "query_trades", lambda: [])
+    # orders 已见终态 (已成, 含已成交量) —— 8-21 现场窗口
+    monkeypatch.setattr(app.gateway, "query_orders", lambda: [
+        {"order_id": "O1", "code": "159949.SZ", "direction": DIRECTION_SELL,
+         "price": 1.676, "qty": 274700, "filled_qty": 274700,
+         "status": 56, "ts": clock[0]},
+        {"order_id": "O2", "code": "518880.SH", "direction": DIRECTION_SELL,
+         "price": 9.384, "qty": 5600, "filled_qty": 5600,
+         "status": 56, "ts": clock[0]}])
+    app._day_baseline = 1033275.0    # 熔断线 = 87.8万
+    expect = 534778.0 + 274700 * 1.676 + 5600 * 9.384
+    ctx = app._build_risk_ctx()
+    assert ctx.current_equity == pytest.approx(expect, abs=1.0)
+    intent = OrderIntent(code="513100.SH", direction=DIRECTION_BUY,
+                         price=2.196, qty=8400)
+    ok, why = app.risk.check(intent, ctx)
+    assert ok, why
+    # 两路回报都齐: orders 与 trades 一致, 取 max 不重复计 (仍在途金额不变)
+    monkeypatch.setattr(app.gateway, "query_trades", lambda: [
+        {"traded_id": "T1", "order_id": "O1", "code": "159949.SZ",
+         "direction": DIRECTION_SELL, "price": 1.676, "qty": 274700,
+         "amount": 460397.2, "ts": clock[0]},
+        {"traded_id": "T2", "order_id": "O2", "code": "518880.SH",
+         "direction": DIRECTION_SELL, "price": 9.384, "qty": 5600,
+         "amount": 52550.4, "ts": clock[0]}])
+    ctx2 = app._build_risk_ctx()
+    assert ctx2.current_equity == pytest.approx(expect, abs=1.0)
 
 def test_stock_budget_cap(tmp_path):
     """轮动启用: 股票池预算 = (1-etf_ratio)×总资产 − 股票市值。"""

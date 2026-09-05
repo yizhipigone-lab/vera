@@ -473,3 +473,30 @@ def test_backfill_sell_records_pnl_high1(store, kill):
     ).fetchone()
     assert row[0] == 200.0   # (12 - 10) * 100
     assert row[1] == 20.0    # (12/10 - 1) * 100
+
+
+def test_sync_orders_placeholder_order_id_not_merged(store, kill):
+    """2026-08-27 (159226 手工单时间错乱): QMT 对手机端手工单回报
+    order_id="0" 占位, 按 oid upsert 会把多日多笔手工单合并成一条,
+    created_ts 停在旧单时间, 委托页显示"旧时间+新价格"四不像。
+    修复: oid="0" 时改用当日唯一合成 id, 各笔手工单独立成行,
+    created_ts 用本地首见时刻 (而非不可信的柜面占位时间)。"""
+    gw = _gw()
+    book = Book()
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    today = time.strftime("%Y%m%d")
+    # 伪造两笔 order_id="0" 的手工委托 (同日两只票 / 同票同价同量也各自独立)
+    with gw._lock:
+        gw._orders["0"] = {
+            "order_id": "0", "remark": "", "code": "159226.SZ",
+            "direction": DIRECTION_SELL, "price": 1.284, "qty": 195300,
+            "filled_qty": 195300, "status": 56,
+            "ts": time.time(), "price_type": None}
+    rec.sync_reports()
+    rows = store._conn.execute(
+        "SELECT order_id, code, created_ts FROM orders").fetchall()
+    assert len(rows) == 1                          # 合成 id 单行, 不复用 "0"
+    assert rows[0][0] == f"manual_{today}_159226.SZ_{DIRECTION_SELL}_1.284_195300"
+    assert rows[0][1] == "159226.SZ"
+    # created_ts 用本地首见时刻 (落在本次运行窗口内), 不是 QMT 占位时间
+    assert abs(rows[0][ 2] - time.time()) < 10

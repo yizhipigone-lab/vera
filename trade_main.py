@@ -1059,11 +1059,19 @@ class TradeApp:
     # ═══════════════════════════════════════════════════════════
 
     def _cmd_buy(self, cmd: dict) -> None:
-        """人工确认买入: 过风控闸门才下单 (MVP 买入的唯一入口)。"""
+        """人工确认买入: 过风控闸门才下单 (MVP 买入的唯一入口)。
+
+        2026-08-25 人工买入 ETF 支持: 行情订阅只按持仓建 (启动时 +
+        成交后补订), 人工买**未持仓**代码 (典型如 ETF, 永不在订阅
+        名单) 缓存必无价, 限价留空必被"无行情"fail-closed 拦死。
+        现先走轮询兜底一次性取价 (回填缓存 + 顺带订阅), 仍取不到
+        才拒单。"""
         code, qty = cmd["code"], int(cmd["qty"])
         price = cmd.get("price")
         if not price:
             quote = self.monitor.quote_of(code)
+            if not quote or not quote.get("last"):
+                quote = self._fetch_quote_once(code)
             if not quote or not quote.get("last"):
                 self.store.write_audit(
                     "buy_fail_closed", f"{code} 无行情, 人工买入被拒", cmd)
@@ -1085,6 +1093,29 @@ class TradeApp:
             "manual_buy", f"人工买入 {code} {qty}@{price}",
             {"code": code, "qty": qty, "price": price, "order_id": order_id})
         # 回报会经事件链自然入账, 这里只留人工动作痕迹
+
+    def _fetch_quote_once(self, code: str) -> dict | None:
+        """一次性取价兜底 (消费者线程, 2026-08-25 人工买入 ETF 支持)。
+
+        轮询接口拉快照 → 回填 monitor 缓存 → 顺带订阅该代码 (成交前
+        监控/卖出链就有价可用; 成交后 _on_trade 还会补订, 重复订阅
+        无害)。取价或订阅失败只记日志不抛 —— 无价的最终裁决在
+        调用方 (fail-closed 拒单)。"""
+        try:
+            snaps = self.gateway.query_quotes([code])
+        except Exception as e:
+            _logger.warning("人工买入一次性取价失败 %s: %s", code, e)
+            return None
+        q = (snaps or {}).get(code)
+        if not q or not q.get("last"):
+            return None
+        self.monitor.on_quote(code, q)
+        try:
+            self.gateway.subscribe_quotes([code])
+        except Exception as e:
+            _logger.warning("人工买入订阅行情失败 %s (监控将无价跳过): %s",
+                            code, e)
+        return self.monitor.quote_of(code)
 
     def _stock_budget(self) -> float | None:
         """股票池买入预算帽 (2026-08-14, 轮动启用时生效)。
@@ -1163,19 +1194,35 @@ class TradeApp:
         成交回报 (query_trades) 汇总当日卖出成交金额作为在途回款补回。
         回款已到账时该值会让 current_equity 略高估 (日亏闸偏松), 方向安全:
         宁可少拦 (允许卖后补买) 不可多拦 (误拒打断换腿)。查询失败返回 0。
+
+        2026-08-24 (实盘 8-21 现场复现): query_trades 成交回报在成交瞬间比
+        query_orders 委托终态晚 ~1 秒 —— 轮动 14:54:00.9 挂卖单,
+        _wait_fills 从 orders 见终态放行, 14:54:01.96 买 513100 时 trades
+        尚无当日卖出 → 补回 = 0 → 534778 < 87.8万 再次误拒, 52 万空仓过周末。
+        改为 trades 金额与 orders「当日卖出已成交量×委托价」取 max: 两路
+        回报都齐时二者一致不重复计 (方向安全偏松), orders 领先的窗口内用
+        orders 值兜住低估。仍只读不改账。
         """
         try:
             trades = self.gateway.query_trades()
+            orders = self.gateway.query_orders()
         except Exception:
             return 0.0
         today = _day_str(self._clock())
         day_start = time.mktime(time.strptime(today, "%Y%m%d"))
-        return sum(
+        from_trades = sum(
             float(t.get("amount") or 0.0)
             for t in trades
             if (t.get("ts") or 0.0) >= day_start
             and t.get("direction") == DIRECTION_SELL
         )
+        from_orders = sum(
+            float(o.get("price") or 0.0) * float(o.get("filled_qty") or 0.0)
+            for o in orders
+            if (o.get("ts") or 0.0) >= day_start
+            and o.get("direction") == DIRECTION_SELL
+        )
+        return max(from_orders, from_trades)
 
     def _prev_close(self, code: str) -> float | None:
         """昨收来源: 优先行情快照 prev_close 字段, 无则查网关快照。

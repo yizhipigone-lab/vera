@@ -604,10 +604,17 @@ class RotationFeature:
             decision = (f"动量择腿 ({mom}) → 目标 {target_code}" if mom
                         else f"目标 {target_code}")
 
-        # 卖超目标腿
+        # 卖出只清「目标值为 0」的腿 (换档卖旧腿 / 止损切避险清风险腿)。
+        # 模型B 铁律 (docs/plan/2026-08-14_ETF轮动与双池资金分配系统_计划书.md §三,
+        # 用户拍板): 比例是「上限」不是强制目标 — 绝不主动卖当前持仓腿来凑比例,
+        # 超配漂移是用户接受的代价(换低手续费); 再平衡只用自由资金补低配(买入侧)。
+        # 2026-08-25 修复: 2026-08-20 动量改造(c08b43b)误删 state_changed 守卫,
+        # 导致每日削超配腿(8-25 纳指腿超池 3936 元被削 1700 股), 违反模型B。
         self._pending_sells.clear()
         sell_ids: list[str] = []
         for code, tval in legs:
+            if tval > 0:
+                continue  # 目标腿(风险腿或避险篮子)超配不削, 漂移由买入侧预算帽兜住
             oid = self._sell_to(code, cur[code], tval, quotes.get(code),
                                 _can(qmt_pos0, code), decision)
             if oid:
@@ -705,7 +712,9 @@ class RotationFeature:
 
     def _sell_to(self, code: str, cur_val: float, target_val: float,
                  quote: dict | None, can_use: int, decision: str) -> str | None:
-        """卖到目标市值 (仅换档时调用)。全清 (target≤0) 允许卖残余非整手。
+        """卖到目标市值。调用方保证仅对「目标值为 0」的腿调用 (换档卖旧腿 /
+        止损清风险腿); 模型B: 当前持仓目标腿绝不主动削, 超配漂移不卖。
+        全清 (target≤0) 允许卖残余非整手。
         返回 order_id (None=本轮未卖)。"""
         if cur_val <= target_val or can_use <= 0:
             return None

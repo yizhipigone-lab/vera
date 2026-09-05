@@ -623,34 +623,61 @@ document.getElementById('tdKillBtn').addEventListener('click', function () {
   }
 });
 
+// 2026-08-25: 人工买入支持 ETF —— 代码输入归一化: 裸 6 位/小写/sh 前缀
+// 写法自动补市场后缀 (51/56/58/6→SH, 15/16/18/0/3→SZ, 4/8/92→BJ);
+// 显式带后缀时信任用户输入; 无法推导返回 null 维持原格式提示, 不瞎猜。
+function normalizeTradeCode(raw) {
+  var c = (raw || '').trim().toUpperCase();
+  var m = c.match(/^(SH|SZ|BJ)?\.?(\d{6})(?:\.(SH|SZ|BJ))?$/);
+  if (!m) return null;
+  var num = m[2], suffix = m[1] || m[3];
+  if (!suffix) {
+    if (/^(51|56|58|6)/.test(num)) suffix = 'SH';
+    else if (/^(15|16|18|0|3)/.test(num)) suffix = 'SZ';
+    else if (/^(4|8|92)/.test(num)) suffix = 'BJ';
+    else return null;
+  }
+  return num + '.' + suffix;
+}
+// ETF 判定口径与后端 trade/book.is_etf 一致 (沪 51/56/58, 深 15/16/18)
+function isEtfCode(c) {
+  return /^(51|56|58|15|16|18)/.test((c || '').split('.')[0]);
+}
+// ETF 最小价位 0.001 (股票 0.01), 价格输入 step 随代码动态切换
+document.getElementById('tdBuyCode').addEventListener('input', function () {
+  document.getElementById('tdBuyPrice').step = isEtfCode(this.value) ? '0.001' : '0.01';
+});
+
 document.getElementById('tdBuyBtn').addEventListener('click', function () {
-  var code = document.getElementById('tdBuyCode').value.trim().toUpperCase();
+  var code = normalizeTradeCode(document.getElementById('tdBuyCode').value);
   var qty = parseInt(document.getElementById('tdBuyQty').value, 10);
   var priceRaw = document.getElementById('tdBuyPrice').value.trim();
   var hint = document.getElementById('tdBuyHint');
-  if (!code) { hint.textContent = '请填代码'; return; }
-  // 2026-08-13: 与后端 _CODE_PATTERN 一致, 提前拦截 (否则 422 被吞成"已受理")
-  if (!/^\d{6}\.(SH|SZ|BJ)$/.test(code)) {
-    hint.textContent = '代码格式应为 6位数字.SH/SZ/BJ, 如 600519.SH'; return;
+  if (!code) {
+    hint.textContent = '代码格式: 6位数字 (自动补市场后缀), 如 600519 / 518880 / 600519.SH'; return;
   }
+  document.getElementById('tdBuyCode').value = code;  // 回填规范形, 所见即所买
   if (!qty || qty <= 0 || qty % 100 !== 0) { hint.textContent = '数量必须是 100 的整数倍'; return; }
   var body = { code: code, qty: qty };
   if (priceRaw) body.price = parseFloat(priceRaw);
+  var etfNote = isEtfCode(code)
+    ? '\n注意: ETF 不纳入自动止盈止损/预埋, 需人工盯盘管理。' : '';
   if (!confirm('待确认买入: ' + code + ' ' + qty + ' 股'
-      + (body.price ? ' @' + body.price : ' (最新价)') + '\n将过风控闸门后下单, 确认?')) return;
+      + (body.price ? ' @' + body.price : ' (最新价)') + etfNote
+      + '\n将过风控闸门后下单, 确认?')) return;
   cmd(this, '/api/trade/buy', body, '买入命令已受理, 等待过闸结果…', 'tdBuyHint',
     function () { watchCmdResult(code, hint); });
 });
 
 // 2026-07-30: 配套手工卖出 — 复用代码+数量输入框, 校验可用后走 /api/trade/sell
 document.getElementById('tdSellBtn').addEventListener('click', function () {
-  var code = document.getElementById('tdBuyCode').value.trim().toUpperCase();
+  var code = normalizeTradeCode(document.getElementById('tdBuyCode').value);
   var qtyRaw = document.getElementById('tdBuyQty').value.trim();
   var hint = document.getElementById('tdBuyHint');
-  if (!code) { hint.textContent = '请填代码'; return; }
-  if (!/^\d{6}\.(SH|SZ|BJ)$/.test(code)) {
-    hint.textContent = '代码格式应为 6位数字.SH/SZ/BJ, 如 600519.SH'; return;
+  if (!code) {
+    hint.textContent = '代码格式: 6位数字 (自动补市场后缀), 如 600519 / 518880 / 600519.SH'; return;
   }
+  document.getElementById('tdBuyCode').value = code;
   var pos = (window._lastPositions || []).find(function (p) { return p.code === code; });
   var canUse = pos ? pos.can_use : 0;
   var body = { code: code };

@@ -339,10 +339,13 @@ class Reconciler:
                      "strategy": strategy})
                 adopted += 1
                 continue
-            try:
-                self._store.update_order_filled(order_id, int(t["qty"]))
-            except Exception:
-                pass  # 本地无此委托 (手工单) 时无行可更新, 正常
+            # 2026-08-27: order_id="0" 是手工单占位号, 进度由 _sync_orders
+            # 的合成 id 委托维护; 此处跳过避免累加到占位行。
+            if order_id != "0":
+                try:
+                    self._store.update_order_filled(order_id, int(t["qty"]))
+                except Exception:
+                    pass  # 本地无此委托 (手工单) 时无行可更新, 正常
             kind = "trade_backfill" if local_order is not None else "manual_adopt"
             self._store.write_audit(
                 kind,
@@ -389,6 +392,19 @@ class Reconciler:
             if ts and datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
                 stale += 1
                 continue
+            # 2026-08-27 (159226 手工单时间错乱事件): QMT 对券商端外部渠道
+            # (手机 APP) 手工单不给真实委托号, 统一回报 order_id="0" 占位,
+            # 且 order_time 是该占位单首次被回报的柜面时间(可能是盘后晚间),
+            # 并非真实下单时刻。若按 oid upsert, 多日多笔手工单被合并成一条
+            # 且 created_ts 停在旧单时间 → 委托页显示"旧时间+新价格"四不像。
+            # 修复: order_id="0" 时改用当日唯一合成 id 区分各笔手工单,
+            # created_ts 用本地首见时刻 (对账周期级精度, 远比柜面占位时间准)。
+            # 成交归属不受影响 —— 成交按 traded_id 幂等, 与 order_id 解耦。
+            if oid == "0":
+                oid = (f"manual_{today}_{o.get('code', '')}_"
+                       f"{o.get('direction', 0)}_{o.get('price', 0.0)}_"
+                       f"{o.get('qty', 0)}")
+                ts = None  # 占位单的 order_time 不可信, 走本地首见时间
             local = local_orders.get(oid)
             status = int(o.get("status", 0))
             filled = int(o.get("filled_qty", 0))
@@ -419,7 +435,10 @@ class Reconciler:
                 # 新插入的行 (券商端手工单/重启后首见) 时间列显示真实
                 # 委托时刻而非同步时刻; 已存在的行 ON CONFLICT 不动
                 # created_ts (save_order upsert 语义), 本地原值保留
-                "created_ts": ts or None,
+                # 2026-08-27: 手工单 (oid 合成 manual_*) 的 QMT order_time
+                # 不可信 (占位号柜面回报时间), 上方已置 ts=None → 此处用
+                # 本地当前时刻 (对账周期级精度) 作 created_ts。
+                "created_ts": (ts if ts else now),
                 # 2026-08-07: 废单原因随回写落库 (XtOrder.status_msg)
                 "status_msg": str(o.get("status_msg", "") or "")})
             updated += 1
