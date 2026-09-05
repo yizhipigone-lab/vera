@@ -12,6 +12,7 @@
 import json
 import re
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # 2026-07-17: 协作式停止标志 (停止回测按钮)
@@ -35,7 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from config_mapper import StrategyConfig, _config_to_yaml_dict  # noqa: F401
 from lab_api import create_lab_router
 from research_api import router as research_router
-from utils.config_loader import ConfigLoader
+from utils.config_loader import ConfigLoader, get_run_config_summary
 from utils.logger import setup_logger
 
 logger = setup_logger("VERA-Server", level="INFO")
@@ -45,17 +46,11 @@ def _read_json(path: Path):
     """读取 JSON 文件 (UTF-8) 并解析, 供结果类端点复用。"""
     return json.loads(path.read_text(encoding="utf-8"))
 
-app = FastAPI(title="VERA 量化回测系统", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])  # 2026-08-18: 放行局域网手机访问
 
-# 静态文件
-app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
-app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")
-
-
-@app.on_event("startup")
-def _startup_cache_check():
-    """启动自检: K线缓存不新鲜则后台补拉 (2026-08-14, 5M 回测超时事故)。
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """启动自检 (2026-09-05: 由 on_event 迁移到 lifespan, 消除 DeprecationWarning):
+    K线缓存不新鲜则后台补拉 (2026-08-14, 5M 回测超时事故)。
 
     与 scheduler 每日 15:45 的定时补拉是双保险 —— 调度器没常驻/电脑关机/
     周末启动回测时, 靠这个自检兜底。非阻塞 (检查毫秒级, 补拉在后台线程),
@@ -66,6 +61,15 @@ def _startup_cache_check():
         logger.info(f"K线缓存启动自检: {ensure_cache_fresh(trigger='server_startup')}")
     except Exception as e:
         logger.warning(f"K线缓存启动自检异常 (不影响服务): {e}")
+    yield
+
+
+app = FastAPI(title="VERA 量化回测系统", version="1.0.0", lifespan=_lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])  # 2026-08-18: 放行局域网手机访问
+
+# 静态文件
+app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
+app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")
 
 # ====== 数据模型 ======
 # StrategyConfig / _config_to_yaml_dict 已抽至 config_mapper.py (C4c), 上方 re-export。
@@ -332,6 +336,10 @@ def run_pipeline(cfg: StrategyConfig):
             return {"success": False, "error": str(err)}
         response_data = writer.serialize(result)
 
+        # 2026-08-20: 回测口径摘要 (初始资金/周期/买入价/公式/股票池/复权) —
+        # 历史回测卡片需展示边界条件, 落进 data 顶层 (有才加 key, 老结果无此键前端回退)。
+        response_data["run_config_summary"] = get_run_config_summary(config_dict)
+
         # C1-3: 落盘三文件（替换原来的手写 persist 块）
         writer.persist(
             response_data,
@@ -587,8 +595,43 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VERA Web 服务器")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", type=str, default="0.0.0.0")  # 2026-08-18: 局域网手机访问
+    # 2026-09-02 热加载: 默认文件改动自动重启 (用户拍板), --no-reload 关闭。
+    # reload 监视必须排除非代码目录 —— data/ (trade.db、kline_cache)、
+    # output/ (回测报告) 高频写入, 不排除会引发重启风暴。
+    parser.add_argument("--no-reload", action="store_true",
+                        help="关闭文件改动自动重启 (跑长回测时建议使用, "
+                             "默认开启自动重启)")
     args = parser.parse_args()
 
     logger.info("VERA 量化回测系统 Web 服务器启动")
     logger.info(f"访问: http://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, access_log=False)
+    # 2026-09-04 大脑启动失败修复: uvicorn 0.44 在 reload 模式下把 Windows
+    # 事件循环换成 SelectorEventLoop (不支持子进程), brain 的 claude CLI 起不来。
+    # 传自定义 loop factory 强制 Proactor (详见 utils/proactor_loop.py docstring)。
+    _LOOP_FACTORY = "utils.proactor_loop:factory"
+    if args.no_reload:
+        uvicorn.run(app, host=args.host, port=args.port, access_log=False,
+                    loop=_LOOP_FACTORY)
+    else:
+        logger.info("开发模式: 后端代码改动自动重启 (--no-reload 关闭; "
+                    "跑长回测期间建议关闭, 保存代码会中断回测)")
+        # 目录 pattern 正反斜杠双写: watchfiles 的 fnmatch 按字面分隔符
+        # 匹配, Windows 路径是反斜杠, 只写 "data/*" 挡不住 data\...。
+        # 2026-09-05: dsh-runtime 必须排除 —— 449MB 便携运行时 + 430 个
+        # junction, watchfiles 全树行走会 stat 风暴甚至沿链接打转; 且 DSH
+        # 每答一问就往 home/sessions/ 写 .jsonl.zstd 会话日志, 不排除会
+        # 在深度思考进行中触发重启 (实测: 8080 端口 deep 请求后整站 wedge)。
+        _excl_dirs = ["data", "output", "reports", "research", "docs",
+                      "notes", "tests", "tools", "skills", ".git",
+                      ".venv", "__pycache__", "dsh-runtime"]
+        _excludes = [p for d in _excl_dirs for p in (f"{d}/*", f"{d}\\*")]
+        _excludes += ["*.log", "*.txt", "*.json", "*.jsonl", "*.parquet",
+                      "*.csv", "*.yaml", "*.html", "*.db"]
+        # 2026-09-05: 排除项目根目录的临时草稿脚本 (_tmp*.py)。它们一保存/
+        # 运行就触发热重启 → Windows 上连续重启会抢端口/报 WinError 87。
+        # 根目录散落的 _tmp_xxx.py 是历史遗留草稿, 不再 watch 即不再误杀服务。
+        _excludes += ["_tmp*.py", "_tmp_*.py"]
+        uvicorn.run(
+            "server:app", host=args.host, port=args.port,
+            access_log=False, reload=True, reload_excludes=_excludes,
+            loop=_LOOP_FACTORY)

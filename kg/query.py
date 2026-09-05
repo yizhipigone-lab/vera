@@ -165,39 +165,6 @@ def get_holdings_chain(stock_code: str, db_path: Path | None = None) -> Optional
     }
 
 
-def get_stock_policy_impact(stock_code: str, db_path: Path | None = None) -> list[dict]:
-    """票 → A 层行业(881) → AFFECTS 边 → 政策影响列表 (P1, 计划书 §6).
-
-    复用 A 层 build_sector_index (票→881.SH). 返 [{policy_id,title,direction,strength,evidence,weight}]
-    按 |weight| 降序 (力度强+方向明的在前). 失败/票不在 A 层 → [].
-    """
-    try:
-        from policy_kb.build_sector_index import get_sector_of
-        sector_code = get_sector_of(stock_code)  # 票 → 881.SH (A 层)
-        if not sector_code:
-            return []
-        conn = _connect(db_path)
-        rows = conn.execute(
-            """SELECT p.code pid, p.name ptitle, e.weight,
-               json_extract(e.payload_json, '$.direction') direction,
-               json_extract(e.payload_json, '$.strength') strength,
-               json_extract(e.payload_json, '$.evidence_quote') evidence
-               FROM kg_edges e JOIN kg_nodes p ON e.src_id = p.node_id
-               WHERE e.dst_id=? AND e.edge_type='affects'
-               ORDER BY abs(e.weight) DESC""",
-            (f"industry_tdx:{sector_code}",),
-        ).fetchall()
-        conn.close()
-        return [
-            {"policy_id": r["pid"], "title": r["ptitle"], "direction": r["direction"],
-             "strength": r["strength"], "evidence": r["evidence"], "weight": r["weight"]}
-            for r in rows
-        ]
-    except Exception as e:
-        logger.warning(f"get_stock_policy_impact 失败(返[]): {e}")
-        return []
-
-
 if __name__ == "__main__":
     # CLI: python -m kg.query <票代码>   例: python -m kg.query 600259.SH
     import sys

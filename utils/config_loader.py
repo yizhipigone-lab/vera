@@ -155,3 +155,83 @@ class ConfigLoader:
         if existed:
             target.unlink()
         return existed
+
+
+# ── 回测口径摘要 (2026-08-20: 历史回测卡片需展示边界条件) ──
+# 输入形如 config_mapper._config_to_yaml_dict 的输出 (已解析具体值, 非合并前配置)。
+
+# 股票池类型 → 中文标签 (与 web/index.html 的 cfgUniverse 选项 + selection/selector.py 对齐)
+_UNIVERSE_LABELS = {
+    "50": "沪深A股", "5": "全部A股", "23": "沪深300", "24": "中证500",
+    "25": "中证1000", "28": "中证A500", "51": "创业板", "52": "科创板",
+    "53": "北交所", "31": "ETF",
+}
+
+_PERIOD_LABELS = {
+    "1d": "日线", "1w": "周线", "5m": "5分线", "1m": "1分线",
+}
+
+_ENTRY_MODE_LABELS = {
+    "close_t": "信号日收盘价 (尾盘下单)",
+    "open_t1": "次日开盘价 (一字涨停才放弃)",
+}
+
+_DIVIDEND_LABELS = {1: "前复权", 0: "不复权", 2: "后复权"}
+
+
+def get_run_config_summary(config: dict) -> str:
+    """根据完整策略配置生成「回测口径」摘要 (初始资金/周期/买入价/公式/股票池/复权/区间)。
+
+    用于历史回测卡片展示边界条件 (用户 2026-08-20 要求: 卡片只显示止损参数, 缺口径信息)。
+    config 形如 config_mapper._config_to_yaml_dict(cfg) 的输出; 缺字段走安全兜底不抛异常。
+    """
+    lines = []
+    bt = config.get("backtest", {}) or {}
+    sel = config.get("selection", {}) or {}
+    tr = config.get("time_range", {}) or {}
+
+    cap = bt.get("initial_capital", 1000000.0)
+    lines.append(f"初始资金: {cap:,.0f} 元")
+
+    bt_period = bt.get("period", "1d")
+    sel_period = sel.get("period", "1d")
+    period_label = _PERIOD_LABELS.get(bt_period, bt_period)
+    if sel_period != bt_period:
+        period_label += f" (选股用{_PERIOD_LABELS.get(sel_period, sel_period)})"
+    lines.append(f"K线周期: {period_label} ({bt_period})")
+
+    em = bt.get("entry_price_mode", "close_t")
+    lines.append(f"买入价口径: {_ENTRY_MODE_LABELS.get(em, em)} ({em})")
+
+    formula = sel.get("formula_name", "")
+    farg = sel.get("formula_arg", "")
+    formula_line = f"选股公式: {formula}" if formula else "选股公式: ?(未配置)"
+    if farg:
+        formula_line += f" (参数 {farg})"
+    lines.append(formula_line)
+
+    uni = sel.get("universe", {}) or {}
+    utype = str(uni.get("type", "50"))
+    pool_label = _UNIVERSE_LABELS.get(utype, utype)
+    parts = []
+    if uni.get("exclude_st", True):
+        parts.append("排除ST")
+    if uni.get("include_etf"):
+        parts.append("含ETF")
+    if uni.get("etf_only"):
+        parts.append("仅ETF")
+    sectors = uni.get("sectors") or []
+    if sectors:
+        parts.append(f"行业板块 {len(sectors)} 个")
+    suffix = f" ({', '.join(parts)})" if parts else ""
+    lines.append(f"股票池: {pool_label}{suffix}")
+
+    adj = sel.get("dividend_type", 1)
+    lines.append(f"复权口径: {_DIVIDEND_LABELS.get(int(adj), adj)}")
+
+    start = tr.get("start", "")
+    end = tr.get("end", "")
+    if start or end:
+        lines.append(f"回测区间: {start} ~ {end}")
+
+    return "\n".join(lines)
