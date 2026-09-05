@@ -361,6 +361,38 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 唯一下单口收口（Executor.place_order，深模块评估候选①高危项）
+
+**计划书**: [docs/plan/2026-09-05_唯一下单口收口_计划书.md](docs/plan/2026-09-05_唯一下单口收口_计划书.md)（两轮审读: 作者逐行 + 独立对抗审计, 应修 P1-P5 全部吸收）
+**背景**: 下单七步曲（风控→取号→发单→登记成交原因→订单簿→落库→审计）在 5 处克隆且已分叉；泰山石油式修复（created_ts）被迫抄 4 份。
+
+### 改动（T1→T6 六提交，先红后绿）
+
+- **T2 `trade/executor.py`**: 新增 `PlaceRequest` 数据类 + `Executor.place_order` 唯一下单口（七步脊柱）；风控价口径 `risk_price`（审计 P1：auto_buy 风控吃参考价、发单/入账用委托价）；审计 extra 的 `order_id` 占位回填（审计 P2：键序与收口前逐字节一致）；`created_ts` 单点收口；风控拒**静默**返回（防双倍告警）。place_ladder/_sell 内部克隆切换；`next_remark` 转私有 `_next_remark`（公开面 8+1−1=8 不破顶）。
+- **T3 `trade/rotation.py`**: `_place_order` 走 place_order（rotation 标记入 intent_flags），卖单登记尾巴留本模块；清 3 个死 import；补 in_flight 直测（审计 P8）。
+- **T4 `trade/auto_buy.py`**: 走 place_order（`price=order_price` 委托价 P0-6 口径收编 + `risk_price=price` 参考价），定价策略不动；清 2 个死 import。
+- **T5 `trade_main.py`**: 人工买走 place_order（`manual` 标记 + `account_immediately=False` 不入账等事件链——行为保持）；audit extra 的 price 保原始值（审计 P11）；清 2 个死 import。
+- **T6 `trade/monitor.py` + `trade_main.py`**: `Monitor.clear_trigger` 公开，组合根 :417 的 lambda 摸私有接线转正为公开方法引用；补当日重触发直测。
+
+### 测试
+
+- 新增 `tests/trade/test_place_order.py` 6 例（脊柱副作用/风控拒静默/人工买不入账/risk_price 口径/order_id 占位回填/created_ts 不继承）+ test_rotation in_flight 直测 + test_monitor clear_trigger 直测。
+- 回归: test_executor 33 例（place_ladder 12）零断言修改全绿；test_rotation 34 / test_auto_buy 21 / test_api+e2e+notifier 82 / test_monitor 全绿；**全量 `pytest tests/` exit=0**。
+- 验收 grep: created_ts 赋值单点（reconciler.py:441 对账例外）；rotation/auto_buy/trade_main 生产路径零下单直调；`next_remark` 外部调用清零。
+
+### 行为口径（§五 三处微统一，已在计划书论证等价）
+
+1. created_ts 时钟源统一到 Executor clock（生产三路本就同一 `time.time` 对象）；
+2. 审计 extra 的 order_id 构造时机提前（占位回填，键序逐字节一致，无观察者）；
+3. 语句顺序：_sell 尾巴（_pending/锁/回填）与 ladder 的 mark_tier 移到 place_order 之后（毫秒级崩溃窗口变化已论证登记）。
+
+### 剩余风险 / 已知债
+
+- **[已知债·单独立项] 人工买入入账时机分叉**: `_cmd_buy` 走 `account_immediately=False`（回报经事件链入账），与四路"立即入账"并存——同系统两种答案。本卡按用户拍板保持现状不统一，统一需先确认事件链回报与立即入账不重复。
+- ladder mark_tier 崩溃窗口从≈0 扩到毫秒级（含 2 次 sqlite 写）；概率极低已登记，实盘出现即按计划书预案改预标记。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:
