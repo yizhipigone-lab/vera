@@ -156,7 +156,10 @@ def main(argv: list[str] | None = None) -> int:
     # 过了点的 daily job 真没发过才补发, 发过不重发。
     sched = VeraScheduler(
         state_path=str(project_root() / "data" / "scheduler_state.json"))
-    sched.add_monthly("monthly_note", _job_monthly_note, day=1, hhmm="08:30")
+    # 月度笔记: 触发日(9/1)错过会因断档永久丢失 (体检 P2-2 教训) →
+    # 触发日起 7 天内补发一次; 已发/超窗不补。
+    sched.add_monthly("monthly_note", _job_monthly_note, day=1, hhmm="08:30",
+                      catchup_days=7)
     # 周度 job 用 add_weekly (不看交易日, 周日休市也要跑) —
     # 2026-09-05 体检 P0-2: daily+weekday 检查组合下周日分支不可达
     sched.add_weekly("weekly_evolution", _job_weekly_evolution,

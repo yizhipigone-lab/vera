@@ -39,6 +39,7 @@ class _Job:
     kind: str = "daily"          # "daily" | "monthly" | "weekly"
     month_day: int = 1           # monthly: 每月第几日 (顺延到下一交易日)
     weekday: int = 6             # weekly: 星期几触发 (0=周一 .. 6=周日)
+    catchup_days: int = 0        # monthly: 错过触发日后宽限补发天数 (0=不补)
     last_fired: str = ""         # daily/monthly/weekly: 最近触发的周期键 (防重复)
     # interval 专用 (其余 kind 不用):
     last_fire_ts: float = 0.0    # 上次触发的墙钟时间 (0=从未; 进程内状态, 重启归零)
@@ -114,8 +115,14 @@ def is_due(job: _Job, now: dt.datetime) -> bool:
         if not is_trading_day(today):
             return False
     elif job.kind == "monthly":  # 只在"顺延后的触发日"当天触发
-        if monthly_fire_date(today.year, today.month, job.month_day) != today:
-            return False
+        sched = monthly_fire_date(today.year, today.month, job.month_day)
+        if sched != today:
+            # 补发窗口 (体检 P2-2): 触发日错过 (机器/调度断档) 后, 触发日
+            # 起 catchup_days 天内仍未发过 → 补发一次; 超窗/本月已发不补。
+            if job.catchup_days <= 0:
+                return False
+            if today < sched or today > sched + dt.timedelta(days=job.catchup_days):
+                return False
     elif job.kind == "weekly":   # 只在指定星期几触发; 不看交易日 (周报周日可跑)
         if today.weekday() != job.weekday:
             return False
@@ -184,12 +191,20 @@ class VeraScheduler:
         return job
 
     def add_monthly(self, name: str, func: Callable[[], None],
-                    day: int = 1, hhmm: str = "08:30") -> _Job:
-        """注册月度 job: 每月第 day 日 (顺延到下一交易日) hhmm 过后触发。"""
+                    day: int = 1, hhmm: str = "08:30",
+                    catchup_days: int = 0) -> _Job:
+        """注册月度 job: 每月第 day 日 (顺延到下一交易日) hhmm 过后触发一次。
+
+        catchup_days>0: 触发日错过 (机器关机/调度断档) 后, 触发日起的
+        catchup_days 天内本周期仍未触发 → 补发一次 (体检 P2-2: 9 月
+        月度笔记因 09-01 断档永久丢失的教训)。0 = 旧行为, 错过即错过。"""
         _parse_hhmm(hhmm)
         if not 1 <= day <= 28:
             raise ValueError(f"monthly day 限 1~28 (避免月末天数不齐): {day}")
-        job = _Job(name=name, func=func, hhmm=hhmm, kind="monthly", month_day=day)
+        if catchup_days < 0:
+            raise ValueError(f"catchup_days 必须 ≥0: {catchup_days}")
+        job = _Job(name=name, func=func, hhmm=hhmm, kind="monthly",
+                   month_day=day, catchup_days=catchup_days)
         job.last_fired = self._persisted.get(name, "")  # 恢复上次进程的触发记录
         with self._lock:
             self._jobs.append(job)

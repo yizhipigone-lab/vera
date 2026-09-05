@@ -129,6 +129,42 @@ class TestMonthlyJob:
         with pytest.raises(ValueError):
             sched.add_monthly("m", lambda: None, day=31)
 
+    def test_invalid_catchup_rejected(self, fake_weekday_calendar):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_monthly("m", lambda: None, day=1, catchup_days=-1)
+
+    def test_catchup_fires_after_missed_trigger_day(self,
+                                                    fake_weekday_calendar):
+        """体检 P2-2: 触发日(06-01 周一)错过, 宽限 7 天内补发一次。
+        模拟 09-01 断档后 09-05 才启动: 6/1 后 6/5 启动应补发。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_monthly("m", lambda: calls.append(1), day=1, hhmm="08:30",
+                          catchup_days=7)
+        assert sched.run_pending(_at(2026, 6, 5, 9, 0)) == 1   # 补发
+        assert calls == [1]
+        sched.run_pending(_at(2026, 6, 6, 9, 0))               # 同月不再补
+        sched.run_pending(_at(2026, 6, 28, 9, 0))
+        assert calls == [1]
+        sched.run_pending(_at(2026, 7, 1, 8, 30))              # 次月正常触发
+        assert calls == [1, 1]
+
+    def test_catchup_not_before_or_past_grace(self, fake_weekday_calendar):
+        """宽限窗口外不补: 触发日前不提前, 超 7 天不补 (太旧不自动生成)。"""
+        sched = vs.VeraScheduler()
+        sched.add_monthly("m", lambda: None, day=1, hhmm="08:30",
+                          catchup_days=7)
+        assert sched.run_pending(_at(2026, 5, 31, 9, 0)) == 0   # 触发日前
+        assert sched.run_pending(_at(2026, 6, 9, 9, 0)) == 0    # 超宽限 (6/1+7)
+
+    def test_no_catchup_when_catchup_days_zero(self,
+                                               fake_weekday_calendar):
+        """catchup_days=0 (默认) = 旧行为: 错过触发日即错过, 不补。"""
+        sched = vs.VeraScheduler()
+        sched.add_monthly("m", lambda: None, day=1, hhmm="08:30")
+        assert sched.run_pending(_at(2026, 6, 5, 9, 0)) == 0
+
 
 class TestWeeklyJob:
     """add_weekly (2026-09-05 体检 P0-2): 每周日触发, 不看交易日。
