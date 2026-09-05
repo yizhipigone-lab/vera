@@ -100,12 +100,13 @@ def test_fill_context_peek_shared_and_discard(store, kill):
     """2026-07-31 (金逸影视 6 笔部成实例): peek 读不删 —— 同一订单
     部成多笔共享同一份 ctx; discard (订单终态) 才清理。"""
     ex = _make_executor(store, kill, Book(), _gw_with())
-    ex.register_fill_context("O1", {"label": "TDX买入"})
-    assert ex.peek_fill_context("O1") == {"label": "TDX买入"}
-    assert ex.peek_fill_context("O1") == {"label": "TDX买入"}   # 读不删
-    ex.discard_fill_context("O1")
-    assert ex.peek_fill_context("O1") is None
-    ex.discard_fill_context("O1")                               # 幂等
+    fc = ex.fill_ctx
+    fc.register("O1", {"label": "TDX买入"})
+    assert fc.peek("O1") == {"label": "TDX买入"}
+    assert fc.peek("O1") == {"label": "TDX买入"}   # 读不删
+    fc.discard("O1")
+    assert fc.peek("O1") is None
+    fc.discard("O1")                                # 幂等
 
 
 # ═══════════════════════════════════════════════════════════════

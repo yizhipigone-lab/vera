@@ -437,7 +437,7 @@ def test_rotation_order_records_decision(tmp_path):
     _, sells = _orders_by(app)
     assert sells, "应有一笔卖出黄金"
     oid = sells[0]["order_id"]
-    detail = (app.executor.peek_fill_context(oid) or {}).get("detail", "")
+    detail = (app.executor.fill_ctx.peek(oid) or {}).get("detail", "")
     assert "ETF轮动卖出" in detail and "动量择腿" in detail
 
 

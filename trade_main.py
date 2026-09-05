@@ -309,10 +309,10 @@ class TradeApp:
             # 2026-07-31: 回调丢失走补记时同样读 fill ctx 落成交原因 +
             # 飞书通知。peek 不删 (部成多笔共享原因), 终态由
             # on_order_terminal 回收 (lambda 延迟取 self.executor —— 构造序在后)
-            pop_fill_context=lambda oid: self.executor.peek_fill_context(oid) or {},
+            pop_fill_context=lambda oid: self.executor.fill_ctx.peek(oid) or {},
             reason_from_ctx=_reason_from_ctx,
             on_adopted_trade=self._on_adopted_trade,
-            on_order_terminal=lambda oid: self.executor.discard_fill_context(oid),
+            on_order_terminal=lambda oid: self.executor.fill_ctx.discard(oid),
         )
         self.executor = Executor(
             self.gateway, self.book, self.store, self.risk, config,
@@ -679,7 +679,7 @@ class TradeApp:
         # peek 不删 —— 部成多笔共享同一份原因, 订单终态才由
         # _on_order/_sync_orders 回收; 组装一次供 save_trade 和
         # _notify_fill 共用 —— 必须在 save_trade 前取。
-        ctx = self.executor.peek_fill_context(rec["order_id"]) or {}
+        ctx = self.executor.fill_ctx.peek(rec["order_id"]) or {}
         rec["reason"] = _reason_from_ctx(ctx)
         # 2026-08-07: 卖出成交落盈亏金额 (盘后日报 realized_pnl/sell_details
         # 数据源, book 成本法, 与 _notify_fill 同口径)。买入不塞 (默认 0)。
@@ -715,7 +715,7 @@ class TradeApp:
         # 回收 fill ctx (peek 语义的配套; 回调全丢时由 _sync_orders 兜底)
         order = self.book.snapshot()["orders"].get(rec["order_id"])
         if order is not None and order.status in TERMINAL_STATUSES:
-            self.executor.discard_fill_context(rec["order_id"])
+            self.executor.fill_ctx.discard(rec["order_id"])
 
     def _notify_fill(self, rec: dict, ctx: dict,
                     avg_cost: float | None = None) -> None:
@@ -1096,7 +1096,7 @@ class TradeApp:
         remark = self.executor.next_remark("B")
         order_id = self.gateway.order(code, DIRECTION_BUY, float(price), qty,
                                       PRICE_TYPE_LIMIT, remark)
-        self.executor.register_fill_context(order_id, {"label": "人工买入"})
+        self.executor.fill_ctx.register(order_id, {"label": "人工买入"})
         self.store.write_audit(
             "manual_buy", f"人工买入 {code} {qty}@{price}",
             {"code": code, "qty": qty, "price": price, "order_id": order_id})

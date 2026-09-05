@@ -151,6 +151,34 @@ class ClearLock:
             self._by_order.pop(cur["order_id"], None)
 
 
+class FillContext:
+    """成交通知上下文存储 (治理III W4-b 自 Executor 三件套收编)。
+
+    order_id -> {label, tier, sell_ratio, detail...}: 下单时 register,
+    成交回报 (部成多笔共享) 由消费方 peek 读取, 订单终态 discard。
+    独立小对象 → Executor 公开方法预算释放, 语义与撤单流水线无关。
+    单写者线程 (消费者线程) 访问, 无需锁; 满容量丢最老一条。
+    """
+
+    _CAP = 1000
+
+    def __init__(self):
+        self._ctx: dict[str, dict] = {}
+
+    def register(self, order_id: str, ctx: dict) -> None:
+        if order_id not in self._ctx and len(self._ctx) >= self._CAP:
+            self._ctx.pop(next(iter(self._ctx)))
+        self._ctx[order_id] = ctx
+
+    def peek(self, order_id: str) -> dict | None:
+        """读取不删 —— 2026-07-31: 同一订单的部成多笔共享同一份原因
+        (金逸影视 1300 股拆 6 笔成交, 只有首笔有原因), 清理责任在订单终态。"""
+        return self._ctx.get(order_id)
+
+    def discard(self, order_id: str) -> None:
+        self._ctx.pop(order_id, None)
+
+
 class Executor:
     """卖出执行。只有消费者线程调用, 无并发设计。"""
 
@@ -192,8 +220,9 @@ class Executor:
         # 直连卖单, 只借用 in_flight 暴露槽, 不进 _pending 操作链
         # (避免被 pending_check 追价/逃生误触发双卖)
         self._external_sells: dict[str, dict] = {}  # code -> {order_id, qty}
-        # 成交通知上下文: order_id -> {label, tier, sell_ratio...}, 下单记成交取
-        self._fill_context: dict[str, dict] = {}
+        # 成交通知上下文独立小对象 (治理III W4-b): 收走 register/peek/
+        # discard 三件套, 释放 Executor 公开方法预算; 上下文与撤单流水线无关
+        self.fill_ctx = FillContext()
         # 审计M1修复: remark 序号进程生命周期单调递增, 不再按日/调用方
         # 重置 —— 重置会让预埋/卖出/人工买入同日出重号, "盘后按 remark
         # 对账"的唯一性前提就破了。mmdd 前缀仍保留 (人读友好)。
@@ -291,7 +320,7 @@ class Executor:
                 remaining -= qty
                 order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
                                           PRICE_TYPE_LIMIT, remark)
-                self.register_fill_context(order_id, {
+                self.fill_ctx.register(order_id, {
                     "label": "阶梯止盈", "tier": tier,
                     "profit": profit, "sell_ratio": ratio,
                     # 2026-07-31: 自然语言成交原因 (成交记录页全文展示)
@@ -517,30 +546,6 @@ class Executor:
         return {code: p["qty"] for code, p in
                 {**self._pending, **self._external_sells}.items()}
 
-    # ── 成交通知上下文 (下单记, 成交取) ───────────────────────────
-
-    _FILL_CONTEXT_CAP = 1000
-
-    def register_fill_context(self, order_id: str, ctx: dict) -> None:
-        """下单时记下这笔单的通知上下文 (策略名/档位/比例), 成交回报
-        来时由 _on_trade 取回拼飞书消息。order_id 是稳定键 (券商单号);
-        限容量防预埋单场景无界增长, 满则丢最老一条 (其通知回退兜底文案,
-        不影响交易)。"""
-        if (order_id not in self._fill_context
-                and len(self._fill_context) >= self._FILL_CONTEXT_CAP):
-            self._fill_context.pop(next(iter(self._fill_context)))
-        self._fill_context[order_id] = ctx
-
-    def peek_fill_context(self, order_id: str) -> dict | None:
-        """成交回报读取 (不删)。2026-07-31: 同一订单的部成多笔共享同一份
-        原因 (金逸影视 1300 股拆 6 笔成交, 只有首笔有原因、看起来像
-        "只买到 100 股"); 清理责任在订单终态 (discard) 与容量上限。"""
-        return self._fill_context.get(order_id)
-
-    def discard_fill_context(self, order_id: str) -> None:
-        """订单终态 (委托回报/状态同步) 时清理 ctx。"""
-        self._fill_context.pop(order_id, None)
-
     # ── 内部 ────────────────────────────────────────────────────
 
     def _sell(self, code: str, qty: int, price: float, price_type,
@@ -557,7 +562,7 @@ class Executor:
         remark = self.next_remark("X")
         order_id = self._gw.order(code, DIRECTION_SELL, price, qty,
                                   price_type, remark)
-        self.register_fill_context(order_id, {
+        self.fill_ctx.register(order_id, {
             "label": _label_from_reason(reason),
             "detail": _detail_from_reason(reason)})
         self._book.apply_order_update(

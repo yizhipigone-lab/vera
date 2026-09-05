@@ -315,7 +315,7 @@ class AutoBuyFeature:
             remark = self._executor.next_remark("B")
             order_id = self._gateway.order(
                 code, DIRECTION_BUY, order_price, qty, order_type, remark)
-            self._executor.register_fill_context(order_id, {"label": "TDX买入"})
+            self._executor.fill_ctx.register(order_id, {"label": "TDX买入"})
             # P0-6: apply_order_update 和 save_order 用实际委托价 order_price,
             # 非参考价 price —— 收盘竞价挂涨停/笼子上限时两者不同,
             # 原用 price 导致页面"成交价>委托价"矛盾记录

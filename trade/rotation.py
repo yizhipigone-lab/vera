@@ -693,8 +693,8 @@ class RotationFeature:
         order_id = self._gateway.order(code, direction, price, qty,
                                        PRICE_TYPE_LIMIT, remark)
         label = "ETF轮动买入" if direction == DIRECTION_BUY else "ETF轮动卖出"
-        self._executor.register_fill_context(order_id, {"label": label,
-                                                        "detail": f"{label}: {decision}"})
+        self._executor.fill_ctx.register(order_id, {"label": label,
+                                                     "detail": f"{label}: {decision}"})
         self._book.apply_order_update(
             order_id, OS_REPORTED, code=code, direction=direction,
             price=price, qty=qty, remark=remark)
