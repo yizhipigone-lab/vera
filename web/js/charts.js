@@ -328,8 +328,6 @@ export function renderTradeTable(trades, allTradesCount) {
     const cls = pnl > 0 ? 'td-up' : pnl < 0 ? 'td-down' : '';
     const eDate = esc(String(t.entry_date || '').slice(0, 10));
     const xDate = esc(String(t.exit_date || '').slice(0, 10));
-    const name = esc(t.stock_name || t.stock_code || '');
-    const code = esc(t.stock_code || '');
     const shares = t.shares || 0;
     const ep = t.entry_price || 0;
     const xp = t.exit_price || 0;
@@ -725,6 +723,14 @@ export function renderAllCharts(data) {
     });
   } else {
     document.getElementById('tradeFiltered').textContent = '显示 0 / 0 笔';
+  }
+
+  // Run config summary (回测口径: 初始资金/周期/买入价/公式/股票池/复权)
+  if (data.run_config_summary) {
+    document.getElementById('runConfigBox').style.display = '';
+    document.getElementById('runConfigContent').textContent = data.run_config_summary;
+  } else {
+    document.getElementById('runConfigBox').style.display = 'none';
   }
 
   // Stop config summary

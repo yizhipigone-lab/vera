@@ -399,7 +399,12 @@ function loadLabHistory() { fetchLabHistory().then(d => { const box = document.g
 
 function viewLabReport(formula) { fetchLabReport(formula).then(d => { if (!d.success) { showToast(d.error||'无报告', 'error'); return; }
     document.getElementById('labReportCard').style.display = ''; document.getElementById('labReportTitle').textContent = '体检报告: '+d.file;
-    document.getElementById('labReportBody').textContent = d.markdown; document.getElementById('labReportCard').scrollIntoView({ behavior: 'smooth' }); }); }
+    const body = document.getElementById('labReportBody');
+    // 2026-08-19: markdown 渲染 (同 brain_chat 姿势), DOMPurify 消毒防注入; marked 缺载时退回转义文本
+    body.innerHTML = (window.marked && window.DOMPurify)
+      ? DOMPurify.sanitize(marked.parse(d.markdown))
+      : '<pre>'+esc(d.markdown)+'</pre>';
+    document.getElementById('labReportCard').scrollIntoView({ behavior: 'smooth' }); }); }
 
 document.getElementById('labTag').addEventListener('change', e => { document.getElementById('labCustomDates').style.display = e.target.value==='custom'?'flex':'none'; });
 

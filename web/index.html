@@ -387,7 +387,27 @@ input:focus-visible,select:focus-visible{outline:none}
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
   .reveal{animation:none!important}
 }
+/* ===== 研究页: 对话大脑全页化 (2026-09-05) =====
+   研究页仅此一块内容: 去卡片边框/折叠, 消息区撑满整页 (顶栏 41px 之下全归它)。 */
+#pageResearch.active{display:flex;flex-direction:column;padding:0;overflow:hidden}
+#foldBrain{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;margin:0}
+.brain-topbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--border);flex:0 0 auto}
+.brain-title{font-size:15px;font-weight:700;color:var(--text);white-space:nowrap;letter-spacing:.3px;cursor:help}
+#brainConvBar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:0}
+.brain-msgs{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px;font-size:14px}
+.brain-status-row{flex:0 0 auto;padding:6px 14px 12px;border-top:1px solid var(--border);background:var(--card)}
+#brainStatus{font-size:12px;color:var(--text2);min-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brain-inputrow{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.brain-inputrow #brainInput{flex:1 1 auto;min-width:220px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:14px}
+.brain-deep{font-size:12px;color:var(--text2);display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer;user-select:none}
+.brain-mode-hint{font-size:12px;color:var(--text2);line-height:1.6;padding:2px 2px 6px;font-style:normal}
+.brain-mode-hint b{color:var(--accent);font-weight:600}
+.brain-inputrow #brainSendBtn{padding:8px 20px}
+.brain-inputrow #brainStopBtn{padding:8px 12px;font-size:11px}
+.brain-inputrow #brainResetBtn{padding:8px 12px;font-size:11px}
 </style>
+<link rel="stylesheet" href="/web/css/polish.css">
+<link rel="stylesheet" href="/web/css/brain-md.css?v=20260902a">
 </head>
 <body>
 <!-- ===== 页签栏 (2026-07-20): 回测 / 公式体检 ===== -->
@@ -782,6 +802,12 @@ input:focus-visible,select:focus-visible{outline:none}
       </div>
     </div>
 
+    <!-- 回测口径摘要 (初始资金/周期/买入价/公式/股票池/复权) -->
+    <div class="chart-box full" id="runConfigBox" style="display:none">
+      <div class="chart-box-header">回测口径</div>
+      <div class="summary-box" id="runConfigContent"></div>
+    </div>
+
     <!-- 止损配置摘要 -->
     <div class="chart-box full" id="summaryBox" style="display:none">
       <div class="chart-box-header">止损止盈配置</div>
@@ -993,39 +1019,30 @@ input:focus-visible,select:focus-visible{outline:none}
 </div>
 
 <div id="pageResearch">
-    <!-- ===== 对话大脑 (P3, 2026-07-28): 多会话, 松耦合独立卡片(可折叠,默认折叠), 卸载删此卡片+brain_chat.js ===== -->
-    <details id="foldBrain" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
-      <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">对话大脑
-        <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">自然语言问政策/持仓/图谱(每次 20-150 秒),多会话可并行,纯研究不调仓</span>
-      </summary>
-      <div style="padding:0 18px 16px">
-      <div id="brainConvBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-      <div id="brainMessages" style="height:calc(100vh - 320px);min-height:320px;overflow-y:auto;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);margin-bottom:10px;font-size:14px"></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input id="brainInput" placeholder="问点什么, 如: 当前持仓哪些在 AVOID 档?" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px">
-        <button id="brainSendBtn" class="btn btn-primary" style="padding:8px 16px">发送</button>
-        <button id="brainResetBtn" class="btn" style="padding:8px 12px;font-size:11px" title="清空本会话记忆,重开">重开</button>
+    <!-- 对话大脑 (2026-09-05 全页化): 研究页仅此一块, 去卡片/折叠, 占满整页
+         卸载删此块 + web/js/brain_chat.js + server.py 路由 -->
+    <div id="foldBrain" class="brain-ws">
+      <div class="brain-topbar">
+        <span class="brain-title" title="自然语言问政策/持仓/图谱; 三档: ⚡快速(1-3s秒回) / 标准(深度agent可读写项目代码) / 🧠深度思考(DSH独立进程, 全量留档); 纯研究不调仓">对话大脑</span>
+        <div id="brainConvBar"></div>
       </div>
-      <div id="brainStatus" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
+      <div id="brainMessages" class="brain-msgs"></div>
+      <div class="brain-status-row">
+        <div id="brainStatus"></div>
+        <div id="brainModeHint" class="brain-mode-hint" aria-live="polite"></div>
+        <div class="brain-inputrow">
+          <input id="brainInput" placeholder="问点什么, 如: 当前持仓哪些在 AVOID 档?">
+          <span class="brain-deep" style="gap:10px">
+            <label class="brain-deep" title="⚡快速: DeepSeek 直答 1-3 秒, 不套深度智能体; 只答知识/轻问题, 问个股/大盘请切标准或深度"><input type="radio" name="brainMode" value="fast" checked>⚡快速</label>
+            <label class="brain-deep" title="标准大脑 (claude CLI): 深度 agent, 会动手读写项目代码, 慢"><input type="radio" name="brainMode" value="standard">标准</label>
+            <label class="brain-deep" title="🧠深度思考 (DSH, deepseek-v4-flash): 独立进程, 会自己写代码/读文件/联网; 工作目录=项目根可读写代码; 每问全量留档"><input type="radio" name="brainMode" value="deep">🧠深度思考</label>
+          </span>
+          <button id="brainSendBtn" class="btn btn-primary">发送</button>
+          <button id="brainStopBtn" class="btn" style="display:none" title="终止本次深度思考 (杀进程)">停止</button>
+          <button id="brainResetBtn" class="btn" title="清空本会话记忆,重开">重开</button>
+        </div>
       </div>
-    </details>
-
-    <!-- 政策影响查询卡片 (可折叠, 默认折叠; 展开状态存 localStorage)
-         2026-07-31: 移到对话大脑下方 (用户要求) -->
-    <details id="foldPolicy" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;box-shadow:var(--shadow-sm)">
-      <summary style="cursor:pointer;padding:14px 18px;font-size:14px;font-weight:600;color:var(--text);user-select:none">政策影响查询
-        <span style="font-size:11px;font-weight:400;color:var(--text2);margin-left:8px">输入股票代码,看它的行业受哪些政策影响(方向/力度/原文证据)</span>
-      </summary>
-      <div style="padding:0 18px 16px">
-      <p style="margin:0 0 12px;font-size:11px;color:var(--text2)">数据来自政策流水线 P1 (DeepSeek 抽取 + 入 AFFECTS 边)</p>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input id="researchStockInput" placeholder="代码 如 300750.SZ" style="width:180px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px">
-        <button id="researchStockBtn" class="btn btn-primary" style="padding:7px 16px">查询</button>
-        <span class="hint">例: 300750 宁德 / 688981 中芯 / 600519 茅台</span>
-      </div>
-      <div id="researchPolicyResult" style="margin-top:14px;font-size:12px;color:var(--text2)">输入代码点查询 (政策库现有: 新能源汽车/AI/集成电路 三条种子政策)</div>
-      </div>
-    </details>
+    </div>
   </div>
 
 <div id="pageTrade">
@@ -1061,7 +1078,7 @@ input:focus-visible,select:focus-visible{outline:none}
 
   <div class="lab-card">
     <details id="tdSettings">
-      <summary class="tds-summary">设置 (止盈止损 / 风控 / 仓位 / 监控) — 保存即热生效</summary>
+      <summary class="tds-summary">设置面板 — 管七类事: 什么时候自动卖 (止盈止损), 风控与仓位上限, 监控灵敏度, 尾盘自动选股买入, ETF 轮动, 弱市择时, 飞书通知; 改完点最下面的保存, 马上生效不用重启</summary>
       <div style="margin-top:10px">
         <div class="tds-sec" style="border-top:none;margin-top:0">
           <div class="tds-sec-title">止盈止损 (结构与回测 stop_loss 同形)</div>
@@ -1143,11 +1160,11 @@ input:focus-visible,select:focus-visible{outline:none}
         <div class="tds-sec">
           <div class="tds-sec-title">ETF 轮动系统 (双池资金分配)</div>
           <div style="color:var(--text2);font-size:11px;line-height:1.7;margin-bottom:4px">
-            把账户分成两个池子：ETF 池（两只风险腿 + 避险篮子）和股票池（现有选股系统）。
+            把账户分成两个池子：ETF 池（两只主ETF + 避险篮子）和股票池（现有选股系统）。
             比例是「上限」不是「强制目标」，卖出回笼的钱自动流向低配的一边，不主动卖来凑比例。<br>
-            信号：两只风险腿各算 4 周动量（谁涨跟谁），动量最高且 &gt;0 的腿满仓；两只都不涨 → 满仓避险篮子（默认单黄金，即"空仓买黄金"）。<br>
-            每周最后一个交易日算信号、次日尾盘执行；持仓期每日「移动止损」（从持仓期最高价回撤超阈值就切避险）。<br>
-            避险腿可配两只（黄金 + 避险ETF2），下方滑条调黄金占比（留空避险ETF2 = 单黄金）。
+            信号：两只主ETF 各算 4 周动量（谁涨跟谁），动量最高且 &gt;0 的满仓；两只都不涨 → 满仓避险篮子（默认单黄金，即"空仓买黄金"）。<br>
+            每周信号日（下方可配，节假日自动前移到最后一个交易日）尾盘算信号并当日执行；其余交易日只做「移动止损」检查（从持仓期最高价回撤超阈值就当日切避险）。<br>
+            避险篮子可配两只（避险ETF①黄金 + 避险ETF2），下方滑条调黄金占比（留空避险ETF2 = 只用黄金）。
           </div>
           <div class="tds-row"><input type="checkbox" id="tdsRotEn"><label for="tdsRotEn">启用轮动系统</label>
             <span class="hint">(启用时选股系统买入被股票池预算封顶)</span></div>
@@ -1157,27 +1174,30 @@ input:focus-visible,select:focus-visible{outline:none}
             <span id="tdsRotRatioLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
           </div>
           <div class="tds-row"><label>执行时点</label>
-            <input type="text" id="tdsRotTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="09:30">
-            <span class="hint">(HH:MM, 每日止损检查 + 信号次日执行)</span></div>
-          <div class="tds-row"><label>第二风险腿</label>
-            <input type="text" id="tdsRotRisk2" class="lab-input" style="width:110px;font-family:var(--mono)" placeholder="513100.SH">
-            <label style="min-width:0">创业板ETF</label>
+            <input type="text" id="tdsRotTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="14:54">
+            <span class="hint">(HH:MM, 每个交易日此时触发: 信号日=算动量换腿/切避险, 平日=移动止损检查)</span></div>
+          <div class="tds-row"><label>主ETF ①</label>
             <input type="text" id="tdsRotCyb" class="lab-input" style="width:110px;font-family:var(--mono)">
-            <label style="min-width:0">黄金ETF</label>
-            <input type="text" id="tdsRotGold" class="lab-input" style="width:110px;font-family:var(--mono)"></div>
-          <div class="tds-row"><label>避险ETF2</label>
-            <input type="text" id="tdsRotHedge2" class="lab-input" style="width:110px;font-family:var(--mono)" placeholder="留空=单黄金">
-            <label style="min-width:0">动量窗口</label>
-            <input type="number" id="tdsRotMomWin" step="1" min="2" style="width:70px"> 交易日</div>
+            <span class="hint">(创业板50ETF)</span>
+            <label style="min-width:0">主ETF ②</label>
+            <input type="text" id="tdsRotRisk2" class="lab-input" style="width:110px;font-family:var(--mono)" placeholder="513100.SH">
+            <span class="hint">(纳指ETF, 留空=单腿)</span></div>
+          <div class="tds-row"><label>避险ETF①（黄金）</label>
+            <input type="text" id="tdsRotGold" class="lab-input" style="width:110px;font-family:var(--mono)">
+            <label style="min-width:0">避险ETF2</label>
+            <input type="text" id="tdsRotHedge2" class="lab-input" style="width:110px;font-family:var(--mono)" placeholder="留空=只用黄金"></div>
+          <div class="tds-row">
+            <label>避险篮子黄金占比</label>
+            <input type="range" id="tdsRotHedge" min="0" max="100" step="5" value="100" style="width:180px">
+            <span id="tdsRotHedgeLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
+          </div>
+          <div class="tds-row"><label>动量窗口</label>
+            <input type="number" id="tdsRotMomWin" step="1" min="2" style="width:70px"> 交易日
+            <span class="hint">(20=4周, 两只主ETF 各算这么久以来的涨幅, 谁涨跟谁)</span></div>
           <div class="tds-row">
             <label>移动止损</label>
             <input type="range" id="tdsRotTrail" min="5" max="50" step="1" style="width:180px">
             <span id="tdsRotTrailLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
-          </div>
-          <div class="tds-row">
-            <label>避险腿黄金占比</label>
-            <input type="range" id="tdsRotHedge" min="0" max="100" step="5" value="100" style="width:180px">
-            <span id="tdsRotHedgeLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
           </div>
           <div class="tds-row"><label>信号日</label>
             <select id="tdsRotSignalDay" class="lab-input" style="font-family:var(--mono)">
@@ -1185,12 +1205,12 @@ input:focus-visible,select:focus-visible{outline:none}
               <option value="wednesday">周三</option><option value="thursday">周四</option>
               <option value="friday">周五</option>
             </select>
-            <span class="hint">(每周最后一个交易日算信号, 次日尾盘执行)</span></div>
+            <span class="hint">(每周此日算信号, 遇节假日前移到最后一个交易日, 当日尾盘执行)</span></div>
         </div>
         <div class="tds-sec">
           <div class="tds-sec-title">弱市择时闸门 (指数跌破年线当日不买)</div>
           <div class="tds-row"><input type="checkbox" id="tdsRfEn"><label for="tdsRfEn">启用弱市择时</label>
-            <span class="hint">(创业板指跌破年线时尾盘不买新仓, 已持仓照常管理)</span></div>
+            <span class="hint">(创业板指跌破年线时尾盘不买新仓, 已持仓照常管理; 仅对股票池生效, ETF 轮动自行管理)</span></div>
           <div class="tds-row"><label>指数</label>
             <input type="text" id="tdsRfIndex" class="lab-input" style="width:110px;font-family:var(--mono)">
             <label style="min-width:0">均线窗口</label>
@@ -1204,7 +1224,7 @@ input:focus-visible,select:focus-visible{outline:none}
         </div>
         <div class="tds-sec" style="display:flex;gap:10px;align-items:center">
           <button class="btn btn-primary" id="tdsSaveBtn">保存设置</button>
-          <span class="trade-hint" id="tdsHint">保存后立即热生效 (账号/路径类字段不在面板内, 改它们请编辑 yaml 重启)</span>
+          <span class="trade-hint" id="tdsHint">点保存后, 面板里的这些设置马上生效, 不用重启交易程序; 但券商账号、文件路径这类底层配置没有放进这个面板, 要改它们需要直接编辑 config/trade.yaml 文件, 改完重启 trade_main 才算数</span>
         </div>
       </div>
     </details>
@@ -1214,7 +1234,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <h3>尾盘自动选股 <span style="font-weight:400;font-size:11px;color:var(--text2)" id="tdAbCfg">—</span></h3>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-primary" id="tdAbRunBtn">立即执行一次</button>
-      <span class="trade-hint" id="tdAbHint">选股在工作线程跑 (约 1 分钟), 不阻塞交易; 今日买入 T+1, 明日 9:15 自动纳入预埋与监控</span>
+      <span class="trade-hint" id="tdAbHint">点「立即执行一次」会马上按设置里的公式跑一遍选股并自动下单买入, 选股大约要 1 分钟, 在后台线程跑, 不会卡住正常交易下单; 平时不用手点, 在设置里启用后每个交易日尾盘 (默认 14:52, 时点可调) 会自动跑一轮。今天买进的股票按 A 股 T+1 规则当天卖不了, 下一个交易日早上 9:15 系统会自动把它们纳入预埋单和盘中监控管理</span>
     </div>
     <div id="tdAbLast" style="margin-top:8px"><div style="color:var(--text2);font-size:12px">今日尚未运行</div></div>
   </div>
@@ -1223,15 +1243,15 @@ input:focus-visible,select:focus-visible{outline:none}
     <h3>ETF 轮动系统 <span style="font-weight:400;font-size:11px;color:var(--text2)" id="tdRotCfg">—</span></h3>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-primary" id="tdRotRunBtn">立即算信号+调仓</button>
-      <span class="trade-hint" id="tdRotHint">每日 09:30 自动算信号并调仓; 盘中点=立即调仓, 收盘后点=预览今日信号</span>
+      <span class="trade-hint" id="tdRotHint">每个交易日下午 14:54 临收盘时, 系统会自动算一次信号并照着调仓: 每周信号日 (默认周五) 会重新比较两只主 ETF 最近四周谁的涨幅更猛, 拿动量最高且还在涨的那只, 两只都不涨就整体切到避险篮子 (默认黄金); 其余交易日不重新选腿, 只把仓位朝当前目标补齐。无论哪天, 都会做一遍移动止损检查——看持仓从持有以来的最高价往回撤的幅度有没有超过止损线, 超过了就当天切到避险篮子。盘中点这个按钮等于立刻手动跑一轮同样的流程, 会真实下单; 收盘后再点, 只是用当天收盘价把信号演算一遍显示在卡片上预览, 不会真实买卖, 也不会改动系统记着的当前目标 (时点/信号日/动量窗口可在设置面板调)。</span>
     </div>
     <div id="tdRotLast" style="margin-top:8px"><div style="color:var(--text2);font-size:12px">尚未运行</div></div>
   </div>
 
   <div class="lab-card">
-    <h3>人工买入 (过风控闸门, 卖出走监控/预埋自动链路)</h3>
+    <h3>人工买入 (支持个股/ETF, 过风控闸门; 个股卖出走监控/预埋自动链路, ETF 不纳入自动管理需人工盯盘)</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <input class="lab-input" id="tdBuyCode" placeholder="代码 如 600519.SH" style="width:160px">
+      <input class="lab-input" id="tdBuyCode" placeholder="代码 如 600519 / 518880 (自动补后缀)" style="width:200px">
       <input class="lab-input" id="tdBuyQty" placeholder="数量 (100整数倍)" style="width:130px" type="number" step="100" min="100">
       <input class="lab-input" id="tdBuyPrice" placeholder="限价 (留空=最新价)" style="width:140px" type="number" step="0.01">
       <button class="btn btn-primary" id="tdBuyBtn">买入</button>
@@ -1352,10 +1372,10 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/recover.js"></script>
 <script src="/web/js/stock_link.js?v=20260826a"></script>
 <script src="/web/js/trade.js?v=20260826a"></script>
-<script src="/web/js/research.js?v=20260728a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
-<script src="/web/js/brain_chat.js?v=20260731a"></script>
+<script src="/web/js/brain_viz.js?v=20260902a"></script>
+<script src="/web/js/brain_chat.js?v=20260905a"></script>
 <script src="/web/js/data_cache.js?v=20260814b"></script>
 <script type="module" src="/web/js/analysis.js?v=20260904c"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260814c"></script>

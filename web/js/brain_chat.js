@@ -2,7 +2,10 @@
  *
  * 多会话 (每条独立 channel, 上下文隔离可并行) + 直接等待 (转圈+耗时)
  * + marked/DOMPurify 渲染大脑 markdown 回答。
- * 松耦合: 本文件挂了不影响 research.js / 其他页; 卸载 = 删本文件 +
+ * 富呈现 (2026-09-02): 完成态回答优先走 window.BrainViz (brain_viz.js:
+ * ```chart 图表块→echarts 交互图 + 事实徽章 + 反证卡 + 涨跌上色, 样式 brain-md.css);
+ * BrainViz 缺失/流式中自动回退本文件原有 marked 路径 (松耦合)。
+ * 松耦合: 本文件挂了不影响其他页; 卸载 = 删本文件 +
  * index.html 卡片 + server.py 两条路由。
  * 刷新页面: 消息存 localStorage 不丢; 服务端 session 记忆还在 (可追问上文)。
  */
@@ -95,29 +98,37 @@
     }
     var badge = m.lowConf ? ' <span style="padding:1px 6px;border-radius:4px;font-size:10px;background:var(--pending);color:#fff">低置信</span>' : '';
     var body;
-    try {
-      body = (window.marked && window.DOMPurify)
-        ? DOMPurify.sanitize(marked.parse(m.text))
-        : '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
-    } catch (e) {
-      body = '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
+    if (window.BrainViz && !m.streaming) {
+      // 富呈现: 图表块/徽章/反证卡/涨跌上色 (brain_viz.js; 缺它就走下面旧路径)
+      body = window.BrainViz.renderBody(m.text);
+    } else {
+      try {
+        body = (window.marked && window.DOMPurify)
+          ? DOMPurify.sanitize(marked.parse(m.text))
+          : '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
+      } catch (e) {
+        body = '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
+      }
     }
     var warn = (m.warnings && m.warnings.length)
       ? '<div style="font-size:12px;color:var(--text2);margin-top:4px">⚠ ' + m.warnings.map(esc).join('；') + '</div>' : '';
     return '<div style="display:flex;justify-content:flex-start;margin:6px 0">' +
       '<div style="max-width:100%;width:100%;padding:10px 14px;border-radius:10px;background:var(--card);border:1px solid var(--border);color:var(--text);word-break:break-word" class="brain-md">' +
-      '<div style="font-size:12px;color:var(--text2);margin-bottom:4px">大脑' + badge + '</div>' +
+      '<div style="font-size:12px;color:var(--text2);margin-bottom:4px">' + _modeBadge(m.via) + badge + '</div>' +
       body + warn + '</div></div>';
   }
 
   function renderMessages() {
     var box = $('brainMessages');
     var msgs = loadMsgs(activeId);
+    if (window.BrainViz) window.BrainViz.disposeAll();   // innerHTML 清空前释放 echarts 实例
     if (!msgs.length) {
       box.innerHTML = '<div style="color:var(--text2);padding:8px">新会话。问点政策/持仓/图谱相关的, 如 "当前持仓哪些在 AVOID 档?"</div>';
       return;
     }
+    if (window.BrainViz) window.BrainViz.beginRender();  // 重置本轮图表 spec 收集
     box.innerHTML = msgs.map(bubbleHtml).join('');
+    if (window.BrainViz) window.BrainViz.mountAll(box);  // 表格包裹/涨跌上色/挂载交互图
     box.scrollTop = box.scrollHeight;
   }
 
@@ -136,6 +147,8 @@
     }
     $('brainSendBtn').disabled = !!p;
     $('brainInput').disabled = !!p;
+    var stopBtn = $('brainStopBtn');
+    if (stopBtn) stopBtn.style.display = (p && p.runId) ? '' : 'none';
   }
 
   function renderAll() { renderConvBar(); renderMessages(); renderStatus(); }
@@ -152,29 +165,68 @@
     renderStatus();
   }
 
+  function _mode() {
+    /* 三态档位 (2026-09-05): fast=⚡快速 / standard=标准 / deep=🧠深度思考 */
+    var el = document.querySelector('input[name="brainMode"]:checked');
+    var m = el ? el.value : 'fast';
+    return (m === 'standard' || m === 'deep') ? m : 'fast';
+  }
+
+  /* 档位大白话注释 (2026-09-05): 随所选档位实时切换, 不悬停也看得懂。
+     brainModeHint 容器在 index.html 研究页, 缺失则静默跳过 (松耦合)。 */
+  var _MODE_HINTS = {
+    fast: '⚡快速: 1~3秒秒回, 只答知识/概念类轻问题 (像随口问一句), 不查你的数据、不碰代码。问个股/大盘要看数字的, 请切下面两档。',
+    standard: '标准: 正经深度回答。它会自己动手查你的数据、翻项目代码再答, 需要十几秒到几分钟。',
+    deep: '🧠深度思考: 最难、要动手的事交给它。独立进程, 自己写代码/读文件/联网核实, 能读写 VERA 项目代码, 最慢但最全, 每次自动留档。',
+  };
+  function updateModeHint() {
+    var el = $('brainModeHint');
+    if (!el) return;
+    el.innerHTML = _MODE_HINTS[_mode()] || _MODE_HINTS.fast;
+  }
+
+  function _modeBadge(mode) {
+    if (mode === 'deep') return '大脑 · 🧠深度';
+    if (mode === 'fast') return '大脑 · ⚡快速';
+    return '大脑';
+  }
+
   function send() {
     var input = $('brainInput');
     var q = input.value.trim();
     if (!q || pending[activeId]) return;
+    var mode = _mode();
+    var isDeep = mode === 'deep';
     var convId = activeId;
     var msgs = loadMsgs(convId);
     msgs.push({ role: 'user', text: q });
     var c = activeConv();
     if (c && msgs.length === 1) { c.title = q.slice(0, 10) + (q.length > 10 ? '…' : ''); saveConvs(); }
     // ★v2 SSE: 先 push streaming 占位 (实时更新 text = claude stdout)
-    msgs.push({ role: 'brain', text: '思考中…', lowConf: false, warnings: [], streaming: true });
+    msgs.push({ role: 'brain', text: '思考中…', lowConf: false, warnings: [], streaming: true, via: mode });
     saveMsgs(convId, msgs);
     input.value = '';
     setPending(convId, true);
     renderMessages();
 
+    var bodyObj = { question: q, conv: convId, mode: mode };
+    // fast(直答无会话)/deep(DSH 无会话) 需打包近 10 条带走; standard 走 claude 自身 session 记忆不用打包
+    if (mode !== 'standard') {
+      bodyObj.history = msgs.filter(function (m) { return m.role === 'user' || m.role === 'brain'; })
+        .slice(-11, -1)  // 去掉刚 push 的 streaming 占位
+        .slice(-10)
+        .map(function (m) { return { role: m.role === 'user' ? 'user' : 'assistant', content: m.text }; });
+    }
+
     fetch('/api/research/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q, conv: convId }),
+      body: JSON.stringify(bodyObj),
     }).then(async function (resp) {
       if (!resp.ok) throw new Error('SSE HTTP ' + resp.status);
       var reader = resp.body.getReader();
+      var p3 = pending[convId];
+      if (p3) p3.reader = reader;
       var decoder = new TextDecoder();
       var buf = '';
       var streamText = '';
@@ -188,6 +240,11 @@
           if (!lines[i].startsWith('data: ')) continue;
           try {
             var d = JSON.parse(lines[i].slice(6));
+            if (d.type === 'channel') {
+              var p0 = pending[convId];
+              if (p0) { p0.runId = d.run_id; renderStatus(); }
+              continue;
+            }
             if (d.type === 'line') {
               streamText += d.text + '\n';
               // 更新状态栏：截断防爆，跳过空行
@@ -231,10 +288,10 @@
   }
 
   function _fallbackSend(q, convId) {
-    // SSE 降级: 走旧同步端点
+    // SSE 降级: 走旧同步端点 (带当前档位, fast 后端同样直答)
     fetch('/api/research/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q, conv: convId }),
+      body: JSON.stringify({ question: q, conv: convId, mode: _mode() }),
     })
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -261,10 +318,11 @@
   }
 
   function initFolds() {
-    /* 折叠卡片: 默认折叠, 展开状态存 localStorage (两张卡片通用) */
-    ['foldPolicy', 'foldBrain'].forEach(function (id) {
+    /* 折叠记忆: 仅旧版 <details> 卡片适用 (2026-09-05 研究页全页化后 foldBrain
+       已改普通 div, 不再折叠; 保留此函数兼容其它未来 details 卡片) */
+    ['foldBrain'].forEach(function (id) {
       var el = $(id);
-      if (!el) return;
+      if (!el || el.tagName !== 'DETAILS') return;
       if (localStorage.getItem('brain_fold_' + id) === '1') el.open = true;
       el.addEventListener('toggle', function () {
         localStorage.setItem('brain_fold_' + id, el.open ? '1' : '0');
@@ -279,6 +337,29 @@
     renderAll();
     $('brainSendBtn').addEventListener('click', send);
     $('brainResetBtn').addEventListener('click', resetConv);
+    /* 三档 radio 切换时刷新大白话注释 (无 brainModeHint 容器也无妨, 内部有守卫) */
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="brainMode"]'), function (r) {
+      r.addEventListener('change', updateModeHint);
+    });
+    updateModeHint();
+    var stopBtn = $('brainStopBtn');
+    if (stopBtn) stopBtn.addEventListener('click', function () {
+      var p = pending[activeId];
+      if (!p || !p.runId) return;
+      var m = loadMsgs(activeId);
+      var last = m[m.length - 1];
+      if (last && last.streaming) {
+        last.text = '已停止: 本次深度思考被手动终止。';
+        delete last.streaming;
+        saveMsgs(activeId, m);
+        renderMessages();
+      }
+      fetch('/api/research/chat/stop', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: p.runId }),
+      }).catch(function () { /* 松耦合 */ });
+      if (p.reader) p.reader.cancel().catch(function () {});
+    });
     $('brainInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

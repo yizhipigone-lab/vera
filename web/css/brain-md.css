@@ -1,0 +1,102 @@
+/* brain-md.css — 研究大脑回答排版升级 (2026-09-02, dsh-visualize 式富呈现 L1)
+ *
+ * 作用域: .brain-md (研究 TAB 对话大脑气泡) — 不影响其他页面。
+ * 依赖: index.html :root 的 CSS 变量 (--text/--border/--up/--down/...),
+ *       light/dark 两套主题自动跟随 (data-theme 切换无需本文件参与)。
+ * 配套: web/js/brain_viz.js (chart 图表块/事实徽章/反证卡/涨跌上色 都靠它注入结构)。
+ * 松耦合: 本文件只管大脑气泡观感; 删除即回浏览器默认样式, 大脑功能不受影响。
+ */
+
+/* ── 基础排版 ── */
+.brain-md { line-height: 1.75; font-size: 13.5px; overflow-wrap: break-word; }
+.brain-md h1, .brain-md h2, .brain-md h3, .brain-md h4 {
+  color: var(--text); line-height: 1.4; margin: 14px 0 8px; letter-spacing: -.2px;
+}
+.brain-md h1:first-child, .brain-md h2:first-child, .brain-md h3:first-child { margin-top: 2px; }
+.brain-md h1 { font-size: 17px; }
+.brain-md h2 { font-size: 15px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.brain-md h3 { font-size: 14px; }
+.brain-md h4 { font-size: 13px; color: var(--text2); }
+.brain-md p { margin: 8px 0; }
+.brain-md ul, .brain-md ol { margin: 8px 0; padding-left: 22px; }
+.brain-md li { margin: 4px 0; }
+.brain-md li > strong:first-child { color: var(--text); }
+.brain-md strong { color: var(--text); font-weight: 600; }
+.brain-md a { color: var(--accent2); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+.brain-md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.brain-md img { max-width: 100%; border-radius: 8px; }
+.brain-md blockquote {
+  margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 0 8px 8px 0; color: var(--text);
+}
+.brain-md blockquote p { margin: 4px 0; }
+
+/* ── 代码 ── */
+.brain-md code {
+  font-family: var(--mono); font-size: 12px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  padding: 1px 5px; border-radius: 4px;
+}
+.brain-md pre {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; overflow-x: auto; margin: 10px 0;
+}
+.brain-md pre code { background: none; padding: 0; font-size: 12px; line-height: 1.6; }
+
+/* ── 表格 (brain_viz.js 包一层 .bm-tbl-wrap 提供横向滚动) ── */
+.bm-tbl-wrap { overflow-x: auto; margin: 10px 0; border: 1px solid var(--border); border-radius: 8px; }
+.brain-md table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.brain-md th, .brain-md td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  text-align: left; white-space: nowrap;
+}
+.brain-md th {
+  font-weight: 600; color: var(--text);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  position: sticky; top: 0;
+}
+.brain-md tbody tr:nth-child(even) { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.brain-md tbody tr:last-child td { border-bottom: none; }
+.brain-md .bm-num { text-align: right; font-family: var(--mono); font-size: 12px; }
+
+/* ── 事实/解读/待验证 徽章 (brain_viz.js 注入 span) ── */
+.bm-badge {
+  display: inline-block; padding: 0 7px; margin: 0 2px; border-radius: 4px;
+  font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px;
+}
+.bm-fact  { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 14%, transparent); }
+.bm-view  { color: var(--accent);  background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.bm-todo  { color: var(--warn);    background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.bm-miss  { color: var(--text2);   background: color-mix(in srgb, var(--text2) 12%, transparent); }
+
+/* ── 涨跌上色 (A股习惯: 红涨绿跌, 只对带正负号的百分比) ── */
+.brain-md .bm-up { color: var(--up); font-weight: 600; }
+.brain-md .bm-down { color: var(--down); font-weight: 600; }
+
+/* ── 反证卡 (counter.py 强制的 <counter_evidence> 段 → 独立警示卡) ── */
+.bm-counter {
+  margin-top: 14px; padding: 10px 14px;
+  border: 1px dashed var(--warn); border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  font-size: 13px;
+}
+.bm-counter-head {
+  color: var(--warn); font-weight: 600; font-size: 12px; margin-bottom: 6px;
+  letter-spacing: .5px;
+}
+.bm-counter p { margin: 4px 0; }
+
+/* ── 交互图表卡 (```chart 块 → echarts) ── */
+.bm-chart {
+  margin: 12px 0; border: 1px solid var(--border); border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 2.5%, transparent); overflow: hidden;
+}
+.bm-chart-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px 0;
+}
+.bm-chart-title { font-weight: 600; font-size: 13px; color: var(--text); }
+.bm-chart-src { font-size: 11px; color: var(--text2); }
+.bm-chart-canvas { height: 240px; padding: 4px 6px 6px; }
+.bm-chart-note { height: auto; padding: 10px 14px; font-size: 12px; color: var(--text2); }
