@@ -233,6 +233,32 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-05 — 深模块浅模块治理 III · Wave 4 结构
+
+**计划书**: [docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md](docs/plan/2026-09-05_深模块浅模块治理III_增补计划书.md)
+
+### 关键改动一览
+
+| 主题 | 关键改动 | 影响 |
+|---|---|---|
+| W4-a regime 文档修正 | 声明"回测与实盘共用"不实 (生产唯一调用方 auto_buy); 回测对照走独立研究脚本如实登记 | 双实现假设解除 |
+| W4-b executor FillContext | fill_context 三件套 (register/peek/discard) 收 `FillContext` 小对象 (executor.fill_ctx), 公开方法预算释放; rotation/auto_buy/trade_main/测试改指, 语义零变 | Executor 公开面收窄 |
+| W4-c data_tools 分家 | 市场面 (zt_pool/market_health/market_snapshot) 原样搬 brain/market_panel.py (789→628 行); 私有助手复制标注来源; data_tools 兼容 re-export 旧引用零改动 | 找"市场体检"不再翻 789 行杂物间 |
+| W4-d api.py 分析域拆分 | 5 个 /api/trade/analysis/* 端点抽 `trade/analysis_api.py` (APIRouter), api.py 729→424 行只留交易/持仓/配置; 路径不变, include_router 注入 | 改图不再碰下单代码 |
+| W4-e api.js 补 client | 数据准备/分析 (calendar/benchmark/kline) + 研究对话 (chat/reset/stop) 域 client 增量加入 | 收敛起点 (页面迁移见下) |
+
+### 已知债 / 诚实边界
+
+- **api.js 页面 fetch 全面迁移未做** (只加了 client, 未改页面): web 区 ~5800 行手写 JS、无自动化测试, 批量替换 20+ fetch 调用点在本环境无法 UI 验证 —— 照项目审计纪律 (web 区改动需人工核对), 页面切换列为需 UI QA 的后续任务, 不静默盲改。
+- **TradeStore 续拆 (旧 P2-5) 未做**: 769 行/21 方法按表域再拆子 store 属高风险低即时收益的重构, 已在 08-28 计划标"可选/随后", 建议等真实 store 改动需求出现时同车做。
+- tdx_tq 悬空: 维持"预留"标注, 待市场面下一需求消费 (06 已把体检迁 market_panel, 数据源未切换, 行为不变)。
+
+### 测试
+
+- 全量 `pytest tests/` 绿 (退出码 0); W4 定向覆盖 test_regime/test_executor/test_rotation/test_api/test_analysis/brain 全部绿; 路由冒烟确认 5 个 analysis 端点注册。
+
+---
+
 ## 格式约定
 
 每次重大迭代新增一条顶级条目,包含:

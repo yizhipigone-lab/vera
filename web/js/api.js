@@ -39,3 +39,22 @@ export const stopLabJob = () => post('/api/lab/stop');
 export const fetchLabStatus = () => get('/api/lab/status');
 export const fetchLabHistory = () => get('/api/lab/history');
 export const fetchLabReport = formula => get('/api/lab/report?formula=' + encodeURIComponent(formula));
+
+// ── 数据准备 / 分析 (治理III W4-e 补全, 2026-09-05) ──
+
+export const fetchCalendar = (year = 0, month = 0) =>
+  get('/api/calendar?year=' + year + '&month=' + month);
+export const fetchBenchmarkHistory = () => get('/api/benchmark/history');
+export const fetchStockKline = params => {
+  const qs = Object.entries(params || {}).map(
+    ([k, v]) => k + '=' + encodeURIComponent(String(v))).join('&');
+  return get('/api/stock/kline' + (qs ? '?' + qs : ''));
+};
+
+// ── 研究对话 (研究 TAB; stream 端点走 fetch 流式, 此处给 stop/reset/
+// 标准 chat —— brain_chat.js 迁流式时保留) ──
+
+export const postResearchChat = body => post('/api/research/chat', body);
+export const postResearchChatStream = body => post('/api/research/chat/stream', body);
+export const resetResearchChat = () => post('/api/research/chat/reset');
+export const stopResearchChat = () => post('/api/research/chat/stop');
