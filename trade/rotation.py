@@ -33,17 +33,15 @@ from datetime import datetime
 from trade.book import (
     DIRECTION_BUY,
     DIRECTION_SELL,
-    OS_REPORTED,
-    PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
     round_price_etf,  # 价格档位单一真相源 (治理III W3 自本模块迁入 book.py)
 )
 from scheduler.trading_calendar import next_trading_day
 from trade import pool_money  # 市值口径单一真相源 (治理III W2-1)
 from trade.events import EVENT_ROTATION, Event
+from trade.executor import PlaceRequest  # 唯一下单口请求 (2026-09-05 收口)
 from trade.monitor import is_trading_day_cached, trading_session
 from trade.quote_stale import is_quote_stale
-from trade.risk import OrderIntent
 from trade.shadow import SHADOW_LOG_PATH, run_shadow
 from utils.logger import get_logger
 
@@ -677,35 +675,26 @@ class RotationFeature:
         """过风控 → 下单 → 入账 (book/store) → audit。轮动买入 rotation=True
         绕过单笔金额/持仓数上限; 急停/对账/日亏/T+1 四道闸照常。
         decision = 本次调仓决策原因 (含动量数据), 进 trades.reason 与审计。
-        返回 order_id (None=风控拒)。"""
+        返回 order_id (None=风控拒)。下单七步脊柱走唯一下单口
+        Executor.place_order (计划书 T3); 卖单登记尾巴留在本模块。"""
         price = round_price_etf(price)
-        intent = OrderIntent(code=code, direction=direction, price=price,
-                             qty=qty, rotation=True)
-        ok, why = self._risk.check(intent, self._build_ctx())
-        if not ok:
+        label = "ETF轮动买入" if direction == DIRECTION_BUY else "ETF轮动卖出"
+        order_id, why = self._executor.place_order(PlaceRequest(
+            code=code, direction=direction, price=price, qty=qty,
+            intent_flags={"rotation": True}, remark_prefix="R",
+            fill_payload={"label": label, "detail": f"{label}: {decision}"},
+            audit_kind="rotation_order",
+            audit_message=f"{label} {code} {qty}@{price} ({decision})",
+            audit_extra={"code": code, "qty": qty, "price": price,
+                         "order_id": None, "decision": decision}),
+            risk_ctx=self._build_ctx())
+        if order_id is None:
             self._store.write_audit(
                 "rotation_risk_reject",
                 f"{code} {'买' if direction == DIRECTION_BUY else '卖'}被风控拒: {why}",
                 {"code": code, "qty": qty, "price": price, "reason": why,
                  "decision": decision})
             return None
-        remark = self._executor.next_remark("R")
-        order_id = self._gateway.order(code, direction, price, qty,
-                                       PRICE_TYPE_LIMIT, remark)
-        label = "ETF轮动买入" if direction == DIRECTION_BUY else "ETF轮动卖出"
-        self._executor.fill_ctx.register(order_id, {"label": label,
-                                                     "detail": f"{label}: {decision}"})
-        self._book.apply_order_update(
-            order_id, OS_REPORTED, code=code, direction=direction,
-            price=price, qty=qty, remark=remark)
-        self._store.save_order({
-            "order_id": order_id, "remark": remark, "code": code,
-            "direction": direction, "price": price, "qty": qty,
-            "status": OS_REPORTED, "created_ts": self._clock()})
-        self._store.write_audit(
-            "rotation_order", f"{label} {code} {qty}@{price} ({decision})",
-            {"code": code, "qty": qty, "price": price, "order_id": order_id,
-             "decision": decision})
         if direction == DIRECTION_SELL:
             # 治理III W2-5: 卖单登记借 executor 共享槽 (对账 in_flight 单源读)
             self._executor.register_external_sell(code, order_id, qty)

@@ -675,6 +675,21 @@ def test_rotation_buy_rejected_kill_switch(tmp_path):
     assert row[0] >= 1                             # 拒单留痕
 
 
+def test_rotation_sell_registers_in_flight(tmp_path):
+    """审计 P8 (计划书 T3): 轮动卖单经唯一下单口 place_order 后, 仍登记
+    executor 外部卖单槽 —— in_flight_sells() 单源可见 (对账差异降级用;
+    本文件此前无 register_external_sell/in_flight 直接断言)。"""
+    clock = [_ts("10:00")]
+    app = _start(_app(_cfg(tmp_path), clock, cash=500_000,
+                      positions={CYB: {"volume": 500_000, "can_use": 500_000,
+                                       "avg_cost": 1.0}}))
+    oid = app._rotation._place_order(CYB, DIRECTION_SELL, 1.5, 2000, "测试卖出")
+    assert oid is not None                          # T+1 可卖, 风控放行
+    assert app.executor.in_flight_sells() == {CYB: 2000}
+    # 唯一下单口七步脊柱: 订单簿立即入账
+    assert app.book.snapshot()["orders"][oid].qty == 2000
+
+
 def test_on_signals_error_no_trade(tmp_path):
     """信号失败/数据不足 → 不调仓 (fail-closed 分支, 审计 M5#4)。"""
     clock = [_ts("10:00")]
