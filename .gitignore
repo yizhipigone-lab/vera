@@ -70,3 +70,8 @@ dsh-runtime/*
 dsh-runtime/workspace/*
 !dsh-runtime/workspace/CLAUDE.md
 data/brain_dsh_runs.db
+
+# 临时脚本/暂存区防堆积闸 (治理III W1-a, 2026-09-05) — /_tmp_* 仅根目录锚定,
+# tools/ 下的 PS1 助手 (kill/tun helper) 不受影响; scratch/ 存放有残留价值的临时产物
+/_tmp_*
+scratch/
