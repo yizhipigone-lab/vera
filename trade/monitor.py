@@ -95,6 +95,11 @@ class Monitor:
     """行情缓存 + 健康检测 + 动态规则评估。公开接口:
     on_quote / quote_of / scan_once / pending_check / is_healthy / has_tick (6 个)。"""
 
+    # 审计降噪 (2026-09-05 体检 P2-1): monitor_no_quote/stale_quote 逐轮刷库
+    # (14 天 7070+133 条) 淹没真告警。同 code 同类 15 分钟最多落一条;
+    # 首现立即写, 状态翻转/recover 等不走过道, 真信号不丢。
+    _AUDIT_THROTTLE_SEC = 900.0
+
     def __init__(
         self,
         gateway,
@@ -122,10 +127,27 @@ class Monitor:
         self._triggered: set[str] = set()    # 当日已触发票, 防同票连环触发
         # 审计H2修复: _triggered 的日期戳, scan_once 跨日清空
         self._triggered_date = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        # 审计节流账: kind -> {key: 上次落库时间}
+        self._audit_last: dict[str, dict[str, float]] = {}
 
     def apply(self, cfg) -> None:
         """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
         self._cfg = cfg
+
+    def _write_throttled(self, kind: str, key: str, message: str,
+                         detail: dict | None = None) -> None:
+        """按 (kind, key) 节流写审计: 首现即写, 窗口内同 key 跳过。
+
+        供逐轮刷屏的 monitor_no_quote/monitor_stale_quote 用 —— 持续缺失/
+        陈旧是稳态不是新事件, 每轮都落库只产生噪音; 恢复/触发等真状态
+        翻转走直写不经过这里。"""
+        bucket = self._audit_last.setdefault(kind, {})
+        now = self._clock()
+        last = bucket.get(key)
+        if last is not None and (now - last) < self._AUDIT_THROTTLE_SEC:
+            return
+        bucket[key] = now
+        self._store.write_audit(kind, message, detail or {})
 
     # ── 行情入口 ────────────────────────────────────────────────
 
@@ -266,8 +288,9 @@ class Monitor:
             quote = self._quotes.get(code)
             if not quote or quote["last"] <= 0:
                 # 无价 fail-closed: 本轮跳过+WARN, 绝不按零价/无数据处理
-                self._store.write_audit(
-                    "monitor_no_quote", f"{code} 无行情快照, 本轮跳过",
+                # (节流: 持续无行情是稳态, 同票 15 分钟只落一条, 体检 P2-1)
+                self._write_throttled(
+                    "monitor_no_quote", code, f"{code} 无行情快照, 本轮跳过",
                     {"code": code})
                 continue
             # 审计M6修复: 陈旧快照与无快照同等 fail-closed —— 单票订阅
@@ -283,8 +306,9 @@ class Monitor:
                 else:
                     # tick_ts_missing / no_ts / ts_none 同属"没可信时间戳"
                     msg = f"{code} tick 缺时间戳, 视为陈旧, 本轮跳过"
-                self._store.write_audit(
-                    "monitor_stale_quote", msg,
+                # (节流: 持续陈旧是稳态, 同票 15 分钟只落一条, 体检 P2-1)
+                self._write_throttled(
+                    "monitor_stale_quote", code, msg,
                     {"code": code, "quote_ts": quote.get("ts")})
                 continue
             result = self._evaluate(code, pos.avg_cost, quote, pos.volume)

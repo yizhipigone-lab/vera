@@ -152,6 +152,28 @@ def test_no_quote_fail_closed(store):
     assert rows
 
 
+def test_no_quote_audit_throttled(store):
+    """体检 P2-1: 持续无行情是稳态不是新事件 —— 同票 15 分钟只落一条,
+    窗口过后再记 (降噪不丢信号, 不再 7070 条/14 天式刷库)。"""
+    t = [_T0 + 100]
+    stub = StubExecutor()
+    mon, _ = _make_monitor(store, _book_with(), stub, t)
+
+    def _count():
+        return store._conn.execute(
+            "SELECT count(*) FROM audit WHERE kind='monitor_no_quote'"
+        ).fetchone()[0]
+
+    mon.scan_once()
+    assert _count() == 1                      # 首现立即写
+    t[0] += 60                                # 1 分钟后同票仍无价 → 节流跳过
+    mon.scan_once()
+    assert _count() == 1
+    t[0] += 1000                              # 过 15 分钟窗口 → 再记一条
+    mon.scan_once()
+    assert _count() == 2
+
+
 def test_trailing_stop_triggered_by_synthetic_peak(store):
     """合成峰值序列: 冲到 12 后回落破 峰值×(1-5%)=11.4 → 移动止盈。
     (档位已预标记 = 实盘正常日状态: ladder 由预埋单覆盖,
