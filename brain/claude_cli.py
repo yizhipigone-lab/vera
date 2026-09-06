@@ -40,6 +40,35 @@ ALLOWED_TOOLS = "Read,Grep,Glob,Bash,Write,Edit"  # C 裸奔：Bash 放行（计
 # 不影响 provider 调用 / Bash 工具 / --resume 会话，只砍 CLI 自己的遥测与更新检查。
 CLI_ENV = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
+
+def _standard_cfg() -> dict | None:
+    """config/ai.json 的 standard 段 (AI 设置页签配置; 松耦合: 异常/缺省返 None)。"""
+    try:
+        from llm.ai_config import section
+        return section("standard")
+    except Exception as e:
+        logger.debug(f"ai_config.standard 读取失败(回落 ~/.claude 现状): {e}")
+        return None
+
+
+def _cli_env() -> dict:
+    """子进程 env: 默认 CLI_ENV; 有 standard 配置时注入 ANTHROPIC_* 三件套。
+
+    2026-09-06 AI 设置页: 用户在页签配了标准档 (Anthropic 兼容端点+Key+模型)
+    后, claude CLI 直接连配置端点, 不碰 ~/.claude/settings.json 原文件;
+    未配置时 env 与现状完全一致 (零行为变化)。
+    """
+    env = dict(CLI_ENV)
+    cfg = _standard_cfg()
+    if cfg:
+        if cfg.get("base_url"):
+            env["ANTHROPIC_BASE_URL"] = cfg["base_url"].rstrip("/")
+        if cfg.get("api_key"):
+            env["ANTHROPIC_AUTH_TOKEN"] = cfg["api_key"]
+        if cfg.get("model"):
+            env["ANTHROPIC_MODEL"] = cfg["model"]
+    return env
+
 # provider 软告警每 channel 只报一次（2026-08-12：原来每条回答都弹，太吵）
 _PROVIDER_WARNED: set[str] = set()
 DEFAULT_TIMEOUT = 300  # v2: 120→300 (简报任务需要)
@@ -62,6 +91,15 @@ _TRANSIENT_PATTERNS = (
 def _is_transient_net(err_text: str) -> bool:
     """err_text (已小写) 是否为 provider 瞬时网络错误 (可续跑恢复)。"""
     return any(p in err_text for p in _TRANSIENT_PATTERNS)
+
+
+def _provider_warning() -> str | None:
+    """标准档 provider 软告警: AI 设置页配了 standard 档 → 不发告警
+    (端点/Key 由页面显式指定, 是用户主动选的接入); 否则按 ~/.claude
+    settings 判断 (沿用旧逻辑)。返告警文案; 无告警返 None。"""
+    if _standard_cfg():
+        return None
+    return _check_provider()
 
 
 def _find_cli() -> str | None:
@@ -149,7 +187,9 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
     if not cli:
         result["answer"] = "claude CLI 未安装（npm i -g @anthropic-ai/claude-code），大脑不可用"
         return result
-    warn = _check_provider()
+    # 2026-09-06: AI 设置页配了 standard 档 → 端点/Key 由页面显式指定,
+    # 不再对 ~/.claude 的 provider 发软告警 (那是用户主动选的接入)
+    warn = _provider_warning()
     if warn and channel not in _PROVIDER_WARNED:
         result["warnings"].append(warn)
         _PROVIDER_WARNED.add(channel)
@@ -182,7 +222,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(VERA_ROOT),
-                env=CLI_ENV,
+                env=_cli_env(),
             )
         except FileNotFoundError:
             return None, b"", "claude CLI 启动失败（找不到可执行文件）"
@@ -220,7 +260,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 *command, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=8 * 1024 * 1024,
-                cwd=str(VERA_ROOT), env=CLI_ENV)
+                cwd=str(VERA_ROOT), env=_cli_env())
         except FileNotFoundError:
             await on_line("[系统] claude CLI 启动失败（找不到可执行文件）")
             return None, b"", ""

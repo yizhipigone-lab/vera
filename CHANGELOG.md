@@ -361,6 +361,34 @@ def test_metrics_67_actual_code_has_as_e():
 
 ---
 
+## 2026-09-06 — AI 设置独立页签（对话大脑三档接入配置）
+
+**审计**: [docs/audit/2026-09-06_AI设置页签_审计报告.md](docs/audit/2026-09-06_AI设置页签_审计报告.md)（深模块/浅模块审计，发现 deep 档合并 Bug + 测试假断言，已修）
+**背景**: 换模型要改 .env / ~/.claude / DSH settings 三处，用户要求界面化；三档各按各的协议（OpenAI 兼容 / Anthropic 兼容 / DSH 适配器），存 `config/ai.json`（不入 git，Key 打码回传）保存即热生效。
+
+### 改动一览
+
+| 模块 | 改动 | 影响 |
+|---|---|---|
+| `llm/ai_config.py`(新) | config/ai.json 读写 + Key 打码 + `merge_patch` 合并语义唯一实现（`_FIELDS` 三档共用字段形状，`__clear__` 整档清空） | 消灭"三份手写合并漂移"；深模块收口 |
+| `llm/providers.py` | LLMClient 每次 chat 现读 fast 段（显式 > ai_config > .env > 默认） | 快速档/政策提取/交易复盘换 Key 即热生效；无配置零行为变化 |
+| `ai_api.py`(新) | /api/ai/config(打码读) / save(合并) / test(连通)；合并语义只调 merge_patch 一行 | 路由回归薄层 165→138 行 |
+| `brain/claude_cli.py` | standard 档 spawn 注入 ANTHROPIC_* env（不碰 ~/.claude 原文件）；配置后不弹 provider 软告警 | 标准大脑可界面换 Anthropic 兼容端点 |
+| `brain/dsh_channel.py` | deep 档 spawn 前改写 dsh-runtime settings 的 agent-default-model（幂等，失败按现状运行） | 深度思考可界面换适配器/模型 |
+| web 前端 | 新增第 9 页签「AI 设置」+ ai_settings.js（三档表单/保存/测试连接/清空本档，纯函数可 node 测） | 界面配置，留空=保留旧值 |
+
+### 审计发现的坑（防再犯）
+
+- **deep 档合并语义曾用 `is not None`**（fast/standard 用 truthy）：空串会把已配置清空——合并逻辑手写三份必然漂移，收口 merge_patch 后同因杜绝。
+- 测试曾留 `assert ... or True` 恒真断言——假绿灯；已删改真检查。
+- `__clear__` 仅严格 `is True` 触发，防 `"false"` 字符串误清。
+
+### 测试基线
+
+新增 tests/test_ai_config.py + test_ai_api.py + test_ai_brain_wiring.py + tests/web/test_ai_settings.js（红→绿）；全量 `pytest tests/` exit 0。
+
+---
+
 ## 2026-09-05 — 唯一下单口收口（Executor.place_order，深模块评估候选①高危项）
 
 **计划书**: [docs/plan/2026-09-05_唯一下单口收口_计划书.md](docs/plan/2026-09-05_唯一下单口收口_计划书.md)（两轮审读: 作者逐行 + 独立对抗审计, 应修 P1-P5 全部吸收）

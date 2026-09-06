@@ -46,6 +46,7 @@ DSH_RUNTIME = _ROOT / "dsh-runtime"
 DSH_NODE = DSH_RUNTIME / "node" / "node.exe"
 DSH_ENTRY = DSH_RUNTIME / "app" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
 DSH_HOME = DSH_RUNTIME / "home"
+DSH_SETTINGS = DSH_HOME / "settings.yaml"
 DSH_WORKSPACE = DSH_RUNTIME / "workspace"
 DSH_CWD = _ROOT  # 2026-09-05 B 方案: 深度档工作目录=VERA 项目根, 能读写项目代码
 DSH_DB = _ROOT / "data" / "brain_dsh_runs.db"
@@ -101,6 +102,82 @@ def scan_leak(content: str) -> list[str]:
     return hits
 
 
+def rewrite_agent_default_model(text: str, provider: str, model: str) -> str:
+    """纯函数: 改写 settings.yaml 文本的 agent-default-model 两行。
+
+    只替换 agent-default-model 段下的 provider:/model: 值, 其余 (注释/
+    其他配置段) 原样保留。找不到该段时在文末追加完整段。
+    """
+    block = f"agent-default-model:\n  provider: {provider}\n  model: {model}\n"
+    if "agent-default-model:" not in text:
+        return text.rstrip("\n") + "\n" + block
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    in_block = False
+    block_done = False
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == "agent-default-model:":
+            in_block = True
+            block_done = True
+            out.append(line)
+            i += 1
+            # 吞掉原 provider:/model: 两行 (若缩进对齐则归本段)
+            consumed = 0
+            while i < len(lines) and consumed < 2 and lines[i].startswith("  "):
+                out.append(None)  # placeholder, 下面剔除
+                i += 1
+                consumed += 1
+            out.extend([f"  provider: {provider}", f"  model: {model}"])
+            continue
+        if in_block and line.strip() and not line.startswith("  "):
+            in_block = False  # 出段 (下一个非缩进行)
+        out.append(line)
+        i += 1
+    cleaned = [l for l in out if l is not None]
+    result = "\n".join(cleaned)
+    if not block_done:
+        result = text.rstrip("\n") + "\n" + block
+    if not result.endswith("\n"):
+        result += "\n"  # 保留尾换行 (原文件惯例, 防 diff 噪音)
+    return result
+
+
+def apply_deep_settings() -> bool:
+    """深度思考档接入配置 → 改写 DSH settings 的 agent-default-model。
+
+    AI 设置页签配了 deep 段 (provider/model) 时, 每次 run_dsh 前调用,
+    让深度思考档用页面上选的适配器+模型; 未配置/文件缺失/读失败 →
+    静默跳过 (按 DSH 现状运行, 零行为变化, 松耦合不抛)。
+    返是否实际改写 (测试/日志用)。
+    """
+    try:
+        from llm.ai_config import section
+        cfg = section("deep") or {}
+    except Exception as e:
+        logger.debug(f"ai_config.deep 读取失败(按 DSH 现状运行): {e}")
+        return False
+    provider = (cfg.get("provider") or "").strip()
+    model = (cfg.get("model") or "").strip()
+    if not provider or not model:
+        return False
+    try:
+        if not DSH_SETTINGS.is_file():
+            logger.debug(f"DSH settings 不存在(未部署深度思考), 跳过改写: {DSH_SETTINGS}")
+            return False
+        text = DSH_SETTINGS.read_text(encoding="utf-8", errors="replace")
+        new_text = rewrite_agent_default_model(text, provider, model)
+        if new_text == text:
+            return False  # 已是目标值, 不写盘 (省 mtime)
+        DSH_SETTINGS.write_text(new_text, encoding="utf-8")
+        logger.info(f"DSH 深度思考档已按 AI 设置切换: provider={provider} model={model}")
+        return True
+    except Exception as e:
+        logger.warning(f"DSH settings 改写失败(按现状运行): {e}")
+        return False
+
+
 def stop_dsh(run_id: str) -> bool:
     """终止一次运行 (杀进程树)。返回是否找到了该运行。"""
     proc = _runs.get(run_id)
@@ -142,6 +219,10 @@ async def run_dsh(question: str, history: list[dict] | None = None,
     task = _pack_task(question, history)
     env = {**os.environ, "DSH_HOME": str(DSH_HOME)}
     t0 = time.monotonic()
+
+    # AI 设置页签 (deep 档): 用户配置了 provider/model → 改写 DSH settings,
+    # 深度思考档用页面选的适配器+模型; 未配置/失败静默按现状运行。
+    apply_deep_settings()
 
     # 子进程输出走日志文件而非 PIPE: Windows 管道缓冲约 64KB, 无人排干时
     # 子进程写阻塞挂死 (IRX 2026-09-04 端到端实测: 进度轮播 4 分钟无产出)。

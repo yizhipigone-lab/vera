@@ -53,6 +53,7 @@
 | 影子校尺 | `trade/shadow.py` + `tools/shadow_compare.py` | 2026-08-23 P0(源自当日 MA20vs动量研判):旧 MA20 三态(已迁 `trade/legacy_three_state.py::compute_signal`,2026-09-05 治理III W2 自 rotation 迁出)作影子策略,`RotationFeature._shadow_tick` 每日落盘 `data/shadow_rotation.jsonl`(**只记录不交易**,fail-soft 绝不影响交易链);对比工具 TDX→新浪降级取数,同尺重放两套规则算季度滚动 90 日收益,**影子连续 2 季赢动量超 10pp → 提示人工复审换规则**。**2026-08-24 口径修正**:重放口径由「T 日信号当天生效」改为「T+1 生效」(原口径对高频策略系统性乐观,交易越勤偏差越大);修正后首次裁决反转——动量 +187.9% vs 影子 +146.0%(2.7 年窗),**影子未连续跑赢,无需复审**;此前「影子连 3 季跑赢」系口径偏差假象(用户「T日还是T+1成交」一问发现,详见 research/2026-08-24 组合寻优报告第六节) |
 | TQ 数据通道 | `core/tdx_tq.py` | 通达信 TQ-Python 只读数据薄封装 (2026-08-28, 源自 TDX SkillHub 研究):**懒加载**(模块导入零 TDX 依赖,测试/server 起动不需要通达信) + fail-soft(异常一律 None/[],研究数据绝不抛) + 纯归一化函数(`norm_etf_list/norm_stock_ext/norm_snapshot` 可独立单测) + 模块锁串行(tqcenter 类级连接非线程安全)。7 公开接口 ≤ 铁律 8:`available()/etf_of_index(指数→跟踪ETF,代码用 .SH/.SZ;部分 .CSI 宽基如 000300/905/852 服务端返回空,特殊 .CSI 如 950162 反而通)/stock_ext(get_more_info 88 字段:市值/涨停跌停价/ZAFPre2D~60D 多日涨幅/换手)/snapshot(实时+基金净值 Jjjz)`。**数据面实测口径**(诊断脚本 `research/tdx_skillhub/tq_probe_诊断脚本.py`,2026-08-28):FN 专业财务/SC 市场统计/BK 板块统计**需客户端先下载数据包**(未下时报空或 NoneType 崩);BK 板块代码须带 `.SH` 后缀;kzz 按**转债代码**查(传正股报错);**交易接口一律不封装**(QMT 唯一通道铁律)。SKILL 说明书落仓 `research/tdx_skillhub/skills/`;tdx-tq-local(HTTP 17709)本机 v7.73 不通弃用。消费方:ETF 行业轮动扩容的指数→ETF 映射、14:50 研究的估值/动量快照 |
 | 实盘交易 | `trade/` + `trade_main.py` | 2026-07-26 P1 MVP(计划书 `docs/2026-07-26_实盘交易系统计划书.md`):QMT 实盘交易,单进程单写者 EventEngine。9 模块:gateway(xtquant 唯一收口+FakeGateway)/events(静态接线)/store(SQLite WAL+JSONL 原始回报)/book(账本+状态机)/executor(预埋单+撤单流水线+两级价格阶梯)/monitor(订阅+心跳+QMT 轮询降级)/reconciler(三方对账只告警不回写)/risk(5 道闸+三重态急停)/api(薄层,独立 8081,交易页为 web 第三页签)。税费未计(P2 回溯补算)。止盈止损复刻回测 stop_loss 结构(parity 测试锁死);风控做减法(集中度闸已砍,sizing 校验接替);设置面板热生效(账号/路径类需重启)。**2026-07-27 ETF 误卖事件后**:时段感知(自动规则仅连续竞价,人工命令任何时段放行;心跳分时段+页面人话原因)、ETF 不纳入自动管理(照常对账)、手工成交对账认领(不拉闸)。**尾盘自动买入 MVP(2026-07-27)**:14:52 TDX 公式选股自动买入(trade/signals.py 桥+工作线程,不堵唯一写者),T+1 次日自动接入预埋/监控,设置面板可配可关。**尾盘价格市场感知(同日实测五连废单驱动)**:深市 14:57 后收盘竞价只收限价单——买挂涨停价/卖挂跌停价(单一价格撮合,成交价=收盘价),沪市维持对手最优。**冷启动 -1 事件(2026-09-02)**:机器重启后 XtMiniQmt 刚起 62 秒就启 trade_main → `connect()` 返回 -1 崩溃;QMT 登录初始化需 30s~2min,**先等 QMT 就绪再启 trade_main**(同路径独立连接测试 rc=0 证实,非代码/配置问题) |
+| AI 设置 | `llm/ai_config.py` + `ai_api.py` + 对话大脑三档接线 | 2026-09-06 web 独立页签「AI 设置」(回测/公式体检/公式农场/交易/分析/交易记录/研究/数据准备之后的第 9 页签):配置对话大脑三档 API Key/接入地址/模型,存 `config/ai.json`(不入 git,Key 只打码回传),**保存即热生效无需重启**。三档各按各的协议:**快速档**(OpenAI 兼容,`llm/providers.py` 每次 chat 现读 fast 段 → 影响快速对话+政策提取 extractor+交易复盘 llm_review)/**标准档**(Anthropic 兼容,`brain/claude_cli.py` spawn 时按 standard 段注入 `ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL` env,不碰 ~/.claude 原文件)/**深度档**(DSH 适配器,`brain/dsh_channel.py` spawn 前按 deep 段改写 dsh-runtime settings 的 agent-default-model)。合并语义唯一实现 = `ai_config.merge_patch`(纯函数:字段非空覆盖、空串保留旧值、`__clear__:true` 整档清空回落默认;三档共用 `_FIELDS` 防手写漂移——曾因 deep 档 `is-not-None` 写错静默清空,已修复有测试锁)。无配置时三档完全回落原默认(零行为变化,有测试锁)。审计:docs/audit/2026-09-06_AI设置页签_审计报告.md |
 
 **历史背景**:`_simulate_core_v3`(39 参数私有函数)曾是事实公共入口,被 4 脚本 + 4 测试直调。候选 A 阶段 1 + 阶段 1.5 收编 5 脚本 + `optimize_strategies` 收编 + 清理 `optimize_full` 死 import,**生产直调完全清零**(锁私有完整达成,2026-07-13 e62e0ab)。候选 D C4 清理 34 个孤儿脚本(2026-07-14 aa54d19);2026-08-01 批次 5 C3 删孤立的 preprocessor.py,根目录仅余 main.py / server.py 两入口。候选 D C2 删 `stop_manager.py`(死代码,无调用方)。**批量注意**:`Pipeline.run()` 每次执行 `initialize+close`,不适合 in-process 高频复用;批量场景用 subprocess 并行调度 `tools/gs_run_one.py`。
 
@@ -126,11 +127,31 @@
 - 核心源码 + tests 要及时入 git(历史审计发现过未入库问题)
 - 接到任务先问清楚决策点(路径/数量/格式/边界),别靠猜动手
 
+### 开工前深模块检查单(2026-09-06 用户拍板铁律)
+
+**写任何新模块/重构/新功能前,先过这五问(约 30 秒),答不上来别动手:**
+
+1. **放哪层?** 逻辑该进深模块(领域实现)还是薄层(路由/门面转发)?项目惯例 = 路由薄 + 实现厚(data_cache_api 薄 / kline_cache_maintenance 厚;ai_api 薄 / ai_config 厚)。计算类逻辑一律下沉纯函数模块。
+2. **接口多大?** 能不能更小?≤8 个公开方法/函数(铁律 8)。新公开符号是否真的要被外部用?纯测试需要的就加 `_` 前缀当内部接缝。
+3. **有没有同类第三份?** grep 一下同语义逻辑是否已有实现——**同一条规则手写 N 份必然漂移**(教训:AI 设置三档合并手写三份,deep 档判断符写错静默清空;trade 买卖口径、行情陈旧判定都犯过)。发现第二份以上 → 收口单一真相源。
+4. **删除测试**: 删掉这个模块,复杂度会散回调用方(该留)还是原地消失(是透传,该并)?
+5. **改完登记没?** 新子系统/新页签 → CLAUDE.md 架构骨架一行 + CHANGELOG 条目 + 及时 commit(三件套,做完=登记完)。
+
+设计词汇(深/浅/接口/接缝/删除测试/locality)以 codebase-design 为准,模糊时先调该 skill。
+
+### 沉淀经验(2026-09-06,源自 AI 设置功能审计)
+
+1. **同一条规则手写 N 份,必然漂移**: 三档合并语义手写三遍,deep 档一处 `is-not-None` 写错 → 留空保存静默清空配置,全靠测试才抓到。规则多副本是 VERA 反复踩的坑类(买卖口径×2、行情陈旧判定×3、下单逻辑×5),每次发现新副本都应收口,不单修。
+2. **做完 ≠ 登记完**: Definition of done 含"登记 CLAUDE.md/CHANGELOG/commit"三件套,但执行常漏(本次 AI 设置就漏了,靠登记体检才补上)。新功能收尾时把三件套当验收项逐条打勾。
+3. **环境红 vs 真红**: TDX 关着(Sunday)、TQ 连接关闭提示、DeprecationWarning 都是"可证明无关"的环境噪音;判据 = 退出码 + 触及路径是否绿,别被噪音带偏也别拿噪音当借口。机制(退出码/机器校验)比自觉可靠。
+4. **Key/Token 半密钥惯例**: 界面可配的密钥只落 gitignore 文件(config/ai.json 因 `*.json` 天然不入库),读取只回打码(前4+****+后4),绝不明文回传;保存留空=保留旧值(不清空),显式清空走 `__clear__` 标记。
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
 
 Key routing rules:
+- 写新模块/重构/设计模块接口 → invoke codebase-design（深模块词汇与原则, 开工前检查单见工作流约定）
 - Product ideas/brainstorming → invoke /office-hours
 - Strategy/scope → invoke /plan-ceo-review
 - Architecture → invoke /plan-eng-review
