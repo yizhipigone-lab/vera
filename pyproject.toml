@@ -26,6 +26,7 @@ dependencies = [
 #   xtquant — QMT 券商终端内置, 仅 trade/gateway.py 内 lazy import
 # 可选依赖 (缺失时自动降级, 非必需):
 #   akshare / exchange_calendars / jinja2 / scipy / tushare / playwright
+#   easytrader — 同花顺 GUI 下单网关, 仅 trade/gateway_ths.py 内 lazy import
 
 [tool.ruff]
 target-version = "py310"
