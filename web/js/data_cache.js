@@ -22,8 +22,9 @@ function statusRowHtml(p, refreshing, esc) {
     });
   };
   var b = statusBadge(p, refreshing);
-  var color = b.cls === 'ok' ? 'var(--green,#3fb950)'
-            : b.cls === 'err' ? 'var(--red,#f85149)' : 'var(--accent)';
+  // W4-1: --green/--red 在 CSS 中从未定义、恒走 fallback — 归并到红绿铁律令牌 (新鲜=绿--down, 过期=红--up)
+  var color = b.cls === 'ok' ? 'var(--down)'
+            : b.cls === 'err' ? 'var(--up)' : 'var(--accent)';
   return '<tr><td>' + esc(p.period) + '</td>'
     + '<td>' + esc(p.stocks) + '</td>'
     + '<td>' + esc(p.first_date || '—') + '</td>'
@@ -94,15 +95,15 @@ function submitBackfill() {
     .then(function (d) {
       if (!msg) return;
       if (d.success) {
-        msg.style.color = 'var(--green,#3fb950)';
+        msg.style.color = 'var(--down)';
         msg.textContent = '✓ 补拉已启动（' + (d.periods || []).join(',') + '），见下方日志';
         refreshStatus(); refreshLog();
       } else {
-        msg.style.color = 'var(--red,#f85149)';
+        msg.style.color = 'var(--up)';
         msg.textContent = '✗ ' + (d.error || d.reason || '启动失败');
       }
     }).catch(function (e) {
-      if (msg) { msg.style.color = 'var(--red,#f85149)'; msg.textContent = '✗ 网络错误: ' + e.message; }
+      if (msg) { msg.style.color = 'var(--up)'; msg.textContent = '✗ 网络错误: ' + e.message; }
     });
 }
 

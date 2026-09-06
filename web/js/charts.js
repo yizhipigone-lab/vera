@@ -129,11 +129,41 @@ export function setChartsRef(ref) { _charts = ref; }
 export function echartsInit(id) {
   const dom = document.getElementById(id);
   if (!dom) return null;
-  if (_charts[id]) _charts[id].dispose();
+  // W3-2: 存在即复用 — 原"每次 dispose+init"让重跑回测/切主题/进分析页
+  // 全部图表销毁重建(闪烁+浪费)。配色写在每次 setOption(notMerge)里,
+  // 复用实例经 renderAllCharts 全量 setOption 自动换色, 无需 dispose 重建
+  if (_charts[id]) { _charts[id].resize(); return _charts[id]; }
   const c = echarts.init(dom);
   _charts[id] = c;
   c.resize();
   return c;
+}
+
+// W3-5: 空数据清图占位 — 无数据分支不再残留上一次回测/分析的旧图误导
+export function chartEmpty(id) {
+  const c = _charts[id];
+  const dom = document.getElementById(id);
+  if (!dom) return;
+  if (!c) return;               // 从未渲染过则容器本就空白, 无旧图可清
+  c.clear();
+  c.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle',
+    textStyle: { color: getColors().text2, fontSize: 12, fontWeight: 400 } } });
+}
+
+// W4-4: 批量加载占位 — fetch 期间图区不再是纯空白/旧图 (W3-2 复用实例后成本极低)
+export function chartsShowLoading(ids, on) {
+  const c = getColors();
+  ids.forEach(id => {
+    let inst = _charts[id];
+    if (!inst) {
+      // 2026-09-06 审查修复: 首载时图还没 init 过, 直接 return 会让"加载中"菊花永不出现
+      if (!on) return;
+      inst = echartsInit(id);
+      if (!inst) return;
+    }
+    if (on) inst.showLoading('default', { text: '加载中…', color: c.accent, maskColor: 'transparent', fontSize: 12 });
+    else inst.hideLoading();
+  });
 }
 
 // ── KPI Tween ──
@@ -143,14 +173,16 @@ export function tweenNumber(el, target, formatter, duration) {
   if (typeof target !== 'number' || isNaN(target)) { el.textContent = '--'; return; }
   // 尊重 prefers-reduced-motion: 直接设终值,不滚动(CSS @media 关其余动画,这里管 JS 数字动画)
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = formatter(target); return; }
+  // W3-6: 取消上一次未完成的动画循环 — 连续两次 KPI 渲染时新旧 rAF 同写一个元素, 数字抖动竞争
+  if (el._veraRaf) cancelAnimationFrame(el._veraRaf);
   const t0 = performance.now();
   function step(now) {
     const p = Math.min(1, (now - t0) / duration);
     const eased = 1 - Math.pow(1 - p, 3);
     el.textContent = formatter(target * eased);
-    if (p < 1) requestAnimationFrame(step); else el.textContent = formatter(target);
+    if (p < 1) el._veraRaf = requestAnimationFrame(step); else el.textContent = formatter(target);
   }
-  requestAnimationFrame(step);
+  el._veraRaf = requestAnimationFrame(step);
 }
 
 // ── SVG Sparkline ──
@@ -225,7 +257,8 @@ export function fillHeroSub(m, data, c) {
   if (ddSpark) {
     if (data.equity && data.equity.length > 1) {
       const dd = data.equity.map(r => (r.drawdown || 0) * 100);
-      ddSpark.innerHTML = sparkline(dd, c.up, 0.2);
+      // W2-3b: 回撤=亏损=绿(c.down), 与水下曲线/回撤线(charts_deep)对齐 (原 c.up 与同屏盈亏红绿打架)
+      ddSpark.innerHTML = sparkline(dd, c.down, 0.2);
     } else ddSpark.innerHTML = '';
   }
 }
@@ -295,7 +328,7 @@ function policyBadge(stockCode) {
 let _policyEnriched = {};
 function conceptTags(stockCode) {
   const tags = ((_policyEnriched[stockCode] || {}).concept_tags) || [];
-  if (!tags.length) return '<span style="color:var(--text2);font-size:10px;opacity:.5">—</span>';
+  if (!tags.length) return '<span style="color:var(--text2);font-size:var(--fs-xs);opacity:.5">—</span>';
   const shown = tags.slice(0, 3).map(function(t) { return '<span class="concept-tag">' + esc(t) + '</span>'; }).join('');
   const more = tags.length > 3 ? '<span class="concept-more">+' + (tags.length - 3) + '</span>' : '';
   return '<div class="concept-list">' + shown + more + '</div>';
@@ -337,7 +370,7 @@ export function renderTradeTable(trades, allTradesCount) {
     const tidx = totalTrades - 1 - (start + i);   // Phase 3: 行在传入 trades 数组中的索引 (pageRows 经过倒序+分页), 回放点击定位用
     return '<tr data-tidx="' + tidx + '" style="cursor:pointer" title="点击查看 K 线回放">' +
       '<td class="hint">' + (totalTrades - (start + i)) + '</td>' +
-      '<td style="font-family:var(--mono);font-size:10px">' + stockLink(t.stock_code) + '</td>' +
+      '<td style="font-family:var(--mono);font-size:var(--fs-xs)">' + stockLink(t.stock_code) + '</td>' +
       '<td>' + stockLink(t.stock_code, t.stock_name) + '</td>' +
       '<td>' + conceptTags(t.stock_code) + '</td>' +
       '<td>' + policyBadge(t.stock_code) + '</td>' +
@@ -349,7 +382,7 @@ export function renderTradeTable(trades, allTradesCount) {
       '<td>' + shares + ' 股</td>' +
       '<td>' + holdDays + '</td>' +
       '<td class="' + cls + '">' + pnl.toFixed(2) + '%</td>' +
-      '<td style="font-size:10px;max-width:120px" title="' + reasonFull + '">' + reasonShort + '</td></tr>';
+      '<td style="font-size:var(--fs-xs);max-width:120px" title="' + reasonFull + '">' + reasonShort + '</td></tr>';
   }).join('');
   document.getElementById('tradeFiltered').textContent = '显示 ' + trades.length + ' / ' + (allTradesCount || trades.length) + ' 笔';
   // 页码条 (2026-07-26)
@@ -360,7 +393,7 @@ export function renderTradeTable(trades, allTradesCount) {
     } else {
       pager.innerHTML =
         '<button class="btn btn-secondary btn-sm" id="tradePagePrev"' + (_tradePage === 0 ? ' disabled' : '') + '>‹ 上一页</button>' +
-        '<span style="font-size:11px;color:var(--text2)">第 ' + (_tradePage + 1) + ' / ' + nPages + ' 页 (每页 ' + TRADE_PAGE_SIZE + ' 笔)</span>' +
+        '<span style="font-size:var(--fs-xs);color:var(--text2)">第 ' + (_tradePage + 1) + ' / ' + nPages + ' 页 (每页 ' + TRADE_PAGE_SIZE + ' 笔)</span>' +
         '<button class="btn btn-secondary btn-sm" id="tradePageNext"' + (_tradePage >= nPages - 1 ? ' disabled' : '') + '>下一页 ›</button>';
       pager.querySelector('#tradePagePrev').addEventListener('click', () => {
         _tradePage--; renderTradeTable(trades, allTradesCount); });
@@ -417,7 +450,7 @@ export function filterTrades(allTrades, renderFn) {
 // ── 权益曲线可复用函数 (分析 Tab 和回测 Tab 共用) ──
 
 export function renderEquityCurve(domId, data, strategyName, colors) {
-  if (!data.equity || data.equity.length < 1) return null;
+  if (!data.equity || data.equity.length < 1) { chartEmpty(domId); return null; }   // W3-5: 清旧图占位, 不再残留上一次结果
   const c = colors || getColors();
   const chart = echartsInit(domId);
   if (!chart) return null;
@@ -467,7 +500,7 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
     tooltip: { trigger: 'axis', formatter: function(params) {
       let s = params[0].axisValue + '<br/>';
       params.forEach(p => {
-        s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:5px"></span>';
+        s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:var(--sp-1)"></span>';
         s += p.seriesName + ': <b>' + (p.value != null ? p.value.toFixed(2) + '%' : '-') + '</b><br/>';
       });
       return s;
@@ -496,8 +529,12 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
   }, true);
 
   // 2026-08-03: 聚焦激活缩放 —— 点一下图表才启用双指/滚轮缩放, 点别处恢复页面滚动
+  // W3-3: 上下文与监听去重 — 每次渲染先清旧监听再挂新 handler,
+  // 不再向同一 DOM 叠加闭包 (旧实现叠加后旧闭包对已销毁实例 setOption);
+  // W3-2 复用实例后闭包捕获的 chart 即长存实例, 换 handler 即换新配色上下文
   var chartDom = document.getElementById(domId);
   if (chartDom) {
+    if (chartDom._veraZoomCleanup) chartDom._veraZoomCleanup();
     var parentBox = chartDom.closest('.chart-box');
     var dzOn  = [{ type: 'inside', xAxisIndex: 0, start: 0, end: 100 },
                  { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20,
@@ -507,6 +544,7 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
                    borderColor: c.border, fillerColor: hexToRgba(c.accent, 0.13),
                    textStyle: { color: c.text2, fontSize: 9 } }];
     var zoomActive = false;
+    var outsideHandler = null;
 
     function enableZoom() {
       if (zoomActive) return;
@@ -514,7 +552,8 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
       chart.setOption({ dataZoom: dzOn });
       if (parentBox) parentBox.style.outline = '1px solid ' + c.accent;
       setTimeout(function () {
-        document.addEventListener('click', disableZoomOnOutside, { once: true });
+        outsideHandler = disableZoomOnOutside;
+        document.addEventListener('click', outsideHandler, { once: true });
       }, 0);
     }
 
@@ -529,6 +568,11 @@ export function renderEquityCurve(domId, data, strategyName, colors) {
       if (parentBox) parentBox.style.outline = '';
     }
 
+    chartDom._veraZoomCleanup = function () {
+      chartDom.removeEventListener('click', chartDom._veraZoomHandler);
+      if (outsideHandler) document.removeEventListener('click', outsideHandler);
+    };
+    chartDom._veraZoomHandler = enableZoom;
     chartDom.addEventListener('click', enableZoom);
   }
 
@@ -612,6 +656,8 @@ export function renderAllCharts(data) {
       yAxis: { type: 'value', name: '月收益 %', nameTextStyle: { color: c.text2, fontSize: 10 }, axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: c.border } } },
       series: [{ type: 'bar', data: mData.map(d => ({ value: parseFloat(d.value), itemStyle: { color: parseFloat(d.value) >= 0 ? c.up : c.down } })) }],
     }, true);
+  } else {
+    chartEmpty('chartMonthly');   // W3-5: 数据不足同样清旧图占位
   }
 
   // Trade analysis charts
@@ -656,18 +702,19 @@ export function renderAllCharts(data) {
       });
     });
     const pieData = Object.entries(reasonCount).map(([name, value]) => ({ name, value }));
+    // W2-3c: 按盈亏语义上色 — 止损类(亏)=绿、止盈类(赚)=红, 与 analysis.js reasonColor 同步改
     const reasonColorMap = {
-      '成本止损': c.up,
-      '移动止损': hexToRgba(c.up, 0.6),
-      '移动止盈': c.down,
+      '成本止损': c.down,
+      '移动止损': hexToRgba(c.down, 0.6),
+      '移动止盈': c.up,
       '阶梯止盈': c.accent,
       '时间止损': c.accent2,
       '时间止盈': 'color-mix(in srgb, ' + c.down + ' 50%, ' + c.accent + ')',
       '条件时间止盈': 'color-mix(in srgb, ' + c.accent2 + ' 50%, ' + c.warn + ')',
       '换股卖出': 'color-mix(in srgb, ' + c.up + ' 50%, ' + c.accent2 + ')',
       '首日未达标': 'color-mix(in srgb, ' + c.warn + ' 50%, ' + c.text + ')',
-      '公式止损': 'color-mix(in srgb, ' + c.accent + ' 50%, ' + c.up + ')',
-      'ATR止损': hexToRgba(c.up, 0.45),
+      '公式止损': 'color-mix(in srgb, ' + c.accent + ' 50%, ' + c.down + ')',
+      'ATR止损': hexToRgba(c.down, 0.45),
       '退市': c.text2,
     };
     chart2.setOption({
@@ -723,6 +770,10 @@ export function renderAllCharts(data) {
     });
   } else {
     document.getElementById('tradeFiltered').textContent = '显示 0 / 0 笔';
+    // W3-5: trades 为空时三张联动图清旧图占位, 不再残留上一次回测的旧图
+    chartEmpty('chartTrade');
+    chartEmpty('chartExit');
+    chartEmpty('chartHold');
   }
 
   // Run config summary (回测口径: 初始资金/周期/买入价/公式/股票池/复权)
@@ -785,7 +836,11 @@ export function renderAllCharts(data) {
     const mvSum = ops.reduce((s, p) => s + (p.market_value || 0), 0);
     document.getElementById('openPosCount').textContent =
       '(' + ops.length + ' 笔, 市值合计 ' + mvSum.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' 元, 已按市值计入权益)';
-    document.getElementById('openPosTableBody').innerHTML = ops.map((p, i) => {
+    // W4-6: 上限 100 行防 DOM 撑爆 (交易明细表已分页, 此表原无保护)
+    const opsShown = ops.slice(0, 100);
+    document.getElementById('openPosTableBody').innerHTML = (ops.length > 100
+      ? '<tr><td colspan="8" style="text-align:center;color:var(--text2)">共 ' + ops.length + ' 条，仅显示前 100 条</td></tr>' : '')
+      + opsShown.map((p, i) => {
       const pct = (p.unrealized_pct || 0) * 100;
       const cls = pct > 0 ? 'td-up' : pct < 0 ? 'td-down' : '';
       return '<tr><td>' + (i + 1) + '</td>'

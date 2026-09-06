@@ -1,9 +1,9 @@
 // ====== VERA Analysis Tab — 交易日历 + 实盘图表 ======
-import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc } from './charts.js';
-import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260814';
+import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc, chartsShowLoading } from './charts.js?v=20260906d';
+import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260906c';
 import { bucketReason, isKnownReason } from './reason_util.mjs';
 // 2026-09-05 (治理III W4-e): 同源取数收敛到统一 client
-import { fetchBenchmarkHistory, fetchCalendar } from './api.js';
+import { fetchBenchmarkHistory, fetchCalendar } from './api.js?v=20260906c';
 
 const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
 const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
@@ -33,11 +33,15 @@ window.analysisPageEnter = async function() {
 };
 
 // ── Data loading ──
+// W4-4: 分析页图表 id 清单 — fetch 期间 showLoading, 不再空白/残留旧图
+const ANALYSIS_CHART_IDS = ['chartAnalysisEquity', 'chartAnalysisUnderwater', 'chartAnalysisRolling',
+  'chartAnalysisAttrSector', 'chartAnalysisAttrStock', 'chartAnalysisHeat', 'chartAnalysisDist', 'chartAnalysisExit'];
 async function loadAnalysisData() {
   const emptyEl = document.getElementById('analysisEmpty');
   const contentEl = document.getElementById('analysisContent');
   const calSeq = ++_calLoadSeq;  // 进页加载也占一个序号: 与切月路径互斥, 谁最后发起谁有渲染权
   let fetchError = false;
+  chartsShowLoading(ANALYSIS_CHART_IDS, true);   // W4-4: 加载占位
   try {
     const results = await Promise.allSettled([
       fetch(API_BASE + '/summary').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
@@ -125,6 +129,8 @@ async function loadAnalysisData() {
     console.error('Analysis load error:', e);
     if (emptyEl) { emptyEl.style.display = ''; emptyEl.querySelector('p').textContent = '数据加载失败，请重试'; }
     if (contentEl) contentEl.style.display = 'none';
+  } finally {
+    chartsShowLoading(ANALYSIS_CHART_IDS, false);   // W4-4: 无论成败都收加载占位
   }
 }
 
@@ -142,7 +148,8 @@ function renderKpiCards(s) {
       tip: '从期初到现在总共赚/亏的百分比。正数=赚钱, 负数=亏钱。' },
     { label: '年化收益', id: 'akpi2', val: s.annualized_return, fmt: v => fmtPct(v), cls: s.annualized_return > 0 ? 'pos' : 'neg',
       tip: '把收益折算成一年的速度, 方便和理财/指数比较。例: 年化 10% ≈ 每 100 元一年赚 10 元。参照: 银行定存约 1.5-2%, 沪深300长期约 5-8%。' },
-    { label: '最大回撤', id: 'akpi3', val: s.max_drawdown, fmt: v => fmtPct(v), cls: s.max_drawdown < 0 ? 'pos' : 'neg',
+    // W2-3d: 回撤为负=亏损=绿(neg), 与回测侧 charts.js setKpi(val<0→neg) 对齐 (原 pos 与同屏盈亏红绿打架)
+    { label: '最大回撤', id: 'akpi3', val: s.max_drawdown, fmt: v => fmtPct(v), cls: s.max_drawdown < 0 ? 'neg' : 'pos',
       tip: '净值从最高点跌到最低点的最大幅度, 即"最惨的时候账面亏多少"。越小越好; 超过 -20% 说明波动很煎熬。' },
     { label: '夏普比率', id: 'akpi4', val: s.sharpe_ratio, fmt: v => fmtNum(v), cls: '',
       tip: '每承担一份上下波动, 换来多少收益 (已扣无风险利率)。>1 算不错, >2 优秀, <0 说明波动白挨了。' },
@@ -160,14 +167,14 @@ function renderKpiCards(s) {
       tip: '总盈利 ÷ 总亏损。<1 必亏, 1.0-1.5 勉强, >1.5 较好, >2 优秀。' },
   ];
   const warnHtml = s.reconciliation_warning
-    ? '<span style="color:var(--warn);font-size:11px;margin-left:4px" title="净值推算与QMT资产偏差>1%">⚠</span>' : '';
+    ? '<span style="color:var(--warn);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="净值推算与QMT资产偏差>1%">⚠</span>' : '';
   const labelHtml = c => c.tip
-    ? c.label + ' <span style="cursor:help;color:var(--text2);font-size:10px" title="' + c.tip + '">?</span>'
+    ? c.label + ' <span style="cursor:help;color:var(--text2);font-size:var(--fs-xs)" title="' + c.tip + '">?</span>'
     : c.label;
-  grid.innerHTML = '<div class="kpi-row-primary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">' +
+  grid.innerHTML = '<div class="kpi-row-primary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:var(--sp-3)">' +
     cards.slice(0, 5).map(c => '<div class="kpi-card"><div class="kpi-label">' + labelHtml(c) + warnHtml + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '">' + c.fmt(c.val) + '</div></div>').join('') +
-    '</div><div class="kpi-row-secondary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px">' +
-    cards.slice(5).map(c => '<div class="kpi-card"><div class="kpi-label">' + labelHtml(c) + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '" style="font-size:18px">' + c.fmt(c.val) + '</div></div>').join('') +
+    '</div><div class="kpi-row-secondary" style="display:grid;grid-template-columns:repeat(5,1fr);gap:var(--sp-2);margin-top:var(--sp-3)">' +
+    cards.slice(5).map(c => '<div class="kpi-card"><div class="kpi-label">' + labelHtml(c) + '</div><div class="kpi-value ' + c.cls + '" id="' + c.id + '" style="font-size:var(--fs-lg)">' + c.fmt(c.val) + '</div></div>').join('') +
     '</div>';
 }
 
@@ -236,6 +243,10 @@ function renderCalendar(calData, dailyPnl) {
       renderCalendar(calData, dailyPnl);
       filterDealsByDate(_selectedDate);
     });
+    // W4-6: 键盘可达 — 格子有 role=button+tabindex 但原来只绑 click, Enter/Space 按不动
+    el.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); this.click(); }
+    });
   });
 }
 
@@ -262,8 +273,8 @@ function renderMonthSummary(dailyPnl) {
     '注意: 月内入金/出金会被当作盈亏计入, 与日历格子、权益曲线同口径。';
   const sep = '<span style="color:var(--border)">|</span>';
   el.innerHTML =
-    '<span style="color:var(--text2)">本月收益 <span style="cursor:help;color:var(--text2);font-size:10px" title="' + tip + '">?</span></span>' +
-    '<span style="font-size:18px;font-weight:700;color:' + cls + ';font-family:var(--mono)">' + rateStr + '</span>' +
+    '<span style="color:var(--text2)">本月收益 <span style="cursor:help;color:var(--text2);font-size:var(--fs-xs)" title="' + tip + '">?</span></span>' +
+    '<span style="font-size:var(--fs-lg);font-weight:700;color:' + cls + ';font-family:var(--mono)">' + rateStr + '</span>' +
     '<span style="font-weight:600;color:' + cls + '">' + amtStr + '</span>' +
     sep +
     '<span>交易日 <b>' + m.trading_days + '</b> 天 · 盈 <span style="color:var(--up)">' + m.win_days + '</span> · 亏 <span style="color:var(--down)">' + m.loss_days + '</span></span>' +
@@ -288,12 +299,12 @@ function _pnlColor(v) { return 'var(--' + (Number(v) >= 0 ? 'up' : 'down') + ')'
 // 单个 section 卡片 (label-value 两列)
 function _drSection(title, rows) {
   const rowsHtml = rows.map(r =>
-    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:3px 0;font-size:12px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-2);padding:var(--sp-1) 0;font-size:var(--fs-sm)">' +
     '<span style="color:var(--text2)">' + r[0] + '</span>' +
     '<span style="color:var(--text);text-align:right">' + r[1] + '</span></div>'
   ).join('');
-  return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px">' +
-    '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:6px;letter-spacing:0.5px">' + title + '</div>' +
+  return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-3) var(--sp-3)">' +
+    '<div style="font-size:var(--fs-xs);font-weight:600;color:var(--link);margin-bottom:var(--sp-2);letter-spacing:0.5px">' + title + '</div>' +
     rowsHtml + '</div>';
 }
 
@@ -313,7 +324,7 @@ function renderDailyReport(payload, dateStr) {
   title.innerHTML = '盘后日报 · ' + esc(dateStr) + pnlHtml;
 
   if (!payload) {
-    body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">该日无盘后日报记录</div>';
+    body.innerHTML = '<div style="padding:var(--sp-6);text-align:center;color:var(--text2);font-size:var(--fs-sm)">该日无盘后日报记录</div>';
     box.style.display = '';
     return;
   }
@@ -340,7 +351,7 @@ function renderDailyReport(payload, dateStr) {
     if (d.turnover != null) sumRows.push(['成交额', _fmtMoney(d.turnover)]);
     if (d.realized_pnl != null) {
       let cell = '<span style="color:' + _pnlColor(d.realized_pnl) + '">' + _fmtSigned(d.realized_pnl) + '</span>';
-      if (d.win_rate != null) cell += ' <span style="color:var(--text2);font-size:11px">胜率 ' + (Number(d.win_rate) * 100).toFixed(0) + '%</span>';
+      if (d.win_rate != null) cell += ' <span style="color:var(--text2);font-size:var(--fs-xs)">胜率 ' + (Number(d.win_rate) * 100).toFixed(0) + '%</span>';
       sumRows.push(['已实现盈亏', cell]);
     }
     sections.push(_drSection('交易摘要', sumRows));
@@ -369,9 +380,9 @@ function renderDailyReport(payload, dateStr) {
       let cell = '<span style="color:' + _pnlColor(pa) + '">' + _fmtSigned(pa) + '</span>';
       if (s.pnl_pct) {
         const pp = Number(s.pnl_pct);
-        cell += ' <span style="color:var(--text2);font-size:11px">(' + (pp >= 0 ? '+' : '') + pp.toFixed(2) + '%)</span>';
+        cell += ' <span style="color:var(--text2);font-size:var(--fs-xs)">(' + (pp >= 0 ? '+' : '') + pp.toFixed(2) + '%)</span>';
       }
-      if (s.reason) cell += ' <span style="color:var(--text2);font-size:11px">· ' + esc(s.reason) + '</span>';
+      if (s.reason) cell += ' <span style="color:var(--text2);font-size:var(--fs-xs)">· ' + esc(s.reason) + '</span>';
       return [esc(s.code || ''), cell];
     });
     if (d.sell_details_folded) {
@@ -382,7 +393,7 @@ function renderDailyReport(payload, dateStr) {
     sections.push(_drSection('卖出明细', sellRows));
   }
 
-  body.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">' + sections.join('') + '</div>';
+  body.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--sp-3)">' + sections.join('') + '</div>';
   box.style.display = '';
 }
 
@@ -392,14 +403,14 @@ async function showDailyReport(dateStr) {
   const title = document.getElementById('analysisDailyReportTitle');
   const body = document.getElementById('analysisDailyReport');
   if (title) title.textContent = '盘后日报 · ' + dateStr;
-  if (body) body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">加载中...</div>';
+  if (body) body.innerHTML = '<div style="padding:var(--sp-6);text-align:center;color:var(--text2);font-size:var(--fs-sm)">加载中…</div>';
   if (box) box.style.display = '';
   try {
     const resp = await fetch(API_BASE + '/daily_report?date=' + dateStr).then(r => r.json());
     if (seq !== _dailyReportSeq) return;  // 已被更新的点击取代, 丢弃陈旧响应
     renderDailyReport(resp.report, dateStr);
   } catch (e) {
-    if (seq === _dailyReportSeq && body) body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2);font-size:12px">加载失败, 请确认 trade 服务运行中</div>';
+    if (seq === _dailyReportSeq && body) body.innerHTML = '<div style="padding:var(--sp-6);text-align:center;color:var(--text2);font-size:var(--fs-sm)">加载失败，请确认 trade 服务运行中</div>';
   }
 }
 
@@ -578,9 +589,11 @@ function renderExitPie(deals) {
   // 全部 fallback 到 c.text2 (灰) → 所有扇区都灰。
   // 修法: 先按分隔符取策略名前缀归一成类目, 再按类目聚合计数与上色;
   // 类目表对齐实盘真实用词 (executor._REASON_LABELS), 表外新类目走调色板兜底, 绝不再灰。
+  // W2-3c: 按盈亏语义上色 — 止损类(亏)=绿(c.down)、止盈类(赚)=红(c.up),
+  // 不再与同屏"赚钱红/亏钱绿"打架 (旧配色是"警示红/成功绿"心理色, 与涨跌语义冲突)
   const reasonColor = {
-    '硬止损': c.up,                      // 旧词"成本止损"已按术语规范改"硬止损" (executor.py:40)
-    '移动止盈': c.down,
+    '硬止损': c.down,                      // 旧词"成本止损"已按术语规范改"硬止损" (executor.py:40)
+    '移动止盈': c.up,
     '阶梯止盈': c.accent,
     '时间止损': c.accent2,
     '条件时间止盈': hexToRgba(c.accent2, 0.55),
@@ -620,7 +633,7 @@ function renderExitPie(deals) {
         let s = `${d.name}: ${d.value} 次 (${p.percent}%)`;
         if (d.detail) {
           const dtl = d.detail.length > 60 ? d.detail.slice(0, 60) + '…' : d.detail;
-          s += `<br/><span style="color:${c.text2};font-size:11px">${esc(dtl)}</span>`;
+          s += `<br/><span style="color:${c.text2};font-size:var(--fs-xs)">${esc(dtl)}</span>`;
         }
         return s;
       },
@@ -702,7 +715,8 @@ function renderDealTable(forceDate) {
     const ts = new Date(t.ts * 1000);
     const ds = ts.getFullYear() + '-' + String(ts.getMonth() + 1).padStart(2, '0') + '-' + String(ts.getDate()).padStart(2, '0');
     const dir = t.direction === DIR_BUY ? '买' : '卖';
-    const cls = t.direction === DIR_BUY ? 'td-down' : 'td-up';
+    // W2-3a: 买=红(td-up) 卖=绿(td-down), 与 K 线回放弹窗(charts_replay)及交易页成交表对齐
+    const cls = t.direction === DIR_BUY ? 'td-up' : 'td-down';
     return '<tr><td>' + (total - (_dealPage * DEAL_PAGE_SIZE + i)) + '</td>' +
       '<td>' + stockLink(t.code) + '</td>' +
       '<td>' + (t.name ? stockLink(t.code, t.name) : '') + '</td>' +
@@ -711,7 +725,7 @@ function renderDealTable(forceDate) {
       '<td>' + (t.price || 0).toFixed(2) + '</td>' +
       '<td>' + (t.qty || 0) + '</td>' +
       '<td>' + (t.amount || (t.price * t.qty) || 0).toLocaleString('zh-CN') + '</td>' +
-      '<td style="font-size:10px;max-width:100px">' + esc(t.reason || (t.source === 'manual' ? '人工' : '')) + '</td></tr>';
+      '<td style="font-size:var(--fs-xs);max-width:100px">' + esc(t.reason || (t.source === 'manual' ? '人工' : '')) + '</td></tr>';
   }).join('');
   document.getElementById('analysisTradeCount').textContent = '共 ' + total + ' 笔';
   // Pager
@@ -719,7 +733,7 @@ function renderDealTable(forceDate) {
   if (nPages <= 1) { pager.innerHTML = ''; }
   else {
     pager.innerHTML = '<button class="btn btn-sm" ' + (_dealPage === 0 ? 'disabled' : '') + ' id="adpPrev">‹ 上一页</button>' +
-      '<span style="margin:0 8px">第 ' + (_dealPage + 1) + ' / ' + nPages + ' 页</span>' +
+      '<span style="margin:0 var(--sp-2)">第 ' + (_dealPage + 1) + ' / ' + nPages + ' 页</span>' +
       '<button class="btn btn-sm" ' + (_dealPage >= nPages - 1 ? 'disabled' : '') + ' id="adpNext">下一页 ›</button>';
     document.getElementById('adpPrev').onclick = () => { _dealPage--; renderDealTable(forceDate); };
     document.getElementById('adpNext').onclick = () => { _dealPage++; renderDealTable(forceDate); };

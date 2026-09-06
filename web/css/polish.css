@@ -12,39 +12,35 @@
            / F4 暗色text2对比 / F5 斑马纹 / 滚动条
    ============================================================ */
 
-/* ── F1: 表头强化 (10px → 11.5px, 主色, 加字距) ─────────── */
+/* ── F1: 表头强化 (→ --fs-sm 12px, 主色, 加字距) ───────────
+   W4-6: 收作用域 — 原裸 `table thead th` 波及全站所有表格(含 brain-md 表头),
+   与 brain-md.css:59 斑马纹双重叠加; 只留交易/委托两类数据表 */
 .trade-table th,
-.td-table th,
-table thead th {
-  font-size: 11.5px;
+.td-table th {
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text);
   opacity: 0.88;
 }
 
-/* ── F2: 9px 中文标签 → 10.5px (中文9px不可读, 地板=10px) ── */
+/* ── F2: 9px 中文标签 → --fs-xs 11px (中文9px不可读, 地板=11px) ── */
 .concept-tag,
 .sector-item label .code,
 .td-sort-arrow {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
-/* ── F3: 工具栏按钮 10px → 11.5px + 最小点击高度 ────────── */
+/* ── F3: 工具栏按钮 → --fs-sm 12px + 最小点击高度 ────────── */
 .sector-toolbar button {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   min-height: 26px;
 }
 
-/* ── F4: 暗色下次级文字提亮一档 ───────────────────────────
-   #7a8499(实测) → #8b95a8: 在 #161c28 卡片上对比 ~4.6:1 → ~5.5:1,
-   叠加小字号场景(表头/badge)脱离"贴地板"区 */
-[data-theme="dark"] {
-  --text2: #8b95a8;
-}
-
-/* ── F5: 密集表格斑马纹 (极淡, 令牌派生, 双主题自适应) ──── */
-tbody tr:nth-child(even) > td {
+/* ── F5: 密集表格斑马纹 (极淡, 令牌派生, 双主题自适应) ────
+   W4-6: 收作用域 — 原裸 `tbody tr` 波及全站(与 brain-md.css:59 各叠一层斑马纹) */
+.trade-table tbody tr:nth-child(even) > td,
+.td-table tbody tr:nth-child(even) > td {
   background: color-mix(in srgb, var(--text) 2.2%, transparent);
 }
 

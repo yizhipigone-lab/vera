@@ -120,7 +120,7 @@ function staleTag(id) {
   if (!box.querySelector('.trade-stale-tag')) {
     var tag = document.createElement('div');
     tag.className = 'trade-stale-tag';
-    tag.style.cssText = 'font-size:10px;color:var(--pending);margin-bottom:4px';
+    tag.style.cssText = 'font-size:var(--fs-xs);color:var(--pending);margin-bottom:var(--sp-1)';
     tag.textContent = '离线缓存 (服务不可达, 数据未更新)';
     box.insertBefore(tag, box.firstChild);
   }
@@ -148,7 +148,7 @@ function _sortTh(field, label) {
   if (_posSort.field === field) {
     arrow = _posSort.asc ? ' ▲' : ' ▼';
   }
-  return '<th class="td-sortable" data-sort="' + field + '">' + label
+  return '<th class="td-sortable" data-sort="' + field + '" tabindex="0" role="button">' + label
     + '<span class="td-sort-arrow">' + arrow + '</span></th>';
 }
 
@@ -160,7 +160,7 @@ function renderPositions(d) {
   window._lastPositions = d.positions || [];
   _lastClosed = d.closed || null;
   if (!d.positions || !d.positions.length) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">无持仓</div>'; return;
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">无持仓</div>'; return;
   }
   // 2026-07-30: 持仓明细增强 — 简称/入场时间/市值/盈亏比例 + 已平仓
   // 2026-07-31: 当日涨幅 (价格口径) + 当日盈亏额 ((现价-昨收)×数量)
@@ -179,9 +179,10 @@ function renderPositions(d) {
   var positions = _applySort(window._lastPositions);
   positions.forEach(function (p) {
     var pnl = p.pnl === null ? '—' : p.pnl.toFixed(2);
-    var pnlColor = p.pnl === null ? '' : p.pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+    // W2-3e: 亏损色统一 --down (原用 --ok 健康语义色, 与 --down 两变量干一件事)
+    var pnlColor = p.pnl === null ? '' : p.pnl >= 0 ? 'color:var(--up)' : 'color:var(--down)';
     var dayColor = p.day_chg_pct === null || p.day_chg_pct === undefined ? ''
-      : p.day_chg_pct >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+      : p.day_chg_pct >= 0 ? 'color:var(--up)' : 'color:var(--down)';
     var dayPct = (p.day_chg_pct === null || p.day_chg_pct === undefined) ? '—'
       : (p.day_chg_pct > 0 ? '+' : '') + p.day_chg_pct.toFixed(2) + '%';
     var dayAmt = (p.day_chg_amt === null || p.day_chg_amt === undefined) ? '—'
@@ -216,12 +217,12 @@ function renderPositions(d) {
       + '</td><td>' + (p.market_value === null ? '—' : p.market_value.toLocaleString('zh-CN', {maximumFractionDigits: 0}))
       + '</td><td style="' + pnlColor + '">' + pnl
       + '</td><td style="' + pnlColor + '">' + (p.pnl_pct === null ? '—' : (p.pnl_pct > 0 ? '+' : '') + p.pnl_pct.toFixed(2) + '%')
-      + '</td><td style="font-size:10px">' + entryCell
+      + '</td><td style="font-size:var(--fs-xs)">' + entryCell
       + '</td><td>' + (p.hold_days === null ? '—' : p.hold_days + ' 天')
       + '</td><td>'
       + (p.tiers_done.length ? p.tiers_done.join(',') : '—')
       + '</td><td>' + (dim ? ''
-      : '<button class="trade-sell-btn" data-code="' + esc(p.code) + '">卖出</button>') + '</td></tr>';
+      : '<button class="trade-sell-btn" data-code="' + esc(p.code) + '"' + (cmdInFlight ? ' disabled' : '') + '>卖出</button>') + '</td></tr>';
   });
   html += '</table>';
   // 已平仓 (整周期闭环: 买入量=卖出量; 出场时间 = 最后一笔卖出)
@@ -231,12 +232,12 @@ function renderPositions(d) {
   (d.positions || []).forEach(function (p) { _posCodes[p.code] = 1; });
   var _histClosed = (d.closed || []).filter(function (c) { return !_posCodes[c.code]; });
   if (_histClosed.length) {
-    html += '<div style="margin-top:8px;color:var(--text2);font-size:11px">历史已平仓（已不在持仓）</div>'
+    html += '<div style="margin-top:var(--sp-2);color:var(--text2);font-size:var(--fs-xs)">历史已平仓（已不在持仓）</div>'
       + '<table class="td-table"><tr><th>代码</th><th>简称</th><th>数量</th>'
       + '<th>买入均价</th><th>卖出均价</th><th>已实现盈亏</th><th>盈亏%</th>'
       + '<th>持仓天数</th><th>入场时间</th><th>出场时间</th></tr>';
     _histClosed.forEach(function (c) {
-      var cColor = c.realized_pnl >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+      var cColor = c.realized_pnl >= 0 ? 'color:var(--up)' : 'color:var(--down)';
       html += '<tr><td>' + thsLink(c.code) + '</td><td>' + (c.name ? thsLink(c.code, c.name) : '—') + '</td>'
         + '<td>' + c.qty + '</td>'
         + '<td>' + (c.buy_avg != null ? c.buy_avg.toFixed(2) : '—') + '</td>'
@@ -244,8 +245,8 @@ function renderPositions(d) {
         + '<td style="' + cColor + '">' + (c.realized_pnl >= 0 ? '+' : '') + c.realized_pnl.toFixed(2) + '</td>'
         + '<td style="' + cColor + '">' + (c.realized_pnl_pct != null ? (c.realized_pnl_pct > 0 ? '+' : '') + c.realized_pnl_pct.toFixed(2) + '%' : '—') + '</td>'
         + '<td>' + (c.hold_days != null ? c.hold_days + ' 天' : '—') + '</td>'
-        + '<td style="font-size:10px">' + fmtTs(c.entry_ts) + '</td>'
-        + '<td style="font-size:10px">' + fmtTs(c.exit_ts) + '</td></tr>';
+        + '<td style="font-size:var(--fs-xs)">' + fmtTs(c.entry_ts) + '</td>'
+        + '<td style="font-size:var(--fs-xs)">' + fmtTs(c.exit_ts) + '</td></tr>';
     });
     html += '</table>';
   }
@@ -255,7 +256,7 @@ function renderPositions(d) {
       var code = b.getAttribute('data-code');
       if (!confirm('确认卖出 ' + code + ' 全部可用持仓?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级逃生通道 (限价))')) return;
       // 审计M12修复: 失败提示 + 防连点, 与买入路径一致
-      cmd(b, '/api/trade/sell', { code: code }, '卖出命令已受理, 等待执行结果…',
+      cmd(b, '/api/trade/sell', { code: code }, '卖出命令已受理，等待执行结果…',
         'tdBuyHint', function () {
           watchCmdResult(code, document.getElementById('tdBuyHint'));
         });
@@ -263,6 +264,10 @@ function renderPositions(d) {
   });
   // 2026-08-03: 可排序表头点击 —— 同列反转方向, 不同列切列且默认升序
   box.querySelectorAll('.td-sortable').forEach(function (th) {
+    // 2026-09-06 审计: 键盘可达 —— Enter/Space 等同点击 (原只绑 click, 键盘用户进不来)
+    th.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); th.click(); }
+    });
     th.addEventListener('click', function () {
       var field = th.getAttribute('data-sort');
       if (!field) return;
@@ -291,7 +296,7 @@ function orderStatusHtml(st, msg) {
   else if (st === 50 || st === 51 || st === 55) html = '<span style="color:var(--pending)">' + txt + '</span>';
   else html = txt;
   // 2026-08-07: 废单/已撤原因 (XtOrder.status_msg, 券商原话) 挂在状态下方
-  if (msg) html += '<br><span style="color:var(--text2);font-size:11px">' + esc(msg) + '</span>';
+  if (msg) html += '<br><span style="color:var(--text2);font-size:var(--fs-xs)">' + esc(msg) + '</span>';
   return html;
 }
 
@@ -299,7 +304,7 @@ function renderOrders(d) {
   var box = document.getElementById('tdOrders');
   clearStale('tdOrders');
   if (!d.orders || !d.orders.length) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">当日无委托</div>'; return;
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">当日无委托</div>'; return;
   }
   // 2026-07-30: 委托表加撤单按钮 (用户要求) — 终态 (部撤53/已撤/已成/废单) 不可撤
   // 2026-08-07 (用户要求): 状态说明列 —— 原始代码是 xtquant 状态码, 小白看不懂
@@ -319,7 +324,7 @@ function renderOrders(d) {
       + Number(o.price).toFixed(2) + '</td><td>' + Number(o.qty) + '</td><td>'
       + Number(o.filled_qty) + '</td><td>' + st + '</td><td>' + orderStatusHtml(st, o.status_msg || '') + '</td><td>'
       + (canCancel
-        ? '<button class="trade-sell-btn trade-cancel-btn" data-oid="' + esc(o.order_id) + '">撤单</button>'
+        ? '<button class="trade-sell-btn trade-cancel-btn" data-oid="' + esc(o.order_id) + '"' + (cmdInFlight ? ' disabled' : '') + '>撤单</button>'
         : '')
       + '</td></tr>';
   });
@@ -337,7 +342,7 @@ function renderReconciles(d) {
   var box = document.getElementById('tdReconciles');
   clearStale('tdReconciles');
   if (!d.reconciles || !d.reconciles.length) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无对账记录</div>'; return;
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无对账记录</div>'; return;
   }
   var html = '<table class="td-table"><tr><th>时间</th><th>级别</th><th>代码</th><th>简称</th>'
     + '<th>本地</th><th>QMT</th><th>说明</th></tr>';
@@ -369,7 +374,7 @@ function renderAudits(d) {
 function renderDeals(d) {
   var box = document.getElementById('recDeals');
   if (!d.deals || !d.deals.length) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">该日无成交</div>'; return;
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">该日无成交</div>'; return;
   }
   // 2026-07-30: 来源列 — 区分手工单 (券商端/手机端, 对账认领) 与系统单
   // 2026-07-31: 原因列 — 为什么成交 (trades.reason: 阶梯止盈·档1/移动止盈/
@@ -386,13 +391,13 @@ function renderDeals(d) {
     // 盈亏列: 仅卖出有值, 买入显示 "—"
     var pnlAmt = '—', pnlPct = '—', pnlColor = '';
     if (isSell && t.pnl_amount !== null && t.pnl_amount !== undefined) {
-      pnlColor = t.pnl_amount >= 0 ? 'color:var(--up)' : 'color:var(--ok)';
+      pnlColor = t.pnl_amount >= 0 ? 'color:var(--up)' : 'color:var(--down)';
       pnlAmt = (t.pnl_amount >= 0 ? '+' : '') + t.pnl_amount.toLocaleString('zh-CN', {maximumFractionDigits: 2});
       pnlPct = (t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct.toFixed(2) + '%';
     }
     html += '<tr><td>' + fmtTs(t.ts) + '</td><td>' + thsLink(t.code) + '</td><td>'
       + (t.name ? thsLink(t.code, t.name) : '—') + '</td><td style="color:'
-      + (isBuy ? 'var(--up)' : 'var(--ok)') + '">' + (isBuy ? '买' : '卖') + '</td><td>'
+      + (isBuy ? 'var(--up)' : 'var(--down)') + '">' + (isBuy ? '买' : '卖') + '</td><td>'
       + src + '</td><td>' + (t.reason ? esc(t.reason) : '—') + '</td><td>'
       + Number(t.price).toFixed(2) + '</td><td>' + Number(t.qty) + '</td><td>'
       + Number(t.amount).toLocaleString('zh-CN', {maximumFractionDigits: 2}) + '</td>'
@@ -406,7 +411,7 @@ function renderDeals(d) {
 function renderHistoryOrders(d) {
   var box = document.getElementById('recOrders');
   if (!d.orders || !d.orders.length) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">该日无委托</div>'; return;
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">该日无委托</div>'; return;
   }
   // 历史台账只读 — 撤单按钮只在交易页"当日委托"卡片 (操作区)
   var html = '<table class="td-table"><tr><th>时间</th><th>备注</th><th>代码</th>'
@@ -432,32 +437,48 @@ function _dateParam(inputId, hintId) {
   return v ? '?date=' + v : '';
 }
 
+// W2-2: 查询按钮 loading 态 — 点击即禁用+文案加"…", 完成恢复 (旧行为挂起时像"没反应")
+function _withBtnLoading(btn, fn) {
+  var original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = original + '…';
+  Promise.resolve(fn()).finally(function () { btn.disabled = false; btn.textContent = original; });
+}
+
 function loadDeals() {
   var q = _dateParam('recDealDate', 'recDealHint');
   if (q === null) return;
-  get('/api/trade/deals' + q).then(renderDeals).catch(function () {
-    document.getElementById('recDealHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+  _withBtnLoading(document.getElementById('recDealBtn'), function () {
+    return get('/api/trade/deals' + q).then(renderDeals).catch(function () {
+      document.getElementById('recDealHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+    });
   });
 }
 
 function loadHistoryOrders() {
   var q = _dateParam('recOrderDate', 'recOrderHint');
   if (q === null) return;
-  get('/api/trade/orders' + q).then(renderHistoryOrders).catch(function () {
-    document.getElementById('recOrderHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+  _withBtnLoading(document.getElementById('recOrderBtn'), function () {
+    return get('/api/trade/orders' + q).then(renderHistoryOrders).catch(function () {
+      document.getElementById('recOrderHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+    });
   });
 }
 
 function loadReconciles() {
-  get('/api/trade/reconciles?limit=50').then(renderReconciles).catch(function () {
-    document.getElementById('tdReconciles').innerHTML =
-      '<div style="color:var(--text2);font-size:12px">查询失败: 交易服务 (8081) 不可达</div>';
+  _withBtnLoading(document.getElementById('recReconcileBtn'), function () {
+    return get('/api/trade/reconciles?limit=50').then(renderReconciles).catch(function () {
+      document.getElementById('tdReconciles').innerHTML =
+        '<div style="color:var(--text2);font-size:var(--fs-sm)">查询失败: 交易服务 (8081) 不可达</div>';
+    });
   });
 }
 
 function loadAudits() {
-  get('/api/trade/audits?limit=100').then(renderAudits).catch(function () {
-    document.getElementById('tdAudits').textContent = '查询失败: 交易服务 (8081) 不可达';
+  _withBtnLoading(document.getElementById('recAuditBtn'), function () {
+    return get('/api/trade/audits?limit=100').then(renderAudits).catch(function () {
+      document.getElementById('tdAudits').textContent = '查询失败: 交易服务 (8081) 不可达';
+    });
   });
 }
 
@@ -517,6 +538,34 @@ function renderAsset(a) {
 // 审计L12修复: 在途保护 (一轮未回完不发起下一轮) + fetch 4s 超时
 var inflight = false;
 
+// W2-1 (2026-09-05): 脏检查 — 数据没变不重绘。
+// 旧实现每秒全量 innerHTML 重建持仓/委托表: 选中文字 1 秒被清、悬停闪烁、
+// cmd() 刚禁用的行内按钮被换成全新可用按钮。
+// 比较键只取各 render 实际消费的字段(见 _consumed), 不 stringify 整个响应 —
+// 防响应体携带前端未消费的 server_time 类字段让脏检查每秒白干。
+// 失败分支删除对应 key: 服务恢复后即使数据与断线前相同也强制重绘(清离线角标)。
+var _lastPayload = {};
+function _consumed(key, d) {
+  if (!d || typeof d !== 'object') return JSON.stringify(d);
+  switch (key) {
+    case 'status': return JSON.stringify([d.connected, d.reconciled, d.monitor_healthy, d.monitor_reason, d.kill_active]);
+    case 'positions': return JSON.stringify([d.positions, d.closed]);
+    case 'orders': return JSON.stringify([d.orders]);
+    case 'auto_buy': return JSON.stringify([d.config, d.last]);
+    case 'rotation': return JSON.stringify([d.config, d.last]);
+    case 'asset': return JSON.stringify([d.total_asset, d.cash, d.market_value, d.frozen_cash, d.prev_day_asset]);
+  }
+  return JSON.stringify(d);
+}
+function _changed(key, d) {
+  var s = _consumed(key, d);
+  if (_lastPayload[key] === s) return false;
+  _lastPayload[key] = s;
+  return true;
+}
+// 命令受理/保存成功后强制下次全量刷新
+function invalidatePayload() { _lastPayload = {}; }
+
 function refresh() {
   if (inflight) return;
   inflight = true;
@@ -525,12 +574,24 @@ function refresh() {
   var s = ctl.signal;
   // 2026-07-30: 对账/审计迁交易记录 TAB (查询页手动加载), 驾驶舱轮询瘦身
   Promise.allSettled([
-    get('/api/trade/status', s).then(renderStatus).catch(markOffline),
-    get('/api/trade/positions', s).then(renderPositions).catch(function () { staleTag('tdPositions'); }),
-    get('/api/trade/orders', s).then(renderOrders).catch(function () { staleTag('tdOrders'); }),
-    get('/api/trade/auto_buy/last', s).then(renderAutoBuy).catch(function () {}),
-    get('/api/trade/rotation/last', s).then(renderRotation).catch(function () {}),
-    get('/api/trade/asset', s).then(renderAsset).catch(function () { staleTag('tdAssetCard'); }),
+    get('/api/trade/status', s).then(function (d) {
+      if (_changed('status', d)) renderStatus(d);
+    }).catch(function () { delete _lastPayload.status; markOffline(); }),
+    get('/api/trade/positions', s).then(function (d) {
+      if (_changed('positions', d)) renderPositions(d); else clearStale('tdPositions');
+    }).catch(function () { delete _lastPayload.positions; staleTag('tdPositions'); }),
+    get('/api/trade/orders', s).then(function (d) {
+      if (_changed('orders', d)) renderOrders(d); else clearStale('tdOrders');
+    }).catch(function () { delete _lastPayload.orders; staleTag('tdOrders'); }),
+    get('/api/trade/auto_buy/last', s).then(function (d) {
+      if (_changed('auto_buy', d)) renderAutoBuy(d);
+    }).catch(function () { delete _lastPayload.auto_buy; }),
+    get('/api/trade/rotation/last', s).then(function (d) {
+      if (_changed('rotation', d)) renderRotation(d);
+    }).catch(function () { delete _lastPayload.rotation; }),
+    get('/api/trade/asset', s).then(function (d) {
+      if (_changed('asset', d)) renderAsset(d);
+    }).catch(function () { delete _lastPayload.asset; staleTag('tdAssetCard'); }),
   ]).then(function () { clearTimeout(timer); inflight = false; });
 }
 
@@ -547,18 +608,26 @@ window.tradePageLeave = function () {
 
 // ── 命令绑定 ─────────────────────────────────────────
 
+// W2-4: 命令在途标志 —— cmd 期间重渲染的行内按钮保持禁用 (与 W2-1 脏检查、
+// confirm 阻塞叠加成三层防线; 旧行为靠 confirm 模态阻塞"碰巧"防住双击)
+var cmdInFlight = false;
+
 // 审计M12修复: 所有命令统一收口 —— 失败有明确提示 (与买入一致),
 // 请求期间按钮 disable 防连点, 4s 超时
 // 2026-08-01: hintId 可选 —— 反馈写就近 hint (买/卖/预埋 tdBuyHint),
 // 默认 tdHint (急停/尾盘选股); renderStatus 已改为不覆盖非急停期的 tdHint
 function cmd(btn, url, body, okMsg, hintId, onAccepted) {
   btn.disabled = true;
+  cmdInFlight = true;
+  // 已在页面上的行内按钮 (卖出/撤单) 同步禁用, 防在途期间点击
+  document.querySelectorAll('.trade-sell-btn,.trade-cancel-btn').forEach(function (b) { b.disabled = true; });
   var hintEl = document.getElementById(hintId || 'tdHint');
   var ctl = new AbortController();
   var timer = setTimeout(function () { ctl.abort(); }, 4000);
   post(url, body, ctl.signal).then(function () {
     hintEl.textContent = okMsg;
     if (onAccepted) onAccepted();
+    invalidatePayload();   // W2-1: 命令受理后强制下次全量刷新
     refresh();
   }).catch(function (e) {
     hintEl.textContent = (e && e.serverMsg)
@@ -566,6 +635,7 @@ function cmd(btn, url, body, okMsg, hintId, onAccepted) {
       : '命令发送失败: 交易服务 (8081) 不可达';
   }).finally(function () {
     clearTimeout(timer);
+    cmdInFlight = false;
     btn.disabled = false;
   });
 }
@@ -694,11 +764,13 @@ document.getElementById('tdSellBtn').addEventListener('click', function () {
     qtyText = qty + ' 股 (可用 ' + canUse + ' 股)';
   }
   if (!confirm('确认卖出 ' + code + ' ' + qtyText + '?\n(走撤单流水线: 撤预埋 → 买一价 → 超时升级逃生通道 (限价))')) return;
-  cmd(this, '/api/trade/sell', body, '卖出命令已受理, 等待执行结果…', 'tdBuyHint',
+  cmd(this, '/api/trade/sell', body, '卖出命令已受理，等待执行结果…', 'tdBuyHint',
     function () { watchCmdResult(code, hint); });
 });
 
 document.getElementById('tdLadderBtn').addEventListener('click', function () {
+  // W1-6: 预埋会真实挂出阶梯委托, 与买入/卖出/撤单一致补二次确认 (其余交易动作均有 confirm)
+  if (!confirm('确认手动触发当日预埋单? 将按阶梯价格真实挂出委托。')) return;
   cmd(this, '/api/trade/ladder', {}, '预埋命令已受理', 'tdBuyHint');});
 
 // ── 尾盘自动选股卡片 (2026-07-27 MVP) ────────────────
@@ -712,15 +784,15 @@ function renderAutoBuy(d) {
   var box = document.getElementById('tdAbLast');
   var last = d.last;
   if (!last) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">今日尚未运行</div>';
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">今日尚未运行</div>';
     return;
   }
   if (last.error) {
-    box.innerHTML = '<div style="color:var(--up);font-size:12px">运行失败: '
+    box.innerHTML = '<div style="color:var(--up);font-size:var(--fs-sm)">运行失败: '
       + esc(last.error) + '</div>';
     return;
   }
-  var html = '<div style="font-size:12px;margin-bottom:6px">最近运行 '
+  var html = '<div style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)">最近运行 '
     + fmtTs(last.ts) + ' (' + esc(last.source) + '): 选中 <b>' + last.selected
     + '</b> / 买入 <b>' + last.bought + '</b></div>';
   if (last.dispositions && last.dispositions.length) {
@@ -755,22 +827,22 @@ function renderRotation(d) {
   var box = document.getElementById('tdRotLast');
   var last = d.last;
   if (!last) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">尚未运行</div>';
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">尚未运行</div>';
     return;
   }
   if (last.error) {
-    box.innerHTML = '<div style="color:var(--down);font-size:12px">失败: '
+    box.innerHTML = '<div style="color:var(--down);font-size:var(--fs-sm)">失败: '
       + esc(last.error) + '</div>';
     return;
   }
   var s = last.signal || {};
   // 跳过/非交易日 (只有 note, 无 target/momentum)
   if (s.target === undefined && s.momentum === undefined && s.note) {
-    box.innerHTML = '<div style="color:var(--text2);font-size:12px">'
+    box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">'
       + esc(s.note) + '</div>';
     return;
   }
-  var html = '<div style="font-size:12px;margin-bottom:6px">最近 ' + fmtTs(last.ts)
+  var html = '<div style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)">最近 ' + fmtTs(last.ts)
     + ' (' + esc(last.source) + '): 目标 <b style="color:var(--up)">'
     + esc(s.target || '避险篮子') + '</b>'
     + (s.date ? ' <span style="color:var(--text2)">(基于 ' + esc(s.date) + ' 收盘)</span>' : '')
@@ -784,7 +856,7 @@ function renderRotation(d) {
       var m = s.momentum[c];
       legs.push(c + ' ' + (m == null ? '—' : (m * 100).toFixed(1) + '%'));
     });
-    html += '<div style="font-size:12px;color:var(--text2)">4周动量 '
+    html += '<div style="font-size:var(--fs-sm);color:var(--text2)">4周动量 '
       + legs.map(function (x) { return esc(x); }).join(' / ')
       + (s.reason ? ' · ' + esc(s.reason) : '')
       + (s.data_source ? ' · 源 ' + esc(s.data_source) : '') + '</div>';
@@ -793,11 +865,11 @@ function renderRotation(d) {
     var eh = Object.keys(s.entry_high).map(function (c) {
       return c + '@' + Number(s.entry_high[c]).toFixed(3);
     }).join(' / ');
-    html += '<div style="font-size:12px;color:var(--text2)">移动止损基准(持仓期最高) '
+    html += '<div style="font-size:var(--fs-sm);color:var(--text2)">移动止损基准(持仓期最高) '
       + esc(eh) + '</div>';
   }
   if (s.note && s.target !== undefined) {
-    html += '<div style="font-size:12px;color:var(--text2)">' + esc(s.note) + '</div>';
+    html += '<div style="font-size:var(--fs-sm);color:var(--text2)">' + esc(s.note) + '</div>';
   }
   box.innerHTML = html;
 }
@@ -974,9 +1046,11 @@ function gatherSettings() {
 
 document.getElementById('tdSettings').addEventListener('toggle', function () {
   if (this.open && !settingsLoaded) {
+    document.getElementById('tdsHint').textContent = '配置加载中…';
     get('/api/trade/config').then(function (cfg) {
       fillSettings(cfg);
       settingsLoaded = true;
+      document.getElementById('tdsHint').textContent = '';
     }).catch(function () {
       document.getElementById('tdsHint').textContent = '配置加载失败: 交易服务不可达';
     });
@@ -991,21 +1065,27 @@ document.getElementById('tdsSaveBtn').addEventListener('click', function () {
   var btn = this;
   var hint = document.getElementById('tdsHint');
   btn.disabled = true;
+  // W2-2: 补 AbortController+4s 超时 (cmd 同款) — 后端半死挂起时旧实现
+  // finally 永不执行, 保存按钮永久锁死且无提示; 超时走 catch 恢复按钮
+  var ctl = new AbortController();
+  var timer = setTimeout(function () { ctl.abort(); }, 4000);
   fetch(BASE + '/api/trade/config', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(gatherSettings()),
+    signal: ctl.signal,
   }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
     .then(function (res) {
       if (res.ok && res.d.accepted) {
         hint.textContent = '已热生效' + (res.d.changed && res.d.changed.length
           ? ' (变更: ' + res.d.changed.join(', ') + ')' : ' (无变更)');
+        invalidatePayload();   // W2-1: 保存改了 auto_buy/rotation 的 config 显示, 强制下次全量刷新
         refresh();
       } else {
         // 422: 后端校验的字段错误原样展示 (真相校验在后端)
         hint.textContent = '保存被拒: ' + (res.d.detail || '未知错误');
       }
-    }).catch(function () { hint.textContent = '保存失败: 交易服务不可达'; })
-    .finally(function () { btn.disabled = false; });
+    }).catch(function () { hint.textContent = '保存失败: 交易服务不可达或超时 (4s)'; })
+    .finally(function () { clearTimeout(timer); btn.disabled = false; });
 });
 
 })();

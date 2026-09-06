@@ -8,65 +8,65 @@
  */
 
 /* ── 基础排版 ── */
-.brain-md { line-height: 1.75; font-size: 13.5px; overflow-wrap: break-word; }
+.brain-md { line-height: 1.75; font-size: var(--fs-md); overflow-wrap: break-word; }
 .brain-md h1, .brain-md h2, .brain-md h3, .brain-md h4 {
-  color: var(--text); line-height: 1.4; margin: 14px 0 8px; letter-spacing: -.2px;
+  color: var(--text); line-height: 1.4; margin: var(--sp-3) 0 var(--sp-2); letter-spacing: -.2px;
 }
 .brain-md h1:first-child, .brain-md h2:first-child, .brain-md h3:first-child { margin-top: 2px; }
-.brain-md h1 { font-size: 17px; }
-.brain-md h2 { font-size: 15px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-.brain-md h3 { font-size: 14px; }
-.brain-md h4 { font-size: 13px; color: var(--text2); }
-.brain-md p { margin: 8px 0; }
-.brain-md ul, .brain-md ol { margin: 8px 0; padding-left: 22px; }
-.brain-md li { margin: 4px 0; }
+.brain-md h1 { font-size: var(--fs-lg); }
+.brain-md h2 { font-size: var(--fs-md); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.brain-md h3 { font-size: var(--fs-md); }
+.brain-md h4 { font-size: var(--fs-md); color: var(--text2); }
+.brain-md p { margin: var(--sp-2) 0; }
+.brain-md ul, .brain-md ol { margin: var(--sp-2) 0; padding-left: 22px; }
+.brain-md li { margin: var(--sp-1) 0; }
 .brain-md li > strong:first-child { color: var(--text); }
 .brain-md strong { color: var(--text); font-weight: 600; }
 .brain-md a { color: var(--accent2); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
-.brain-md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.brain-md hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-3) 0; }
 .brain-md img { max-width: 100%; border-radius: 8px; }
 .brain-md blockquote {
-  margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+  margin: var(--sp-3) 0; padding: var(--sp-2) var(--sp-3); border-left: 3px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   border-radius: 0 8px 8px 0; color: var(--text);
 }
-.brain-md blockquote p { margin: 4px 0; }
+.brain-md blockquote p { margin: var(--sp-1) 0; }
 
 /* ── 代码 ── */
 .brain-md code {
-  font-family: var(--mono); font-size: 12px;
+  font-family: var(--mono); font-size: var(--fs-sm);
   background: color-mix(in srgb, var(--text) 8%, transparent);
-  padding: 1px 5px; border-radius: 4px;
+  padding: 1px var(--sp-1); border-radius: 4px;
 }
 .brain-md pre {
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 12px; overflow-x: auto; margin: 10px 0;
+  padding: var(--sp-3) var(--sp-3); overflow-x: auto; margin: var(--sp-3) 0;
 }
-.brain-md pre code { background: none; padding: 0; font-size: 12px; line-height: 1.6; }
+.brain-md pre code { background: none; padding: 0; font-size: var(--fs-sm); line-height: 1.6; }
 
 /* ── 表格 (brain_viz.js 包一层 .bm-tbl-wrap 提供横向滚动) ── */
-.bm-tbl-wrap { overflow-x: auto; margin: 10px 0; border: 1px solid var(--border); border-radius: 8px; }
-.brain-md table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.bm-tbl-wrap { overflow-x: auto; margin: var(--sp-3) 0; border: 1px solid var(--border); border-radius: 8px; }
+.brain-md table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .brain-md th, .brain-md td {
-  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border);
   text-align: left; white-space: nowrap;
 }
 .brain-md th {
   font-weight: 600; color: var(--text);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  background: var(--card);   /* W4-6: sticky 表头必须不透明 — 原 9% 透明 color-mix 会让行内容横向滚动时从表头底下透出来 */
   position: sticky; top: 0;
 }
 .brain-md tbody tr:nth-child(even) { background: color-mix(in srgb, var(--text) 3%, transparent); }
 .brain-md tbody tr:last-child td { border-bottom: none; }
-.brain-md .bm-num { text-align: right; font-family: var(--mono); font-size: 12px; }
+.brain-md .bm-num { text-align: right; font-family: var(--mono); font-size: var(--fs-sm); }
 
 /* ── 事实/解读/待验证 徽章 (brain_viz.js 注入 span) ── */
 .bm-badge {
-  display: inline-block; padding: 0 7px; margin: 0 2px; border-radius: 4px;
-  font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px;
+  display: inline-block; padding: 0 var(--sp-2); margin: 0 2px; border-radius: 4px;
+  font-size: var(--fs-xs); font-weight: 600; line-height: 18px; vertical-align: 1px;
 }
 .bm-fact  { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 14%, transparent); }
-.bm-view  { color: var(--accent);  background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.bm-view  { color: var(--link);  background: color-mix(in srgb, var(--accent) 14%, transparent); }/* 2026-09-06 审计: 文字色走 --link 保浅色对比度 */
 .bm-todo  { color: var(--warn);    background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .bm-miss  { color: var(--text2);   background: color-mix(in srgb, var(--text2) 12%, transparent); }
 
@@ -76,27 +76,27 @@
 
 /* ── 反证卡 (counter.py 强制的 <counter_evidence> 段 → 独立警示卡) ── */
 .bm-counter {
-  margin-top: 14px; padding: 10px 14px;
+  margin-top: var(--sp-3); padding: var(--sp-3) var(--sp-3);
   border: 1px dashed var(--warn); border-radius: 8px;
   background: color-mix(in srgb, var(--warn) 7%, transparent);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 .bm-counter-head {
-  color: var(--warn); font-weight: 600; font-size: 12px; margin-bottom: 6px;
+  color: var(--warn); font-weight: 600; font-size: var(--fs-sm); margin-bottom: var(--sp-2);
   letter-spacing: .5px;
 }
-.bm-counter p { margin: 4px 0; }
+.bm-counter p { margin: var(--sp-1) 0; }
 
 /* ── 交互图表卡 (```chart 块 → echarts) ── */
 .bm-chart {
-  margin: 12px 0; border: 1px solid var(--border); border-radius: 10px;
+  margin: var(--sp-3) 0; border: 1px solid var(--border); border-radius: 10px;
   background: color-mix(in srgb, var(--text) 2.5%, transparent); overflow: hidden;
 }
 .bm-chart-head {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  padding: 10px 14px 0;
+  display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-3) 0;
 }
-.bm-chart-title { font-weight: 600; font-size: 13px; color: var(--text); }
-.bm-chart-src { font-size: 11px; color: var(--text2); }
-.bm-chart-canvas { height: 240px; padding: 4px 6px 6px; }
-.bm-chart-note { height: auto; padding: 10px 14px; font-size: 12px; color: var(--text2); }
+.bm-chart-title { font-weight: 600; font-size: var(--fs-md); color: var(--text); }
+.bm-chart-src { font-size: var(--fs-xs); color: var(--text2); }
+.bm-chart-canvas { height: 240px; padding: var(--sp-1) var(--sp-2) var(--sp-2); }
+.bm-chart-note { height: auto; padding: var(--sp-3) var(--sp-3); font-size: var(--fs-sm); color: var(--text2); }

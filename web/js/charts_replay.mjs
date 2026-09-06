@@ -14,7 +14,7 @@
 //   连续点不同行先关再开, 不产生叠层。
 // 弹窗自包含 (内联样式), index.html 零改动。
 
-import { esc, getColors, hexToRgba } from './charts.js';
+import { esc, getColors, hexToRgba } from './charts.js?v=20260906d';
 import { klineWindow, toCandleRows, formatMoney } from './deep_math.mjs';
 
 // ── 模块级状态 (同一时刻最多一个弹窗) ──
@@ -43,7 +43,7 @@ export function closeTradeReplay() {
 function _showError(bodyEl, msg, detail, c) {
   console.warn('[trade-replay] ' + (detail || msg));
   bodyEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%'
-    + ';color:' + c.warn + ';font-size:13px;padding:20px;text-align:center">' + esc(msg) + '</div>';
+    + ';color:' + c.warn + ';font-size:var(--fs-md);padding:var(--sp-5);text-align:center">' + esc(msg) + '</div>';
 }
 
 /**
@@ -75,7 +75,7 @@ export async function openTradeReplay(trade, colors) {
     + (typeof trade.pnl === 'number' && Number.isFinite(trade.pnl) ? ' (' + formatMoney(trade.pnl) + ')' : '');
   const header = document.createElement('div');
   header.style.cssText = 'display:flex;align-items:center;justify-content:space-between'
-    + ';padding:10px 14px;border-bottom:1px solid ' + c.border + ';font-size:13px;color:' + c.text;
+    + ';padding:var(--sp-3) var(--sp-3);border-bottom:1px solid ' + c.border + ';font-size:var(--fs-md);color:' + c.text;
   const title = document.createElement('span');
   title.innerHTML = '<b>' + esc(trade.stock_name || trade.stock_code || '') + '</b>'
     + '<span style="color:' + c.text2 + '">(' + esc(trade.stock_code || '') + ')</span> '
@@ -84,8 +84,8 @@ export async function openTradeReplay(trade, colors) {
   const btnClose = document.createElement('button');
   btnClose.textContent = '×';
   btnClose.title = '关闭 (ESC)';
-  btnClose.style.cssText = 'background:none;border:none;color:' + c.text2 + ';font-size:20px'
-    + ';cursor:pointer;line-height:1;padding:0 4px';
+  btnClose.style.cssText = 'background:none;border:none;color:' + c.text2 + ';font-size:var(--fs-xl)'
+    + ';cursor:pointer;line-height:1;padding:0 var(--sp-1)';
   btnClose.addEventListener('click', closeTradeReplay);
   header.appendChild(title);
   header.appendChild(btnClose);
@@ -95,7 +95,7 @@ export async function openTradeReplay(trade, colors) {
   const body = document.createElement('div');
   body.style.cssText = 'flex:1;position:relative;min-height:0';
   body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%'
-    + ';color:' + c.text2 + ';font-size:12px">K 线加载中…</div>';
+    + ';color:' + c.text2 + ';font-size:var(--fs-sm)">K 线加载中…</div>';
   box.appendChild(body);
 
   overlay.addEventListener('click', function (e) { if (e.target === overlay) closeTradeReplay(); });

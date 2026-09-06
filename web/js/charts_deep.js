@@ -6,9 +6,9 @@
 // 数学口径全在 deep_math.mjs (纯函数, node 可测), 本文件只管渲染。
 // 降级约定: 数据不足/异常 → 隐藏容器 (display:none), 不报错不崩页面。
 
-import { hexToRgba, getColors, echartsInit } from './charts.js';
+import { hexToRgba, getColors, echartsInit } from './charts.js?v=20260906d';
 import { computeDrawdown, tradeNetReturns, monteCarloFan, chooseScale, formatMoney } from './deep_math.mjs';
-import { wireTradeReplay } from './charts_replay.mjs';   // Phase 3: 交易行点击 → K 线回放
+import { wireTradeReplay } from './charts_replay.mjs?v=20260906c';   // Phase 3: 交易行点击 → K 线回放
 
 // 样本不足 20 笔时蒙特卡洛结果仅供参考 (与 deep_math 的 lowSample 阈值一致)
 const MC_SIMS = 1000;   // bootstrap 模拟次数
@@ -101,7 +101,7 @@ export function renderUnderwater(domId, equityPoints, colors) {
       { name: '回撤', type: 'line', data: dd, symbol: 'none',
         itemStyle: { color: c.down },
         lineStyle: { color: c.down, width: 1.5 },
-        // 0 轴向下红色系渐变填充, 越深越红
+        // 0 轴向下绿色系渐变填充, 越深越绿 (W2-3b: 修正与代码矛盾的旧注释"红色系")
         areaStyle: { color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
@@ -212,7 +212,7 @@ export function renderMonteCarlo(domId, trades, colors, opts) {
         .sort((a, b) => order[a.seriesName] - order[b.seriesName])
         .forEach(p => {
           const m = toMult(p.value);  // 两种模式统一换回倍数, tooltip 保持「倍数 + %」双口径
-          s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:5px"></span>';
+          s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:var(--sp-1)"></span>';
           s += p.seriesName + ': <b>' + _fmtMult(m) + '</b>（' + ((m - 1) * 100).toFixed(1) + '%）<br/>';
         });
       if (hasActual) s += '实际回测终点: <b>' + _fmtMult(actualMult) + '</b><br/>';
@@ -318,7 +318,7 @@ export function renderRolling(domId, rolling, colors) {
       params.forEach(p => {
         const v = p.value;
         const txt = v == null ? '-' : (p.seriesName === '滚动夏普' ? Number(v).toFixed(2) : Number(v).toFixed(1) + '%');
-        s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:5px"></span>';
+        s += '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + p.color + ';margin-right:var(--sp-1)"></span>';
         s += p.seriesName + ': <b>' + txt + '</b><br/>';
       });
       return s;

@@ -2,19 +2,45 @@
 // 所有后端 HTTP 请求的单一入口。每个函数只做 fetch + JSON 解析，不处理业务逻辑。
 // 统一返回 { success, data/error } 形状（与后端约定一致）。
 
-const json = p => p.then(r => r.json());
-const get = u => json(fetch(u));
-const post = (u, body, extra) => json(fetch(u, {
-  method: 'POST',
-  ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
-  ...extra,
-}));
-const del = u => json(fetch(u, { method: 'DELETE' }));
-const put = (u, body, extra) => json(fetch(u, {
-  method: 'PUT',
-  ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
-  ...extra,
-}));
+// W2-2 (2026-09-05): 统一请求基座 — AbortController 默认 8s 超时 + r.ok 检查 +
+// FastAPI detail 解析 (r.ok/detail 模式参考 trade.js 的 post; 原实现不查 r.ok,
+// 后端 5xx 返回 HTML 错误页时 r.json() 抛 SyntaxError, 错误信息不可控)。
+// 超时豁免两条路径: (1) 调用方自带 signal (如 submitBacktest, vera-ui 有 2h 控制器)
+// (2) 显式传 timeout=null (如流式端点)。
+export const DEFAULT_TIMEOUT_MS = 8000;
+function request(method, u, body, extra, timeout = DEFAULT_TIMEOUT_MS) {
+  const opt = {
+    method,
+    ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    ...extra,
+  };
+  let timer = null;
+  if (timeout != null && !opt.signal) {
+    const ctl = new AbortController();
+    opt.signal = ctl.signal;
+    timer = setTimeout(() => ctl.abort(), timeout);
+  }
+  return fetch(u, opt).then(r =>
+    r.json().catch(() => { throw new Error('HTTP ' + r.status + ' (响应非 JSON)'); })
+      .then(d => {
+        if (!r.ok) {
+          let msg = 'HTTP ' + r.status;
+          if (d && d.detail) {
+            msg = (typeof d.detail === 'string') ? d.detail
+              : (Array.isArray(d.detail)
+                ? d.detail.map(e => (e.loc ? e.loc.join('.') + ': ' : '') + e.msg).join('; ')
+                : JSON.stringify(d.detail));
+          }
+          throw new Error(msg);
+        }
+        return d;
+      })
+  ).finally(() => { if (timer) clearTimeout(timer); });
+}
+const get = (u, timeout) => request('GET', u, undefined, undefined, timeout);
+const post = (u, body, extra, timeout) => request('POST', u, body, extra, timeout);
+const del = u => request('DELETE', u);
+const put = (u, body, extra, timeout) => request('PUT', u, body, extra, timeout);
 
 // ── 回测管线 ──
 
@@ -45,6 +71,16 @@ export const fetchLabStatus = () => get('/api/lab/status');
 export const fetchLabHistory = () => get('/api/lab/history');
 export const fetchLabReport = formula => get('/api/lab/report?formula=' + encodeURIComponent(formula));
 
+// ── 公式农场 (2026-09-06, 三段闸门) ──
+
+export const fetchFarmStatus = () => get('/api/farm/status');
+export const farmCheck = () => post('/api/farm/check', {});
+export const farmOnboard = () => post('/api/farm/onboard', {});
+export const farmBacktest = () => post('/api/farm/backtest', {});
+export const farmStop = () => post('/api/farm/stop', {});
+export const fetchFarmReports = () => get('/api/farm/reports');
+export const fetchFarmReport = file => get('/api/farm/report?file=' + encodeURIComponent(file));
+
 // ── 数据准备 / 分析 (治理III W4-e 补全, 2026-09-05) ──
 
 export const fetchCalendar = (year = 0, month = 0) =>
@@ -71,7 +107,8 @@ export const submitDataCacheBackfill = body => post('/api/data_cache/backfill', 
 // 标准 chat —— brain_chat.js 迁流式时保留) ──
 
 export const postResearchChat = body => post('/api/research/chat', body);
-export const postResearchChatStream = body => post('/api/research/chat/stream', body);
+// 流式端点: 回答可持续数分钟 (深度思考档), 豁免默认超时
+export const postResearchChatStream = body => post('/api/research/chat/stream', body, undefined, null);
 // 后端 reset/stop 均为必填 body (dict); 缺省 {} 防无 body 调用 422,
 // 调用方仍需按其契约带 conv / {run_id} (brain_chat 迁移时)。
 export const resetResearchChat = (body = {}) => post('/api/research/chat/reset', body);

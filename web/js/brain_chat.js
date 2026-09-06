@@ -18,6 +18,10 @@
   var convs = [];      // [{id, title}]
   var activeId = null;
   var pending = {};    // {convId: {startTs, timer}}
+  // W3-1: 流式会话的内存态 — line 事件只增量更新最后一条气泡 + 500ms 节流写盘,
+  // 不再每行 全量parse/stringify/renderMessages (旧实现长回答几百次全套, 越聊越卡)
+  var _streams = {};   // {convId: {msgs: [], lastSave: 0}}
+  var STREAM_SAVE_MS = 500;
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
@@ -43,12 +47,12 @@
       var dot = pending[c.id] ? ' ⏳' : '';
       return '<span style="display:inline-flex;align-items:center;gap:2px">' +
         '<button data-conv="' + c.id + '" class="btn' + (on ? ' btn-primary' : '') + '" ' +
-        'style="padding:4px 10px;font-size:12px;' + (on ? '' : 'opacity:.75') + '">' +
+        'style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-sm);' + (on ? '' : 'opacity:.75') + '">' +
         esc(c.title) + dot + '</button>' +
         '<span data-close="' + c.id + '" title="关闭并清空此会话 (归档已保存, 不丢)" ' +
-        'style="cursor:pointer;color:var(--text2);font-size:12px;padding:0 3px">×</span>' +
+        'style="cursor:pointer;color:var(--text2);font-size:var(--fs-sm);padding:0 var(--sp-1)">×</span>' +
         '</span>';
-    }).join('') + '<button id="brainNewConvBtn" class="btn" style="padding:4px 10px;font-size:11px" title="新会话 (独立上下文)">＋</button>';
+    }).join('') + '<button id="brainNewConvBtn" class="btn" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs)" title="新会话 (独立上下文)">＋</button>';
     Array.prototype.forEach.call(bar.querySelectorAll('button[data-conv]'), function (b) {
       b.addEventListener('click', function () {
         activeId = b.getAttribute('data-conv');
@@ -73,6 +77,14 @@
   function closeConv(id) {
     var c = convs.filter(function (v) { return v.id === id; })[0];
     if (!confirm('关闭「' + (c ? c.title : id) + '」?\n页面消息将清空, 服务端会话记忆同时重置。\n(归档文件不受影响, 思考沉淀都在)')) return;
+    // W3-1 修复: 清掉该会话的 pending 定时器与流读取器 —
+    // 旧实现 closeConv 不清 pending[id].timer, 关闭正在等回答的会话后
+    // 它 1 秒一次的 interval 继续空跑 (SSE 挂掉则永久泄漏)
+    if (pending[id]) {
+      if (pending[id].reader) pending[id].reader.cancel().catch(function () {});
+      setPending(id, false);
+    }
+    delete _streams[id];
     // 服务端 session 一并重置 (归档在 vault, 不丢)
     fetch('/api/research/chat/reset', {
       method: 'POST',
@@ -92,29 +104,33 @@
 
   function bubbleHtml(m) {
     if (m.role === 'user') {
-      return '<div style="display:flex;justify-content:flex-end;margin:6px 0">' +
-        '<div style="max-width:80%;padding:8px 12px;border-radius:10px;background:var(--accent);color:#fff;white-space:pre-wrap;word-break:break-word">' +
+      return '<div style="display:flex;justify-content:flex-end;margin:var(--sp-2) 0">' +
+        '<div style="max-width:80%;padding:var(--sp-2) var(--sp-3);border-radius:10px;background:var(--accent);color:#fff;white-space:pre-wrap;word-break:break-word">' +
         esc(m.text) + '</div></div>';
     }
-    var badge = m.lowConf ? ' <span style="padding:1px 6px;border-radius:4px;font-size:10px;background:var(--pending);color:#fff">低置信</span>' : '';
+    var badge = m.lowConf ? ' <span style="padding:1px var(--sp-2);border-radius:4px;font-size:var(--fs-xs);background:var(--pending);color:#fff">低置信</span>' : '';
     var body;
-    if (window.BrainViz && !m.streaming) {
+    if (m.streaming) {
+      // W3-1: 流式占位气泡 — 纯 pre + 打标, 供 line 事件增量 textContent 更新
+      // (流式期不做 markdown 渲染, 半成品 md 每行重排本就浪费且易闪)
+      body = '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
+    } else if (window.BrainViz) {
       // 富呈现: 图表块/徽章/反证卡/涨跌上色 (brain_viz.js; 缺它就走下面旧路径)
       body = window.BrainViz.renderBody(m.text);
     } else {
       try {
         body = (window.marked && window.DOMPurify)
-          ? DOMPurify.sanitize(marked.parse(m.text))
+          ? DOMPurify.sanitize(window.veraDemoteH1 ? window.veraDemoteH1(marked.parse(m.text)) : marked.parse(m.text))
           : '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
       } catch (e) {
         body = '<pre style="white-space:pre-wrap;margin:0">' + esc(m.text) + '</pre>';
       }
     }
     var warn = (m.warnings && m.warnings.length)
-      ? '<div style="font-size:12px;color:var(--text2);margin-top:4px">⚠ ' + m.warnings.map(esc).join('；') + '</div>' : '';
-    return '<div style="display:flex;justify-content:flex-start;margin:6px 0">' +
-      '<div style="max-width:100%;width:100%;padding:10px 14px;border-radius:10px;background:var(--card);border:1px solid var(--border);color:var(--text);word-break:break-word" class="brain-md">' +
-      '<div style="font-size:12px;color:var(--text2);margin-bottom:4px">' + _modeBadge(m.via) + badge + '</div>' +
+      ? '<div style="font-size:var(--fs-sm);color:var(--text2);margin-top:var(--sp-1)">⚠ ' + m.warnings.map(esc).join('；') + '</div>' : '';
+    return '<div data-stream-bubble="' + (m.streaming ? '1' : '0') + '" style="display:flex;justify-content:flex-start;margin:var(--sp-2) 0">' +
+      '<div style="max-width:100%;width:100%;padding:var(--sp-3) var(--sp-3);border-radius:10px;background:var(--card);border:1px solid var(--border);color:var(--text);word-break:break-word" class="brain-md">' +
+      '<div style="font-size:var(--fs-sm);color:var(--text2);margin-bottom:var(--sp-1)">' + _modeBadge(m.via) + badge + '</div>' +
       body + warn + '</div></div>';
   }
 
@@ -123,7 +139,7 @@
     var msgs = loadMsgs(activeId);
     if (window.BrainViz) window.BrainViz.disposeAll();   // innerHTML 清空前释放 echarts 实例
     if (!msgs.length) {
-      box.innerHTML = '<div style="color:var(--text2);padding:8px">新会话。问点政策/持仓/图谱相关的, 如 "当前持仓哪些在 AVOID 档?"</div>';
+      box.innerHTML = '<div style="color:var(--text2);padding:var(--sp-2)">新会话。问点政策/持仓/图谱相关的, 如 "当前持仓哪些在 AVOID 档?"</div>';
       return;
     }
     if (window.BrainViz) window.BrainViz.beginRender();  // 重置本轮图表 spec 收集
@@ -166,7 +182,7 @@
   }
 
   function _mode() {
-    /* 三态档位 (2026-09-05): fast=⚡快速 / standard=标准 / deep=🧠深度思考 */
+    /* 三态档位 (2026-09-05): fast=快速 / standard=标准 / deep=深度思考 */
     var el = document.querySelector('input[name="brainMode"]:checked');
     var m = el ? el.value : 'fast';
     return (m === 'standard' || m === 'deep') ? m : 'fast';
@@ -175,9 +191,9 @@
   /* 档位大白话注释 (2026-09-05): 随所选档位实时切换, 不悬停也看得懂。
      brainModeHint 容器在 index.html 研究页, 缺失则静默跳过 (松耦合)。 */
   var _MODE_HINTS = {
-    fast: '⚡快速: 1~3秒秒回, 只答知识/概念类轻问题 (像随口问一句), 不查你的数据、不碰代码。问个股/大盘要看数字的, 请切下面两档。',
+    fast: '快速: 1~3秒秒回, 只答知识/概念类轻问题 (像随口问一句), 不查你的数据、不碰代码。问个股/大盘要看数字的, 请切下面两档。',
     standard: '标准: 正经深度回答。它会自己动手查你的数据、翻项目代码再答, 需要十几秒到几分钟。',
-    deep: '🧠深度思考: 最难、要动手的事交给它。独立进程, 自己写代码/读文件/联网核实, 能读写 VERA 项目代码, 最慢但最全, 每次自动留档。',
+    deep: '深度思考: 最难、要动手的事交给它。独立进程, 自己写代码/读文件/联网核实, 能读写 VERA 项目代码, 最慢但最全, 每次自动留档。',
   };
   function updateModeHint() {
     var el = $('brainModeHint');
@@ -186,8 +202,8 @@
   }
 
   function _modeBadge(mode) {
-    if (mode === 'deep') return '大脑 · 🧠深度';
-    if (mode === 'fast') return '大脑 · ⚡快速';
+    if (mode === 'deep') return '大脑 · 深度';
+    if (mode === 'fast') return '大脑 · 快速';
     return '大脑';
   }
 
@@ -205,6 +221,7 @@
     // ★v2 SSE: 先 push streaming 占位 (实时更新 text = claude stdout)
     msgs.push({ role: 'brain', text: '思考中…', lowConf: false, warnings: [], streaming: true, via: mode });
     saveMsgs(convId, msgs);
+    _streams[convId] = { msgs: msgs, lastSave: Date.now() };   // W3-1: 流式内存态
     input.value = '';
     setPending(convId, true);
     renderMessages();
@@ -255,15 +272,30 @@
                   if (convId === activeId) renderStatus();
                 }
               }
-              var m = loadMsgs(convId);
-              var last = m[m.length - 1];
-              if (last && last.streaming) {
-                last.text = streamText;
-                saveMsgs(convId, m);
-                if (convId === activeId) renderMessages();
+              // W3-1: 只增量更新最后一条气泡的 textContent (不做 markdown/挂图),
+              // localStorage 500ms 节流写 — 完成态由末尾 .then 的 renderMessages 富渲染
+              var st = _streams[convId];
+              if (st && st.msgs.length) {
+                var last = st.msgs[st.msgs.length - 1];
+                if (last && last.streaming) {
+                  last.text = streamText;
+                  var now = Date.now();
+                  if (now - st.lastSave > STREAM_SAVE_MS) {
+                    st.lastSave = now;
+                    saveMsgs(convId, st.msgs);
+                  }
+                  if (convId === activeId) {
+                    var pre = $('brainMessages').querySelector('[data-stream-bubble="1"] pre');
+                    if (pre) {
+                      pre.textContent = streamText;
+                      $('brainMessages').scrollTop = $('brainMessages').scrollHeight;
+                    }
+                  }
+                }
               }
             } else if (d.type === 'done') {
-              var m2 = loadMsgs(convId);
+              var st2 = _streams[convId];
+              var m2 = st2 ? st2.msgs : loadMsgs(convId);
               var last2 = m2[m2.length - 1];
               if (last2 && last2.streaming) {
                 last2.text = d.answer || streamText || '(空回答)';
@@ -272,15 +304,20 @@
                 delete last2.streaming;
                 saveMsgs(convId, m2);
               }
+              delete _streams[convId];
             }
           } catch (e) {}
         }
       }
     }).catch(function (e) {
       // SSE 失败 → 移除 streaming 占位 + 降级旧端点
-      var m = loadMsgs(convId);
+      // W3-1 修复: return 降级 Promise 纳入同一链 — 旧实现不等 fallback,
+      // .then 立即 setPending(false)+renderMessages, 降级回答落地时无人渲染
+      var st3 = _streams[convId];
+      var m = st3 ? st3.msgs : loadMsgs(convId);
       if (m.length && m[m.length - 1].streaming) { m.pop(); saveMsgs(convId, m); }
-      _fallbackSend(q, convId);
+      delete _streams[convId];
+      return _fallbackSend(q, convId);
     }).then(function () {
       setPending(convId, false);
       if (convId === activeId) renderMessages();
@@ -354,6 +391,7 @@
         saveMsgs(activeId, m);
         renderMessages();
       }
+      delete _streams[activeId];   // W3-1: 停止后清流式内存态, 防悬挂
       fetch('/api/research/chat/stop', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ run_id: p.runId }),

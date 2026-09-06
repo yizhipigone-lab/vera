@@ -37,6 +37,13 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  // W4-6: markdown h1 → h2 降级 (页内已有 <h1>VERA</h1>, 报告/回答再渲一个 h1 破坏标题层级)。
+  // 字符串后处理, 不依赖 marked 版本的 renderer API; brain_chat 与 lab 报告两条渲染路径共用。
+  function demoteH1(html) {
+    return String(html == null ? '' : html).replace(/<(\/?)h1(\s|>)/gi, '<$1h2$2');
+  }
+  window.veraDemoteH1 = demoteH1;
+
   function hexToRgba(color, alpha) {
     if (!color) return 'rgba(120,120,120,' + alpha + ')';
     if (color.charAt(0) !== '#') return color;
@@ -47,6 +54,10 @@
   }
 
   function themeColors() {
+    /* 2026-09-06 审计: 兜底色收敛为一份 FB (原 v() 逐参数一份 + catch 再抄一份, 11 处重复) */
+    var FB = { up: '#d6342f', down: '#1f8a5b', accent: '#b8860b', accent2: '#2a9d8f',
+      warn: '#c47f17', text: '#1a1d24', text2: '#666', bg: '#f6f7f9', border: '#e2e4e9',
+      bm: ['#b8860b', '#2a9d8f', '#e8833a', '#6a5acd', '#457b9d'] };
     try {
       var s = getComputedStyle(document.documentElement);
       function v(name, fb) {
@@ -54,18 +65,15 @@
         return val || fb;
       }
       return {
-        up: v('--up', '#d6342f'), down: v('--down', '#1f8a5b'),
-        accent: v('--accent', '#b8860b'), accent2: v('--accent2', '#2a9d8f'),
-        warn: v('--warn', '#c47f17'), text: v('--text', '#1a1d24'),
-        text2: v('--text2', '#666'), bg: v('--bg', '#f6f7f9'),
-        border: v('--border', '#e2e4e9'),
-        bm: [v('--bm-1', '#b8860b'), v('--bm-2', '#2a9d8f'), v('--bm-3', '#e8833a'),
-             v('--bm-4', '#6a5acd'), v('--bm-5', '#457b9d')]
+        up: v('--up', FB.up), down: v('--down', FB.down),
+        accent: v('--accent', FB.accent), accent2: v('--accent2', FB.accent2),
+        warn: v('--warn', FB.warn), text: v('--text', FB.text),
+        text2: v('--text2', FB.text2), bg: v('--bg', FB.bg),
+        border: v('--border', FB.border),
+        bm: FB.bm.map(function (c, i) { return v('--bm-' + (i + 1), c); })
       };
     } catch (e) {
-      return { up: '#d6342f', down: '#1f8a5b', accent: '#b8860b', accent2: '#2a9d8f',
-        warn: '#c47f17', text: '#1a1d24', text2: '#666', bg: '#f6f7f9', border: '#e2e4e9',
-        bm: ['#b8860b', '#2a9d8f', '#e8833a', '#6a5acd', '#457b9d'] };
+      return FB;
     }
   }
 
@@ -176,7 +184,8 @@
   // ── markdown → 消毒 HTML (与 brain_chat 旧路径同款, 多一层失败兜底) ──
   function mdToHtml(md) {
     if (window.marked && window.DOMPurify) {
-      try { return window.DOMPurify.sanitize(window.marked.parse(md)); } catch (e) { /* 走兜底 */ }
+      // 2026-09-06 审查修复: 本路径此前漏接 demoteH1, 报告 h1 只走 brain_chat 那条线会漏
+      try { return demoteH1(window.DOMPurify.sanitize(window.marked.parse(md))); } catch (e) { /* 走兜底 */ }
     }
     return '<pre style="white-space:pre-wrap;margin:0">' + escapeHtml(md) + '</pre>';
   }

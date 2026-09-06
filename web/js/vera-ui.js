@@ -1,9 +1,9 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
-import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport } from './api.js';
+import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport } from './api.js?v=20260906c';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
-import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js';
-import { renderDeepCharts } from './charts_deep.js?v=20260814';
+import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js?v=20260906d';
+import { renderDeepCharts } from './charts_deep.js?v=20260906c';
 
 // ═══════════════════════════════════════════
 // Global State
@@ -33,7 +33,10 @@ const { tryRecoverAbortedResult, resetRunUI, setBtnStopMode, setBtnRunMode } = R
 
 setChartsRef(charts);
 toggleTheme._onToggle = () => { if (lastResult) renderAllCharts(lastResult); if (lastResult) renderDeepCharts(lastResult); };
-toggleSidebar._onToggle = () => { setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300); };
+toggleSidebar._onToggle = () => { setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300);
+  // W1-2: 侧栏折叠钮(div→button)后同步 aria-expanded
+  const st = document.querySelector('.sidebar-toggle');
+  if (st) st.setAttribute('aria-expanded', String(!document.querySelector('.sidebar').classList.contains('collapsed'))); };
 
 // ═══════════════════════════════════════════
 // Config bridge — thin wrappers around config.js
@@ -51,6 +54,16 @@ function toggleEdit(blockId) { cfgToggleEdit(blockId, saveAllConfig, refreshAllS
 function cancelEdit(blockId) { cfgCancelEdit(blockId); }
 function saveBlock(blockId) { cfgSaveBlock(blockId, saveAllConfig, refreshAllSummaries, addLog); }
 function filterTrades() { chartFilterTrades(allTrades, renderTradeTable); }
+
+// W3-4: 搜索防抖 — 9 万笔回测下旧实现每敲一键全量 filter+重建 200 行 DOM;
+// 250ms 内连打只触发一次, 回车立即执行不等防抖
+function debounce(fn, ms) {
+  let t = null;
+  const d = (...a) => { clearTimeout(t); t = setTimeout(() => fn.apply(null, a), ms); };
+  d.cancel = () => clearTimeout(t);
+  return d;
+}
+const filterTradesDebounced = debounce(filterTrades, 250);
 
 // ═══════════════════════════════════════════
 // Config File Ops
@@ -139,6 +152,8 @@ function runPipeline() {
       dispPct += (target - dispPct) * 0.4;                          // 缓动逼近
       if (Math.abs(target - dispPct) < 0.4) dispPct = target;
       document.getElementById('progressFill').style.width = dispPct.toFixed(1)+'%';
+      // W1-7: 进度条语义化, 读屏可感知进度
+      const pb = document.getElementById('progressBar'); if (pb) pb.setAttribute('aria-valuenow', dispPct.toFixed(0));
       const elapsed = (Date.now() - runT0) / 1000;
       let txt = s.step || '';
       if (s.detail) txt += ' · ' + s.detail;
@@ -203,9 +218,9 @@ let _allSectors = [], _selectedSectors = [];
 async function loadSectors() {
   const grid = document.getElementById('sectorGrid'), empty = document.getElementById('sectorEmpty');
   try { const result = await apiFetchSectors();
-    if (!result.success || !result.sectors || result.sectors.length === 0) { empty.innerHTML = '板块列表加载失败：'+(result.error||'未知错误')+'（请检查通达信客户端）<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:6px">重试</button>'; empty.style.color = 'var(--up)';
+    if (!result.success || !result.sectors || result.sectors.length === 0) { empty.innerHTML = '板块列表加载失败：'+(result.error||'未知错误')+'（请检查通达信客户端）<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>'; empty.style.color = 'var(--up)';
       setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0); return; }
-    _allSectors = result.sectors; } catch (e) { empty.innerHTML = '板块列表加载失败：'+e.message+'<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:6px">重试</button>'; empty.style.color = 'var(--up)';
+    _allSectors = result.sectors; } catch (e) { empty.innerHTML = '板块列表加载失败：'+e.message+'<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>'; empty.style.color = 'var(--up)';
     setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0); return; }
   empty.style.display = 'none';
   try { _selectedSectors = JSON.parse(localStorage.getItem(SECTORS_KEY) || '[]'); } catch(e) { _selectedSectors = []; }
@@ -339,10 +354,23 @@ function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade',
   var _pRec = document.getElementById('pageRecords'); if (_pRec) _pRec.classList.toggle('active', isRecords);
   if (isRecords && window.recordsPageEnter) window.recordsPageEnter();
   if (!isRecords && window.recordsPageLeave) window.recordsPageLeave();
+  // 2026-09-06: 公式农场 TAB (三段闸门, 切入轮询/切出停止)
+  var isFarm = name==='farm';
+  var _tabF = document.getElementById('tabBtnFarm'); if (_tabF) _tabF.classList.toggle('active', isFarm);
+  var _pF = document.getElementById('pageFarm'); if (_pF) _pF.classList.toggle('active', isFarm);
+  if (isFarm) { refreshFarmStatus(); loadFarmReports(); startFarmPoll(); } else stopFarmPoll();
+  // 2026-09-06: AI 设置 TAB (对话大脑三档接入配置; 切入加载, 无轮询)
+  var isAi = name==='ai';
+  var _tabAi = document.getElementById('tabBtnAi'); if (_tabAi) _tabAi.classList.toggle('active', isAi);
+  var _pAi = document.getElementById('pageAi'); if (_pAi) _pAi.classList.toggle('active', isAi);
+  if (isAi && window.aiPageEnter) window.aiPageEnter();
   if (isLab) { refreshLabStatus(); loadLabHistory(); startLabPoll(); } else stopLabPoll();
   // 交易页轮询生命周期由 trade.js 自治 (window 钩子, 解耦两个 JS 模块)
   if (isTrade && window.tradePageEnter) window.tradePageEnter();
-  if (!isTrade && window.tradePageLeave) window.tradePageLeave(); }
+  if (!isTrade && window.tradePageLeave) window.tradePageLeave();
+  // W1-4: 页签写入 URL hash — 刷新保持页签、可把"交易页"地址发给别人
+  // (值相同不重复写, 防止与 hashchange 监听互相触发成环)
+  if (location.hash.slice(1) !== name) location.hash = name; }
 function startLabPoll() { stopLabPoll(); _labPollTimer = setInterval(refreshLabStatus, 2000); }
 function stopLabPoll() { if (_labPollTimer) { clearInterval(_labPollTimer); _labPollTimer = null; } }
 
@@ -384,25 +412,26 @@ function _labStatusBadge(t) { if (t.status==='done') return '<span class="lab-ba
 function refreshLabStatus() { fetchLabStatus().then(d => { const box = document.getElementById('labQueue'), hint = document.getElementById('labHint');
     _setLabBtn(d.current ? 'stop' : 'run');
     hint.textContent = d.current ? '当前: '+d.current.formulas.join(',')+' — '+d.current.stage+'(已 '+Math.floor(d.current.elapsed_s/60)+' 分钟) · 基线股票池 '+(d.current.universe_note||'') : (d.running?'':'空闲(回测运行中提交的体检会自动排队)');
-    if (!d.queue||!d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无任务</div>'; return; }
+    if (!d.queue||!d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无任务</div>'; return; }
     box.innerHTML = d.queue.slice().reverse().map(t => { const mins = Math.floor(t.elapsed_s/60);
       let html = '<div class="lab-row">'+_labStatusBadge(t)+' <b>'+esc(t.formulas.join(','))+'</b><span style="color:var(--text2)">'+esc(t.stage)+(t.status!=='queued'&&mins?' · '+mins+'分钟':'')+'</span></div>';
-      if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:#d05050">'+esc(t.error.slice(0,200))+'</div></div>';
-      if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <a href="javascript:void(0)" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--link)">查看报告</a></div></div>'; return html; }).join('');
+      if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:var(--up)">'+esc(t.error.slice(0,200))+'</div></div>';
+      if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <button type="button" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--link);background:none;border:none;padding:0;cursor:pointer;font-size:var(--fs-xs);text-decoration:underline">查看报告</button></div></div>'; return html; }).join('');
     setTimeout(() => { box.querySelectorAll('.lab-report-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0);
     if (d.running||d.queue.some(t=>t.status==='queued')) startLabPoll(); loadLabHistory(); }).catch(() => {}); }
 
 function loadLabHistory() { fetchLabHistory().then(d => { const box = document.getElementById('labHistory');
-    if (!d.items||!d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无体检记录</div>'; return; }
-    box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><a href="javascript:void(0)" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--link);font-size:11px">查看</a></div>').join('');
+    if (!d.items||!d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无体检记录</div>'; return; }
+    box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><button type="button" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--link);background:none;border:none;padding:0;cursor:pointer;font-size:var(--fs-xs);text-decoration:underline">查看</button></div>').join('');
     setTimeout(() => { box.querySelectorAll('.lab-hist-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0); }).catch(() => {}); }
 
 function viewLabReport(formula) { fetchLabReport(formula).then(d => { if (!d.success) { showToast(d.error||'无报告', 'error'); return; }
     document.getElementById('labReportCard').style.display = ''; document.getElementById('labReportTitle').textContent = '体检报告: '+d.file;
     const body = document.getElementById('labReportBody');
     // 2026-08-19: markdown 渲染 (同 brain_chat 姿势), DOMPurify 消毒防注入; marked 缺载时退回转义文本
+    // W4-6: h1 降级 h2 (与 brain 渲染路径共用 window.veraDemoteH1, 页内已有 <h1>VERA</h1>)
     body.innerHTML = (window.marked && window.DOMPurify)
-      ? DOMPurify.sanitize(marked.parse(d.markdown))
+      ? DOMPurify.sanitize(window.veraDemoteH1 ? window.veraDemoteH1(marked.parse(d.markdown)) : marked.parse(d.markdown))
       : '<pre>'+esc(d.markdown)+'</pre>';
     document.getElementById('labReportCard').scrollIntoView({ behavior: 'smooth' }); }); }
 
@@ -419,10 +448,68 @@ document.getElementById('tabBtnAnalysis')?.addEventListener('click', () => switc
 document.getElementById('tabBtnResearch')?.addEventListener('click', () => switchTab('research'));
 document.getElementById('tabBtnRecords')?.addEventListener('click', () => switchTab('records'));
 document.getElementById('tabBtnData')?.addEventListener('click', () => switchTab('data'));
+document.getElementById('tabBtnFarm')?.addEventListener('click', () => switchTab('farm'));
+document.getElementById('tabBtnAi')?.addEventListener('click', () => switchTab('ai'));
+document.getElementById('btnFarmCheck')?.addEventListener('click', () => farmGate(farmCheck, '检查增量'));
+document.getElementById('btnFarmOnboard')?.addEventListener('click', () => farmGate(farmOnboard, '一键入库'));
+document.getElementById('btnFarmBacktest')?.addEventListener('click', () => farmGate(farmBacktest, '开始回测'));
+document.getElementById('btnFarmStop')?.addEventListener('click', () => farmStop().then(() => showToast('已请求停止')).catch(() => {}));
+
+// ═══════════════════════════════════════════
+// Farm Page (公式农场三段闸门, 2026-09-06)
+// ═══════════════════════════════════════════
+
+let _farmPollTimer = null;
+function startFarmPoll() { stopFarmPoll(); _farmPollTimer = setInterval(refreshFarmStatus, 2000); }
+function stopFarmPoll() { if (_farmPollTimer) { clearInterval(_farmPollTimer); _farmPollTimer = null; } }
+
+function refreshFarmStatus() {
+  fetchFarmStatus().then(d => {
+    const cur = d.current, last = d.last || {};
+    const setS = (id, gate) => { const el = document.getElementById(id); if (!el) return;
+      if (cur && cur.gate === gate && cur.status === 'running') { el.textContent = '⏳ 运行中: ' + (cur.stage || ''); return; }
+      if (cur && cur.gate === gate && cur.status !== 'running') { el.textContent = (cur.status === 'done' ? '✅ 完成 ' : '❌ 失败 ') + (cur.finished_at || '') + (cur.error ? ' — ' + cur.error : ''); return; }
+      const l = last[gate];
+      el.textContent = l ? ('上次: ' + (l.status === 'done' ? '✅' : '❌') + ' ' + (l.finished_at || '')) : '未运行'; };
+    setS('farmCheckStatus', 'check'); setS('farmOnboardStatus', 'onboard'); setS('farmBacktestStatus', 'backtest');
+    const box = document.getElementById('farmNewList');
+    if (box && cur && cur.status === 'running') {
+      box.innerHTML = '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);padding:var(--sp-2);border-radius:6px;margin-top:var(--sp-2)">'
+        + esc((cur.log_tail || []).slice(-30).join('\n')) + '</pre>';
+    }
+  }).catch(() => {});
+}
+
+function farmGate(fn, label) {
+  fn().then(() => { showToast(label + '已启动'); refreshFarmStatus(); })
+    .catch(e => showToast(e.message || '启动失败', 'error'));
+}
+
+function loadFarmReports() {
+  fetchFarmReports().then(d => {
+    const box = document.getElementById('farmReports'); if (!box) return;
+    if (!d.items || !d.items.length) { box.innerHTML = '<div style="color:var(--text2)">暂无报告</div>'; return; }
+    box.innerHTML = d.items.map(i =>
+      '<div class="lab-row"><b>' + esc(i.file) + '</b><span style="color:var(--text2);font-size:var(--fs-xs)"> ' + esc(i.mtime) + '</span> '
+      + '<a href="javascript:void(0)" class="farm-rpt" data-f="' + escAttr(i.file) + '" style="color:var(--link)">查看</a></div>').join('');
+    box.querySelectorAll('.farm-rpt').forEach(a => a.addEventListener('click', function () {
+      fetchFarmReport(this.dataset.f).then(d2 => {
+        const b = document.getElementById('farmReportBody');
+        // 2026-09-06 审查修复: 补上与 lab 报告同款的 marked 守卫 + demoteH1 (原裸调, marked 缺载即抛错)
+        b.innerHTML = (window.marked && window.DOMPurify)
+          ? DOMPurify.sanitize(window.veraDemoteH1 ? window.veraDemoteH1(marked.parse(d2.markdown)) : marked.parse(d2.markdown))
+          : '<pre style="white-space:pre-wrap;margin:0">' + esc(d2.markdown) + '</pre>';
+        b.scrollIntoView({ behavior: 'smooth' });
+      }).catch(e => showToast(e.message, 'error'));
+    }));
+  }).catch(() => {});
+}
 document.querySelector('.theme-btn').addEventListener('click', toggleTheme);
 document.querySelector('.sidebar-toggle').addEventListener('click', toggleSidebar);
 document.getElementById('historySelect').addEventListener('change', function() { loadHistory(this.value); });
-const sh = document.querySelector('.sector-header'); if (sh) sh.addEventListener('click', toggleSectorPanel);
+const sh = document.querySelector('.sector-header'); if (sh) { sh.addEventListener('click', toggleSectorPanel);
+  // W1-2: 板块折叠头(div→button)后同步 aria-expanded (toggleSectorPanel 切 class, 本监听在其后同步态)
+  sh.addEventListener('click', () => sh.setAttribute('aria-expanded', String(!document.querySelector('.sector-section').classList.contains('collapsed')))); }
 document.getElementById('sectorSearch').addEventListener('input', filterSectors);
 document.getElementById('btnClearSectors').addEventListener('click', clearSectors);
 document.getElementById('cfgFactorFilterEn').addEventListener('change', saveFactorFilterState);
@@ -441,7 +528,8 @@ document.getElementById('btnResetDefaults').addEventListener('click', resetDefau
 document.getElementById('btnSaveToFile').addEventListener('click', saveConfigToFile);
 document.getElementById('btnLoadFile').addEventListener('click', loadConfigFromFile);
 document.getElementById('btnDeleteFile').addEventListener('click', deleteSavedConfigFile);
-document.getElementById('tradeSearch').addEventListener('input', filterTrades);
+document.getElementById('tradeSearch').addEventListener('input', filterTradesDebounced);
+document.getElementById('tradeSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { filterTradesDebounced.cancel(); filterTrades(); } });
 document.getElementById('tradeFilter').addEventListener('change', filterTrades);
 document.getElementById('tradeReason').addEventListener('change', filterTrades);
 document.getElementById('btnLabSubmit').addEventListener('click', labSubmit);
@@ -458,10 +546,31 @@ if (themeIcon) {
 }
 if (localStorage.getItem('vera_sidebar')==='0') { document.querySelector('.sidebar').classList.add('collapsed');
   const svg = document.querySelector('.sidebar-toggle svg'); if (svg) svg.innerHTML = '<polyline points="15 18 9 12 15 6"/>'; }
+// W1-2: 侧栏折叠钮初始 aria-expanded 同步
+(function syncSidebarAria() {
+  const st = document.querySelector('.sidebar-toggle');
+  if (st) st.setAttribute('aria-expanded', String(!document.querySelector('.sidebar').classList.contains('collapsed')));
+})();
 
 loadConfig(); refreshAllSummaries(); loadSectors(); loadFactorRules();
+// W4-6: lab 自定义日期 placeholder 动态生成 (原写死 20250719/20260718 已过期)
+(function labDatePlaceholders() {
+  const f = d => d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+  const now = new Date();
+  const y1 = new Date(now); y1.setFullYear(now.getFullYear()-1);
+  const y3 = new Date(now); y3.setFullYear(now.getFullYear()-3);
+  const s1 = document.getElementById('labStart1'), e1 = document.getElementById('labEnd1');
+  const s2 = document.getElementById('labStart2'), e2 = document.getElementById('labEnd2');
+  if (s1) s1.placeholder = f(y1); if (e1) e1.placeholder = f(now);
+  if (s2) s2.placeholder = f(y3); if (e2) e2.placeholder = f(now);
+})();
 fetchSavedConfig().then(res => { _savedFileExists = !!(res&&res.exists); toggleSavedButtons(_savedFileExists); }).catch(() => {});
 if (localStorage.getItem('vera_sector_collapsed')==='1') { const sec = document.querySelector('.sector-section'); if (sec) sec.classList.add('collapsed'); }
+// W1-2: 板块折叠头初始 aria-expanded 同步 (须在 localStorage 折叠恢复之后)
+(function syncSectorAria() {
+  const sh2 = document.querySelector('.sector-header');
+  if (sh2) sh2.setAttribute('aria-expanded', String(!document.querySelector('.sector-section').classList.contains('collapsed')));
+})();
 addLog('前端就绪，等待执行回测', 'info');
 
 fetchResults().then(list => { if (list&&list.length>0) { document.getElementById('historyCount').textContent = '('+list.length+'条)';
@@ -471,5 +580,11 @@ fetchResults().then(list => { if (list&&list.length>0) { document.getElementById
     o.textContent = item.time+' | '+item.formula+' '+item.date_range+' | '+item.trade_count+'笔 '+cumRet; sel.appendChild(o); }); } }).catch(() => {});
 
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200); });
+
+// W1-4: 初始 hash 恢复页签 + 浏览器前进后退联动 (白名单与 switchTab 实际入参一致)
+const _validTabs = ['backtest','lab','trade','analysis','research','records','data','farm','ai'];
+function _applyHashTab() { const h = location.hash.slice(1); if (_validTabs.includes(h)) switchTab(h); }
+_applyHashTab();
+window.addEventListener('hashchange', _applyHashTab);
 
 // Test exports are in recover.js (loadable by Node without ES module support)
