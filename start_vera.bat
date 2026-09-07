@@ -9,6 +9,8 @@ set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
 echo [1/3] 启动回测 Web (8080) ...
+rem 默认稳定模式(2026-09-07 起): 代码改动不会自动重启, 防打断长回测/深度思考
+rem 开发要热更时: 把下行改为 python server.py --reload
 start "VERA-Web-8080" cmd /k python server.py
 
 echo [2/3] 启动实盘交易 (8081) ...

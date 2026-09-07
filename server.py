@@ -1,6 +1,7 @@
 """VERA Web 服务器 — FastAPI 后端 + 量化前端界面。
 
-启动: python server.py [--port 8080]
+启动: python server.py [--port 8080]   # 默认稳定模式 (2026-09-07)
+       python server.py --reload         # 开发热更 (默认关: 文件改动会打断回测/深度思考)
 访问: http://localhost:8080
 
 2026-08-01 批次5 C4c 拆分 (纯移动不改行为):
@@ -105,9 +106,17 @@ lab_status = LabQueue(pipeline_busy=lambda: pipeline_status.running)
 
 # C4c: 抽出的路由模块 (路由注册语义不变, 路径/方法逐个平移)
 app.include_router(create_lab_router(lab_status, pipeline_status))
+# 2026-09-06: 公式农场页签 (三段闸门: 检查增量/一键入库/开始回测)
+from core.farm_runner import FarmRunner  # noqa: E402
+from core.farm_api import create_farm_router  # noqa: E402
+
+farm_status = FarmRunner()
+app.include_router(create_farm_router(farm_status, pipeline_status))
 app.include_router(research_router)
 from data_cache_api import router as data_cache_router  # 2026-08-14: 数据准备 TAB
 app.include_router(data_cache_router)
+from ai_api import router as ai_router  # 2026-09-06: AI 设置 TAB (对话大脑三档接入配置)
+app.include_router(ai_router)
 
 
 # ====== 配置端点 ======
@@ -595,12 +604,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VERA Web 服务器")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", type=str, default="0.0.0.0")  # 2026-08-18: 局域网手机访问
-    # 2026-09-02 热加载: 默认文件改动自动重启 (用户拍板), --no-reload 关闭。
+    # 2026-09-07 稳定优先: 默认关闭文件改动自动重启 (用户拍板)。此前默认热更,
+    # 别人改 trade_main.py 等任何代码都会连带把 server 重启 → 打断正在跑的
+    # 深度思考/回测 (2026-09-07 早盘实测)。要热更时显式 --reload。
     # reload 监视必须排除非代码目录 —— data/ (trade.db、kline_cache)、
-    # output/ (回测报告) 高频写入, 不排除会引发重启风暴。
-    parser.add_argument("--no-reload", action="store_true",
-                        help="关闭文件改动自动重启 (跑长回测时建议使用, "
-                             "默认开启自动重启)")
+    # output/ (回测报告) 高频写入, 不排除会引发重启风暴 (reload 分支内处理)。
+    parser.add_argument("--reload", action="store_true",
+                        help="开启文件改动自动重启 (仅开发调后端时用; "
+                             "默认关闭, 更稳定)")
     args = parser.parse_args()
 
     logger.info("VERA 量化回测系统 Web 服务器启动")
@@ -609,12 +620,12 @@ if __name__ == "__main__":
     # 事件循环换成 SelectorEventLoop (不支持子进程), brain 的 claude CLI 起不来。
     # 传自定义 loop factory 强制 Proactor (详见 utils/proactor_loop.py docstring)。
     _LOOP_FACTORY = "utils.proactor_loop:factory"
-    if args.no_reload:
+    if not args.reload:  # 默认: 稳定模式 (不盯文件改动, 长回测/深度思考不被打断)
         uvicorn.run(app, host=args.host, port=args.port, access_log=False,
                     loop=_LOOP_FACTORY)
-    else:
-        logger.info("开发模式: 后端代码改动自动重启 (--no-reload 关闭; "
-                    "跑长回测期间建议关闭, 保存代码会中断回测)")
+    else:  # 显式 --reload: 开发热更模式
+        logger.info("开发模式: 后端代码改动自动重启 (--reload 显式开启; "
+                    "跑长回测/深度思考期间勿用, 保存代码会中断)")
         # 目录 pattern 正反斜杠双写: watchfiles 的 fnmatch 按字面分隔符
         # 匹配, Windows 路径是反斜杠, 只写 "data/*" 挡不住 data\...。
         # 2026-09-05: dsh-runtime 必须排除 —— 449MB 便携运行时 + 430 个
