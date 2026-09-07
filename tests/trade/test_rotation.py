@@ -431,8 +431,10 @@ def test_rotation_order_records_decision(tmp_path):
     assert rows, "rotation_order 审计应带决策原因"
     d = json.loads(rows[0][0])
     assert d["decision"].startswith("动量择腿")
-    assert "159949.SZ +5.0%" in d["decision"]
-    assert "513100.SH +3.0%" in d["decision"]
+    # 2026-09-07 决策文案改大白话: 腿名插中文简称(如 创业板50ETF华安(159949.SZ)),
+    # 名称表拿不到时退化为纯代码 —— 断言只锁"代码+涨幅都在", 不锁中间是否带名。
+    assert "159949.SZ" in d["decision"] and "+5.0%" in d["decision"]
+    assert "513100.SH" in d["decision"] and "+3.0%" in d["decision"]
     # 卖出黄金的成交原因 (fill_context.detail) 也带决策原因, 进 trades.reason
     _, sells = _orders_by(app)
     assert sells, "应有一笔卖出黄金"

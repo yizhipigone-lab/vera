@@ -71,14 +71,28 @@ def _is_signal_day(d, signal_day: str) -> bool:
 _LOT = 100  # ETF 一手 = 100 份
 
 
+def _etf_label(code: str) -> str:
+    """代码 → '简称(代码)' 给人看; 查不到简称时退回原代码。
+
+    2026-09-07 用户反馈: 审计/决策文案满屏 513100.SH 谁看得明白。
+    复用 trade/analysis.name_of 名称表 (进程级缓存, 拿不到不落缓存会重试);
+    惰性 import 防模块环。只影响人类可读文案, 机器字段仍存原代码。"""
+    try:
+        from trade.analysis import name_of
+        name = name_of(code)
+    except Exception:
+        name = ""
+    return f"{name}({code})" if name else code
+
+
 def _fmt_momentum(momentum: dict | None) -> str:
-    """动量 dict {代码: float|None} → 人话字符串 '159949.SZ +3.2% / 513100.SH +8.5%'。
+    """动量 dict {代码: float|None} → 人话字符串 '创业板50(159949.SZ) +3.2% / 纳指ETF(513100.SH) +8.5%'。
     空/None/全 None 返回 ''。None 表示该腿数据不足 (不参与择腿)。"""
     if not momentum:
         return ""
     parts = []
     for c, m in momentum.items():
-        parts.append(f"{c} {'—' if m is None else f'{float(m) * 100:+.1f}%'}")
+        parts.append(f"{_etf_label(c)} {'—' if m is None else f'{float(m) * 100:+.1f}%'}")
     return " / ".join(parts)
 
 
@@ -501,8 +515,8 @@ class RotationFeature:
                         else "避险篮子 (无动量数据)")
         else:
             mom = _fmt_momentum(momentum)
-            decision = (f"动量择腿 ({mom}) → 目标 {target_code}" if mom
-                        else f"目标 {target_code}")
+            decision = (f"动量择腿 ({mom}) → 目标 {_etf_label(target_code)}" if mom
+                        else f"目标 {_etf_label(target_code)}")
 
         # 卖出只清「目标值为 0」的腿 (换档卖旧腿 / 止损切避险清风险腿)。
         # 模型B 铁律 (docs/plan/2026-08-14_ETF轮动与双池资金分配系统_计划书.md §三,
@@ -549,10 +563,14 @@ class RotationFeature:
         self._has_target = True
         signal["entry_high"] = dict(self._entry_high)
         signal["pending_target"] = self._pending_target
+        # 大白话审计 (2026-09-07 用户反馈: 原 "现值 0/537534/0" 要查表才懂):
+        # 人话说清「决策 / 池多大(怎么来) / 三腿现在各值多少(带简称)」。
+        # 机器可读字段仍在下方 dict 里 (decision/momentum/stop_leg 均存原代码)。
+        leg_txt = " / ".join(f"{_etf_label(c)}: {cur[c]:,.0f}元" for c in codes)
         self._store.write_audit(
             "rotation_summary",
-            f"ETF 轮动: {decision} (池 {pool:.0f}), "
-            f"现值 {'/'.join(f'{cur[c]:.0f}' for c in codes)}",
+            f"ETF轮动: {decision}; 轮动资金池 {pool:,.0f}元"
+            f"(≈总资产×{cfg.etf_ratio:.0%}); 各腿现值: {leg_txt}",
             {"target": target_code, "pool": round(pool, 2),
              "decision": decision, "momentum": momentum,
              "stop_off": stop_off, "stop_leg": stop_leg,
