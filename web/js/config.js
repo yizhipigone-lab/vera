@@ -32,6 +32,15 @@ export function cleanNum(x) {
   return isNaN(n) ? 0 : parseFloat(n.toPrecision(12));
 }
 
+// 2026-09-16 审计第二轮 MEDIUM-E: 程序化写 cfgFormula (加载配置/农场回填) 后必须
+// 通知依赖公式名的下游 (因子过滤规则面板挂的是 input/change 监听)。原来
+// applyConfigDict 与农场回填各自静默赋值 → 面板列的还是上一个公式的规则。
+// 收口成这一个函数, 两处共引。
+export function notifyFormulaChanged() {
+  const el = document.getElementById('cfgFormula');
+  if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 // ── 表单校验 ──
 
 export function validateDate(el) {
@@ -207,6 +216,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     if (!el) continue;
     if (val != null) el.checked = val;
   }
+  notifyFormulaChanged();   // MEDIUM-E: 程序化改公式后刷因子规则面板
   RADIO_CONFIGS.forEach(rc => {
     const val = mapping[rc.allow];
     if (val != null) {

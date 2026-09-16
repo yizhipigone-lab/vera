@@ -1,7 +1,7 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
 import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport, fetchFarmLog, fetchFarmPrefill } from './api.js?v=20260916b';
-import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
+import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries, notifyFormulaChanged } from './config.js?v=20260916f';
 import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js?v=20260906d';
 import { renderDeepCharts } from './charts_deep.js?v=20260906c';
 
@@ -255,10 +255,7 @@ function onSectorToggle(cb) { const code = cb.value;
   try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
   const item = cb.closest('.sector-item'); if (item) item.classList.toggle('checked', cb.checked); updateSectorSummary(); toggleUniverseDropdown(); }
 
-function clearSectors() { _selectedSectors = [];
-  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
-  document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => { cb.checked = false;
-    const item = cb.closest('.sector-item'); if (item) item.classList.remove('checked'); }); updateSectorSummary(); toggleUniverseDropdown(); }
+function clearSectors() { setSectors([]); }   // 2026-09-16 收口: 唯一写入口 = setSectors
 
 function updateSectorSummary() { const box = document.getElementById('sectorSelected');
   if (_selectedSectors.length === 0) { box.innerHTML = ''; } else {
@@ -598,7 +595,7 @@ function showFarmLog(gate, label) {
 //    ② 引擎默认移动止盈确认=盘中触线而页面默认条件单语义 (HIGH-1)。
 // 板块另有单独清理 (clearSectors, 不在字段表内)。
 const _PREFILL_FIELDS = ['cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
-  'cfgEntryPriceMode', 'cfgStart', 'cfgEnd', 'cfgCapital', 'cfgMaxBuy',
+  'cfgEntryPriceMode', 'cfgStart', 'cfgEnd', 'cfgCapital', 'cfgMinBuy', 'cfgMaxBuy',
   'cfgExcludeST', 'cfgIncludeEtf', 'cfgEtfOnly',
   'cfgCostStopEn', 'cfgCostStopVal', 'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
   'cfgTrailingConfirm',
@@ -618,7 +615,12 @@ function _farmToBacktest(gs) {
       _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
         if (el) snap[id] = el.type === 'checkbox' ? el.checked : el.value; });
       _farmPrefillSnapshot = snap;
-      _farmPrefillSectorsSnap = (_selectedSectors || []).slice();
+      // 审计第二轮 MEDIUM-B: 板块快照必须读**磁盘**而不是内存 —— 通达信没开时
+      // loadSectors() 提前 return (_selectedSectors 停在 []), 从内存快照会把
+      // 用户真实选择记成空, 恢复时用空覆盖, 设置不可逆丢失
+      let raw = [];
+      try { raw = JSON.parse(localStorage.getItem(SECTORS_KEY) || '[]'); } catch (e) { raw = []; }
+      _farmPrefillSectorsSnap = Array.isArray(raw) ? raw.slice() : [];
     }
     // ② 逐字段直写 (不走 applyConfigDict —— 它会把缺失字段重置成默认值,
     //    冲掉用户的佣金/滑点设置, 计划书侦察结论 4)
@@ -626,6 +628,7 @@ function _farmToBacktest(gs) {
     const set = (id, v) => { const el = document.getElementById(id);
       if (el) { if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v); } };
     set('cfgFormula', d.gs); set('cfgFormulaArg', '');
+    notifyFormulaChanged();   // 审计 MEDIUM-E: 程序化改公式后刷因子规则面板
     set('cfgUniverse', cal.universe_type); set('cfgPeriod', cal.period);
     set('cfgEntryPriceMode', cal.entry_price_mode);
     // 池子/语义开关按粗扫口径复位 (HIGH-2 / HIGH-1)
@@ -633,10 +636,18 @@ function _farmToBacktest(gs) {
     set('cfgTrailingConfirm', cal.trailing_confirm);
     set('cfgFirstDayEn', false); set('cfgFormulaSellEn', false);
     set('cfgFactorFilterEn', false);
-    if (typeof clearSectors === 'function') clearSectors();
+    // 审计第二轮 MEDIUM-B: 板块 UI 未加载成功 (_allSectors 空) 时**只清内存不落盘**
+    // —— 否则 clearSectors() 会把用户磁盘上的真实选择立刻抹成 [] 且恢复不回来;
+    // 结果口径不受影响 (提交走内存 _selectedSectors, 已是空)
+    if (_allSectors && _allSectors.length > 0) {
+      if (typeof clearSectors === 'function') clearSectors();
+    } else {
+      _selectedSectors = [];
+    }
     if (d.window && d.window[0]) set('cfgStart', String(d.window[0]).replace(/-/g, ''));
     if (d.window && d.window[1]) set('cfgEnd', String(d.window[1]).replace(/-/g, ''));
     set('cfgCapital', cal.capital); set('cfgMaxBuy', cal.max_buy);
+    set('cfgMinBuy', cal.min_buy);   // 审计 LOW-G: 硬闸参数, 不同值会让复跑一笔不开
     // 自审修复: JS 浮点直乘会出 "20.000000000000004" 填进输入框 —— 先修约再写
     const pct100 = v => String(Number((v * 100).toFixed(6)));
     set('cfgCostStopEn', true); set('cfgCostStopVal', pct100(Math.abs(p.cost)));
@@ -650,19 +661,35 @@ function _farmToBacktest(gs) {
       set('cfgCondTimeProfit', pct100(p.cond_profit || 0)); }
     const radio = document.querySelector('input[name="cfgPriority"][value="' + cal.priority_value + '"]');
     if (radio) radio.checked = true;
-    refreshAllSummaries();                       // 审计 MEDIUM-4: 摘要行必须跟着刷新
     // ③ 横幅 + 切页 (人工核对后自己点开始回测 —— 两口径铁律的最后一道闸)
     const name = (d.file || '').replace(/\.md$/, '');
+    const win = (d.window && d.window[0] && d.window[1])
+      ? ' · 区间 ' + d.window[0] + '~' + d.window[1] : '';
     let txt = '已从公式农场回填: ' + d.gs + (name ? '(' + name + ')' : '')
       + ' · 最优组合 ' + d.combo_text
       + ' · 口径: ' + (d.caliber_text || '')          // 文案后端唯一生成 (LOW-8)
-      + ' · 已清空板块选择并复位池子/语义开关'
+      + win
+      + ' · 已复位池子/语义开关'
       + ' · 请核对后手动点「开始回测」';
     if (d.ladder_note) txt += ' ⚠ ' + d.ladder_note;
     if (banner) { document.getElementById('farmPrefillText').textContent = txt;
       banner.style.display = ''; }
     switchTab('backtest');
+    // 审计第二轮 LOW-I: 摘要刷新是装饰性动作, 必须排在"横幅已显示+已切页"之后
+    // 且自吞异常 —— 原顺序(刷新→横幅)一旦抛错, 表单已改却弹"回填失败"、无横幅
+    // 不切页, 直接违背"人工过目是最后一道闸"的前提
+    try { refreshAllSummaries(); } catch (e) { console.warn('摘要刷新失败', e); }
   }).catch(e => showToast(e.message || '回填失败', 'error'));
+}
+
+// 板块状态唯一写入口 (审计第二轮 MEDIUM-C: 「变更板块后必须同步股票池下拉框」
+// 原来手写在 onSectorToggle/clearSectors/removeSector 三处, 恢复分支漏调 → 收口)
+function setSectors(list) {
+  _selectedSectors = (list || []).slice();
+  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch (e) {}
+  renderSectors();
+  updateSectorSummary();
+  toggleUniverseDropdown();
 }
 
 function _farmRestorePrefill() {
@@ -672,14 +699,9 @@ function _farmRestorePrefill() {
       if (el && id in snap) { if (el.type === 'checkbox') el.checked = snap[id]; else el.value = snap[id]; } });
     if (snap.radio) { const r = document.querySelector('input[name="cfgPriority"][value="' + snap.radio + '"]');
       if (r) r.checked = true; }
-    // 板块选择恢复 (审计 HIGH-2 配套)。注意: 模块内没有 setSelectedSectors
-    // 函数 (那只是 cfgApply 的形参名), 必须直接改 _selectedSectors + 持久化 + 重绘
-    if (_farmPrefillSectorsSnap) {
-      _selectedSectors = _farmPrefillSectorsSnap.slice();
-      try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch (e) {}
-      renderSectors(); updateSectorSummary();
-    }
-    refreshAllSummaries();
+    // 板块选择恢复: 走 setSectors (含 toggleUniverseDropdown, 修 MEDIUM-C)
+    if (_farmPrefillSectorsSnap) setSectors(_farmPrefillSectorsSnap);
+    try { refreshAllSummaries(); } catch (e) { console.warn('摘要刷新失败', e); }
   }
   _farmPrefillSnapshot = null;                   // MEDIUM-3: 恢复后允许重新快照
   _farmPrefillSectorsSnap = null;
@@ -692,6 +714,10 @@ document.getElementById('farmBoard')?.addEventListener('click', function (ev) {
 });
 document.getElementById('farmPrefillRestore')?.addEventListener('click', _farmRestorePrefill);
 document.getElementById('farmPrefillDismiss')?.addEventListener('click', () => {
+  // 审计第二轮 MEDIUM-D: 「知道了」只隐藏横幅会让下次点击重新快照(覆盖原配置) ——
+  // 必须一并清快照, 与「恢复原配置」保持同一生命周期语义
+  _farmPrefillSnapshot = null;
+  _farmPrefillSectorsSnap = null;
   document.getElementById('farmPrefillBanner').style.display = 'none';
 });
 

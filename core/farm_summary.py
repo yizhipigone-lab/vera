@@ -247,17 +247,32 @@ def _pct_txt(v):
     return s + "%"
 
 
+def _money_txt(v) -> str:
+    """金额带单位: 2000 → 「2000元」, 20000 → 「2万」, 3000000 → 「300万」。"""
+    return "%g万" % (v / 10000) if v >= 10000 else "%g元" % v
+
+
 def _caliber_text(c) -> str:
-    """回填横幅的口径文案 — 后端唯一生成 (审计 LOW-8: 前端不得再手写第二份)。"""
+    """回填横幅的口径文案 — 后端唯一生成 (审计 LOW-8: 前端不得再手写第二份)。
+
+    2026-09-16 审计第二轮 HIGH-A: 必须披露"同口径复跑"的**全部已知差异** ——
+    引擎入口不同 (粗扫 run_cached 不支持 degrade_5m → 缺 5m 的股-天丢信号;
+    回测页 run() 恒 degrade_5m=true → 用日线 OHLC 补满 48 根 bar 照样开仓) +
+    数据窗口不同 (粗扫 60 交易日稀疏窗口 fill_data=False vs 本页连续区间)。
+    只披露 trailing confirm 不足以让用户判断"数字能不能并排比"。
+    """
     period = {"5m": "5分线", "1m": "1分线", "1d": "日线"}.get(c["period"], c["period"])
     entry = {"close_t": "T日收盘买入", "open_t1": "次日开盘买入"}.get(
         c["entry_price_mode"], c["entry_price_mode"])
     confirm = {"intraday": "移动止盈盘中触线(回测页标注为偏乐观的旧语义)",
                "real": "移动止盈条件单语义"}.get(c["trailing_confirm"],
                                                 c["trailing_confirm"])
-    return ("%s · %s · %s万本金 · 单票上限%s万 · %s · %s · %s"
-            % (c["universe"].split(" ")[0], period, "%g" % (c["capital"] / 10000),
-               "%g" % (c["max_buy"] / 10000), entry, confirm, c["priority"]))
+    return ("%s · %s · %s本金 · 单票上限%s · 最低买入%s · %s · %s · %s"
+            " · ⚠ 粗扫走稀疏60交易日窗口且缺5m的股-天丢信号, 本页为连续区间且"
+            "5m降级补线(缺数据用日线补满), 笔数可能偏多, 数字别与粗扫并排比"
+            % (c["universe"].split(" ")[0], period, _money_txt(c["capital"]),
+               _money_txt(c["max_buy"]), _money_txt(c["min_buy"]),
+               entry, confirm, c["priority"]))
 
 
 def backtest_prefill(data_root: str, gs: str) -> dict:
@@ -272,9 +287,15 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
     e = arch[gs]
     best = e.get("best") or {}
     p = best.get("params") or {}
-    # 审计 LOW-6: 六个数值键全验 (原只验 cost, act/dd 缺 → _pct_txt 抛
-    # TypeError 变 500; time_days 缺 → 前端写 "null" 变 0 天启用)
-    need = [k for k in ("cost", "act", "dd", "time_days") if p.get(k) is None]
+    # 审计 LOW-6/第二轮 LOW-F: **六项**数值参数全验 (原只验 cost, 后改四键;
+    # cond_days=None 会静默变「无条件时间止盈」, cond_profit=None 会经 `or 0`
+    # 变 0% 即「持仓 N 天必卖」—— 语义被悄悄改掉)
+    need = [k for k in ("cost", "act", "dd", "time_days", "cond_days", "cond_profit")
+            if p.get(k) is None]
+    # 审计 LOW-H: window 缺失时原会静默沿用用户旧区间跑, 横幅看不出跑的不是
+    # 粗扫窗口 —— 直接拒, 逼重建档案 (实测当前 783 条 best 全有 window)
+    if not e.get("window"):
+        need.append("window")
     if not best or need:
         raise ValueError("该公式没有带参数的最优组合%s, 请先跑④重建档案 "
                          "(python tools/formula_farm/farm_backtest.py "
@@ -298,6 +319,7 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
                         "entry_price_mode": c["entry_price_mode"],
                         "trailing_confirm": c["trailing_confirm"],
                         "capital": c["capital"], "max_buy": c["max_buy"],
+                        "min_buy": c["min_buy"],
                         "priority_value": c["priority_value"],
                         "priority": c["priority"]},
             "combo_text": " + ".join(parts), "ladder_note": ladder_note,

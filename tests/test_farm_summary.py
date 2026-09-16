@@ -310,28 +310,51 @@ def test_backtest_prefill_missing_params_raises_valueerror(root):
 
 
 def test_backtest_prefill_validates_all_numeric_keys(root):
-    """审计 LOW-6: act/dd/time_days 缺失同样要 409 (原只验 cost, 缺项会 500)。"""
+    """审计 LOW-6 + 第二轮 LOW-F: **六项**数值键缺失都要拒 (原只验 cost/四键)。
+
+    cond_days=None 会静默变「无条件时间止盈」; cond_profit=None 经 `or 0` 变 0%
+    即「持仓 N 天必卖」—— 语义被悄悄改掉, 所以必须拒而不是兜底。
+    """
     base = {"cost": -0.2, "act": 0.08, "dd": 0.005, "ladder": "off",
             "time_days": 20, "cond_days": 0, "cond_profit": 0.0}
     import pytest as _pt
-    for miss in ("act", "dd", "time_days"):
+    for miss in ("cost", "act", "dd", "time_days", "cond_days", "cond_profit"):
         p = dict(base, **{miss: None})
         _wj(root / "archive.json", {"GS0001": {
             "file": "a.md", "best": {"key": "k", "params": p},
-            "verdict": {"code": "pass"}}})
+            "verdict": {"code": "pass"}, "window": ["2024-09-02", "2026-09-03"]}})
         fs._CACHE.clear()
         with _pt.raises(ValueError) as ei:
             fs.backtest_prefill(str(root), "GS0001")
         assert miss in str(ei.value)
 
 
-def test_backtest_prefill_caliber_text_and_confirm(root):
-    """审计 HIGH-1/LOW-8: 口径文案由后端生成, 且披露移动止盈确认语义。"""
+def test_backtest_prefill_requires_window(root):
+    """审计第二轮 LOW-H: window 缺失必须拒 —— 否则静默沿用用户旧区间跑。"""
+    base = {"cost": -0.2, "act": 0.08, "dd": 0.005, "ladder": "off",
+            "time_days": 20, "cond_days": 0, "cond_profit": 0.0}
+    _wj(root / "archive.json", {"GS0001": {
+        "file": "a.md", "best": {"key": "k", "params": base},
+        "verdict": {"code": "pass"}}})          # 无 window
+    import pytest as _pt
+    fs._CACHE.clear()
+    with _pt.raises(ValueError) as ei:
+        fs.backtest_prefill(str(root), "GS0001")
+    assert "window" in str(ei.value)
+
+
+def test_backtest_prefill_caliber_text_discloses_engine_gap(root):
+    """审计第一轮 HIGH-1 + 第二轮 HIGH-A/LOW-G: 口径文案必须披露
+    ①移动止盈确认语义 ②引擎入口差异(缺 5m 丢信号 vs 降级补线) ③最低买入。"""
     _archive_with_params(root)
     d = fs.backtest_prefill(str(root), "GS0607")
     assert d["caliber"]["trailing_confirm"] == "intraday"
-    assert "盘中触线" in d["caliber_text"]
-    assert "沪深300" in d["caliber_text"] and "5分线" in d["caliber_text"]
-    assert "T日收盘买入" in d["caliber_text"]
+    assert d["caliber"]["min_buy"] == 2000.0
+    t = d["caliber_text"]
+    assert "盘中触线" in t
+    assert "沪深300" in t and "5分线" in t and "T日收盘买入" in t
+    assert "最低买入2000元" in t                   # 带单位 (LOW-G: 硬闸口径)
+    assert "降级补线" in t and "别与粗扫并排比" in t   # HIGH-A 披露
     from core import farm_rules
     assert farm_rules.SWEEP_CALIBER["trailing_confirm"] == "intraday"
+    assert farm_rules.SWEEP_CALIBER["min_buy"] == 2000.0

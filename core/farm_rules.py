@@ -52,6 +52,10 @@ SWEEP_CALIBER = {
     "universe_type": "23", "universe": "沪深300 (TDX type 23)",
     "period": "5m", "dividend": "前复权",
     "capital": 3_000_000.0, "max_buy": 20_000.0,
+    # 审计 LOW-G: 最低买入额是硬闸 (backtest/loop/entry.py 买入额 < min_buy 直接
+    # 不开仓), 粗扫固定 2000 (gs_5m_sweep.py), 回填必须同值 —— 否则用户把它设成
+    # >2万时复跑一笔都开不出来, 而横幅还在说"单票上限2万"
+    "min_buy": 2_000.0,
     "entry": "信号日 T 最后一根 5m bar (15:00) 收盘买入",
     "entry_price_mode": "close_t",
     # 审计 HIGH-1: 粗扫 combo_stop_config 不写 trailing_stop.confirm → 引擎默认
