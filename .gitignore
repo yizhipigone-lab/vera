@@ -85,3 +85,6 @@ data/market_position/
 .dsh-vision-router/
 # WorkBuddy 助手记忆 (工具产物)
 .workbuddy/
+
+# 2026-09-17 (M5): 邮箱收到的外部研究产物 —— 第三方内容、体积随收信增长、可重建
+docs/research_inbox/
