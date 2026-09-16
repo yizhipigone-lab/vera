@@ -22,6 +22,7 @@ from trade.book import (
     DIRECTION_BUY,
     OS_CANCELED,
     OS_JUNK,
+    OS_PART_CANCEL,
     OS_PART_SUCC,
     OS_REPORTED,
     OS_SUCCEEDED,
@@ -876,6 +877,26 @@ class FakeGateway(BaseGateway):
             rec.pop("_cancel_pending", None)
             self._orders[order_id] = rec
             self._release_frozen(rec)
+        self._fire_order(rec)
+
+    def simulate_partial_cancel(self, order_id: str, filled: int = 0) -> None:
+        """模拟部撤 (状态 53, OS_PART_CANCEL): 先成交 filled 份, 剩余全部撤销。
+
+        2026-09-17 买侧在途台账核销测试接缝 (原先无钩子, 部撤路径测不到):
+        真机「部分成交后撤单」的终态 = 53 且 traded_volume = 已成交量;
+        只改订单状态与冻结资金, 不写 _trades (与 simulate_fill 一致 ——
+        成交由 simulate_fill 记账, 这里只推进状态)。
+        filled 会被夹在 [已有的已成交量, qty] 内。"""
+        with self._lock:
+            rec = self._orders[order_id]
+            if rec["status"] in TERMINAL_STATUSES:
+                raise ValueError(
+                    f"终态单不可部撤: {order_id} status={rec['status']}")
+            filled = max(int(rec.get("filled_qty") or 0),
+                         min(int(filled), int(rec["qty"])))
+            rec = dict(rec, filled_qty=filled, status=OS_PART_CANCEL)
+            self._orders[order_id] = rec
+            self._release_frozen(rec)     # 未成交部分释放冻结 (同撤单口径)
         self._fire_order(rec)
 
     def query_asset(self) -> dict:

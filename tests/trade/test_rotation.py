@@ -406,6 +406,42 @@ def test_overweight_target_leg_no_trim(tmp_path):
     assert buys == []     # pool_gap = max(0, 52.5万-55万) = 0 → 不补买
 
 
+def test_buy_lot_gap_zero_no_crash_no_order(tmp_path):
+    """gap == 0 (该腿现值恰好等于目标) → 早退, 不抛异常也不下单。
+
+    回归 (2026-09-17 买侧在途台账改造): `_buy_lot` 返回改成
+    `(实际花掉金额, order_id)` 二元组时, 三条早退分支 (gap/budget ≤ 0、
+    无卖一价) 漏改 → 调用点 `spent, oid = ...` 解包裸 float 抛
+    TypeError, 在消费者线程里**打断整轮执行 pass**。gap==0 是正常路径
+    (该腿刚好补齐), 不是罕见分支, 单独立锁。"""
+    clock = [_ts("10:00")]
+    # 两条避险腿各半: 黄金腿现值恰好等于目标 (gap == 0), 国债腿零配 (要买)
+    app = _start(_app(_cfg(tmp_path, hedge_etf2=BOND, hedge_ratio=0.5), clock,
+                      cash=750_000,
+                      positions={GOLD: {"volume": 250_000, "can_use": 250_000,
+                                        "avg_cost": 1.0}}))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 1.0, bid=1.0, ask=1.0))
+    app.gateway.push_quote(BOND, _quote(BOND, 1.0, bid=1.0, ask=1.0))
+    assert _wait(lambda: app.monitor.quote_of(GOLD) is not None)
+    app._rotation._migration_pending = False
+    app._rotation._lots = {(0, GOLD): {"qty": 250_000, "entry_high": 0.0}}
+    t = app._rotation._tranches[0]
+    t["pending_target"] = None       # 目标 = 避险篮子 (黄金 50% + 国债 50%)
+    t["has_target"] = True
+    app._rotation.on_signals({"signal": {"target": None}, "source": "test"})
+    buys, _ = _orders_by(app)
+    # 总资产 = 现金 75万 + 黄金 25万 = 100万 → 份池 50万; 黄金目标 25万 == 现值
+    assert not [b for b in buys if b["code"] == GOLD]      # gap == 0 → 不补买
+    assert app._rotation._lots[(0, GOLD)]["qty"] == 250_000
+    # 三条早退分支都返回二元组 (不是裸 float)
+    bl = app._rotation._buy_lot
+    q = _quote(CYB, 1.0, bid=1.0, ask=1.0)
+    assert bl(0, CYB, 0.0, 10_000.0, q, "t", True) == (0.0, None)      # gap == 0
+    assert bl(0, CYB, 5_000.0, 0.0, q, "t", True) == (0.0, None)       # budget == 0
+    assert bl(0, CYB, 5_000.0, 10_000.0, None, "t", True) == (0.0, None)  # 无行情
+    assert not [b for b in _orders_by(app)[0] if b["code"] == CYB]     # 未下单
+
+
 def test_rotation_order_records_decision(tmp_path):
     """2026-08-21: 交易记录带详细决策原因 (动量数据 + 判断依据)。"""
     import json
@@ -680,6 +716,29 @@ def test_rotation_buy_rejected_kill_switch(tmp_path):
     finally:
         ro.close()
     assert row[0] >= 1                             # 拒单留痕
+
+
+def test_reject_by_risk_not_tracked(tmp_path):
+    """E1 (2026-09-17 计划书 §四): `_place_order` 被风控拒 (返 None) →
+    **不记账、不入在途台账** (台账只记真正下出去的单)。"""
+    clock = [_ts("10:00")]
+    app = _start(_app(_cfg(tmp_path), clock))
+    app.gateway.push_quote(CYB, _quote(CYB, 1.0, bid=1.0, ask=1.0))
+    app.gateway.push_quote(GOLD, _quote(GOLD, 2.0))
+    assert _wait(lambda: app.monitor.quote_of(CYB) is not None)
+    app.kill.activate("test")            # 急停 → 买入被风控闸1拒
+    try:
+        app._rotation.on_signals({"signal": {"target": CYB}, "source": "test"})
+    finally:
+        app.kill.deactivate()
+    buys, _ = _orders_by(app)
+    assert buys == []                              # 没下出去
+    assert app._rotation._lots == {}               # 不记账
+    # 不入台账: pass 末的整表替换会把空台账写成 "{}" (与卖侧历来行为一致,
+    # 读出来都是空 dict), 故按语义等价断言 —— 关键是有没有该单的条目。
+    import json as _json
+    raw = app.store.rotation_meta.get("rotation_open_buys")
+    assert _json.loads(raw or "{}") == {}
 
 
 def test_rotation_sell_registers_in_flight(tmp_path):
