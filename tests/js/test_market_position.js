@@ -163,6 +163,20 @@ eq(bg[2].n, 1, '缺值不计数（bear 只剩 1 个）');
 eq(bg[0].box[2], 85, '牛组中位数 = (80+90)/2');
 eq(mp.boxByRegime([], 'shanghai', 'regime').length, 0, '空输入不崩');
 
+console.log('\nvaluationHtml 估值卡片:');
+assert(mp.valuationHtml({}).includes('【缺】没有本地 ERP'), '没有缓存时给补数指引');
+const vh = mp.valuationHtml({ valuation: {
+  erp_pct: 6.22, erp_pct_10y: 72.4, erp_median_10y_pct: 5.53,
+  erp_min_10y_pct: 2.47, erp_max_10y_pct: 7.75, n_obs: 2430,
+  asof: '2026-09-15', caliber: '沪深300 口径: 1/PE-TTM − 10年期国债收益率',
+  source: 'akshare' } });
+assert(vh.includes('6.22'), 'ERP 值进卡片');
+assert(vh.includes('72.4%'), '十年百分位进卡片');
+assert(vh.includes('越高越划算'), '必须给白话读法（越高越划算）');
+assert(vh.includes('不是「全市场」口径'), '口径必须如实标注是沪深300');
+assert(mp.valuationHtml({ valuation: { erp_pct: 1, erp_pct_10y: 5 } })
+       .includes('比过去十年大多数时候都贵'), '低分位→白话解释偏向贵');
+
 console.log('\ntrendSeries 趋势图数据:');
 const ts = mp.trendSeries([
   { date: '2026-09-14', breadth: { above_ma20_pct: 29.1 }, indices: { shanghai: { pct_10y: 91.2 } } },

@@ -1461,7 +1461,20 @@ input:focus-visible,select:focus-visible{outline:none}
     </div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
       十年百分位 = 现在的位置比过去十年百分之多少的交易日高（90% = 偏贵区）。
-      牛熊口径 = 价 vs 年线(MA250) + 年线斜率，与「大盘快照」同源（core/index_regime.py）。
+      <b>牛熊</b> = 按「年线斜率」判：价格在过去 250 个交易日平均价的<b>上方还是下方</b>，
+      而且这条平均线自己在<b>往上还是往下</b>（与「大盘快照」用的是同一套口径，core/index_regime.py）。
+      <br><b>注意</b>：这张表只回答「贵不贵」，<b>不回答「接下来涨还是跌」</b>；
+      三个指数各自独立看，我们<b>不合成一个总分</b>。
+    </div>
+  </div>
+
+  <div class="lab-card">
+    <h2>估值（贵不贵，跟位置是两回事）</h2>
+    <div id="mpValuation" style="font-size:var(--fs-sm);line-height:1.7">加载中…</div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
+      为什么单列这一节：上面那张位置表全是<b>价格</b>算出来的 ——
+      价格在高位不等于<b>贵</b>（如果公司盈利涨得比股价还快，价格高但估值不高）。
+      指标体检里，这一维是唯一同时通过 3/6/12 个月检验的正向指标。
     </div>
   </div>
 
@@ -1534,8 +1547,10 @@ input:focus-visible,select:focus-visible{outline:none}
       </table>
     </div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
-      三条候选规则按「T 日收盘出信号 → T+1 生效」回放（空仓按 0 收益）。
-      这是研究记录，<b>不是交易建议</b>；换规则要人工拍板。
+      三条候选规则按「<b>收盘后出信号、第二天才生效</b>」回放（空仓的时段按不赚不赔算）。
+      这是研究记录，<b>不是交易建议</b>；换规则要人工拍板。<br>
+      <b>哪几个指标真的有用</b>（每个指标 vs 之后 1/3/6/12 个月涨跌的相关性体检）
+      见下面「完整体温表」里的「指标体检」一节。
     </div>
   </div>
 

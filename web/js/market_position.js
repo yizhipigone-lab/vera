@@ -265,6 +265,33 @@ function boxByRegime(items, key, caliber) {
   }).filter(Boolean);
 }
 
+// 估值（贵不贵）：一句话 + 十年百分位。数据来自记录里的 valuation（一天一行）
+function valuationHtml(rec) {
+  var v = (rec && rec.valuation) || null;
+  if (!v) {
+    return '<div style="color:var(--text2)">【缺】没有本地 ERP（股债性价比）缓存 —— '
+      + '补的办法：点上面的「立即采集」（会联网拉一次）。</div>';
+  }
+  var hi = v.erp_pct_10y;
+  var feel = hi == null ? '' :
+    (hi >= 70 ? '<b>过去十年里只有很少的时间比现在更划算</b> —— 股票相对国债的吸引力偏高'
+      : hi >= 40 ? '处在中间水平，谈不上特别划算也谈不上特别贵'
+        : '比过去十年大多数时候都贵 —— 股票相对国债的吸引力偏低');
+  return '<div style="font-size:var(--fs-sm);line-height:1.8">'
+    + '<b>股债性价比 ' + fmtNum(v.erp_pct, 2) + '%</b>'
+    + '（= 沪深300 的盈利收益率 1/PE 减掉 10 年期国债收益率），'
+    + '处在<b>过去十年 ' + fmtPct(v.erp_pct_10y) + ' 分位</b>。<br>'
+    + '<b>怎么读</b>：这个数<b>越高越划算</b>'
+    + '（拿着股票的预期回报比拿着国债强多少）。' + feel + '。<br>'
+    + '十年中位数 ' + fmtNum(v.erp_median_10y_pct, 2) + '%，'
+    + '十年区间 ' + fmtNum(v.erp_min_10y_pct, 2) + '% ~ '
+    + fmtNum(v.erp_max_10y_pct, 2) + '%。'
+    + '<span style="color:var(--text2)">口径：' + esc(v.caliber)
+    + '（数据日 ' + esc(v.asof) + '，十年窗口 ' + v.n_obs + ' 个交易日）。'
+    + '<b>注意这是沪深300 口径，不是「全市场」口径。</b>'
+    + '体检结果：这是唯一同时通过 3/6/12 个月检验的正向维度。</span></div>';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { esc: esc, positionLabel: positionLabel, fmtPct: fmtPct,
                      fmtNum: fmtNum, pctColor: pctColor, RULE_CN: RULE_CN,
@@ -278,6 +305,7 @@ if (typeof module !== 'undefined' && module.exports) {
                      trendSeries: trendSeries,
                      regimeOf: regimeOf, regimeBands: regimeBands,
                      boxStats: boxStats, boxByRegime: boxByRegime,
+                     valuationHtml: valuationHtml,
                      REGIME_BAND_COLOR: REGIME_BAND_COLOR };
   return;
 }
@@ -317,6 +345,7 @@ function refresh() {
         + '（一年百分位 ' + fmtPct(t.amount_pct_1y) + '）；涨停 ' + lim.up
         + ' 家 / 跌停 ' + lim.down + ' 家。';
       $('mpPositionBody').innerHTML = positionRowsHtml(rec);
+      $('mpValuation').innerHTML = valuationHtml(rec);
       var sh = rec.shadow || {};
       $('mpShadowNow').textContent = '今天这三条规则各自怎么说：' + ['ma20', 'breadth50', 'regime']
         .map(function (k) {

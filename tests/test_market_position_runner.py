@@ -153,15 +153,56 @@ class TestThermometer:
         assert "还没有连续录像" in md
         assert "market_position_collect.py" in md
 
-    def test_markdown_carries_all_three_caveats(self, tmp_path):
-        """三条已知偏差必须原样出现在报告里 (不靠各处自觉)。"""
+    def test_markdown_carries_all_three_caveats_in_plain_chinese(self):
+        """§16.9 第 10 条【大白话·硬条款】: 三条已知偏差必须**用大白话**出现。
+
+        原版写的是「生存者偏差」「ST 股 (±5%) 会漏计」—— 用户明说看不懂。
+        这条测试同时是**正向锁**（白话解释必须在）与**反向锁**（黑话不许再出现）。
+        """
         _write_cache()
         mpr.collect(bars=300, write=True)
         md = mpr.thermometer_md()
-        assert "ST 股 (±5%) 会漏计" in md
-        assert "生存者偏差" in md
-        assert "不足十年" in md
+        # ① 涨跌停口径
+        assert "ST 股" in md and "±5%" in md and "偏低" in md
+        # ② 退市股不在数据里 —— 必须说清"方向是高估"和"为什么"
+        assert "退市" in md and "高估" in md and "活到今天的公司" in md
+        # ③ 十年百分位早年凑不满十年
+        assert "凑不满十年" in md and "2016~2019" in md
+        # 铁律提示
         assert "不联入任何仓位调度" in md
+        # **反向锁**: 这些黑话必须已经被翻译掉
+        for jargon in ("生存者偏差", "Newey-West (HAC) t 值", "T+1 生效", "秩相关"):
+            assert jargon not in md, f"大白话条款要求翻译黑话，但报告里还有：{jargon}"
+
+    def test_markdown_explains_every_number_in_the_headline(self):
+        """§16.9 第 10 条: 每个数字后面必须跟一句白话说明它意味着什么。"""
+        _write_cache()
+        mpr.collect(bars=300, write=True)
+        md = mpr.thermometer_md()
+        head = md.split("## 位置")[0]
+        assert "先说人话" in head
+        # 宽度、新高低、量能、涨跌停 四个数字都要有解释
+        assert "均线下方" in head and "换句话说" in head
+        assert "倍" in head and ("偏弱" in head or "向下" in head or "更多" in head)
+        assert ("冷到" in head or "热闹" in head or "活跃" in head)
+        assert "情绪" in head or "方向" in head
+
+    def test_plain_language_helpers_are_generated_not_hardcoded(self):
+        """人话必须由数字生成 —— 写死"八成"会在宽度变了之后变成假话。"""
+        assert "八成" not in mpr._width_plain(85)
+        assert "绝大多数" in mpr._width_plain(85)
+        assert "不到六分之一" in mpr._width_plain(5)
+        assert "算不出" in mpr._width_plain(None)
+        assert "一边倒地向下" in mpr._hl_plain(0, 30)
+        assert "0.0 倍" not in mpr._hl_plain(0, 30)
+        assert "冷到了地板上" in mpr._amount_plain(1.6)
+        assert "非常活跃" in mpr._amount_plain(90)
+        assert "下跌" not in mpr._amount_plain(None) or "算不出" in mpr._amount_plain(None)
+        assert "情绪偏多" in mpr._zdt_plain({"up": 60, "down": 5})
+        assert "情绪偏空" in mpr._zdt_plain({"up": 3, "down": 40})
+        assert "没有极端情绪" in mpr._zdt_plain({"up": 0, "down": 0})
+        assert mpr._position_plain(90.9) == "（偏贵区）"
+        assert mpr._position_plain(5) == "（便宜区）"
 
     def test_markdown_reports_stale_date(self, tmp_path):
         _write_cache()
@@ -345,7 +386,7 @@ class TestShadowReplayCaliber:
         for r in sd["rows"] + [sd["buy_hold"]]:
             assert r["net"]["annualized_pct"] <= r["annualized_pct"] + 1e-9
             assert r["round_trips"] >= 1
-            assert "未计滑点" in sd["caliber"]
+            assert "没扣滑点" in sd["caliber"] and "偏乐观" in sd["caliber"]
 
     def test_every_row_has_significance_and_windows(self):
         sd = self._run()
