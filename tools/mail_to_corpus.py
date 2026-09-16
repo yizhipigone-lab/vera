@@ -41,6 +41,8 @@ VERA_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = VERA_ROOT / "docs" / "research_inbox"
 #: qqmail 技能的默认位置（外部依赖，见模块 docstring）
 DEFAULT_SKILL_DIR = Path.home() / ".dsh" / "skills" / "qqmail"
+#: 技能里收信脚本的名字（SKILL.md 记的布局是 `<技能目录>/scripts/Receive-QQMail.ps1`）
+RECEIVE_SCRIPT_NAME = "Receive-QQMail.ps1"
 #: 只收 .md：实测那批产物包里 html 体积是 md 的 34 倍且满是标签噪音，py/json 是源码与数据
 WANTED_SUFFIX = ".md"
 #: 单个 .md 小于这么多字节就不收（碎片/占位）
@@ -53,22 +55,57 @@ def find_skill(skill_dir: Path | None = None) -> Path | None:
     return d if d.is_dir() else None
 
 
+def _find_receive_script(skill_dir: Path) -> Path:
+    """在技能目录里找收信脚本。
+
+    **2026-09-17 M7 实测踩坑（审计 F-09 的 HIGH）**：技能按 SKILL.md 的布局把脚本放在
+    **`scripts/` 子目录**下（`<技能目录>/scripts/Receive-QQMail.ps1`），而这里原来只在
+    技能**根目录**平铺 glob `*.ps1` → 找不到 → 默认入口直接 EXIT=3 报「技能目录里没有
+    可执行的收信脚本」。功能等于**根本没接上**，而报错信息还像是"环境缺技能"。
+
+    查找顺序：约定位置 → 技能根目录 → 递归（**跳过 `tools/` 子树** —— 那里放的是
+    openssl 二进制，不该被当脚本执行）。
+    """
+    cands = [skill_dir / "scripts" / RECEIVE_SCRIPT_NAME,
+             skill_dir / RECEIVE_SCRIPT_NAME]
+    cands += [p for pat in ("*.ps1", "*.py")
+              for p in sorted(skill_dir.rglob(pat))
+              if "tools" not in p.relative_to(skill_dir).parts]
+    for p in cands:
+        if p.is_file():
+            return p
+    raise FileNotFoundError(
+        f"技能目录里没有可执行的收信脚本: {skill_dir}"
+        f"（预期 <技能目录>/scripts/{RECEIVE_SCRIPT_NAME}）")
+
+
+def _powershell_exe() -> str:
+    """找 PowerShell 解释器：优先 PowerShell 7（`pwsh`），退回 Windows PowerShell 5.1。
+
+    **2026-09-17 M7 实测踩坑（审计 F-09 同一条链上的第二个坑）**：原来硬写 `"pwsh"`，
+    而本机 PATH 上**只有** `powershell.exe`（Windows PowerShell 5.1，位于
+    `C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0`），没有 pwsh →
+    `subprocess` 直接 `[WinError 2] 系统找不到指定的文件`，默认入口照样跑不通。
+    技能自己的文档写的就是 `powershell -File ...`，所以这两个谁在都能跑。
+    """
+    for exe in ("pwsh", "powershell"):
+        p = shutil.which(exe)
+        if p:
+            return p
+    raise FileNotFoundError("本机既没有 pwsh 也没有 powershell，无法调用技能的收信脚本")
+
+
 def receive_mail(skill_dir: Path, out_dir: Path, limit: int) -> int:
     """调技能的收信脚本，把 .eml 落到 out_dir → 返收到的封数。
 
-    技能脚本名实测为 `Receive-QQMail.ps1`（PowerShell）。找不到脚本就抛
-    （由 main 统一转成非零退出）。
+    脚本位置由 `_find_receive_script` 定位（技能装在 `scripts/` 子目录里，不递归就找不到）。
+    找不到脚本就抛（由 main 统一转成非零退出）。
     """
-    ps1 = skill_dir / "Receive-QQMail.ps1"
-    if not ps1.exists():
-        cands = sorted(skill_dir.glob("*.ps1")) + sorted(skill_dir.glob("*.py"))
-        if not cands:
-            raise FileNotFoundError(f"技能目录里没有可执行的收信脚本: {skill_dir}")
-        ps1 = cands[0]
+    ps1 = _find_receive_script(skill_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     if ps1.suffix.lower() == ".ps1":
-        cmd = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1),
-               "-OutDir", str(out_dir), "-Limit", str(limit)]
+        cmd = [_powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass",
+               "-File", str(ps1), "-OutDir", str(out_dir), "-Limit", str(limit)]
     else:
         cmd = [sys.executable, str(ps1), "--out-dir", str(out_dir), "--limit", str(limit)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -199,8 +236,17 @@ def write_corpus(items: list[dict], corpus_dir: Path | None = None) -> dict:
                   f"> **注意**：这是**外部**研究产物，**未经本系统复核**，"
                   f"引用时必须说明来源。\n\n")
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # **审计 F3**: 原来这里直接 `dest.relative_to(VERA_ROOT)` —— 当 `--out`
+        # 指到项目根之外(测试的 basetemp 就可能在外)时 **ValueError**,
+        # 而且是在**文件已经写完**之后才抛, 半途而废又报错。
+        # 返回值只是给人看的报告字段, 不参与索引口径(那由 `_to_source` 唯一负责),
+        # 所以出根时如实返回绝对路径即可, **绝不为了凑相对路径而崩**。
+        try:
+            shown = dest.relative_to(VERA_ROOT).as_posix()
+        except ValueError:
+            shown = dest.as_posix()
         dest.write_text(header + it["text"], encoding="utf-8")
-        written.append(str(dest.relative_to(VERA_ROOT).as_posix()))
+        written.append(shown)
         seen[key] = str(dest.name)
     return {"written": written, "dups": dups}
 

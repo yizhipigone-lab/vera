@@ -162,6 +162,15 @@ def _isolate_caches(tmp_path):
     import brain.search_engine as _se
     orig_index_dir = _se.INDEX_DIR
     _se.INDEX_DIR = tmp_path / "brain_vectors"
+    # 2026-09-17 M7（第二轮审计 F4）: M5/M6 又新增了两条落盘路径，
+    # 它们当时只靠"各用例自己传 tmp / 模块内 fixture"兜着 —— 与 07-27、09-17
+    # 两次投毒事故同一个病类（**新增落盘路径必须一并进全局隔离**，不是"记得传 tmp"）。
+    import notes_gen.daily as _drev
+    orig_review_dir = _drev.REVIEW_DIR
+    _drev.REVIEW_DIR = tmp_path / "daily_review"
+    import tools.mail_to_corpus as _mtc
+    orig_corpus_dir = _mtc.CORPUS_DIR
+    _mtc.CORPUS_DIR = tmp_path / "research_inbox"
     # 双保险: archive 侧有现成开关, 直接关掉归档同步 (brain/archive.py 读它)
     orig_no_sync = os.environ.get("BRAIN_NO_INDEX_SYNC")
     os.environ["BRAIN_NO_INDEX_SYNC"] = "1"
@@ -175,6 +184,8 @@ def _isolate_caches(tmp_path):
         _mpr.DAILY_PATH = orig_mp_path
         _mpr.KLINE_1D_DIR = orig_mp_kline
         _mpr.ERP_PATH = orig_mp_erp
+        _drev.REVIEW_DIR = orig_review_dir
+        _mtc.CORPUS_DIR = orig_corpus_dir
         if orig_erp_fetch is None:
             os.environ.pop(_mpr.ERP_FETCH_ENV, None)
         else:

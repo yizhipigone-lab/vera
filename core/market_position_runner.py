@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from core.kline_cache import STUB_TRADED_RATIO
 from core.limit_ratio import limit_ratio
 from core.market_position import (PCT_WINDOW_BARS, POSITION_COLUMNS,
                                   RECENT_EXCLUDE_BARS, RET_1Y_BARS,
@@ -41,6 +42,12 @@ from core.market_position import (PCT_WINDOW_BARS, POSITION_COLUMNS,
                                   forward_return, index_position_series,
                                   last_valid_date, limit_counts_series,
                                   similar_days)
+
+#: `POSITION_COLUMNS` 里**是文本**的列（牛熊标签）。
+#: 其余都是数值列、走 `_f()` 转 float —— 两类必须分开处理，否则文本列会被
+#: `float("bull")` 打回 None 并**静默丢掉**（2026-09-17 M7 自查实测：`regime_20`
+#: 在 5501 条记录里 0 条非空）。
+TEXT_COLS = ("regime", "regime_20")
 
 try:  # pragma: no cover - 循环导入兜底 (logger 永远可用, 这里只是防御)
     from utils.logger import get_logger
@@ -71,7 +78,10 @@ ERP_PATH = _ROOT / "data" / "market_position" / "erp.jsonl"
 #: **口径如实标注**: 这是 **沪深300** 口径, 不是邮件里用的「万得全A」口径;
 #: 两者不是同一个数, 报告里必须写清楚, 不许含糊成"全市场估值"。
 ERP_SOURCE = "akshare stock_ebs_lg (乐咕乐股 股债性价比)"
-ERP_CALIBER = ("沪深300 口径: 1/PE-TTM − 10年期国债收益率（越高越划算，负数=股票还不如国债）")
+#: 上面那个是**技术来源**（写进数据文件、给开发者看）；下面这个才是给用户看的说法。
+#: 用户可见文案里不许出现库名/接口名 —— 他不需要知道我们用哪个库抓的数据。
+ERP_SOURCE_PLAIN = "乐咕乐股公布的「股债利差」（本机每天自动取一次）"
+ERP_CALIBER = ("沪深300 口径: 用「市盈率的倒数」当作股票的盈利收益率，再减掉 10 年期国债收益率（越高越划算；负数=拿着股票还不如买国债）")
 #: ERP 算百分位至少要多少条历史 (一年 ≈243 条, 这里要满 3 年才给数,
 #: 与 core/market_position.PCT_WINDOW_BARS 的 min_periods 精神一致: 不足就不给)
 ERP_MIN_OBS = 750
@@ -86,18 +96,31 @@ INDEX_SPECS = (("shanghai", "上证指数", "000001.SH"),
 _STOCK_RE = re.compile(r"^(6\d{5}\.SH|(000|001|002|003|300|301)\d{3}\.SZ)$")
 #: 日常采集窗口: 覆盖"成交额一年百分位"(250 根) + 60 日新高低 + 缓冲
 DEFAULT_BARS = 300
+#: 「成交额一年百分位」的回看窗口 / 最少样本数 —— **一处定义、两处引用**
+#: (计算在 `amt_rank`, 预热在 `WARMUP_BARS`)。
+#: **注意 `min_periods < window` 是个陷阱**：满 120 根就有数, 但那个数是"在 120 个值里
+#: 排名"而不是"在 250 个值里排名", 是**错的**。要满 250 根才正确。
+AMOUNT_RANK_WINDOW = 250
+AMOUNT_RANK_MIN_PERIODS = 120
 #: **预热窗口 (2026-09-17 实测抓到的真 bug 的修法)**: 日常采集算 DEFAULT_BARS 天,
-#: 但窗口头部那些天**算不出**需要长回看的指标 —— `amt_rank` 是
-#: `rolling(250, min_periods=120)`, 头 120 天必然是 NaN; 新高新低是 60 日窗。
+#: 但窗口头部那些天**算不出/算不对**需要长回看的指标 —— `amt_rank` 是
+#: `rolling(250, min_periods=120)`, 头 120 天没有数, **120~249 天有数但是错的**;
+#: 新高新低是 60 日窗。
 #: 而日常采集会把这些记录 **upsert 覆盖**回录像, 于是**历史上本来是好的记录
-#: 被改成了缺值**: 实测 `collect(bars=300)` 一次让 118 条记录 (2025-04-17 ~
-#: 2025-10-13) 的 `amount_pct_1y` 变成 null, 照镜子的可选池凭空少 118 天。
+#: 被改成了缺值**。实测（2026-09-17 M7 用当时录像重放"无预热"那条路径）：
+#: **单次** `collect(bars=300)` 就让 **72 条**记录 (2025-06-26 ~ 2025-10-13) 的
+#: `amount_pct_1y` 由"有值"变 null, 且 **0 条变好** —— 只坏不好。而日常是**每天
+#: 滑一次窗**, 受损区间会一路向历史蔓延（另一轮独立审计用更长的重放窗口数到
+#: 118~119 条 / 起点 2025-04-16 —— 两个数都对, 差别只在"重放了几天日常采集"）。
 #: 修法 = 多读 WARMUP_BARS 根做预热, **只输出窗口内最后 bars 天**。
-WARMUP_BARS = 300
+#: 余量**不是拍脑袋**（2026-09-17 M7 冻结数据实测, 只让预热变、数据不变）:
+#: 「成交额一年百分位」与长期预热基准不一致的天数 = 预热 0 → 243 天、60 → 187、
+#: 120 → 126、180 → 67、240 → 10、**250 起 → 0**。所以下限就是 250 整窗, 取 300。
+WARMUP_BARS = AMOUNT_RANK_WINDOW + 50
 #: 回填窗口: 0 = 全量历史
 BACKFILL_BARS = 0
 #: 有效交易日判据: 当日有成交的股票占比。空壳 bar 的比例会掉到 1% 以下。
-MIN_TRADED_RATIO = 0.5
+MIN_TRADED_RATIO = STUB_TRADED_RATIO     # 引 core.kline_cache 的单一真相源, 不写第二份 0.5
 #: TDX 日线 amount 字段单位 = 万元 → 除以 1e4 得亿元
 AMOUNT_WAN_PER_YI = 1e4
 #: 三条候选择时规则 (只记录不交易; 定义见 _shadow_states)
@@ -265,8 +288,13 @@ def _build_record(d, bf_row, idx_hist: dict, hs_raw, hs_ma20, total_amt,
         r = h.loc[d]
         item = {"name": name, "code": code}
         for col in POSITION_COLUMNS:
-            item[col] = _f(r[col]) if col != "regime" else (
-                None if r[col] is None or r[col] != r[col] else str(r[col]))
+            # **文本列 vs 数值列必须分开**（2026-09-17 M7 自查抓到的真 bug）:
+            # 原判断写的是 `col != "regime"`, 于是新加的 `regime_20` 走了 `_f()`
+            # → `float("bull")` 抛 TypeError → `_f` 吞掉并返回 None
+            # → **5501 条记录里 regime_20 全是 None, 静默丢了这一维**(实测 0/5501 非空)。
+            # 同类坑: 以后再加文本列, 必须一并列进 TEXT_COLS。
+            item[col] = (None if r[col] is None or r[col] != r[col] else str(r[col])) \
+                if col in TEXT_COLS else _f(r[col])
         indices[key] = item
 
     traded = bf_row.get("traded")
@@ -431,7 +459,8 @@ def _erp_snapshot(table: pd.DataFrame, asof) -> dict | None:
             "erp_max_10y_pct": _f(row["max_10y"], 2),
             "n_obs": int(row["n_obs"]),
             "asof": table.index[i].date().isoformat(),
-            "source": ERP_SOURCE, "caliber": ERP_CALIBER}
+            "source": ERP_SOURCE, "source_plain": ERP_SOURCE_PLAIN,
+            "caliber": ERP_CALIBER}
 
 
 # ───────────────── 内部: 牛熊区间与时长 (§14.5/§14.6) ─────────────────
@@ -528,7 +557,7 @@ def _regime_all() -> dict:
         df = index_position_series(s)
         out[key] = {
             "name": name, "code": code,
-            "ma250": _regime_summary(df["regime"], s, caliber="年线(MA250)斜率口径"),
+            "ma250": _regime_summary(df["regime"], s, caliber="年线斜率口径"),
             "pct20": _regime_summary(df["regime_20"], s, caliber="20% 法则口径"),
         }
     return out
@@ -698,6 +727,12 @@ def _dimension_validity() -> dict:
             "field": field, "name": name, "family": family,
             "rho_12m": best["rho"], "p_12m": best["p"],
             "n_12m": best["n"],
+            #: 五分位差与"是哪个持有期"都取自**同一行** `best`。
+            #: 2026-09-17 M7：正文原来写死 `by_field[field][252]`，而 `best` 是
+            #: "优先 12 个月、没有就取最长的" —— 两者不是同一行时，正文会出现
+            #: "12 个月 rho +0.99、五分位差算不出来"这种自相矛盾的组合。
+            "spread": best.get("quintile_spread_pct"),
+            "best_horizon": best["horizon"],
             "verdict_12m": best["verdict"],
             "any_significant_consistent": bool(strong),
             "significant_horizons": [r["horizon"] for r in strong],
@@ -709,29 +744,53 @@ def _dimension_validity() -> dict:
         f = families.setdefault(s["family"], {"n_fields": 0, "usable": False})
         f["n_fields"] += 1
         f["usable"] = f["usable"] or s["any_significant_consistent"]
+    #: 取**实际有结果的最长持有期**（不是写死的 12 个月）—— 录像短的时候 12 个月那一档
+    #: 可能一行都没有，写死就会印出「各指标落在 个位数」这种半截话。
+    _present = sorted({r["horizon_days"] for r in rows}, reverse=True)
+    longest = _present[0] if _present else max(k for k, _ in VALIDITY_HORIZONS)
+    longest_cn = dict(VALIDITY_HORIZONS).get(longest, f"{longest} 个交易日")
+    at_longest = [r for r in rows if r["horizon_days"] == longest]
+    eff = [r["n_eff"] for r in at_longest if r["n_eff"] is not None]
+    months_n = [r["n"] for r in at_longest if r["n"] is not None]
+    thinnest = min(at_longest, key=lambda r: r["n"], default=None)
+    widest = max(at_longest, key=lambda r: r["n"], default=None)
+    usable_fams = sorted(f for f, v in families.items() if v["usable"])
+    _eff_sentence = (
+        f"**{longest_cn}持有期的有效独立样本，各指标落在 {min(eff)} ~ {max(eff)} 份**"
+        if eff else
+        f"**{longest_cn}持有期在本机数据上还凑不出有效样本**（录像不够长）")
     return {"ok": True, "n_months": n_months,
             "start": mon.index[0].date().isoformat(),
             "end": mon.index[-1].date().isoformat(),
             "rows": rows, "summary": summary,
             "n_tests": n_tests, "n_fields": len(summary),
-            "n_families": len(families), "n_families_usable":
-                sum(1 for f in families.values() if f["usable"]),
-            "families": families,
+            "n_families": len(families), "n_families_usable": len(usable_fams),
+            "usable_families": usable_fams, "families": families,
             "limitations": [
                 "**幸存者偏差是满格的**（实测 2026-09-17：本地日线缓存 5211 只股票里，"
                 "最后交易日早于 2026-08-01 的有 **0 只**）—— 缓存里一只退市股都没有。"
                 "而这些票当年通常是弱票，所以历史宽度序列被**系统性高估**，"
                 "用宽度类指标算出来的相关性都建立在这条被污染的序列上。",
-                f"**月频采样得 {n_months} 个月（2004-02 ~ 2026-09），但各指标历史长短不同**："
-                "十年百分位与波动率要满 3 年才有数（可用约 126~162 个月），"
-                "宽度/新高低/成交额从 2004 年就有（约 254~270 个月），ERP 从 2005 年"
-                "**12 个月持有期的有效独立样本只有约 9~10 个**（各指标 7.6~12.3，"
-                "见接口返回的 `n_eff` 字段），"
-                "所以 p 值只能当参考，不能当结论。",
-                f"**共检验 {n_tests} 个组合**（{len(summary)} 个指标 × 4 个持有期），"
+                f"**月频采样得 {n_months} 个月（{mon.index[0].date()} ~ "
+                f"{mon.index[-1].date()}），但各指标历史长短不同**："
+                + (f"能用的月份数从 **{min(months_n)} 个月**（{thinnest['name']}）"
+                   f"到 **{max(months_n)} 个月**（{widest['name']}）不等"
+                   if months_n and thinnest and widest else "各指标可用月份数不等")
+                + "（这是各列自己的可用起点不同：十年百分位要满 3 年预热才给数，"
+                  "宽度/新高低/成交额几乎从录像开头就有）。",
+                _eff_sentence
+                + "（见下方「有效独立样本」列）—— 所以 p 值只能当参考，不能当结论；"
+                  "持有期越长，重叠越少、但样本也越少。",
+                f"**共检验 {n_tests} 个组合**（{len(summary)} 个指标 × "
+                f"{len(VALIDITY_HORIZONS)} 个持有期），"
                 f"按纪律 3「数族不数因子」归到 {len(families)} 个族 —— "
+                f"其中 **{len(usable_fams)} 个族**（{'、'.join(usable_fams) or '无'}）"
+                f"**至少在一个持有期上**找到了可用证据；"
+                "判断依据是各指标自己那一行写明的持有期，"
+                "**不等于它在 12 个月上也显著**。"
                 "从这么多次比较里挑出显著的那几个，本身就是过拟合风险；"
-                "本项目**不做** DSR/PBO 校正（2026-07-26 用户拍板），"
+                "本项目**不做**「多重检验校正」（那是为了对付「试很多次、挑出最好的那个」这类"
+                "偏差的统计处理；2026-07-26 用户拍板不做），"
                 "所以这里如实披露检验次数，由读者自己打折。",
                 "**本体检只说明样本内相关性，不改任何仓位**（业务铁律 1）；"
                 "没通过的一律标「仅描述现状，不作预测依据」，"
@@ -825,7 +884,9 @@ def _collect_locked(*, bars: int, write: bool,
 
     # 全市场成交额 (空壳 bar 的 0 不算) + 一年百分位
     total_amt = amt_df.where(vol_df > 0).sum(axis=1)
-    amt_rank = total_amt.rolling(250, min_periods=120).rank(pct=True) * 100
+    amt_rank = (total_amt.rolling(AMOUNT_RANK_WINDOW,
+                                 min_periods=AMOUNT_RANK_MIN_PERIODS)
+                .rank(pct=True) * 100)
 
     ratios = pd.Series({c: limit_ratio(c) for c in close_df.columns}, dtype=float)
     hs_raw = idx_raw.get("hs300")
@@ -1267,6 +1328,11 @@ def shadow_replay() -> dict:
 
         `entry_cost` = 窗口第一天就另外补一笔成本 (买入持有用: 它在窗口起点建仓,
         不经过 0→1 的跳变, 逐日摊法抓不到那一笔)。
+
+        **每个窗口还要报自己的持有段数**（审计 F-12）：只看"两半年化同不同号"会漏掉
+        一件事 —— 对 `regime` 这种全样本只有 15 段的规则，半段可能只有几段，
+        同号与否几乎没有信息量。所以段数 < `MIN_SEGMENTS_FOR_T` 的窗口标
+        「样本不足」，**同号也不算数**（与单窗口那条纪律一致）。
         """
         cut = int(len(pos) * WINDOW_SPLIT)
         res: dict = {}
@@ -1279,12 +1345,21 @@ def shadow_replay() -> dict:
             cs = _cost_series(sub)
             if entry_cost and len(cs):
                 cs.iloc[0] += entry_cost
+            n_seg = len(_holding_segments(sub))
             res[name] = {"start": sub.index[0].date().isoformat(),
                          "end": sub.index[-1].date().isoformat(),
                          "years": _f(yrs, 1),
+                         "round_trips": n_seg,
+                         "enough": n_seg >= MIN_SEGMENTS_FOR_T,
                          **_stats(sub * sub_ret - cs, yrs)}
         a, b = res["in"].get("annualized_pct"), res["out"].get("annualized_pct")
-        res["consistent"] = bool(a is not None and b is not None and (a > 0) == (b > 0))
+        both_enough = bool(res["in"].get("enough") and res["out"].get("enough"))
+        res["consistent"] = bool(both_enough and a is not None and b is not None
+                                 and (a > 0) == (b > 0))
+        res["note"] = ("" if both_enough else
+                       f"有一半窗口的持有段不足 {MIN_SEGMENTS_FOR_T} 段"
+                       f"（前半 {res['in'].get('round_trips')} 段 / "
+                       f"后半 {res['out'].get('round_trips')} 段），同号也不算数")
         return res
 
     rows = []
@@ -1320,8 +1395,9 @@ def shadow_replay() -> dict:
                "只扣了佣金和印花税、**没扣滑点**，单次往返 "
                + (f"{rt * 100:.2f}%" if cost else "【缺】") +
                "，所以**净口径的结果是偏乐观的下限**；"
-               "显著性用 Newey-West 方法（一种会给自己人跟自己人相关的部分打折的算法，"
-               "免得把显著性吹大）算 t 值，并同时报「有效独立样本数」")
+               "显著性用一套「会给自己人跟自己人相关的部分打折」的算法算 t 值"
+               "（免得把显著性吹大 —— 相邻日子的涨跌是重叠的，不打折就会虚高），"
+               "并同时报「有效独立样本数」")
     out = {"ok": True, "start": df.index[0].date().isoformat(),
            "end": df.index[-1].date().isoformat(),
            "years": _f(years, 1), "days": len(df),
@@ -1351,6 +1427,17 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     st = ("（**数据滞后**: 最新有效交易日 " + rec["date"] + ", 应有 "
           + rec.get("expected_date", "?") + "）") if rec.get("stale") else ""
     out = [f"# 大盘体温表 {rec['date']} {st}".rstrip()]
+    # 审计 F-09：数据滞后时正文里十几处「今天」会让人把日期认错。**由数据生成日词**，
+    # 并在抬头紧跟一句说明 —— 只改这一处比改十几处文案可靠（改文案总会漏）。
+    try:
+        _d = pd.Timestamp(rec["date"])
+        day_word = "今天" if not rec.get("stale") else f"{_d.month}月{_d.day}日"
+    except Exception:
+        day_word = "今天"
+    if rec.get("stale"):
+        out.append(f"⚠ **下面正文里凡说「{day_word}」的地方，指的都是 "
+                   f"{rec['date']} 收盘 —— 不是今天。**"
+                   "（本地日线缓存还没拿到更新的收盘数据，报告不拿旧数据冒充新数据。）")
     b = rec.get("breadth") or {}
     t = rec.get("turnover") or {}
     lim = rec.get("limit") or {}
@@ -1360,7 +1447,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     apct = t.get("amount_pct_1y")
     out.append(
         f"**一句话（先说人话，再给数字）**\n"
-        f"今天全市场有 **{traded}** 只股票在交易。\n"
+        f"{day_word}全市场有 **{traded}** 只股票在交易。\n"
         f"- **站上 20 日均线的只有 {_rat(w)}**（20 日均线 = 最近一个月的平均买入成本，"
         f"跌破它意味着最近一个月买的人大多在亏）—— {_width_plain(w)}\n"
         f"- 一边创新高的有 **{hi}** 家、一边创新低的却有 **{lo}** 家"
@@ -1469,7 +1556,8 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             f"十年区间 {_num(v.get('erp_min_10y_pct'), 2)}% ~ "
             f"{_num(v.get('erp_max_10y_pct'), 2)}%。\n\n"
             f"口径：{v.get('caliber')}（数据日 {v.get('asof')}，"
-            f"十年窗口 {v.get('n_obs')} 个交易日；来源 {v.get('source')}）。"
+            f"十年窗口 {v.get('n_obs')} 个交易日；"
+            f"来源：{v.get('source_plain') or v.get('source')}）。"
             "**注意这是沪深300 口径，不是「全市场」口径**。\n\n"
             "**为什么单列这一节**：前面那张位置表全是**价格**算出来的——"
             "价格在高位不等于**贵**（如果公司盈利涨得比股价还快，价格高但估值不高）。"
@@ -1478,7 +1566,8 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     else:
         out.append("## 估值（贵不贵，跟位置是两回事）\n\n"
                    "【缺】没有本地 ERP（股债性价比）缓存。补的办法："
-                   "`python tools/market_position_collect.py --collect`（会联网拉一次），"
+                   "`python tools/market_position_collect.py`（不带参数就是日常采集，"
+                   "会联网拉一次）,"
                    "或手工把 `data/market_position/erp.jsonl` 造出来。")
 
     md = mirror_data if isinstance(mirror_data, dict) else mirror()
@@ -1545,7 +1634,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                 "breadth50": "全市场有一半以上股票站上 20 日均线就满仓",
                 "regime": "项目牛熊口径判为「牛」就满仓",
                 "buy_hold": "什么都不做，一直拿着（对照用）"}
-    sd_lines = ["**今天这三条规则各自怎么说**: " + "；".join(
+    sd_lines = [f"**{day_word}这三条规则各自怎么说**: " + "；".join(
         f"{_rule_cn.get(k, k)} → "
         f"{'**在场内**' if v == 'on' else '**空仓**'}" for k, v in sh_now.items()),
         "注意：这只是**影子记录**，系统绝不会按它下单（业务铁律 1：宏观与研判只出报告，"
@@ -1581,14 +1670,20 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                      "—— **既不写「这条规则无效」，也不写「跑输一直拿着」**。"
                      "只有整个范围都在 0 以下，才能说「明显比一直拿着差」。\n"
                      "- **有效独立样本** = 天数看着很多，但相邻日子的涨跌是重叠的，"
-                     "**真正独立的信息没那么多**，这个数就是打了折之后的信息量。"]
+                     "**真正独立的信息没那么多**，这个数就是打了折之后的信息量。"
+                     "⚠ **它是「按天算」的口径**（把每个持仓日当一个观测），所以数出来"
+                     "接近总天数；**真正不重复的「下注次数」是「建仓次数」那一列**"
+                     "（一个往返 = 建仓到清仓算一次下注）。两个数要一起看："
+                     "按天的样本大、按次的下注少，后者才是保守的下界。"]
         # 逐条写人话结论 (§15.2 E4 措辞纪律: 不说"跑输", 说"无显著净边际")
         for r in (sd.get("rows") or []):
             net = r.get("net") or {}
             lo, hi = net.get("ci_low_pct"), net.get("ci_high_pct")
             seg = r.get("segments") or {}
-            dtxt = (f"{_num(net.get('t'), 2)}（有效独立样本约 "
-                    f"{_num(net.get('n_eff'), 0)} 天）" if net.get("t") is not None else "【缺】")
+            dtxt = (f"{_num(net.get('t'), 2)}（按天算的有效独立样本约 "
+                    f"{_num(net.get('n_eff'), 0)} 天；但**真正独立的下注只有 "
+                    f"{_num(seg.get('n'), 0)} 次**（= 建仓次数），"
+                    f"**以少的那个为准**）" if net.get("t") is not None else "【缺】")
             if lo is None or hi is None:
                 verdict = "数据不足，判不了"
             elif lo <= 0 <= hi:
@@ -1615,17 +1710,35 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                      "**双窗口一致性**（纪律 2「双窗口一致才算数」：把这段历史对半切开，"
                      "两半各算一遍，**只有两半同向才算数**，不一致的结论一律标「待复核」）:",
                      "",
-                     "| 规则 | 前半段净年化 | 后半段净年化 | 一致? |", "|---|---|---|---|"]
+                     "| 规则 | 前半段净年化 | 后半段净年化 | 前半段持有段数 | "
+                     "后半段持有段数 | 一致? |", "|---|---|---|---|---|---|"]
         for r in (sd.get("rows") or []) + [sd.get("buy_hold") or {}]:
             if not r:
                 continue
             w = r.get("windows") or {}
             wi, wo = w.get("in") or {}, w.get("out") or {}
+            if w.get("consistent"):
+                verdict = "✅ 同向，算数"
+            elif w.get("note"):
+                verdict = "⚠ 样本不足，不算数"
+            else:
+                verdict = "⚠ 不一致，待复核"
             sd_lines.append(
                 f"| {_rule_cn.get(r.get('rule'), r.get('rule'))} | "
                 f"{_pct(wi.get('annualized_pct'))}（{wi.get('start')} 起） | "
                 f"{_pct(wo.get('annualized_pct'))}（{wo.get('start')} 起） | "
-                f"{'✅ 同向，算数' if w.get('consistent') else '⚠ 不一致，待复核'} |")
+                f"{_num(wi.get('round_trips'), 0)} 段 | "
+                f"{_num(wo.get('round_trips'), 0)} 段 | {verdict} |")
+        _wnote = next((w.get("note") for w in
+                       [(r.get("windows") or {}) for r in
+                        (sd.get("rows") or []) + [sd.get("buy_hold") or {}]] if w.get("note")),
+                      "")
+        if _wnote:
+            sd_lines += ["",
+                         f"（为什么有「样本不足」：{_wnote}。"
+                         f"一个往返 = 建仓到清仓算一次「下注」，"
+                         f"段数太少时「两半同号」可能只是碰巧 —— "
+                         f"所以按纪律 2 的精神标「不算数」，而不是当它通过了。）"]
         c = sd.get("cost") or {}
         if c:
             sd_lines += [
@@ -1656,16 +1769,21 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     else:
         vd_lines += [
             "",
-            "| 指标 | 族 | 1 个月 | 3 个月 | 6 个月 | 12 个月 | 12 个月五分位差 | 判定 |",
-            "|---|---|---|---|---|---|---|---|"]
+            "| 指标 | 族 | 1 个月 | 3 个月 | 6 个月 | 12 个月 | 12 个月五分位差 | "
+            "12 个月的有效独立样本 | 判定 |",
+            "|---|---|---|---|---|---|---|---|---|"]
         by_field: dict = {}
         for r in vd["rows"]:
             by_field.setdefault(r["field"], {})[r["horizon_days"]] = r
+        warn_cells: list[str] = []      # 收集所有 ⚠（审计 F-04：正文不许与表格打架）
 
         def _cell(r):
             if not r or r.get("rho") is None:
                 return "—"
-            mark = "⚠" if not r.get("consistent") else ""
+            ok = r.get("consistent")
+            mark = "⚠" if not ok else ""
+            if not ok:
+                warn_cells.append(f"{r['name']}·{r['horizon']}")
             return f"{r['rho']:+.2f}{_stars(r.get('p'))}{mark}"
 
         for s in vd["summary"]:
@@ -1673,7 +1791,14 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             q = (h.get(252) or {}).get("quintile_spread_pct")
             vd_lines.append(
                 f"| {s['name']} | {s['family']} | {_cell(h.get(21))} | {_cell(h.get(63))} | "
-                f"{_cell(h.get(126))} | {_cell(h.get(252))} | {_pct(q)} | {s['label']} |")
+                f"{_cell(h.get(126))} | {_cell(h.get(252))} | {_pct(q)} | "
+                f"{_num((h.get(252) or {}).get('n_eff'), 1)} 份 | {s['label']} |")
+        if warn_cells:
+            vd_lines.append(
+                f"\n**本次共 {len(warn_cells)} 处标了 ⚠**（两半方向打架 → 一律待复核）："
+                + "、".join(warn_cells)
+                + "。**这些格子里的数一个都不能当结论用。**（这段是从数据生成的，"
+                  "不是手写的 —— 免得正文与表格打架。）")
         vd_lines += [
             "",
             "**怎么读**：rho 是「名次合不合拍」—— **+0.5 表示指标越高、之后涨得越多**，"
@@ -1681,24 +1806,69 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             "星号是「这不太可能是碰巧」的可信程度：`***` = 很可信、`**` = 可信、"
             "`*` = 勉强、**没有星号 = 看不出来**。"
             "**⚠ = 两半打架**（把样本按时间对半切开，两半的方向不一致）→ 一律标「待复核」，"
-            "**不算数**（项目《公式因子体检方法论》纪律 2「双窗口一致才算数」）。"
-            "本次唯一一处 ⚠ 是 ERP 的 1 个月（短期它反而反向），中长期三档全部两半同号。",
+            "**不算数**（项目《公式因子体检方法论》纪律 2「双窗口一致才算数」）。",
+            # 审计 F-04：原来这里硬编码「本次唯一一处 ⚠ 是 ERP 的 1 个月」，而同一份
+            # 报告的表里其实有 10 处 ⚠ —— **正文与自己的表格打架，会系统性高估可信度**。
+            # 改成**由数据生成**（下面的 _warn_cells 在渲染表格时收集）。
             "",
-            "**这次实测出来的三件事**（2026-09-17）：",
-            "1. **估值（ERP 股债性价比）是唯一又强又稳的正向维度**："
-            "12 个月 rho **+0.55**、五分位差 **+37.4 个百分点**（即最便宜的那批之后比最贵的那批"
-            "多涨 37.4 个百分点）—— **独立复现了外部研究的结果**（他们 +0.48 / +26.7pp）。"
-            "前面「估值」那一节之所以必须单列，就是这条证据撑起来的。",
-            "2. **十年百分位是强**负**相关**：上证 12 个月 rho **−0.57**、五分位差 **−32.2 个百分点**。"
-            "所以位置指标**不是没用，而是方向跟直觉相反** —— 位置越高，之后一年越差"
-            "（样本内均值回归）。这条与「指数在十年 90% 高位」要放在一起读。",
-            "3. **宽度类（站上 20 日均线占比、创新高与新低的差）在四个持有期上全部看不出相关性**，"
-            "与外部研究「资金层/广度层被证伪」的结论一致 —— 所以它们"
-            "**只描述现状，不作预测依据**（注意：我们**不给它们权重、也不合成总分**）。",
+            "**表头怎么读**：「有效独立样本」= 月数 ÷ 持有期月数"
+            "（重叠窗口会让信息量远小于观测条数）；「五分位差」= 把历史日子按指标"
+            "从低到高分成五组后，最高一组减最低一组之后多赚或少赚的百分点。",
+            "",
+            "**这次实测出来的几件事**（数字全部由本次数据现算，不写死 —— "
+            "写死的统计结论会随数据漂移变成假话，审计 F-06/F-08/【F-04】同一根因）："]
+        # 下面三条的**挑法**写死、**数字**全部现算。挑法：12 个月上显著且两半一致的
+        # 指标里，rho 最大的是"最强正向"、最小的是"最强负向"；一个持有期都没通过的族
+        # 就是"看不出相关性"的族。
+        _sig = [s for s in vd["summary"]
+                if s["p_12m"] is not None and s["p_12m"] < 0.05
+                and s["any_significant_consistent"]]
+        _pos = max((s for s in _sig if (s["rho_12m"] or 0) > 0),
+                   key=lambda s: s["rho_12m"], default=None)
+        _neg = min((s for s in _sig if (s["rho_12m"] or 0) < 0),
+                   key=lambda s: s["rho_12m"], default=None)
+        _weak = sorted(f for f, v in (vd.get("families") or {}).items() if not v["usable"])
+        _weak_fields = [s["name"] for s in vd["summary"] if s["family"] in _weak]
+        _facts: list[str] = []
+
+        def _spread(s) -> str:
+            q = s.get("spread")
+            if q is None:
+                return "五分位差算不出来（月频样本不足）"
+            return (f"五分位差 **{_pct(q)}**（把历史日子按这个指标从低到高分成五组，"
+                    f"最高那组之后比最低那组**{'多' if q > 0 else '少'}赚 "
+                    f"{_num(abs(q), 1)} 个百分点**）")
+
+        if _pos:
+            _erp_note = ("—— **独立复现了外部研究的结果**（他们 +0.48 / +26.7 个百分点）。"
+                         "前面「估值」那一节之所以必须单列，就是这条证据撑起来的。"
+                         if _pos["field"] == "erp" else "")
+            _facts.append(
+                f"**{_pos['name']}是 {_pos['best_horizon']}上最强的正向维度**："
+                f"rho **{_pos['rho_12m']:+.2f}**、{_spread(_pos)}"
+                + _erp_note)
+        if _neg:
+            _facts.append(
+                f"**{_neg['name']}是 {_neg['best_horizon']}上最强的负相关**"
+                f"（方向和直觉相反）："
+                f"rho **{_neg['rho_12m']:+.2f}**、{_spread(_neg)}。"
+                f"所以位置指标**不是没用，而是方向跟直觉相反** —— 位置越高，之后一年越差"
+                f"（样本内均值回归）。这条要与「现在指数在什么位置」放在一起读。")
+        if _weak_fields:
+            _facts.append(
+                f"**{'、'.join(_weak_fields)}（{'、'.join(_weak)}）在四个持有期上全部看不出"
+                f"相关性**，与外部研究「资金层/广度层被证伪」的结论一致 —— 所以它们"
+                f"**只描述现状，不作预测依据**（注意：我们**不给它们权重、也不合成总分**）。")
+        if not _facts:
+            _facts.append("**本次没有任何指标在任何持有期上通过双窗口检验** —— "
+                          "所有指标都只能描述现状、不作预测依据。")
+        vd_lines += [f"{i}. {t}" for i, t in enumerate(_facts, 1)]
+        vd_lines += [
             "",
             f"规模：月频样本 **{vd['n_months']} 个月**（{vd['start']} ~ {vd['end']}）、"
             f"共检验 **{vd['n_tests']} 个组合**、归到 **{vd['n_families']} 个族**"
-            f"（其中 {vd['n_families_usable']} 个族有可用证据）。",
+            f"（其中 **{vd['n_families_usable']} 个族**至少在一个持有期上有可用证据："
+            f"{'、'.join(vd.get('usable_families') or []) or '无'}）。",
             "",
             "**诚实限制（必须一起读）**："]
         vd_lines += [f"- {x}" for x in vd["limitations"]]

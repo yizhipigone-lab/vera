@@ -307,7 +307,6 @@ def limit_counts_series(close_df: pd.DataFrame, volume_df: pd.DataFrame,
 
 
 def similar_days(target: dict, history: pd.DataFrame, *, top_n: int = 5,
-                 gap: int | None = None,
                  exclude_recent: int = RECENT_EXCLUDE_BARS,
                  min_gap: int = MIN_MATCH_GAP_BARS,
                  quantile: float | None = None,
@@ -325,7 +324,10 @@ def similar_days(target: dict, history: pd.DataFrame, *, top_n: int = 5,
     - `min_gap` (默认 20): 两个入选的"相似日"之间至少隔这么多交易日,
       否则一次会照出一串连续的同一天。
 
-    `gap` 是**已废弃的兼容参数**: 传了就同时覆盖上面两个 (老调用方/老测试用)。
+    `gap` 这个"一个参数同时管两条纪律"的兼容写法**已于 2026-09-17 M7 删除**
+    （审计 F-13）：它允许 `gap=0` 静默把两条纪律一起关掉（不抛错、不告警），
+    等于给数据窥探防护留了个后门。现在两个纪律必须分别显式给，删掉参数后
+    误传 `gap=` 会直接 `TypeError`，是**响亮地坏**而不是**安静地错**。
 
     `quantile` (如 0.05): 额外给出"**距离最近的这一档**"全体 (前 5%)。
     为什么要它: 只报 top-5 的中位数**在统计上没有意义** (5 个样本不构成统计量);
@@ -348,10 +350,6 @@ def similar_days(target: dict, history: pd.DataFrame, *, top_n: int = 5,
     empty = {"picks": [], "band": [], "n_band": 0, "eligible": 0,
              "exclude_recent": int(exclude_recent), "min_gap": int(min_gap),
              "quantile": quantile}
-    if gap is not None:                      # 已废弃参数: 同时覆盖两条纪律
-        exclude_recent = min_gap = int(gap)
-        empty["exclude_recent"] = int(exclude_recent)
-        empty["min_gap"] = int(min_gap)
     exclude_recent, min_gap = int(exclude_recent), int(min_gap)
     if history is None or len(history) == 0:
         return empty

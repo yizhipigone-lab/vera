@@ -398,18 +398,29 @@ class TestSourceFormatGate:
 
 
 class TestExcludeDirs:
-    """M5 §12.6：机器生成物必须排掉，否则系统每天生成的报告污染自己的检索库。"""
-    def test_machine_generated_dirs_are_excluded(self):
-        for d in ("docs/brief", "docs/report", "docs/audit"):
+    """M5 §12.6：**每天自动落盘**的机器生成物必须排掉，否则系统每天生成的报告污染自己的检索库。
+
+    2026-09-17 M7（审计 F-09）：`docs/audit` **从排除名单移出** —— 提示词要求
+    "审计/根因类问题必须先搜库"，而审计报告正是那份语料，排掉它等于要求搜空库。
+    """
+    def test_daily_machine_generated_dirs_are_excluded(self):
+        for d in ("docs/brief", "docs/report"):
             assert d in se.DEFAULT_EXCLUDE_DIRS
+
+    def test_audit_reports_are_searchable(self):
+        """审计报告必须**能**被检索到（否则提示词那条要求是空的）。"""
+        assert "docs/audit" not in se.DEFAULT_EXCLUDE_DIRS
+        assert not se._is_excluded(se.VERA_ROOT / "docs" / "audit" / "2026-09-17_x.md",
+                                   se.DEFAULT_EXCLUDE_DIRS)
 
     def test_is_excluded_matches_prefix_and_dirname(self, tmp_path):
         ex = se.DEFAULT_EXCLUDE_DIRS
         assert se._is_excluded(tmp_path / "docs" / "brief" / "a.md", ex)
-        assert se._is_excluded(tmp_path / "docs" / "audit" / "x" / "b.md", ex)
+        assert se._is_excluded(tmp_path / "docs" / "report" / "x" / "b.md", ex)
         assert se._is_excluded(tmp_path / "data" / "market_position" / "c.md", ex)
         assert not se._is_excluded(tmp_path / "docs" / "plan" / "d.md", ex)
-        assert not se._is_excluded(tmp_path / "research" / "e.md", ex)
+        assert not se._is_excluded(tmp_path / "docs" / "audit" / "e.md", ex)
+        assert not se._is_excluded(tmp_path / "research" / "f.md", ex)
 
 
 class TestIndexFreshness:

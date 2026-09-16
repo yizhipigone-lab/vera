@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from notes_gen import daily as drev  # noqa: E402
+# 方向码**必须**从生产库的唯一真相源引，不许在测试里自己编一套（审计 F-01 的根因：
+# 测试夹具曾用 0/1 造数，而生产库只存 23/24，于是测试全绿、报告全错）。
+from trade.book import DIRECTION_BUY, DIRECTION_SELL  # noqa: E402
 
 
 def _ts(date: str, hh: int = 14, mm: int = 30) -> float:
@@ -46,8 +49,8 @@ def _make_db(path: Path, *, report_date: str | None, positions=None, trades=None
         payload = {"total_asset": 1_000_000.0, "cash": 400_000.0,
                    "market_value": 600_000.0, "day_pnl": 5_000.0,
                    "day_pnl_pct": 0.5, "position_count": len(positions or []),
-                   "buy_count": sum(1 for t in (trades or []) if t[1] == 0),
-                   "sell_count": sum(1 for t in (trades or []) if t[1] == 1),
+                   "buy_count": sum(1 for t in (trades or []) if t[1] == DIRECTION_BUY),
+                   "sell_count": sum(1 for t in (trades or []) if t[1] == DIRECTION_SELL),
                    "turnover": 120_000.0, "realized_pnl": 1_200.0, "win_rate": 0.5,
                    "floating_pnl": -3_000.0, "rotation": {"target": "159949.SZ"},
                    "ts": 0}
@@ -122,11 +125,43 @@ class TestStopWatch:
         text = "\n".join(r["watch"])
         assert "距硬止损线" in text and "159949.SZ" in text
 
-    def test_stop_threshold_reused_from_trade_config(self, tmp_path):
-        """止损阈值**复用** `trade.config.CostStopConfig`，不新增参数定义。"""
-        from trade.config import CostStopConfig
-        assert drev.build_review(asof="2026-01-01", with_market=False)["ok"]
-        assert CostStopConfig().threshold < 0
+    def test_stop_threshold_is_really_read_from_trade_config(self, monkeypatch, tmp_path):
+        """**审计 F6**：原测试只断言 `CostStopConfig().threshold < 0` —— 那**不能证明**
+        `notes_gen/daily` 真的读了配置（它自己写一份 -0.12 兜底也能过这个断言）。
+        这里**把配置换掉再跑**：止损线必须跟着变，才算真的"复用"。
+        """
+        _make_db(tmp_path / "trade.db", report_date="2026-09-17",
+                 positions=[{"code": "159949.SZ", "avg_cost": 10.0}])
+        _make_kline("159949.SZ", "2026-09-17", close=9.0, high=9.1, low=8.9)
+        import trade.config as tc
+        from dataclasses import replace
+
+        def _text_with(thr):
+            monkeypatch.setattr(tc, "CostStopConfig",
+                                lambda: replace(_Real(), threshold=thr))
+            r = drev.build_review(asof="2026-09-17", with_market=False)
+            return "\n".join(r["watch"])
+
+        _Real = tc.CostStopConfig
+        tight = _text_with(-0.05)     # 止损线 = 成本 × 0.95 = 9.50
+        loose = _text_with(-0.30)     # 止损线 = 成本 × 0.70 = 7.00
+        assert "9.50" in tight and "7.00" in loose, (tight[-140:], loose[-140:])
+        assert tight != loose, "换了配置报告却没变 = 止损阈值没有真的在读配置"
+
+    def test_missing_config_does_not_fabricate_a_threshold(self, monkeypatch, tmp_path):
+        """读不到配置就**不报**「距止损线还有多少」，绝不用编的默认值糊过去。"""
+        _make_db(tmp_path / "trade.db", report_date="2026-09-17",
+                 positions=[{"code": "159949.SZ", "avg_cost": 10.0}])
+        _make_kline("159949.SZ", "2026-09-17", close=9.0)
+        import trade.config as tc
+
+        def _boom():
+            raise RuntimeError("配置坏了")
+        monkeypatch.setattr(tc, "CostStopConfig", _boom)
+        r = drev.build_review(asof="2026-09-17", with_market=False)
+        text = "\n".join(r["watch"])
+        assert "距硬止损线" not in text
+        assert any("读不到交易配置里的硬止损阈值" in n for n in r["notes"])
 
     def test_no_quote_says_so_instead_of_guessing(self, monkeypatch, tmp_path):
         _make_db(tmp_path / "trade.db", report_date="2026-09-17",
@@ -157,7 +192,8 @@ class TestHighLowZero:
     def test_flat_but_traded_bar_gives_no_amplitude(self, monkeypatch, tmp_path):
         """有成交但一字板（high == low）→ 输出「当日无有效振幅」，不产生 inf。"""
         _make_db(tmp_path / "trade.db", report_date="2026-09-17",
-                 trades=[("600000.SH", 0, 11.81, _ts("2026-09-17"), "manual", None, None)])
+                 trades=[("600000.SH", DIRECTION_BUY, 11.81, _ts("2026-09-17"),
+                          "manual", None, None)])
         _make_kline("600000.SH", "2026-09-17", high=11.81, low=11.81,
                     close=11.81, volume=1000.0)
         r = drev.build_review(asof="2026-09-17", with_market=False)
@@ -167,7 +203,8 @@ class TestHighLowZero:
 
     def test_normal_bar_computes_position(self, monkeypatch, tmp_path):
         _make_db(tmp_path / "trade.db", report_date="2026-09-17",
-                 trades=[("600000.SH", 0, 9.8, _ts("2026-09-17"), "manual", None, None)])
+                 trades=[("600000.SH", DIRECTION_BUY, 9.8, _ts("2026-09-17"),
+                          "manual", None, None)])
         _make_kline("600000.SH", "2026-09-17", high=10.0, low=8.0, close=9.0)
         r = drev.build_review(asof="2026-09-17", with_market=False)
         text = "\n".join(r["behavior"])
@@ -196,12 +233,73 @@ class TestCumulative:
         assert "本月至今" in "\n".join(r["cumulative"])
 
     def test_recent_window_summary(self, monkeypatch, tmp_path):
-        trades = [("600000.SH", 1, 10.0, _ts("2026-09-17"), "cost_stop", -500.0, -5.0),
-                  ("600001.SH", 1, 20.0, _ts("2026-09-17") + 100, "ladder_tp", 800.0, 4.0)]
+        trades = [("600000.SH", DIRECTION_SELL, 10.0, _ts("2026-09-17"),
+                   "cost_stop", -500.0, -5.0),
+                  ("600001.SH", DIRECTION_SELL, 20.0, _ts("2026-09-17") + 100,
+                   "ladder_tp", 800.0, 4.0)]
         _make_db(tmp_path / "trade.db", report_date="2026-09-17", trades=trades)
         r = drev.build_review(asof="2026-09-17", with_market=False)
         text = "\n".join(r["cumulative"])
         assert "胜率" in text and "最大单笔亏损" in text
+        assert "最近 2 笔卖出" in text, f"分母只该数卖出：{text}"
+
+    def test_win_rate_denominator_excludes_buys(self, monkeypatch, tmp_path):
+        """审计 F-05 回归锁：**买入不许进胜率分母**。
+
+        买入那行的 `pnl_amount` 是 `0`（`trade/store.py` 里该列 `REAL NOT NULL DEFAULT 0`），
+        所以按「`pnl_amount` 不为空」筛卖出等于没筛 —— 生产库实测最近 200 行里有 58 行是买入，
+        胜率被摊薄成 20%，而真实（只算卖出且非零）是 38%。
+        这里 2 笔卖出（1 赚 1 亏）+ 3 笔买入 → 必须报 50%、且明写「最近 2 笔卖出」。
+        """
+        trades = [("600000.SH", DIRECTION_SELL, 10.0, _ts("2026-09-17"),
+                   "cost_stop", -500.0, -5.0),
+                  ("600001.SH", DIRECTION_SELL, 20.0, _ts("2026-09-17") + 100,
+                   "ladder_tp", 800.0, 4.0)]
+        trades += [("60010%d.SH" % i, DIRECTION_BUY, 10.0, _ts("2026-09-17") + 200 + i,
+                    "manual", 0.0, 0.0) for i in range(3)]
+        _make_db(tmp_path / "trade.db", report_date="2026-09-17", trades=trades)
+        r = drev.build_review(asof="2026-09-17", with_market=False)
+        text = "\n".join(r["cumulative"])
+        assert "最近 2 笔卖出" in text, f"买入混进来了：{text}"
+        assert "胜率 50%" in text, f"胜率该是 1/2 = 50%：{text}"
+        # 今天那段也一样：卖出只数卖出
+        assert "卖出 2 笔" in text, f"今日卖出笔数被买入污染：{text}"
+
+    def test_unrecorded_pnl_sells_leave_the_denominator(self, monkeypatch, tmp_path):
+        """审计 F-05 第二半：**没有盈亏记录的卖出既不算赚也不算亏**，且必须写明笔数。
+
+        生产库 212 笔卖出里有 105 笔 `pnl_amount`/`pnl_pct` 恰恰都是 0，日期全落在
+        2026-07-30~2026-08-07 —— 那是 `trades` 表还没有这两列的时候（2026-08-07 才加），
+        它们是「没记」不是「打平」。把它们当没赚钱 → 胜率 20%；只算有记录的 → 38%。
+        """
+        trades = [("600000.SH", DIRECTION_SELL, 10.0, _ts("2026-09-17"),
+                   "cost_stop", -500.0, -5.0),
+                  ("600001.SH", DIRECTION_SELL, 20.0, _ts("2026-09-17") + 100,
+                   "ladder_tp", 800.0, 4.0),
+                  ("600002.SH", DIRECTION_SELL, 15.0, _ts("2026-09-17") + 200,
+                   "manual", 0.0, 0.0)]      # 没有盈亏记录的那种
+        _make_db(tmp_path / "trade.db", report_date="2026-09-17", trades=trades)
+        r = drev.build_review(asof="2026-09-17", with_market=False)
+        text = "\n".join(r["cumulative"])
+        assert "胜率 50%" in text, f"没记录的那笔不该进分母：{text}"
+        assert "按能算出盈亏的 2 笔算" in text, f"必须说明分母是几笔：{text}"
+        assert "其中 1 笔没有盈亏记录" in text, f"必须披露被排除的笔数：{text}"
+
+    def test_direction_caliber_is_imported_not_reinvented(self):
+        """审计 F-01 回归锁：方向判据必须是 `trade.book` 那一份（23/24）。
+
+        原来本文件自己写了「0=买 / 1=卖」，与生产库不符 → 每笔买入都判不出来，
+        报告会印「今日无买入成交」并把买入当卖出。这里锁死「只认 23/24」。
+        """
+        assert drev._DIR_BUY == DIRECTION_BUY == 23
+        assert drev._DIR_SELL == DIRECTION_SELL == 24
+        assert drev._is_buy({"direction": DIRECTION_BUY}) is True
+        assert drev._is_sell({"direction": DIRECTION_SELL}) is True
+        assert drev._is_buy({"direction": DIRECTION_SELL}) is False
+        assert drev._is_sell({"direction": DIRECTION_BUY}) is False
+        # 那个害人的旧口径必须**判不出来**（宁可漏判并告警，也不许猜反方向）
+        assert drev._is_buy({"direction": 0}) is False
+        assert drev._is_sell({"direction": 1}) is False
 
 
 class TestDidWell:
@@ -213,7 +311,8 @@ class TestDidWell:
     def test_never_empty(self, monkeypatch, tmp_path):
         """§12.5 验收 1：无亮点时明写「没有特别值得点出来的亮点」，不许略过。"""
         _make_db(tmp_path / "trade.db", report_date="2026-09-17",
-                 trades=[("600000.SH", 1, 10.0, _ts("2026-09-17"), "manual", -100.0, -1.0)])
+                 trades=[("600000.SH", DIRECTION_SELL, 10.0, _ts("2026-09-17"),
+                          "manual", -100.0, -1.0)])
         r = drev.build_review(asof="2026-09-17", with_market=False)
         assert r["did_well"]
 

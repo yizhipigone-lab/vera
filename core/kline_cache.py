@@ -36,6 +36,16 @@ _FIELD_LOWER = {"Open": "open", "High": "high", "Low": "low",
                 "Close": "close", "Volume": "volume", "Amount": "amount"}
 
 
+#: **空壳 bar 的统一判据（单一真相源）**: 某一天"有成交的股票占比"低于它,
+#: 就认为那天的行情是盘前抓数留下的空壳（2026-09-16 实测空壳日只有 0.2%,
+#: 正常日接近 100%）。
+#: **消费方**（必须都引这个常量, 不许各写一份 0.5）:
+#:   - `core/kline_cache_maintenance._STUB_MIN_TRADED_RATIO`
+#:   - `core/market_position_runner.MIN_TRADED_RATIO`
+#:   - `core/market_position.last_valid_date(min_ratio=...)` 的调用方
+STUB_TRADED_RATIO = 0.5
+
+
 class KlineCache:
     """per-stock parquet + sqlite manifest (WAL) 的 K 线缓存。
 
@@ -180,8 +190,16 @@ class KlineCache:
         做法: 从 manifest 取该 period 的代码列表, 按固定步长**确定性抽样** sample 只
         (同输入同结果, 便于测试), 读各自最后一根 bar 的 volume, 统计 >0 的比例。
 
+        **分母是什么（审计 F-15 明确口径）**: 分母 = **在 `MAX(last_date)` 那天真的有行**
+        的抽样股票数。某只票的历史截止日早于全局 MAX（长期停牌、退市、或它自己还没补上
+        最后一根）时**读不到行 → 既不算分子也不算分母**，只记一个 `no_row` 计数并打
+        WARNING。**为什么不把它算成"没成交"**: 那样长期停牌股会**永远**拉低这个比例，
+        于是"判陈旧 → 全量补拉"变成永不停止的误报（补拉是小时级代价）。
+        所以这里的方向是"分母偏小 → 比例可能偏高"，配合下面的 WARNING 让人能看见；
+        真正的"这批票没有那一天"由 `stale_periods` 的**日期**口径兜底。
+
         Returns:
-            float 0~1; **None = 查不了** (无记录/无末根/读盘异常)。
+            float 0~1; **None = 查不了** (无记录/无末根/抽样全读不到/读盘异常)。
             调用方拿到 None 必须按"查不了"处理 —— **不得**据此判陈旧,
             否则读盘抖动会误触发全量补拉 (那是小时级代价)。
         """
@@ -199,17 +217,24 @@ class KlineCache:
             ts = pd.Timestamp(str(last))
             step = max(1, len(codes) // max(1, int(sample)))
             picked = codes[::step][:max(1, int(sample))]
-            traded = total = 0
+            traded = total = no_row = 0
             for code in picked:
                 try:
                     df = self._read_parquet(code, period, ts, ts)
                 except Exception:      # 单只读失败只少一个样本, 不推翻结论
+                    no_row += 1
                     continue
                 if df is None or len(df) == 0 or "volume" not in df.columns:
+                    no_row += 1
                     continue
                 total += 1
                 if float(df["volume"].iloc[-1]) > 0:
                     traded += 1
+            if no_row:
+                logger.warning(
+                    "last_bar_traded_ratio(%s): 抽样 %d 只里有 %d 只在 %s 没有行"
+                    "（分母只算有行的 %d 只 —— 比例可能偏高，属已知口径）",
+                    period, len(picked), no_row, last, total)
             return (traded / total) if total else None
         except Exception as e:         # 任何意外都退成"查不了", 不改变旧行为
             logger.warning("last_bar_traded_ratio 异常 (按查不了处理): %s", e)

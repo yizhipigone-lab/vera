@@ -12,12 +12,17 @@ function assert(cond, label) {
 function eq(a, b, label) { assert(a === b, `${label} (期望 ${b}, 实际 ${a})`); }
 
 console.log('positionLabel 位置分档:');
-eq(mp.positionLabel(95).text, '高位', '95 → 高位');
-eq(mp.positionLabel(80).text, '高位', '80 边界 → 高位');
+// 这 5 个词必须与体温表 _position_plain 逐字相同（反向锁: tests/test_market_position_runner.py
+// 的 test_band_words_match_frontend 锁住 Python 侧同一组词）
+eq(mp.positionLabel(95).text, '偏贵区', '95 → 偏贵区');
+eq(mp.positionLabel(80).text, '偏贵区', '80 边界 → 偏贵区');
 eq(mp.positionLabel(65).text, '偏高', '65 → 偏高');
-eq(mp.positionLabel(50).text, '中位', '50 → 中位');
+eq(mp.positionLabel(50).text, '中间', '50 → 中间');
 eq(mp.positionLabel(25).text, '偏低', '25 → 偏低');
-eq(mp.positionLabel(5).text, '低位', '5 → 低位');
+eq(mp.positionLabel(5).text, '便宜区', '5 → 便宜区');
+eq(mp.positionLabel(20).text, '偏低', '20 边界 → 偏低（不落便宜区）');
+eq(mp.positionLabel(60).text, '偏高', '60 边界 → 偏高（不落中间）');
+eq(mp.positionLabel(40).text, '中间', '40 边界 → 中间（不落偏低）');
 eq(mp.positionLabel(null).text, '【缺】', 'null → 缺（不冒充 0）');
 
 console.log('\nfmtPct / fmtNum:');
@@ -51,7 +56,7 @@ const rec = {
 const rows = mp.positionRowsHtml(rec);
 assert((rows.match(/<tr>/g) || []).length === 3, '恰好渲染 3 行');
 assert(rows.includes('上证指数(000001.SH)'), '标的全名+代码都在');
-assert(rows.includes('90.9%') && rows.includes('高位'), '十年百分位带分档标签');
+assert(rows.includes('90.9%') && rows.includes('偏贵区'), '十年百分位带分档标签');
 assert(rows.includes('震荡'), '牛熊映射成中文');
 eq(mp.positionRowsHtml({}).split('<tr>').length - 1, 3, '缺数据也渲染 3 行（不崩）');
 assert(mp.positionRowsHtml({}).includes('【缺】'), '缺数据标【缺】');

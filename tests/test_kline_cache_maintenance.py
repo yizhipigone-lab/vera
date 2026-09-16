@@ -25,6 +25,24 @@ def _make_manifest(db_path, rows):
     conn.close()
 
 
+class TestModuleImportContract:
+    def test_空壳阈值只有一个真相源且在模块级就可见(self):
+        """M7 回归锁（2026-09-17 实测踩到）：`_STUB_MIN_TRADED_RATIO` 的值
+        **必须在 `import` 的那一刻就能取到**。
+
+        当时的写法是模块级直接 `_STUB_MIN_TRADED_RATIO = STUB_TRADED_RATIO`，
+        但 `STUB_TRADED_RATIO` 只在 `_cache_handle()` 函数里惰性 import →
+        `import core.kline_cache_maintenance` 抛 **NameError，整个模块不可导入**。
+        危害不是显式报错而是**静默降级**：`market_position_runner._expected_trading_day()`
+        与 `server.py`/`scheduler` 的补拉入口全把 import 包在 try 里，
+        NameError 被吞成「日历不可用」→ 新鲜度判断永远宽松、补拉永不触发。
+        """
+        from core.kline_cache import STUB_TRADED_RATIO
+        assert m._STUB_MIN_TRADED_RATIO == STUB_TRADED_RATIO
+        assert m.STUB_TRADED_RATIO is STUB_TRADED_RATIO, \
+            "顶层必须可见（只在函数里惰性 import 就会让本模块 import 失败）"
+
+
 class TestExpectedLastTradingDay:
     def test_交易日收盘后等于今天(self):
         assert m.expected_last_trading_day(
@@ -118,7 +136,7 @@ class TestStubBarDetection:
             ("600002.SH", [("2026-08-14", 0)]),
             ("600003.SH", [("2026-08-14", 0)]),
         ])
-        assert m.last_bar_traded_ratio("1d", tmp_path) == 0.25
+        assert m._last_bar_traded_ratio("1d", tmp_path) == 0.25
 
     def test_查不了返None且维持旧行为(self, tmp_path):
         """没有 parquet 文件 → 抽检"查不了" → **不得**据此判陈旧。
@@ -126,7 +144,7 @@ class TestStubBarDetection:
         这条是安全阀: 读盘抖动若被判成陈旧, 会误触发小时级的全量补拉。
         """
         _make_manifest(tmp_path / "manifest.db", [("000001.SZ", "1d", "20260814")])
-        assert m.last_bar_traded_ratio("1d", tmp_path) is None
+        assert m._last_bar_traded_ratio("1d", tmp_path) is None
         got = m.stale_periods(dt.datetime(2026, 8, 14, 16, 0), tmp_path)
         assert "1d" not in got
 

@@ -205,30 +205,44 @@ class TestSimilarDays:
         # 把第 100 行改成与 target 完全一样 —— 它应当是距离最小的一天
         for f in mp.SIMILAR_FEATURES:
             h.iloc[100, h.columns.get_loc(f)] = target[f]
-        picks = mp.similar_days(target, h, top_n=3, gap=20)["picks"]
+        picks = mp.similar_days(target, h, top_n=3,
+                                exclude_recent=20, min_gap=20)["picks"]
         assert picks, "应当能照出镜子"
         assert picks[0]["date"] == h.index[100].date().isoformat()
         assert picks[0]["distance"] == pytest.approx(0.0, abs=1e-9)
 
     def test_recent_days_excluded(self):
-        """纪律①: 最近 gap 个交易日不能作为相似日 (否则永远是昨天)。"""
+        """纪律①: 最近 exclude_recent 个交易日不能作为相似日 (否则永远是昨天)。"""
         h = _fake_history()
         gap = 20
         target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
-        picks = mp.similar_days(target, h, top_n=5, gap=gap)["picks"]
+        picks = mp.similar_days(target, h, top_n=5,
+                                exclude_recent=gap, min_gap=gap)["picks"]
         cutoff = h.index[-gap].date().isoformat()
         assert picks and all(p["date"] <= cutoff for p in picks)
 
     def test_neighbours_deduped(self):
-        """纪律②: 已选中的日子前后 gap 个交易日内不再选 (否则照出一串连续日)。"""
+        """纪律②: 已选中的日子前后 min_gap 个交易日内不再选 (否则照出一串连续日)。"""
         h = _fake_history()
         gap = 20
         target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
-        picks = mp.similar_days(target, h, top_n=5, gap=gap)["picks"]
+        picks = mp.similar_days(target, h, top_n=5,
+                                exclude_recent=gap, min_gap=gap)["picks"]
         pos = [h.index.get_loc(pd.Timestamp(p["date"])) for p in picks]
         for i in range(len(pos)):
             for j in range(i + 1, len(pos)):
                 assert abs(pos[i] - pos[j]) > gap
+
+    def test_deprecated_gap_kwarg_is_gone(self):
+        """审计 F-13 回归锁: 「一个参数同时管两条纪律」的 `gap` 必须**已删除**。
+
+        留着它的坏处不是不兼容，而是 **`gap=0` 会静默把两条数据窥探纪律一起关掉**
+        （不抛错、不告警）。删掉之后误传 `gap=` 直接 `TypeError` —— 响亮地坏。
+        """
+        h = _fake_history()
+        target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
+        with pytest.raises(TypeError):
+            mp.similar_days(target, h, gap=20)
 
     def test_default_excludes_a_whole_year(self):
         """§14.1 回归锁: 默认排除**整整一年** (252 个交易日), 不是 20 天。

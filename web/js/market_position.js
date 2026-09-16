@@ -21,11 +21,13 @@ function esc(s) {
 // 位置分档：只描述"贵不贵"，不做任何买卖建议（业务铁律 1）
 function positionLabel(pct) {
   if (pct == null) return { text: '【缺】', cls: 'warn' };
-  if (pct >= 80) return { text: '高位', cls: 'hot' };
+  // 这 5 个词必须与体温表 core/market_position_runner.py::_position_plain 逐字相同：
+  // 同一条分档规则的第二份实现（浏览器跑不了 Python），两侧各有测试把这 5 个词锁死。
+  if (pct >= 80) return { text: '偏贵区', cls: 'hot' };
   if (pct >= 60) return { text: '偏高', cls: 'warm' };
-  if (pct >= 40) return { text: '中位', cls: 'mid' };
+  if (pct >= 40) return { text: '中间', cls: 'mid' };
   if (pct >= 20) return { text: '偏低', cls: 'cool' };
-  return { text: '低位', cls: 'cold' };
+  return { text: '便宜区', cls: 'cold' };
 }
 
 function fmtPct(v, signed) {

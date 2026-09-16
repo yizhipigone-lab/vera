@@ -89,11 +89,13 @@ class TestWriteCorpus:
         items = [{"name": "01_面板/面板.md", "text": "正文" * 20, "subject": "产物包",
                   "sender": "研究产物自动分发 <dcliuzh@qq.com>", "date": "2026-09-12",
                   "zip": "包.zip"}]
-        res = mtc.write_corpus(items, tmp_path / "corpus")
-        body = (ROOT / res["written"][0]).read_text(encoding="utf-8") \
-            if (ROOT / res["written"][0]).exists() else \
-            (tmp_path / "corpus" / Path(res["written"][0]).relative_to(
-                "docs/research_inbox")).read_text(encoding="utf-8")
+        out_dir = tmp_path / "corpus"
+        res = mtc.write_corpus(items, out_dir)
+        # **审计 F3 修正**: 不再假设返回值是"项目根相对路径"(basetemp 可能不在仓库内),
+        # 直接在 out_dir 下找刚写的那个文件。
+        files = list(out_dir.rglob("*.md"))
+        assert len(files) == 1, f"应当只写一个文件, 实际 {files}"
+        body = files[0].read_text(encoding="utf-8")
         assert "外部" in body and "未经本系统复核" in body
         assert "dcliuzh@qq.com" in body and "包.zip" in body
 

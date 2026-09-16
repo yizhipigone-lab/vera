@@ -26,6 +26,16 @@ from pathlib import Path
 from utils.logger import get_logger
 from utils.sysutil import project_root
 
+#: 空壳判据阈值 —— **引 core.kline_cache.STUB_TRADED_RATIO 单一真相源**, 不写第二份 0.5。
+#: **必须顶层 import**（2026-09-17 M7 修复）：此前只在 `_cache_handle()` 里惰性 import，
+#: 而模块级的 `_STUB_MIN_TRADED_RATIO = STUB_TRADED_RATIO` 在 import 时就要用它 →
+#: `import core.kline_cache_maintenance` 直接 NameError，**整个模块不可导入**。
+#: 后果不是报错而是**静默降级**：`market_position_runner._expected_trading_day()` 里那句
+#: `from core.kline_cache_maintenance import expected_last_trading_day` 挂在 try 里，
+#: NameError 被吞成「交易日历不可用，按今天处理」——新鲜度判断从此永远宽松。
+#: （core.kline_cache **不** import 本模块，顶层引不构成循环。）
+from core.kline_cache import STUB_TRADED_RATIO
+
 _logger = get_logger("core.kline_cache_maintenance")
 
 _CACHE_DIR = project_root() / "data" / "kline_cache"
@@ -37,8 +47,9 @@ _SEGMENTS = (("5m", "20240627"), ("1d", "20240101"), ("1m", "20260126"))
 # （多数还拉不到数据白烧请求）——VERA 交易池是沪深，.BJ 数据零用途。
 _DEFAULT_UNIVERSE = "50"
 #: 末根 bar「有成交」的最低抽样比例 —— 低于它就判为空壳 bar 并触发补拉
-#: (2026-09-17: 实测空壳日全市场只有 0.2% 有成交, 正常日接近 100%, 0.5 阈值余量充足)
-_STUB_MIN_TRADED_RATIO = 0.5
+#: (2026-09-17 实测: 空壳日全市场只有 0.2% 有成交, 正常日接近 100%。
+#:  **注意余量没有想象中大 —— M7 审计实测某日 0.404 已很接近 0.5**, 见 kline_cache 注释。)
+_STUB_MIN_TRADED_RATIO = STUB_TRADED_RATIO
 _LOCK = _CACHE_DIR / "refresh.lock"
 _LOCK_TTL = dt.timedelta(hours=4)       # 锁超时：崩溃遗留锁自动失效
 _REFRESH_LOG = _CACHE_DIR / "refresh.log"
@@ -105,9 +116,14 @@ def cached_last_date(period: str, cache_dir: Path | None = None) -> str | None:
         return None
 
 
-def last_bar_traded_ratio(period: str,
-                          cache_dir: Path | None = None) -> float | None:
+def _last_bar_traded_ratio(period: str,
+                           cache_dir: Path | None = None) -> float | None:
     """该 period 末根 bar 的"有成交"抽样比例 (判空壳 bar); 查不了返 None。
+
+    **为什么是私有**（2026-09-17 M7 第二轮审计 F1）：本模块原先 8 个公开函数，
+    边界加它变成 **9 个，破了铁律 8 的 8 个上限**；而它唯一的生产调用方是同文件的
+    `stale_periods`，另外两个是测试 —— 按深模块检查单第 2 问"纯测试需要的就加 `_` 前缀"。
+    公开入口仍是 `KlineCache.last_bar_traded_ratio`（那是另一个模块，单独计数）。
 
     实现全在 `KlineCache.last_bar_traded_ratio` (parquet 布局知识只在那边);
     本函数只做"拿实例 + fail-soft"。
@@ -143,7 +159,7 @@ def stale_periods(now: dt.datetime | None = None,
             continue
         if p != "1d":
             continue
-        ratio = last_bar_traded_ratio(p, cache_dir)
+        ratio = _last_bar_traded_ratio(p, cache_dir)
         if ratio is not None and ratio < _STUB_MIN_TRADED_RATIO:
             _logger.warning(
                 "K线缓存 %s 末根疑似空壳 bar: 抽检有成交比例仅 %.1f%% (阈值 %.0f%%)"

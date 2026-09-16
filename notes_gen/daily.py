@@ -40,6 +40,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.logger import get_logger
 from utils.sysutil import project_root
 
+#: 买卖方向口径的**唯一真相源** = `trade/book.py`（xtquant 官方枚举 23=买 / 24=卖）。
+#: 审计 F-01（2026-09-17）：本文件原先自己写了一份「0=买 / 1=卖」的判据，
+#: 而生产库 `trades.direction` 只存 23/24 —— 结果**每一笔买入都判不出来**，
+#: 报告会印出「今日无买入成交」，同时把买入当成卖出统计进胜率分母（F-05）。
+#: 同一条规则写两份必然漂移，所以这里**只引不改**（与 `brain/prompts.py` 同一做法）。
+from trade.book import DIRECTION_BUY as _DIR_BUY, DIRECTION_SELL as _DIR_SELL
+
 _logger = get_logger("notes_gen.daily")
 
 _ROOT = project_root()
@@ -102,6 +109,29 @@ def _latest_payload(con: sqlite3.Connection, asof: str | None = None) -> dict | 
         return p
     except Exception:
         return None
+
+
+def _is_buy(t: dict) -> bool:
+    """这笔成交是不是买入。判据 = `trade/book.py` 的 DIRECTION_BUY（23）。
+
+    容忍字符串写法（SQLite 的 INTEGER 列不会给出字符串，但测试夹具/JSON 往返可能给出），
+    **不容忍别的数字口径** —— 收到不认识的方向码就返回 False 并留日志，
+    绝不"猜一个"（猜错方向会把买入说成卖出）。
+    """
+    d = t.get("direction")
+    if d == _DIR_BUY or str(d) == str(_DIR_BUY):
+        return True
+    if d == _DIR_SELL or str(d) == str(_DIR_SELL):
+        return False
+    _logger.warning("trades.direction 出现不认识的方向码 %r（既不是买入 %s 也不是卖出 %s），"
+                    "这笔成交按「非买入」处理", d, _DIR_BUY, _DIR_SELL)
+    return False
+
+
+def _is_sell(t: dict) -> bool:
+    """这笔成交是不是卖出（方向码 = DIRECTION_SELL 24）。"""
+    d = t.get("direction")
+    return d == _DIR_SELL or str(d) == str(_DIR_SELL)
 
 
 def _trades_on(con: sqlite3.Connection, date: str) -> list[dict]:
@@ -168,6 +198,69 @@ def _money(v) -> str:
         return "【缺】"
 
 
+def _price(v) -> str:
+    """价格 → **两位小数**。
+
+    审计 F-03：原来把持仓成本直挂浮点，印出 `2.166472046589018` 十六位小数 ——
+    用户看不懂，也违反"数量带单位/完整表达"的沟通规则。
+    """
+    if v is None:
+        return "【缺】"
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return "【缺】"
+
+
+_NAME_CACHE: dict = {}
+
+
+def _stock_label(code) -> str:
+    """标的 → 「中文简称(代码)」。
+
+    审计 F-03：原来只印裸代码 `513100.SH`，违反 AGENTS 沟通风格第 6 条
+    （「标的写全名+代码，不写裸代码」）。名称取自既有 `core.data_fetcher.get_name_map`
+    （**不新建名称源**）；取不到就退回裸代码并标注，不编一个名字出来。
+    """
+    c = str(code or "").strip()
+    if not c:
+        return "【缺】"
+    if c not in _NAME_CACHE:
+        try:
+            from core.data_fetcher import get_name_map
+            _NAME_CACHE[c] = (get_name_map() or {}).get(c) or ""
+        except Exception:
+            _NAME_CACHE[c] = ""
+    name = _NAME_CACHE[c]
+    return f"{name}({c})" if name else f"{c}（查不到中文简称）"
+
+
+def _rotation_plain(rot) -> str:
+    """ETF 轮动的当日状态 → 一句人话（**不打印原始 JSON**）。
+
+    审计 F-02：原来 `json.dumps(rot)[:200]` 会把 `{"note": "首个周频信号未算..."}`
+    这种程序原文直接倒到用户手机上，复杂形态还会被截成半截 JSON。
+    这里**只翻译已知的键**，未知键一个都不打印（不猜、不倒原文）。
+    """
+    if not rot:
+        return "轮动：当日归档里没有轮动状态（可能未初始化），跳过。"
+    if not isinstance(rot, dict):
+        return "轮动：状态格式不认识，跳过（不猜）。"
+    bits = []
+    note = rot.get("note")
+    if note:
+        bits.append(str(note))
+    if rot.get("target"):
+        bits.append(f"当前目标腿 {_stock_label(rot['target'])}")
+    if rot.get("date"):
+        bits.append(f"锚定日 {rot['date']}")
+    if rot.get("entry_high") is not None:
+        bits.append(f"买入后最高价 {_price(rot['entry_high'])}（移动止损的参照点）")
+    if rot.get("tranches"):
+        bits.append(f"分 {len(rot['tranches'])} 份在跑")
+    return "轮动：" + ("；".join(bits) if bits else "今日没有可读的轮动状态。")
+
+
 def _pct(v, nd: int = 2) -> str:
     if v is None:
         return "【缺】"
@@ -190,6 +283,55 @@ def _pct_plain(v) -> str:
     return "小跌" if x > -1 else ("下跌" if x > -3 else "明显下跌")
 
 
+def _asset_plain(payload: dict) -> str:
+    """总资产 → 一句人话（审计 F-08：数字后面必须有"这意味着什么"）。"""
+    ta = payload.get("total_asset")
+    cash = payload.get("cash")
+    if ta is None:
+        return "（总资产没取到）"
+    try:
+        w = (float(cash) / float(ta) * 100) if cash is not None and float(ta) > 0 else None
+    except (TypeError, ValueError):
+        w = None
+    s = "说人话就是："
+    if w is not None:
+        s += (f"账户里约 {w:.0f}% 是现金、{100 - w:.0f}% 是持仓 —— "
+              f"现金多说明**还有子弹**，持仓多说明**已经押上去了**。")
+    else:
+        s += "这是你账户当天收盘的总钱数（现金 + 持仓市值）。"
+    return s
+
+
+def _pnl_plain(payload: dict) -> str:
+    """当日盈亏 → 一句人话（它跟你账户规模比是什么量级）。"""
+    pnl, ta = payload.get("day_pnl"), payload.get("total_asset")
+    if pnl is None or not ta:
+        return ""
+    try:
+        r = float(pnl) / float(ta) * 100
+    except (TypeError, ValueError):
+        return ""
+    if abs(r) < 0.1:
+        return "说人话就是：**今天基本白干**，账户规模跟昨天差不多。"
+    return (f"说人话就是：{abs(r):.2f}% 的波动落在你的账户上大约 "
+            f"{abs(float(pnl)):,.0f} 元 —— "
+            f"{'一天赚出一顿饭到一台手机的量级' if abs(r) < 1 else '这个波动已经不小了'}。")
+
+
+def _turnover_plain(payload: dict) -> str:
+    """成交额 → 一句人话（跟总资产比，占多少）。"""
+    tv, ta = payload.get("turnover"), payload.get("total_asset")
+    if tv is None:
+        return ""
+    try:
+        if ta and float(ta) > 0:
+            return (f"说人话就是：这一天动用的钱约占账户的 "
+                    f"{float(tv) / float(ta) * 100:.2f}%。")
+    except (TypeError, ValueError):
+        pass
+    return ""
+
+
 # ───────────────────── 各段组装 ─────────────────────
 
 
@@ -204,11 +346,12 @@ def _account_md(payload: dict | None, asof: str, trades: list[dict]) -> list[str
     out = [
         f"- **总资产 {_money(payload.get('total_asset'))}**"
         f"（其中现金 {_money(payload.get('cash'))}、"
-        f"持仓市值 {_money(payload.get('market_value'))}）",
+        f"持仓市值 {_money(payload.get('market_value'))}）。{_asset_plain(payload)}",
         f"- 当日盈亏 **{_money(payload.get('day_pnl'))}**"
         f"（{_pct(payload.get('day_pnl_pct'))}，{_pct_plain(payload.get('day_pnl_pct'))}）"
-        f"；浮动盈亏 {_money(payload.get('floating_pnl'))}",
-        f"- 已实现盈亏 {_money(payload.get('realized_pnl'))}"
+        f"；浮动盈亏 {_money(payload.get('floating_pnl'))}（还没卖的账面盈亏）。"
+        f"{_pnl_plain(payload)}",
+        f"- 已实现盈亏 {_money(payload.get('realized_pnl'))}（已经卖掉落袋的）"
         f"；持仓 {payload.get('position_count')} 只"
         f"；当日买入 {payload.get('buy_count')} 笔 / 卖出 {payload.get('sell_count')} 笔"
         # **单位坑（2026-09-17 核实写方后修正）**: payload 里的 `turnover` 是
@@ -216,7 +359,7 @@ def _account_md(payload: dict | None, asof: str, trades: list[dict]) -> list[str
         # `Σ|amount|`，`trade/notifier.py:282` 也按「成交额 {x:,.2f}」打印。
         # 第一版这里按百分比打印，`.env` 显示 0.0 时看不出错，一旦有成交额就会
         # 把「12 万元」印成「+0.00%」—— 这类单位错必须对着写方核，不许猜。
-        f"；当日成交额 {_money(payload.get('turnover'))}",
+        f"；当日成交额 {_money(payload.get('turnover'))}。{_turnover_plain(payload)}",
     ]
     wr = payload.get("win_rate")
     if wr is not None:
@@ -233,25 +376,25 @@ def _did_well_md(trades: list[dict], ohlc_by_code: dict, *, asof: str) -> list[s
 
     **为什么要有这一段**：只报问题会让人回避看报告（外部最佳实践 SMB 那篇的核心论点）。
     """
-    sells = [t for t in trades if (t.get("pnl_amount") is not None)]
+    sells = [t for t in trades if _is_sell(t)]
     if not trades:
         return ["今日无成交，**没有可算的亮点**（这不是坏事，只是今天没动）。"]
     wins = sorted([s for s in sells if (s.get("pnl_amount") or 0) > 0],
                   key=lambda x: -(x["pnl_amount"] or 0))[:2]
     lines: list[str] = []
     for w in wins:
-        lines.append(f"- 已实现盈利最大的一笔：**{w['code']}**，"
+        lines.append(f"- 已实现盈利最大的一笔：**{_stock_label(w['code'])}**，"
                      f"落袋 **{_money(w.get('pnl_amount'))}**"
                      f"（{_pct(w.get('pnl_pct'))}，原因码 {w.get('reason')}）。")
     # 卖在相对高点：卖出价 ≥ 当日最高价 × 0.99
     for t in trades:
-        if t.get("direction") not in (1, "1", "sell", "SELL"):
+        if not _is_sell(t):
             continue
         o = ohlc_by_code.get(t["code"])
         if not o or o["high"] <= 0:
             continue
         if float(t["price"]) >= o["high"] * 0.99:
-            lines.append(f"- **卖在相对高点**：{t['code']} 卖在 {t['price']}，"
+            lines.append(f"- **卖在相对高点**：{_stock_label(t['code'])} 卖在 {t['price']}，"
                          f"当日最高 {o['high']}（基本是最高价附近出的）。")
             break
     # 按规则止损且事后证明对：卖出后当日收盘更低
@@ -261,8 +404,9 @@ def _did_well_md(trades: list[dict], ohlc_by_code: dict, *, asof: str) -> list[s
             continue
         o = ohlc_by_code.get(t["code"])
         if o and float(t["price"]) > o["close"]:
-            lines.append(f"- **按规则止损、事后看是对的**：{t['code']} 卖在 {t['price']}，"
-                         f"当日收盘 {o['close']}（卖完还在跌）。守规矩这件事本身值得记住。")
+            lines.append(f"- **按规则止损、事后看是对的**：{_stock_label(t['code'])} "
+                         f"卖在 {t['price']}，当日收盘 {o['close']}（卖完还在跌）。"
+                         "守规矩这件事本身值得记住。")
             break
     if not lines:
         lines.append("今天**没有特别值得点出来的亮点**（也没有做错什么明显的）——"
@@ -289,16 +433,21 @@ def _behavior_md(payload: dict | None, trades: list[dict],
     for label, key, val in items:
         pct = pcts.get(key)
         shown = f"{val:.2f}%" if (key == "turnover" and val is not None) else val
-        if val is None or pct is None:
+        if val == 0:
+            # 审计 F-10：0 笔交易被印成"第 30 分位"，与括号里"0 = 最低"直接打架。
+            # 没交易就是没交易，不给分位。
+            out.append(f"- **{label} 0**（今天没有交易，所以谈不上在历史里排第几）")
+        elif val is None or pct is None:
             out.append(f"- **{label}**：{shown if shown is not None else '【缺】'}"
                        f"（过去 {BEHAVIOR_WINDOW} 个交易日里能比的数据不足 10 天，"
                        "算不出分位）")
         else:
             out.append(f"- **{label} {shown}**，处于过去 {BEHAVIOR_WINDOW} 个交易日的"
-                       f"**第 {pct:.0f} 分位**（0 = 最低、100 = 最高）。"
+                       f"**第 {pct:.0f} 分位**（0 = 最低、100 = 最高；"
+                       "跟今天数值相同的历史日子也算在内）。"
                        f"{'（今天比平时动得多）' if pct >= 80 else ''}"
                        f"{'（今天比平时安静）' if pct <= 20 else ''}")
-    buys = [t for t in trades if str(t.get("direction")) in ("0", "buy", "BUY")]
+    buys = [t for t in trades if _is_buy(t)]
     placed = []
     for t in buys:
         o = ohlc_by_code.get(t["code"])
@@ -317,9 +466,10 @@ def _behavior_md(payload: dict | None, trades: list[dict],
     else:
         for code, pos, tag in placed:
             if pos is None:
-                out.append(f"- **买价位置**：{code} —— {tag}。")
+                out.append(f"- **买价位置**：{_stock_label(code)} —— {tag}。")
             else:
-                out.append(f"- **买价位置**：{code} 买在当日振幅的 {pos * 100:.0f}% 处"
+                out.append(f"- **买价位置**：{_stock_label(code)} 买在当日振幅的 "
+                           f"{pos * 100:.0f}% 处"
                            f"（0% = 当日最低、100% = 当日最高），**{tag}**。")
     return out
 
@@ -331,27 +481,49 @@ def _cumulative_md(con: sqlite3.Connection, asof: str, trades: list[dict]) -> li
     近 20 日只做**已有数据的聚合**（`trades.pnl_amount`），不新增取数。
     """
     out: list[str] = []
-    wins = [t for t in trades if (t.get("pnl_amount") or 0) > 0]
-    loses = [t for t in trades if (t.get("pnl_amount") or 0) < 0]
+    #: 今天的卖出笔 —— **按方向码判定**（审计 F-01/F-05）。
+    #: 原先用「`pnl_amount` 不为空」当卖出判据是错的：买入那行的 `pnl_amount` 是
+    #: `0`（`trade/store.py` 该列 `REAL NOT NULL DEFAULT 0`），过滤等于没写。
+    sells_today = [t for t in trades if _is_sell(t)]
+    wins = [t for t in sells_today if (t.get("pnl_amount") or 0) > 0]
+    loses = [t for t in sells_today if (t.get("pnl_amount") or 0) < 0]
     if trades:
-        out.append(f"- **今天**：卖出 {len(loses) + len(wins)} 笔，"
+        out.append(f"- **今天**：卖出 {len(sells_today)} 笔，"
                    f"赚 {len(wins)} 笔 / 亏 {len(loses)} 笔，"
-                   f"已实现合计 {_money(sum((t.get('pnl_amount') or 0) for t in trades))}。")
-    # 近 N 个交易日：从 trades 现算
-    rows = _rows(con, "SELECT code, pnl_amount, pnl_pct, ts FROM trades "
-                      "WHERE pnl_amount IS NOT NULL ORDER BY ts DESC LIMIT 200")
-    if rows:
-        recent = rows[:200]
-        w = sum(1 for r in recent if (r["pnl_amount"] or 0) > 0)
+                   f"已实现合计 {_money(sum((t.get('pnl_amount') or 0) for t in sells_today))}。")
+    # 近 N 笔卖出：从 trades 现算。**分母只能是"有盈亏记录的卖出"**，两个坑都要躲开
+    # （审计 F-05）：
+    #   ①按「`pnl_amount` 不为空」筛卖出 → 买入也满足（该列 `REAL NOT NULL DEFAULT 0`），
+    #     等于没筛，实测最近 200 行里混进 58 笔买入；
+    #   ②把"没有盈亏记录"的卖出当成"没赚钱" → 也会摊薄胜率。实测生产库 212 笔卖出里
+    #     105 笔 `pnl_amount`/`pnl_pct` 恰恰都是 0，日期全落在 2026-07-30~2026-08-07，
+    #     正是 `trades` 表**还没有这两列**的时候（2026-08-07 才加，`trade/store.py`）——
+    #     它们是"没记"，不是"打平"。所以没记录的既不算赚也不算亏，**退出分母并明说笔数**。
+    rows = _rows(con, "SELECT code, direction, pnl_amount, pnl_pct, ts FROM trades "
+                      "ORDER BY ts DESC LIMIT 400")
+    recent = [r for r in rows if _is_sell(r)][:200]
+    if recent:
+        measurable = [r for r in recent
+                      if (r["pnl_amount"] or 0) != 0 or (r["pnl_pct"] or 0) != 0]
+        no_record = len(recent) - len(measurable)
         tot = sum((r["pnl_amount"] or 0) for r in recent)
-        worst = min(recent, key=lambda r: (r["pnl_amount"] or 0))
-        out.append(f"- **最近 {len(recent)} 笔卖出**（跨若干交易日）："
-                   f"胜率 {w / len(recent) * 100:.0f}%，"
-                   f"已实现合计 {_money(tot)}，"
-                   f"最大单笔亏损 {_money(worst.get('pnl_amount'))}"
-                   f"（{worst.get('code')}）。")
+        if measurable:
+            w = sum(1 for r in measurable if (r["pnl_amount"] or 0) > 0)
+            out.append(f"- **最近 {len(recent)} 笔卖出**（跨若干交易日）："
+                       f"胜率 {w / len(measurable) * 100:.0f}%"
+                       f"（按能算出盈亏的 {len(measurable)} 笔算），"
+                       f"已实现合计 {_money(tot)}，"
+                       f"最大单笔亏损 {_money(min(r['pnl_amount'] or 0 for r in measurable))}"
+                       f"（{_stock_label(min(measurable, key=lambda r: r['pnl_amount'] or 0)['code'])}）。")
+        else:
+            out.append(f"- **最近 {len(recent)} 笔卖出**（跨若干交易日）："
+                       f"这 {len(recent)} 笔都还没有盈亏记录，胜率算不出来。")
+        if no_record:
+            out.append(f"  （其中 {no_record} 笔没有盈亏记录 —— 是系统还不会记盈亏那阵子的"
+                       f"成交。它们既不算赚也不算亏，所以没进胜率的分母，"
+                       f"免得把「没记账」说成「没赚钱」。）")
     else:
-        out.append("- 还没有带盈亏的卖出记录，累计统计暂无数据。")
+        out.append("- 还没有卖出成交记录，累计统计暂无数据。")
     # 本月至今 vs 上月：复用 trade.analysis 的月度口径（不重算）
     try:
         from trade.analysis import build_daily_pnl_view
@@ -393,6 +565,9 @@ def _watch_md(con: sqlite3.Connection, payload: dict | None,
     这些本报告不复原，硬凑一个数出来就是编。
     """
     out: list[str] = []
+    if stop_threshold is None:
+        out.append("- 【缺】读不到硬止损阈值，**这次不报「距止损线还有多少」**"
+                   "（宁可不说，也不给一个编出来的数）。")
     for p in positions:
         code = p.get("code")
         cost = p.get("avg_cost")
@@ -403,27 +578,27 @@ def _watch_md(con: sqlite3.Connection, payload: dict | None,
             continue
         px = o["close"]
         dist = (px / float(cost) - 1.0) if cost else None
-        line = float(cost) * (1.0 + stop_threshold)
+        line = float(cost) * (1.0 + stop_threshold) if stop_threshold is not None else 0.0
         gap = (px / line - 1.0) * 100 if line > 0 else None
-        s = (f"- 持仓 **{code}**：成本 {cost}、当日收盘 {px}、"
-             f"浮动 {_pct(None if dist is None else dist * 100)}。")
+        s = (f"- 持仓 **{_stock_label(code)}**：成本 {_price(cost)}、当日收盘 "
+             f"{_price(px)}、浮动 {_pct(None if dist is None else dist * 100)}。")
         if gap is not None:
-            s += (f"**距硬止损线（成本 {stop_threshold * 100:.0f}% = {line:.2f}）"
-                  f"还有 {gap:+.1f}%**")
-            s += "（已经很近了，注意）" if gap < 2 else "。"
+            s += (f"**距硬止损线（成本往下 {abs(stop_threshold) * 100:.0f}% = "
+                  f"{_price(line)}）还有 {gap:+.1f}%**")
+            # 审计 F-15：这里原来写「（已经很近了，注意）」—— 那是指令/评价式措辞，
+            # 与"只陈述事实、评判权在用户"的纪律冲突。改成纯距离陈述。
+            s += "（这个距离是最小的一个警戒口径；要不要处理由你判断）。" if gap < 2 else "。"
         out.append(s)
     if not positions:
-        out.append("- 当前没有持仓记录（`position_snapshot` 为空）。")
-    rot = (payload or {}).get("rotation")
-    if rot:
-        out.append(f"- **ETF 轮动**：{json.dumps(rot, ensure_ascii=False)[:200]}")
-    else:
-        out.append("- ETF 轮动：当日归档里没有轮动状态（可能未初始化），跳过。")
+        out.append("- 当前没有持仓记录（就是空仓）。")
+    rot_txt = _rotation_plain((payload or {}).get("rotation"))
+    out.append(f"- **ETF 轮动**：{rot_txt}")
     if mp_rec:
         if mp_rec.get("stale"):
             out.append(f"- **大盘数据滞后**：最新有效交易日 {mp_rec.get('date')}，"
                        f"应有 {mp_rec.get('expected_date')} —— 上面那些盘面数字"
-                       "不是今天收盘的。")
+                       f"**不是今天收盘的，是 {mp_rec.get('date')} 收盘的**，"
+                       "看的时候别把日期认错。")
         else:
             out.append(f"- 大盘盘面数据日期 {mp_rec.get('date')}，是最新的。")
     out.append("- **以上都是事实陈述，不是建议。** 要不要动手，你自己判断"
@@ -480,13 +655,17 @@ def build_review(*, asof: str | None = None, with_market: bool = True) -> dict:
         if payload is not None and len(counts) >= 10:
             cur = int(payload.get("buy_count") or 0) + int(payload.get("sell_count") or 0)
             pcts["count"] = sum(1 for x in counts if x <= cur) / len(counts) * 100
-    # 止损阈值：复用 trade.config 的既有定义，不新增参数
-    stop_threshold = -0.12
+    # 止损阈值：**复用** trade.config 的既有定义。
+    # 审计 F6：原来这里写了 `stop_threshold = -0.12` 兜底 —— 那是**第二份参数定义**,
+    # 一旦配置改了它不会跟着变, 而报告还会照旧说"距止损线还有 X%"（静默错）。
+    # 现在读不到就**不做这条判断**, 如实记一条 note, 绝不用一个自己编的数糊过去。
+    stop_threshold = None
     try:
         from trade.config import CostStopConfig
         stop_threshold = float(CostStopConfig().threshold)
     except Exception as e:
-        notes.append(f"读不到 trade.config 的硬止损阈值（用默认 -12%）: {e}")
+        notes.append(f"读不到交易配置里的硬止损阈值，所以这次不算「距止损线还有多少」"
+                     f"（不用编的默认值糊过去）: {e}")
     mp_rec = None
     market_md = ""
     if with_market:
@@ -512,8 +691,13 @@ def build_review(*, asof: str | None = None, with_market: bool = True) -> dict:
     }
 
 
-def review_md(review: dict) -> str:
-    """payload → Markdown（**纯函数**，不取数、不推送；便于单测）。"""
+def review_md(review: dict, *, written: str | None = None) -> str:
+    """payload → Markdown（**纯函数**，不取数、不推送；便于单测）。
+
+    `written` = 真实落盘路径（确实写了才传）。**审计 F-01**：原来末行无条件写
+    「落盘路径 X」，而 CLI 不带 `--push` 时根本不落盘 —— 用户会被告知一个不存在的文件。
+    现在**按真实结果打印**：写了说"已落盘"，没写就明说"本次未落盘"。
+    """
     r = review or {}
     asof = r.get("asof") or ""
     out = [f"# 盘后复盘 {asof}", ""]
@@ -523,46 +707,57 @@ def review_md(review: dict) -> str:
         out += [r["market_md"], ""]
     out += ["## 我的账户", ""] + list(r.get("account") or []) + [""]
     out += ["## 今天做对的", ""] + list(r.get("did_well") or []) + [""]
-    out += [f"## 我的交易行为（只陈述事实，不评价；评判权在你）", ""] \
+    out += ["## 我的交易行为（只陈述事实，不评价；评判权在你）", ""] \
         + list(r.get("behavior") or []) + [""]
     out += ["## 需要你留意的清单", ""] + list(r.get("watch") or []) + [""]
     out += ["## 累计统计（单日看不出趋势，看累计）", ""] \
         + list(r.get("cumulative") or []) + [""]
     out += ["---",
-            "本报告只读，**不联入任何仓位调度**（业务铁律 1：研判只出报告，最后一步由人来做）。",
-            f"落盘路径 `data/daily_review/{asof}.md`（`data/` 不在 RAG 语料范围内，"
-            "复盘报告不会污染检索库）。"]
+            "本报告只读，**不联入任何仓位调度**（业务铁律 1：研判只出报告，最后一步由人来做）。"]
+    if written:
+        out.append(f"已落盘：`{written}`（`data/` 不在 RAG 语料范围内，"
+                   "复盘报告不会污染检索库）。")
+    else:
+        out.append(f"**本次只生成未落盘**。落盘位置是 "
+                   f"`data/daily_review/{asof}.md` —— 加 `--write` 立即写，"
+                   "或等 15:55 的调度任务跑（它一定会写）。")
     return "\n".join(out)
 
 
 def push_review(review: dict, *, also_email: bool = False,
-                email_to: str | None = None) -> dict:
+                email_to: str | None = None, feishu: bool = True,
+                written: str | None = None) -> dict:
     """投递：飞书卡片（复用 `tools/send_report_feishu.py`）+ 可选邮件。
+
+    `feishu=False` 时**只发邮件**（审计 F-16：原来 `--email` 会连带真推飞书，
+    与用户的意图不符）。
 
     永远 fail-soft：任何一路失败只返 `{"ok": False, "reason": ...}`，绝不抛 ——
     调度器 job 不该因为推送失败而中断。
     """
-    md = review_md(review)
+    md = review_md(review, written=written)
     asof = review.get("asof") or ""
     result: dict = {"ok": False, "feishu": None, "email": None}
-    try:
-        from tools.send_report_feishu import (chunk_sections, load_webhook,
-                                             md_to_lark, send_card)
+    if feishu:
         try:
-            webhook = load_webhook()
-        except SystemExit:
-            result["feishu"] = {"ok": False, "reason": "未配置 FEISHU_WEBHOOK_URL (.env)"}
-            webhook = None
-        if webhook:
-            chunks = chunk_sections(md_to_lark(md))
-            codes = []
-            for i, c in enumerate(chunks, 1):
-                rr = send_card(webhook, f"盘后复盘 {asof}", c, i, len(chunks))
-                codes.append(rr.get("code", rr.get("StatusCode")))
-            result["feishu"] = {"ok": True, "cards": len(chunks), "codes": codes}
-            result["ok"] = True
-    except Exception as e:
-        result["feishu"] = {"ok": False, "reason": f"飞书推送器不可用: {e}"}
+            from tools.send_report_feishu import (chunk_sections, load_webhook,
+                                                 md_to_lark, send_card)
+            try:
+                webhook = load_webhook()
+            except SystemExit:
+                result["feishu"] = {"ok": False,
+                                    "reason": "未配置 FEISHU_WEBHOOK_URL (.env)"}
+                webhook = None
+            if webhook:
+                chunks = chunk_sections(md_to_lark(md))
+                codes = []
+                for i, c in enumerate(chunks, 1):
+                    rr = send_card(webhook, f"盘后复盘 {asof}", c, i, len(chunks))
+                    codes.append(rr.get("code", rr.get("StatusCode")))
+                result["feishu"] = {"ok": True, "cards": len(chunks), "codes": codes}
+                result["ok"] = True
+        except Exception as e:
+            result["feishu"] = {"ok": False, "reason": f"飞书推送器不可用: {e}"}
     if also_email:
         try:
             import subprocess
@@ -584,48 +779,61 @@ def push_review(review: dict, *, also_email: bool = False,
 
 
 def run_daily_review(*, asof: str | None = None, write: bool = True,
-                     push: bool = False, also_email: bool = False) -> dict:
+                     push: bool = False, also_email: bool = False,
+                     feishu: bool = True) -> dict:
     """编排入口：组装 → 落盘 → 推送。供调度器 15:55 的 job 调。"""
     review = build_review(asof=asof)
-    md = review_md(review)
     path = None
     if write:
         try:
             REVIEW_DIR.mkdir(parents=True, exist_ok=True)
             path = REVIEW_DIR / f"{review['asof']}.md"
             tmp = path.with_suffix(".md.tmp")
-            tmp.write_text(md, encoding="utf-8")
+            tmp.write_text(review_md(review, written=None), encoding="utf-8")
             import os
             os.replace(tmp, path)       # 原子写, 防读到半截
         except Exception as e:
             _logger.warning("复盘落盘失败: %s", e)
             path = None
+    md = review_md(review, written=str(path) if path else None)
+    if write and path:
+        try:                            # 落盘版与展示版内容一致（含"已落盘"那行）
+            path.write_text(md, encoding="utf-8")
+        except Exception:
+            pass
     out = {"ok": True, "asof": review["asof"], "chars": len(md),
            "path": str(path) if path else None, "notes": review["notes"]}
     if push:
-        out["push"] = push_review(review, also_email=also_email)
-        out["ok"] = bool(out["push"].get("ok") or out["push"].get("email"))
+        out["push"] = push_review(review, also_email=also_email, feishu=feishu,
+                                  written=str(path) if path else None)
+        out["ok"] = bool({"feishu": out["push"].get("feishu"),
+                          "email": out["push"].get("email")})
     return out
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI：`python -m notes_gen.daily [--push] [--email] [--no-market] [--stdout]`。"""
+    """CLI：`python -m notes_gen.daily [--push] [--email] [--no-write] [--stdout]`。
+
+    **默认落盘**（审计 F-01：原来不带 `--push` 就不写盘，却还在报告末行声称文件在哪）。
+    `--no-write` 才是不落盘。`--stdout` 只影响"要不要打到屏幕"。
+    """
     import argparse
     ap = argparse.ArgumentParser(prog="python -m notes_gen.daily",
                                  description="盘后复盘报告（只读，不联仓位）")
     ap.add_argument("--asof", default=None, help="按哪一天做（默认今天）")
     ap.add_argument("--push", action="store_true", help="推飞书")
-    ap.add_argument("--email", action="store_true", help="同时发邮件")
+    ap.add_argument("--email", action="store_true",
+                    help="发邮件（**只发邮件，不推飞书** —— 审计 F-16）")
+    ap.add_argument("--no-write", action="store_true", help="不落盘（默认会落盘）")
     ap.add_argument("--no-market", action="store_true", help="不带盘面段（只要账户）")
-    ap.add_argument("--stdout", action="store_true", help="直接打印 Markdown")
+    ap.add_argument("--stdout", action="store_true", help="把 Markdown 打到屏幕")
     args = ap.parse_args(argv)
-    if args.stdout or not (args.push or args.email):
+    res = run_daily_review(asof=args.asof, write=not args.no_write,
+                           push=args.push or args.email,
+                           also_email=args.email, feishu=args.push)
+    if args.stdout:
         r = build_review(asof=args.asof, with_market=not args.no_market)
-        print(review_md(r))
-        if not args.push and not args.email:
-            return 0
-    res = run_daily_review(asof=args.asof, write=True, push=True,
-                           also_email=args.email)
+        print(review_md(r, written=res.get("path")))
     print(json.dumps(res, ensure_ascii=False, indent=2))
     return 0 if res.get("ok") else 1
 

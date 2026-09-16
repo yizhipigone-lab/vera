@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -258,11 +259,19 @@ def _embed_with_retry(chunks: list[str], tries: int = 2) -> np.ndarray:
 INDEX_CONFIG_PATH = VERA_ROOT / "config" / "brain_index.json"
 DEFAULT_INDEX_ROOTS = ("vera_obs_vault/company", "vera_obs_vault/对话沉淀")
 #: 永不索引的目录（前缀匹配）。**机器生成物必须排掉**（§12.6）：
-#: `docs/brief`（每日简报）、`docs/report`（回测产物）、`docs/audit`（体检报告自动落盘）
-#: —— 不排的话系统每天生成的报告会被自己的 RAG 索引进去，日积月累污染检索库。
+#: `docs/brief`（每日简报）、`docs/report`（回测产物）—— 不排的话系统**每天**生成的
+#: 报告会被自己的 RAG 索引进去，日积月累污染检索库。
+#:
+#: **`docs/audit` 2026-09-17 M7 已移出排除名单（审计 F-09）**，理由有两个：
+#:   ① 自相矛盾：提示词（`brain/prompts.py` 模式 A）要求"审计/根因类问题必须先搜库再答"，
+#:      而最该被搜到的语料正是我们自己的审计报告 —— 把它们排在索引外，等于要求搜一个
+#:      空的库；
+#:   ② 排除理由不成立：`docs/audit` 里 113 篇 md 只有 10 篇是 `tools/formula_lab.py`
+#:      按需生成的"因子体检报告"，其余 103 篇是审计/实施报告，**不是每天自动落盘**的
+#:      东西（共 1.3 MB）。按需生成的报告也算"我们自己的研究库"，该被引用。
 DEFAULT_EXCLUDE_DIRS = (".git", "__pycache__", "node_modules", "data", "output",
                         "logs", ".agent-teams", "vera_obs_vault/对话沉淀/_tmp",
-                        "docs/brief", "docs/report", "docs/audit")
+                        "docs/brief", "docs/report")
 #: 小于这么多字符的文件不索引（碎片）
 DEFAULT_MIN_CHARS = 50
 
@@ -355,6 +364,14 @@ def _check_build_consistency(disk: list[tuple[str, Path, float]], meta: list[dic
             f"不同 source 个数 {len(distinct)} != 成功处理的文件数 {file_count} "
             "（有文件被记成了同一个 key，或同一文件被记了多个 key）")
     disk_srcs = [s for s, _p, _m in disk]
+    # **磁盘侧就要查重**（审计 F-14）：如果两个不同的文件映射成同一个 source，
+    # 那么"其中一个处理失败"时，上面那条"不同 source 数 == 成功文件数"会**同时减一**、
+    # 等式照旧成立 → 静默少收一篇语料。直接在磁盘侧查重才抓得住根因。
+    _dups = sorted(s for s, n in Counter(disk_srcs).items() if n > 1)
+    if _dups:
+        problems.append(
+            f"有 {len(_dups)} 个 source 对应多个磁盘文件（会互相覆盖、必丢一篇）: "
+            f"{_dups[:3]}")
     indexed = distinct
     skip = {s["path"] for s in skipped}
     missing = set(disk_srcs) - indexed - skip
@@ -587,7 +604,7 @@ class VaultSearchEngine:
             meta_path = _meta_path(self._dir)
             if not force_rebuild and meta_path.exists() and meta_path.stat().st_size > 0:
                 return {"files": 0, "chunks": 0, "skipped": True,
-                        "skipped_detail": [], "problems": []}
+                        "skipped_detail": [], "problems": [], "disk_changed": []}
 
             disk = _disk_files()                 # [(source, path, mtime), ...]
             all_meta: list[dict] = []
@@ -622,15 +639,26 @@ class VaultSearchEngine:
                 _save_index(self._dir, np.empty((0, EMBED_DIM), dtype=np.float32), [])
                 _write_source_format(self._dir)
                 return {"files": 0, "chunks": 0, "skipped": False,
-                        "skipped_detail": skipped_detail, "problems": []}
+                        "skipped_detail": skipped_detail, "problems": [],
+                        "disk_changed": []}
 
             vectors = np.stack(all_vecs, axis=0)
             _save_index(self._dir, vectors, all_meta)
             _write_source_format(self._dir)      # 只在真构建时写版本号 (§12.3)
+            # §3.3「构建期间磁盘变动」检查 —— **原来只写在 docstring 里没实现**
+            # （2026-09-17 M7 第二轮审计 F5）。这里真的比对一次: 本仓库同时有别的会话在写,
+            # 收进"写到一半的文件"是有可能的。发现变动就**告警 + 在结果里标出来**
+            # （索引本身是原子写, 不会读坏; 只是提醒"这一份可能少了刚写的文件"）。
+            disk_after = {src for src, _p, _m in _disk_files()}
+            changed = sorted(disk_after ^ {src for src, _p, _m in disk})
+            if changed:
+                logger.warning("build_index: 构建期间磁盘清单变了 %d 项（别的会话在写?）: %s",
+                               len(changed), changed[:3])
             logger.info(f"build_index 完成: {file_count} 文件, {len(all_meta)} 块, "
                         f"skip {len(skipped_detail)}")
             return {"files": file_count, "chunks": len(all_meta), "skipped": False,
-                    "skipped_detail": skipped_detail, "problems": []}
+                    "skipped_detail": skipped_detail, "problems": [],
+                    "disk_changed": changed}
 
     def update_file(self, filepath: Path) -> int:
         """单文件增量更新（archive.py 用）。按 source 去重：删旧块→写新块。返新块数。
@@ -769,6 +797,12 @@ def _cmd_build(args):
     result = engine.build_index(force_rebuild=args.force)
     ensure_utf8_stdout()
     print(json.dumps(result, ensure_ascii=False))
+    # **审计 F7**: 自检没过时 build_index 拒绝落盘(对的), 但 CLI 原来照样 return 0
+    # → 脚本里 `&&` 后面那些步骤会**在索引没更新的情况下继续跑**, 把"拒绝落盘"静默化。
+    # 这里显式非零退出, 让调用方能看见。
+    if result.get("problems"):
+        print("【错】索引自检未通过, 已拒绝落盘（详见上面的 problems）", file=sys.stderr)
+        sys.exit(4)
 
 
 def _cmd_search(args):

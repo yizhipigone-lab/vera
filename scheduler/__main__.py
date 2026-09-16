@@ -185,25 +185,35 @@ def _job_market_position_push() -> None:
 
 
 def _job_market_position_morning() -> None:
-    """每交易日 09:05: **只补采, 不推送**。
+    """每交易日 09:05: **兜底补采 + 推「隔夜简报」**。
 
-    2026-09-17 起不再在这里推体温表 —— 已实测证伪 (见文件头注释与
-    `_job_market_position_push`)。保留这个 job 只为**兜底补采**:
-    机器昨天 15:50/15:55 若没开机, 早上把录像补齐, 让页面数据不滞后。
+    两件事，顺序不能反：
+    1. **兜底补采**：机器昨天 15:50/15:55 若没开机，早上把大盘位置录像补齐，
+       让页面数据不滞后。**这一步不推任何东西** —— 实测证伪过「早上推体温表」
+       （15:50 与次日 09:05 的数据同一天、逐字段相同，等于把昨天作业今早再交一遍）。
+    2. **隔夜简报**（2026-09-17 用户拍板选 (b)，M7 补做）：只放"过了一夜新发生的"
+       —— 美股隔夜收盘 / 港股 / 南向资金（复用 `brain.market_panel.market_snapshot()`），
+       体温表**只作一句背景**。**没有隔夜新信息就不发空卡**；昨天 15:55 没推成则附带补发。
 
-    **待建**: 隔夜简报 (美股三大指数隔夜收盘 / 港股 / 南向资金 / 夜里消息,
-    数据源复用 `brain.market_panel.market_snapshot()` 现成三块),
-    以及"昨天 15:55 没推成则在简报里附带补发"的逻辑
-    (判定依据 `data/scheduler_state.json`)。
     计划书: docs/plan/2026-09-17_大盘位置与趋势研判_计划书.md §17.4
     """
     from core import market_position_runner as mpr
     res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
     if not res.get("ok"):
         _logger.warning("大盘位置盘前兜底补采失败: %s", res.get("reason"))
+    else:
+        _logger.info("大盘位置盘前兜底补采完成: 数据日期 %s, 录像共 %d 条",
+                     res["asof"], res["lines"])
+    try:
+        from notes_gen import morning as brief
+        r = brief.run_morning_brief(push=True, write=True)
+    except Exception as e:      # 简报失败绝不影响别的 job
+        _logger.warning("隔夜简报生成/推送失败: %s", e)
         return
-    _logger.info("大盘位置盘前兜底补采完成: 数据日期 %s, 录像共 %d 条 (按设计不推送)",
-                 res["asof"], res["lines"])
+    if r.get("ok"):
+        _logger.info("隔夜简报已处理: %s", {k: v for k, v in r.items() if k != "push"})
+    else:
+        _logger.info("隔夜简报未推送: %s", r.get("reason"))
 
 
 def _register_market_position(sched: VeraScheduler) -> None:

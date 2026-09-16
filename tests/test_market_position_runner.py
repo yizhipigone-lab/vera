@@ -23,11 +23,14 @@ import pytest
 from core import market_position_runner as mpr
 
 
-def _write_cache(n_days=400, n_stocks=6, stub_last=False):
+def _write_cache(n_days=400, n_stocks=6, stub_last=False, wavy_amount=False):
     """造一个最小日线缓存: n_stocks 只票 + 三大指数。
 
     写到 mpr.KLINE_1D_DIR (= conftest 隔离出来的 per-test tmp), 不写 tmp_path ——
     隔离的意义就是"runner 认哪个目录, 测试就往哪个目录造数据"。
+
+    `wavy_amount`: 成交额改成**起伏**的（默认是单调上行）。默认那条序列的
+    `rolling(...).rank(pct=True)` 恒等于 100，测不出"预热不足导致排名算错"（F-07）。
     """
     d = mpr.KLINE_1D_DIR
     d.mkdir(parents=True, exist_ok=True)
@@ -37,6 +40,8 @@ def _write_cache(n_days=400, n_stocks=6, stub_last=False):
         base = 10.0 + i
         close = np.linspace(base, base * 1.3, n_days)
         vol = np.full(n_days, 1000.0)
+        if wavy_amount:
+            vol = 1000.0 + 300.0 * np.sin(np.arange(n_days) / 7.0)
         if stub_last:
             close[-1] = close[-2]          # 空壳 bar: OHLC 全等
             vol[-1] = 0.0                  # 且无成交
@@ -116,6 +121,26 @@ class TestCollect:
         # 三条影子规则一律只有 on/off 两态 (2026-09-17 修复: regime 曾落 'range')
         assert all(v in ("on", "off") for v in rec["shadow"].values())
 
+    def test_text_columns_survive_the_record_writer(self, tmp_path):
+        """M7 自查抓到的真 bug 的回归锁：文本列不许被 `_f()` 打回 None。
+
+        原写法用 `col != "regime"` 判断文本列，于是新加的 `regime_20` 走了
+        `float("bull")` → TypeError 被 `_f` 吞掉 → 返回 None →
+        **5501 条记录里 regime_20 全空**（实测 0/5501），静默丢了这一维。
+        """
+        _write_cache(n_days=400)
+        recs = [r for r in mpr.history(limit=0)]
+        if not recs:
+            recs = [mpr.collect(bars=0, write=True)["snapshot"]]
+        rec = mpr.collect(bars=0, write=True)["snapshot"]
+        for key in ("shanghai", "hs300", "chuangyeban"):
+            it = rec["indices"][key]
+            assert it.get("regime") in ("bull", "bear", "range", None)
+            # regime_20 不依赖均线 → 400 根样本上必须有值
+            assert it.get("regime_20") in ("bull", "bear", "range"), \
+                f"{key}.regime_20 = {it.get('regime_20')!r}（文本列被数值转换吃掉了）"
+        assert set(mpr.TEXT_COLS) >= {"regime", "regime_20"}
+
     def test_regime_shadow_rule_is_on_off_not_label(self, tmp_path):
         """回归: regime 规则必须落 on/off, 否则回放按 =='on' 判定永远 0 持仓。"""
         _write_cache()
@@ -171,7 +196,13 @@ class TestThermometer:
         # 铁律提示
         assert "不联入任何仓位调度" in md
         # **反向锁**: 这些黑话必须已经被翻译掉
-        for jargon in ("生存者偏差", "Newey-West (HAC) t 值", "T+1 生效", "秩相关"):
+        # **审计 F2 修正**: 原来锁的是 "Newey-West (HAC) t 值" 这个**整串** ——
+        # 它在我们改写口径后已经不存在了, 于是这条锁**永远不会失败、也拦不住任何回归**
+        # (实测锁的串恒 False, 而 "Newey-West" 与 "t 值" 两个黑话仍在正文)。
+        # 改成锁**词根**: 只要出现这些词就是没翻译干净。
+        for jargon in ("生存者偏差", "Newey-West", "HAC", "T+1 生效", "秩相关",
+                       "MA250", "n_eff", "DSR", "PBO", "akshare", "stock_ebs_lg",
+                       "PE-TTM"):
             assert jargon not in md, f"大白话条款要求翻译黑话，但报告里还有：{jargon}"
 
     def test_markdown_explains_every_number_in_the_headline(self):
@@ -230,13 +261,20 @@ class TestMirrorAndShadow:
         assert len(recs) > 300
         md = mpr.mirror(top_n=3)
         # 合成数据里指数只有 400 根 (不足 750), 十年分位为 None → 照镜子明确报不可用
-        assert "ok" in md
+        # **审计 F2 修正**: 原来写 `assert "ok" in md` —— 那判的是字典**键**存在性,
+        # 而 mirror() 所有返回路径都带 ok 键 → **恒真, 一个字都没验证**。
+        assert md["ok"] is False, "400 根指数样本给不出十年分位, 照镜子应当明确报不可用"
+        assert md["reason"], "不可用必须给出原因, 不能只有个 False"
         sd = mpr.shadow_replay()
-        assert "ok" in sd
-        if sd["ok"]:
-            assert {r["rule"] for r in sd["rows"]} == set(mpr.SHADOW_RULES)
-            # 年化分母必须按真实日历跨度, 不能拿录像条数当分母
-            assert sd["years"] > 0 and sd["days"] > 0
+        assert sd["ok"] is True, sd.get("reason")
+        assert {r["rule"] for r in sd["rows"]} == set(mpr.SHADOW_RULES)
+        # 年化分母必须按真实日历跨度, 不能拿录像条数当分母
+        assert sd["years"] > 0 and sd["days"] > 0
+        assert sd["days"] > sd["years"] * 200, "交易日数与年数应当量级自洽"
+        # 每条规则都要有毛/净两组数 + 显著性字段(否则就是半个功能)
+        for r in sd["rows"] + [sd["buy_hold"]]:
+            assert r["net"]["annualized_pct"] is not None
+            assert r["windows"]["in"], "双窗口结果不许为空"
 
 
 class TestMirrorCaliber:
@@ -460,7 +498,47 @@ class TestWarmup:
 
     def test_warmup_covers_the_longest_lookback(self):
         """预热必须覆盖最长的回看窗口 (成交额一年百分位 250 根)。"""
-        assert mpr.WARMUP_BARS >= 250
+        assert mpr.WARMUP_BARS >= mpr.AMOUNT_RANK_WINDOW
+        assert mpr.AMOUNT_RANK_WINDOW > mpr.AMOUNT_RANK_MIN_PERIODS, \
+            "min_periods 比窗口小, 正是这条预热的由来"
+
+    def test_warmup_values_are_identical_not_merely_non_null(self):
+        """审计 F-07：预热不足时数值会**静默漂移**（不是变 null），所以要比数值。
+
+        `amount_pct_1y` = `rolling(250, min_periods=120).rank(pct=True)`：满 120 根
+        就有数，但那是"在 120 个值里排名"，**是错的**，要满 250 根才对。
+        原来那条测试只断言"不许变 null"，抓不到这种漂移。
+
+        两段：
+          ① 预热 300（实际值）与预热 900（远超任何回看窗）→ 逐日**完全相同**；
+          ② 预热 120（不足）与预热 900 → **必须有差异**（反锁：证明这条测试有牙，
+             将来有人把 WARMUP_BARS 调小到 min_periods 附近就会红）。
+        """
+        _write_cache(n_days=900, wavy_amount=True)
+        got = {}
+
+        def run(w):
+            orig = mpr._upsert
+            mpr.WARMUP_BARS = w
+            mpr._upsert = lambda records, path=None: got.update(
+                {r["date"]: _amount_pct(r) for r in records}) or len(records)
+            try:
+                mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
+            finally:
+                mpr._upsert = orig
+            return dict(got)
+
+        base = run(900)
+        enough = run(mpr.WARMUP_BARS)
+        short = run(mpr.AMOUNT_RANK_MIN_PERIODS)
+        common = [d for d in base if d in enough and base[d] is not None]
+        assert len(common) > 50, f"可比对的交易日太少: {len(common)}"
+        bad = [d for d in common if enough[d] != base[d]]
+        assert not bad, f"预热 {mpr.WARMUP_BARS} 根仍与长预热不一致: {bad[:5]} …"
+        # 反锁：预热只到 min_periods 时必然对不上（否则这条测试是空转的）
+        short_common = [d for d in base if d in short and base[d] is not None]
+        off = [d for d in short_common if short[d] != base[d]]
+        assert off, "预热降到 min_periods 竟然还对得上 —— 这条测试没牙，得重写"
 
 
 class TestErpValuation:
@@ -590,7 +668,9 @@ class TestDimensionValidity:
         assert r["n_families"] >= 2 and r["n_tests"] == len(r["rows"])
         notes = " ".join(r["limitations"])
         assert "幸存者偏差" in notes, "§16.5 要求把幸存者偏差写成显式限制"
-        assert "DSR" in notes, "必须说明为何不做多重检验校正"
+        # 审计 M7：原来断言字面 "DSR" —— 但那三个字母已按"用户可见文案不许出现
+        # 技术名词"的要求翻成白话「多重检验校正」，所以改成锁**语义**。
+        assert "多重检验校正" in notes, "必须说明为何不做多重检验校正"
         assert "不作预测依据" in notes and "不合成总分" in notes, "§16.4 措辞"
 
     def test_erp_absent_when_no_erp_cache(self):
@@ -621,6 +701,64 @@ class TestDimensionValidity:
         mpr.collect(bars=300, write=True)
         md = mpr.thermometer_md()
         assert "## 牛熊区间" in md and "20% 法则" in md and "年线" in md
+
+    def test_validity_numbers_follow_the_data_not_the_source_code(self):
+        """审计 F-06/F-08 回归锁：正文里的统计结论**必须跟着数据走**。
+
+        两段断言，各治一种"写死"：
+
+        ① **「几件事」那段**（在 `thermometer_md` 里现算）—— 用"偷梁换柱"（与
+           `test_reuses_trade_analysis_month_view` 同一手法）：真跑一遍拿到体检结果，
+           把成绩改成一组**真实数据里绝不可能出现**的数（rho `+0.99` / `-0.98`、
+           五分位差 `88.8` / `-77.7`）再注入渲染，正文必须跟着变。
+           原来正文写死的是「rho +0.55 / −0.57」这类数字，在这条断言下必然露馅。
+        ② **「诚实限制」那段**（在 `_dimension_validity` 里就拼好了）—— 把它的数字
+           与同一份结果里的 `rows` 对账：有效独立样本的区间必须等于最长持有期那一批的
+           最小/最大值。原来写死的是「各指标 7.6~12.3」，而实测是 9.6~21.6。
+        """
+        _write_cache(n_days=1200)
+        _write_erp(n=1200, start="2024-01-01")
+        mpr.collect(bars=0, write=True)
+        vd = mpr._dimension_validity()
+        assert vd["ok"], vd.get("reason")
+        assert len(vd["summary"]) >= 2, "这条测试要至少两个指标才能摆出正负两端"
+        notes = " ".join(vd["limitations"])
+
+        # ② 先对账"诚实限制"（用真数据，不注入）—— 区间必须与 rows 算出来的一致
+        longest = max(r["horizon_days"] for r in vd["rows"])
+        eff = [r["n_eff"] for r in vd["rows"]
+               if r["horizon_days"] == longest and r["n_eff"] is not None]
+        assert f"{min(eff)} ~ {max(eff)} 份" in notes, \
+            f"有效独立样本区间必须由 rows 现算（最长持有期 {longest}）：{notes}"
+        assert "7.6~12.3" not in notes and "7.6 ~ 12.3" not in notes, \
+            "写死的那对数字必须彻底消失"
+
+        # ① 再验「几件事」那段跟着注入的数据走
+        fake = json.loads(json.dumps(vd))            # 深拷贝（全是纯类型）
+        by_field = {s["field"]: s for s in fake["summary"]}
+        # 挑两个"在最长的那个持有期上真的有结果"的指标来当正负两端 ——
+        # 短历史的指标（十年百分位要 3 年预热）在最长的档上可能一行都没有。
+        have = [f for f in by_field
+                if any(r["field"] == f and r["horizon_days"] == longest
+                       for r in fake["rows"])]
+        assert len(have) >= 2, "这条测试要至少两个指标在最长持有期上有结果"
+        s1, s2 = by_field[have[0]], by_field[have[1]]
+        for s, rho, spread in ((s1, 0.99, 88.8), (s2, -0.98, -77.7)):
+            s.update(rho_12m=rho, p_12m=0.0001, any_significant_consistent=True,
+                     spread=spread, best_horizon="12 个月")
+        for s in fake["summary"]:                     # 其余压成不显著，别抢"最强"的位置
+            if s["field"] not in (s1["field"], s2["field"]):
+                s["p_12m"], s["any_significant_consistent"] = 0.9, False
+
+        md = mpr.thermometer_md(validity_data=fake)
+        # 只截「几件事」那一段来断言：表格里的 rho 格子也会印 +0.99，混在一起会掩盖
+        # 「正文是不是写死的」这个问题。
+        i = md.find("**这次实测出来的几件事**")
+        assert i >= 0, "正文必须保留这一段"
+        items = md[i:md.find("**诚实限制", i)]
+        assert "+0.99" in items and "-0.98" in items, \
+            f"正文没跟着注入的数据变 —— 这几个数字是写死在源码里的：{items}"
+        assert "88.8" in items and "77.7" in items, f"五分位差也必须现算：{items}"
 
 
 class TestCacheLayoutContract:
