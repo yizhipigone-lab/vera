@@ -167,6 +167,54 @@ class KlineCache:
         return {"stocks": row[0] or 0, "first_date": row[1],
                 "last_date": row[2], "not_intact": row[3] or 0}
 
+    def last_bar_traded_ratio(self, period: str = "1d",
+                              sample: int = 50) -> Optional[float]:
+        """抽检「最后一根 bar 有没有真成交」的比例 —— 判空壳 bar (2026-09-17)。
+
+        为什么需要它: `MAX(last_date)` 只说明"这一行存在", 说明不了"这一行有数据"。
+        实测 (2026-09-17): 2026-09-16 沪深 5204 只票**都有该日行**, 但只有 **10 只**
+        成交量 > 0 (0.2%) —— 那是盘前抓数留下的**空壳 bar**。若只用日期判新鲜,
+        空壳会被当成好数据, 补拉永远不触发, 它就永远卡在缓存里
+        (实证: 大盘位置体温表一直显示"数据滞后", 而 `stale_periods` 却说 1d 新鲜)。
+
+        做法: 从 manifest 取该 period 的代码列表, 按固定步长**确定性抽样** sample 只
+        (同输入同结果, 便于测试), 读各自最后一根 bar 的 volume, 统计 >0 的比例。
+
+        Returns:
+            float 0~1; **None = 查不了** (无记录/无末根/读盘异常)。
+            调用方拿到 None 必须按"查不了"处理 —— **不得**据此判陈旧,
+            否则读盘抖动会误触发全量补拉 (那是小时级代价)。
+        """
+        try:
+            last = self.cached_last_date(period)
+            if not last:
+                return None
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT stock_code FROM manifest WHERE period=? "
+                    "ORDER BY stock_code", (period,)).fetchall()
+            codes = [r[0] for r in rows]
+            if not codes:
+                return None
+            ts = pd.Timestamp(str(last))
+            step = max(1, len(codes) // max(1, int(sample)))
+            picked = codes[::step][:max(1, int(sample))]
+            traded = total = 0
+            for code in picked:
+                try:
+                    df = self._read_parquet(code, period, ts, ts)
+                except Exception:      # 单只读失败只少一个样本, 不推翻结论
+                    continue
+                if df is None or len(df) == 0 or "volume" not in df.columns:
+                    continue
+                total += 1
+                if float(df["volume"].iloc[-1]) > 0:
+                    traded += 1
+            return (traded / total) if total else None
+        except Exception as e:         # 任何意外都退成"查不了", 不改变旧行为
+            logger.warning("last_bar_traded_ratio 异常 (按查不了处理): %s", e)
+            return None
+
     # ───────────────────── trading calendar ─────────────────────
 
     def _calendar_path(self) -> Path:

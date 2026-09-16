@@ -36,6 +36,9 @@ _SEGMENTS = (("5m", "20240627"), ("1d", "20240101"), ("1m", "20260126"))
 # 此前用 backfill 工具默认 "5"=全部A股，把 577 只 .BJ 也拉进了缓存
 # （多数还拉不到数据白烧请求）——VERA 交易池是沪深，.BJ 数据零用途。
 _DEFAULT_UNIVERSE = "50"
+#: 末根 bar「有成交」的最低抽样比例 —— 低于它就判为空壳 bar 并触发补拉
+#: (2026-09-17: 实测空壳日全市场只有 0.2% 有成交, 正常日接近 100%, 0.5 阈值余量充足)
+_STUB_MIN_TRADED_RATIO = 0.5
 _LOCK = _CACHE_DIR / "refresh.lock"
 _LOCK_TTL = dt.timedelta(hours=4)       # 锁超时：崩溃遗留锁自动失效
 _REFRESH_LOG = _CACHE_DIR / "refresh.log"
@@ -86,7 +89,12 @@ def cached_last_date(period: str, cache_dir: Path | None = None) -> str | None:
     """manifest 里该 period 的 MAX(last_date)（'YYYYMMDD'），无记录返 None。
 
     读操作经 KlineCache.cached_last_date 接口 (schema 单点, 治理III W3-schema);
-    异常按"不新鲜"处理 (返回 None → 上层判定 stale 触发补拉, 方向安全)。"""
+    异常按"不新鲜"处理 (返回 None → 上层判定 stale 触发补拉, 方向安全)。
+
+    **注意**: 它只说明"这一行存在", 说明不了"这一行有数据" —— 盘前抓数会造出
+    "有日期、无成交"的空壳 bar (2026-09-16 实测 5204 只有行、仅 10 只有成交)。
+    判新鲜度请用 `stale_periods()` (它 2026-09-17 起带末根成交抽检)。
+    """
     kc = _cache_handle(cache_dir)
     if kc is None:
         return None
@@ -97,12 +105,52 @@ def cached_last_date(period: str, cache_dir: Path | None = None) -> str | None:
         return None
 
 
+def last_bar_traded_ratio(period: str,
+                          cache_dir: Path | None = None) -> float | None:
+    """该 period 末根 bar 的"有成交"抽样比例 (判空壳 bar); 查不了返 None。
+
+    实现全在 `KlineCache.last_bar_traded_ratio` (parquet 布局知识只在那边);
+    本函数只做"拿实例 + fail-soft"。
+    """
+    kc = _cache_handle(cache_dir)
+    if kc is None:
+        return None
+    try:
+        return kc.last_bar_traded_ratio(period)
+    except Exception as e:
+        _logger.warning("末根成交抽检失败 (%s, 按查不了处理): %s", period, e)
+        return None
+
+
 def stale_periods(now: dt.datetime | None = None,
                   cache_dir: Path | None = None) -> list[str]:
-    """哪些 period 的缓存落后于最近交易日。全新鲜返 []。"""
+    """哪些 period 的缓存落后于最近交易日, **或末根是空壳 bar**。全新鲜返 []。
+
+    2026-09-17 加第二条判据 (**日期够新 ≠ 数据是真的**):
+    实测 2026-09-16 沪深 5204 只票**都有该日行**, 但只有 **10 只**成交量 > 0 ——
+    那是盘前抓数留下的**空壳 bar**。只比 `MAX(last_date)` 会把它判成"新鲜",
+    于是补拉永不触发, 空壳永远卡在缓存里 (实证: 大盘位置体温表一直显示
+    "数据滞后", 而本函数却说 1d 新鲜)。
+
+    故对 **1d** 追加一次"末根有没有成交"的抽检。**5m/1m 不加**: 盘中当前日的
+    bar 天然可能零成交, 加了会误报成一整天都不新鲜。
+    """
     expected = expected_last_trading_day(now).strftime("%Y%m%d")
-    return [p for p, _ in _SEGMENTS
-            if (cached_last_date(p, cache_dir) or "") < expected]
+    out: list[str] = []
+    for p, _ in _SEGMENTS:
+        if (cached_last_date(p, cache_dir) or "") < expected:
+            out.append(p)
+            continue
+        if p != "1d":
+            continue
+        ratio = last_bar_traded_ratio(p, cache_dir)
+        if ratio is not None and ratio < _STUB_MIN_TRADED_RATIO:
+            _logger.warning(
+                "K线缓存 %s 末根疑似空壳 bar: 抽检有成交比例仅 %.1f%% (阈值 %.0f%%)"
+                " —— 判为陈旧, 触发补拉", p, ratio * 100,
+                _STUB_MIN_TRADED_RATIO * 100)
+            out.append(p)
+    return out
 
 
 def _period_stats(period: str, cache_dir: Path | None = None) -> dict:

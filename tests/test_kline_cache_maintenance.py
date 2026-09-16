@@ -59,6 +59,103 @@ class TestStalePeriods:
         assert got == ["5m", "1d", "1m"]
 
 
+# ── 空壳 bar 识别 (2026-09-17) ────────────────────────────────────
+# 背景: 盘前抓数会造出"有日期、无成交"的空壳 bar。实测 2026-09-16 沪深
+# 5204 只票都有该日行, 但只有 10 只有成交 (0.2%)。只比 MAX(last_date)
+# 会把它判成"新鲜" → 补拉永不触发 → 空壳永远卡住、体温表永远显示"数据滞后"。
+# 计划书: docs/plan/2026-09-17_大盘位置与趋势研判_计划书.md §18
+
+
+def _make_daily_cache(cache_dir, rows):
+    """造 <cache_dir>/1d/<code>.parquet + manifest。
+
+    rows: [(code, [(date_str, volume), ...]), ...] —— 末条即"最后一根 bar"。
+    """
+    import pandas as pd
+
+    d = cache_dir / "1d"
+    d.mkdir(parents=True, exist_ok=True)
+    for code, bars in rows:
+        pd.DataFrame({
+            "date": pd.to_datetime([b[0] for b in bars]),
+            "open": [10.0] * len(bars), "high": [10.0] * len(bars),
+            "low": [10.0] * len(bars), "close": [10.0] * len(bars),
+            "volume": [float(b[1]) for b in bars],
+            "amount": [1000.0] * len(bars),
+        }).to_parquet(d / f"{code}.parquet", index=False)
+    conn = sqlite3.connect(str(cache_dir / "manifest.db"))
+    conn.execute("CREATE TABLE manifest (stock_code TEXT, period TEXT, "
+                 "first_date TEXT, last_date TEXT, last_close REAL, "
+                 "rows INTEGER, fetched_at TEXT, intact INTEGER)")
+    conn.executemany(
+        "INSERT INTO manifest VALUES (?,?,?,?,NULL,0,'',1)",
+        [(c, "1d", "20260801", bars[-1][0].replace("-", ""))
+         for c, bars in rows])
+    conn.commit()
+    conn.close()
+
+
+class TestStubBarDetection:
+    def test_末根全无成交判为陈旧(self, tmp_path):
+        _make_daily_cache(tmp_path, [
+            (f"60000{i}.SH", [("2026-08-13", 1000), ("2026-08-14", 0)])
+            for i in range(6)])
+        got = m.stale_periods(dt.datetime(2026, 8, 14, 16, 0), tmp_path)
+        assert "1d" in got, "末根无成交却没判陈旧 —— 空壳 bar 会永远卡在缓存里"
+
+    def test_末根有成交不误报(self, tmp_path):
+        _make_daily_cache(tmp_path, [
+            (f"60000{i}.SH", [("2026-08-13", 1000), ("2026-08-14", 1000)])
+            for i in range(6)])
+        got = m.stale_periods(dt.datetime(2026, 8, 14, 16, 0), tmp_path)
+        assert "1d" not in got
+
+    def test_抽检比例算得对(self, tmp_path):
+        """4 只里 1 只有成交 → 0.25。"""
+        _make_daily_cache(tmp_path, [
+            ("600000.SH", [("2026-08-14", 1000)]),
+            ("600001.SH", [("2026-08-14", 0)]),
+            ("600002.SH", [("2026-08-14", 0)]),
+            ("600003.SH", [("2026-08-14", 0)]),
+        ])
+        assert m.last_bar_traded_ratio("1d", tmp_path) == 0.25
+
+    def test_查不了返None且维持旧行为(self, tmp_path):
+        """没有 parquet 文件 → 抽检"查不了" → **不得**据此判陈旧。
+
+        这条是安全阀: 读盘抖动若被判成陈旧, 会误触发小时级的全量补拉。
+        """
+        _make_manifest(tmp_path / "manifest.db", [("000001.SZ", "1d", "20260814")])
+        assert m.last_bar_traded_ratio("1d", tmp_path) is None
+        got = m.stale_periods(dt.datetime(2026, 8, 14, 16, 0), tmp_path)
+        assert "1d" not in got
+
+    def test_5m不做末根抽检(self, tmp_path):
+        """5m/1m 不抽检 —— 盘中当前日 bar 天然可能零成交, 抽检会误报一整天陈旧。"""
+        import pandas as pd
+
+        d = tmp_path / "5m"
+        d.mkdir(parents=True, exist_ok=True)
+        for i in range(4):
+            pd.DataFrame({
+                "date": pd.to_datetime(["2026-08-14 09:35", "2026-08-14 14:55"]),
+                "open": [10.0, 10.0], "high": [10.0, 10.0],
+                "low": [10.0, 10.0], "close": [10.0, 10.0],
+                "volume": [0.0, 0.0], "amount": [0.0, 0.0],
+            }).to_parquet(d / f"60000{i}.SH.parquet", index=False)
+        conn = sqlite3.connect(str(tmp_path / "manifest.db"))
+        conn.execute("CREATE TABLE manifest (stock_code TEXT, period TEXT, "
+                     "first_date TEXT, last_date TEXT, last_close REAL, "
+                     "rows INTEGER, fetched_at TEXT, intact INTEGER)")
+        conn.executemany("INSERT INTO manifest VALUES (?,?,?,?,NULL,0,'',1)",
+                         [(f"60000{i}.SH", "5m", "20260801", "20260814")
+                          for i in range(4)])
+        conn.commit()
+        conn.close()
+        got = m.stale_periods(dt.datetime(2026, 8, 14, 16, 0), tmp_path)
+        assert "5m" not in got, "5m 不该做末根抽检"
+
+
 class TestEnsureCacheFresh:
     def _patch_paths(self, monkeypatch, tmp_path):
         monkeypatch.setattr(m, "_CACHE_DIR", tmp_path)
