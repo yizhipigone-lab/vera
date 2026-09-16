@@ -87,14 +87,27 @@ def _show_only(args) -> int:
             print(f"照镜子不可用: {r.get('reason')}")
             return 1
         s = r.get("summary") or {}
-        print(f"基准日 {r['asof']} —— 今天最像历史上这 {s.get('n')} 天:")
+        print(f"基准日 {r['asof']} —— 今天最像历史上这 {s.get('n')} 天"
+              f"(距离最近的一档 = 前 {(r.get('band_quantile') or 0) * 100:.0f}%;"
+              f" 可当参照的历史日 {r.get('eligible')} 天,"
+              f" 已排除最近 {r.get('exclude_recent')} 个交易日):")
         for m in r.get("matches") or []:
             print(f"  {m['date']}  距离 {m['distance']}  "
                   f"之后20日(沪深300) {m.get('fwd_20_hs300_pct')}%  "
                   f"之后60日 {m.get('fwd_60_hs300_pct')}%")
-        print(f"\n汇总: 20日中位数 {s.get('fwd_20_median')}%, "
+        print(f"\n汇总(基于分位带 {s.get('n')} 天): "
+              f"20日中位数 {s.get('fwd_20_median')}%, "
+              f"平均 {s.get('fwd_20_mean')}%, "
               f"上涨占比 {s.get('fwd_20_up_ratio')}%; "
               f"60日中位数 {s.get('fwd_60_median')}%")
+        print(f"有效独立样本: 20日约 {s.get('n_eff_20')} 份 / "
+              f"60日约 {s.get('n_eff_60')} 份 (命中日高度重叠, 不能按天数读)")
+        if r.get("years"):
+            print("\n按年份拆解:")
+            for y in r["years"]:
+                print(f"  {y['year']} 年  {y['n']:>3} 天  "
+                      f"之后20日中位 {y['median_pct']}%  "
+                      f"上涨占比 {y['up_ratio_pct']}%")
         print(f"\n{r.get('warning')}")
     if args.shadow:
         r = mpr.shadow_replay()
@@ -102,13 +115,35 @@ def _show_only(args) -> int:
             print(f"影子回放不可用: {r.get('reason')}")
             return 1
         print(f"影子回放 {r['start']} ~ {r['end']}  口径: {r['caliber']}")
-        print(f"{'规则':<16}{'年化':>10}{'最大回撤':>10}{'夏普':>8}{'卡玛':>8}{'持仓占比':>10}")
+        print(f"{'规则':<16}{'毛年化':>9}{'净年化':>9}{'净95%区间':>18}"
+              f"{'净回撤':>9}{'建仓次数':>9}{'在场占比':>9}")
         for row in (r.get("rows") or []) + [r.get("buy_hold") or {}]:
             if not row:
                 continue
-            print(f"{str(row.get('rule')):<16}{str(row.get('annualized_pct')):>10}"
-                  f"{str(row.get('max_drawdown_pct')):>10}{str(row.get('sharpe')):>8}"
-                  f"{str(row.get('calmar')):>8}{str(row.get('exposure_pct')):>10}")
+            net = row.get("net") or {}
+            ci = (f"{net.get('ci_low_pct')} ~ {net.get('ci_high_pct')}"
+                  if net.get("ci_low_pct") is not None else "【缺】")
+            print(f"{str(row.get('rule')):<16}"
+                  f"{str(row.get('annualized_pct')):>9}"
+                  f"{str(net.get('annualized_pct')):>9}{ci:>18}"
+                  f"{str(net.get('max_drawdown_pct')):>9}"
+                  f"{str(row.get('round_trips')):>9}"
+                  f"{str(row.get('exposure_pct')):>9}")
+        print("\n双窗口一致性 (前一半 / 后一半, 同向才算数):")
+        for row in (r.get("rows") or []) + [r.get("buy_hold") or {}]:
+            if not row:
+                continue
+            w = row.get("windows") or {}
+            print(f"  {str(row.get('rule')):<16}"
+                  f"前 {(w.get('in') or {}).get('annualized_pct')}%  "
+                  f"后 {(w.get('out') or {}).get('annualized_pct')}%  "
+                  f"{'同向' if w.get('consistent') else '不一致(待复核)'}")
+        c = r.get("cost") or {}
+        if c:
+            print(f"\n成本口径: 单次往返 {c.get('round_trip_pct')}% (佣金+印花税), "
+                  f"未计滑点; 含滑点则 {c.get('round_trip_with_slippage_pct')}%")
+        print("\n措辞纪律: 净口径 95% 区间跨过 0 → 只能说「看不出显著的优势或劣势」, "
+              "不写「无效」也不写「跑输」。")
     return 0
 
 

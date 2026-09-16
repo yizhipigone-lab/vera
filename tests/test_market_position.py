@@ -205,7 +205,7 @@ class TestSimilarDays:
         # 把第 100 行改成与 target 完全一样 —— 它应当是距离最小的一天
         for f in mp.SIMILAR_FEATURES:
             h.iloc[100, h.columns.get_loc(f)] = target[f]
-        picks = mp.similar_days(target, h, top_n=3, gap=20)
+        picks = mp.similar_days(target, h, top_n=3, gap=20)["picks"]
         assert picks, "应当能照出镜子"
         assert picks[0]["date"] == h.index[100].date().isoformat()
         assert picks[0]["distance"] == pytest.approx(0.0, abs=1e-9)
@@ -215,7 +215,7 @@ class TestSimilarDays:
         h = _fake_history()
         gap = 20
         target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
-        picks = mp.similar_days(target, h, top_n=5, gap=gap)
+        picks = mp.similar_days(target, h, top_n=5, gap=gap)["picks"]
         cutoff = h.index[-gap].date().isoformat()
         assert picks and all(p["date"] <= cutoff for p in picks)
 
@@ -224,25 +224,78 @@ class TestSimilarDays:
         h = _fake_history()
         gap = 20
         target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
-        picks = mp.similar_days(target, h, top_n=5, gap=gap)
+        picks = mp.similar_days(target, h, top_n=5, gap=gap)["picks"]
         pos = [h.index.get_loc(pd.Timestamp(p["date"])) for p in picks]
         for i in range(len(pos)):
             for j in range(i + 1, len(pos)):
                 assert abs(pos[i] - pos[j]) > gap
 
+    def test_default_excludes_a_whole_year(self):
+        """§14.1 回归锁: 默认排除**整整一年** (252 个交易日), 不是 20 天。
+
+        喂一个"最近 30 天里的完美匹配", 断言它**不会**被选中 —— 原默认 20 天时
+        它会当选, 那就是拿上个月当"历史参照", 属于数据窥探。
+        """
+        assert mp.RECENT_EXCLUDE_BARS == 252
+        assert mp.MIN_MATCH_GAP_BARS == 20
+        h = _fake_history(n=400)
+        target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
+        for f in mp.SIMILAR_FEATURES:          # 30 天前那天改成与今天一模一样
+            h.iloc[-30, h.columns.get_loc(f)] = target[f]
+        res = mp.similar_days(target, h, top_n=5)
+        got = [p["date"] for p in res["picks"]]
+        assert h.index[-30].date().isoformat() not in got, \
+            "最近一年内的日子被选中 = 数据窥探复发"
+        cutoff = h.index[-mp.RECENT_EXCLUDE_BARS].date().isoformat()
+        assert got and all(d <= cutoff for d in got)
+        # 可选池 = 截止日(含)之前的全部历史日
+        assert res["eligible"] == len(h) - mp.RECENT_EXCLUDE_BARS + 1
+        assert res["exclude_recent"] == 252 and res["min_gap"] == 20
+
+    def test_band_mode_returns_quantile_slice(self):
+        """§14.2: 结论依据是"距离最近的一档"(前 5%), 不是 top-5 的中位数。"""
+        h = _fake_history(n=400)
+        target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
+        res = mp.similar_days(target, h, top_n=5, quantile=0.05, max_band=300)
+        assert res["band"], "开了 quantile 就必须给出一档样本"
+        assert res["n_band"] == len(res["band"])
+        assert res["n_band"] >= 5, "样本太少时至少给 5 个"
+        assert res["n_band"] <= res["eligible"]
+        dates = [b["date"] for b in res["band"]]
+        assert len(set(dates)) == len(dates), "档内不许有重复日"
+        # 档内距离单调不减 = 确实是"距离最近的那一档"
+        dists = [b["distance"] for b in res["band"]]
+        assert dists == sorted(dists), "分位带必须按距离从小到大取"
+        assert res["quantile"] == 0.05
+
+    def test_band_off_by_default(self):
+        """没传 quantile 时不悄悄塞一档样本 (默认行为零变化)。"""
+        h = _fake_history(n=400)
+        target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
+        res = mp.similar_days(target, h)
+        assert res["band"] == [] and res["n_band"] == 0
+
     def test_short_history_returns_empty(self):
-        assert mp.similar_days({f: 1.0 for f in mp.SIMILAR_FEATURES},
-                               _fake_history(n=30)) == []
+        res = mp.similar_days({f: 1.0 for f in mp.SIMILAR_FEATURES},
+                              _fake_history(n=30))
+        assert res["picks"] == [] and res["band"] == [] and res["eligible"] == 0
 
     def test_missing_feature_returns_empty(self):
         h = _fake_history().drop(columns=["vol_ann_20"])
-        assert mp.similar_days({f: 1.0 for f in mp.SIMILAR_FEATURES}, h) == []
+        assert mp.similar_days({f: 1.0 for f in mp.SIMILAR_FEATURES}, h)["picks"] == []
 
     def test_target_with_none_returns_empty(self):
         h = _fake_history()
         target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
         target["amount_pct_1y"] = None
-        assert mp.similar_days(target, h) == []
+        assert mp.similar_days(target, h)["picks"] == []
+
+    def test_zero_variance_feature_returns_empty(self):
+        """某特征在历史上是常数 → 没法标准化 → 整题放弃, 不硬算。"""
+        h = _fake_history(n=400)
+        h["vol_ann_20"] = 12.0
+        target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
+        assert mp.similar_days(target, h)["picks"] == []
 
 
 # ── forward_return ────────────────────────────────────────────────────

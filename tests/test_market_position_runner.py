@@ -198,6 +198,181 @@ class TestMirrorAndShadow:
             assert sd["years"] > 0 and sd["days"] > 0
 
 
+class TestMirrorCaliber:
+    """§14.2 / §14.3 / §14.9: 结论基于分位带 + 按年份拆解 + 单一年份主导必须点名。"""
+
+    def _patch_band(self, monkeypatch, band):
+        fake = {"picks": band[:1], "band": band, "n_band": len(band),
+                "eligible": 900, "exclude_recent": 252, "min_gap": 20,
+                "quantile": 0.05}
+        monkeypatch.setattr(mpr, "similar_days", lambda *a, **k: fake)
+
+    def test_mirror_names_dominating_year(self, tmp_path, monkeypatch):
+        _write_cache(n_days=400)
+        mpr.collect(bars=0, write=True)
+        self._patch_band(monkeypatch, [
+            {"date": "2020-03-02", "distance": 0.10},
+            {"date": "2020-03-05", "distance": 0.11},
+            {"date": "2020-03-09", "distance": 0.12},
+            {"date": "2021-07-05", "distance": 0.30}])
+        md = mpr.mirror()
+        assert md["ok"], md.get("reason")
+        assert [y["year"] for y in md["years"]] == ["2020", "2021"]
+        assert md["years"][0]["n"] == 3
+        assert md["dominance"] == "2020"
+        assert "本结论由 2020 年主导" in md["warning"]
+
+    def test_mirror_no_dominance_when_spread_evenly(self, tmp_path, monkeypatch):
+        _write_cache(n_days=400)
+        mpr.collect(bars=0, write=True)
+        self._patch_band(monkeypatch, [
+            {"date": "2019-03-02", "distance": 0.10},
+            {"date": "2019-03-05", "distance": 0.11},
+            {"date": "2021-07-05", "distance": 0.30},
+            {"date": "2021-07-09", "distance": 0.31}])
+        md = mpr.mirror()
+        assert md["dominance"] is None
+        assert "主导" not in md["warning"]
+
+    def test_mirror_reports_when_band_is_unusable(self, tmp_path):
+        """合成缓存只有 400 天且十年分位为 None → 明确说"不可用 + 怎么办"。"""
+        _write_cache(n_days=400)
+        mpr.collect(bars=0, write=True)
+        md = mpr.mirror(top_n=3)
+        assert md["ok"] is False
+        assert "252" in md["reason"] and "回填" in md["reason"]
+
+
+class TestStatsHelpers:
+    """§15.1 E1/E2 + §16.7 MED-4: HAC t 值 / 持有段 / 段收益口径。"""
+
+    def test_hac_matches_manual_newey_west(self):
+        rng = np.random.default_rng(11)
+        x = pd.Series(rng.normal(0.001, 0.01, 400))
+        got = mpr._hac_tstat(x, lags=5)
+        d = x - x.mean()
+        nw = float((d * d).mean())
+        for k in range(1, 6):
+            # 手写循环按**位置**配对 (pandas 的 iloc 乘法会按索引对齐, 不能用)
+            nw += 2.0 * (1.0 - k / 6.0) * float((d.iloc[k:].to_numpy()
+                                                 * d.iloc[:-k].to_numpy()).mean())
+        expect_se = (nw / len(x)) ** 0.5
+        assert got["se"] == pytest.approx(expect_se, rel=1e-9)
+        assert got["t"] == pytest.approx(x.mean() / expect_se, rel=1e-9)
+        assert got["ci_low"] < x.mean() < got["ci_high"]
+        assert got["n_eff"] == pytest.approx(len(x) / got["vif"])
+
+    def test_hac_inflates_variance_under_autocorrelation(self):
+        """正自相关序列必须被膨胀 —— 否则普通 t 检验会把显著性吹大。"""
+        rng = np.random.default_rng(3)
+        e = rng.normal(0.0, 0.01, 2000)
+        ar = np.zeros(2000)
+        for i in range(1, 2000):
+            ar[i] = 0.8 * ar[i - 1] + e[i]
+        got = mpr._hac_tstat(pd.Series(ar))
+        assert got["vif"] > 2.0, f"AR(1) 方差膨胀因子应远大于 1, 实际 {got['vif']}"
+        assert got["n_eff"] < 1000
+        assert mpr._hac_tstat(pd.Series(e))["vif"] < 1.2, "白噪声不该被膨胀"
+
+    def test_hac_returns_none_on_thin_or_constant(self):
+        assert mpr._hac_tstat(pd.Series([0.01] * 30)) is None   # 常量 → 方差 0
+        assert mpr._hac_tstat(pd.Series([0.01] * 5)) is None    # 样本不足
+        assert mpr._hac_tstat(pd.Series([], dtype=float)) is None
+
+    def test_holding_segments_counts_runs(self):
+        pos = pd.Series([0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1],
+                        index=pd.date_range("2024-01-01", periods=11, freq="B"))
+        assert mpr._holding_segments(pos) == [(2, 4, 3), (6, 6, 1), (9, 10, 2)]
+        assert mpr._holding_segments(pd.Series([1.0, 1.0])) == [(0, 1, 2)]
+        assert mpr._holding_segments(pd.Series([0.0, 0.0])) == []
+
+    def test_segment_stats_does_not_normalise_by_length(self):
+        """§16.7 MED-4 实测修正: 段收益**不做长度归一化**。
+
+        除以段长会给长段(赢家)打折、却不给短段(输家)打折 —— 实测能把结论的符号
+        弄反。这里两段都是 +5% (1 天 / 99 天): 不归一化 → 平均就是 5%;
+        若按日均归一化 → 会掉到约 2.5%, 两者可区分。
+        """
+        idx = pd.date_range("2024-01-01", periods=101, freq="B")
+        r = pd.Series(0.0, index=idx)
+        r.iloc[1] = 0.05                                   # 1 天段: +5%
+        r.iloc[2:] = (1.05 ** (1.0 / 99)) - 1.0            # 99 天段: 合计 +5%
+        st = mpr._segment_stats(r, [(1, 1, 1), (2, 100, 99)], 0.0)
+        assert st["mean_return_pct"] == pytest.approx(5.0, abs=0.01)
+        assert st["median_return_pct"] == pytest.approx(5.0, abs=0.01)
+        assert st["n"] == 2 and st["min_days"] == 1 and st["max_days"] == 99
+        assert st["t"] is None and "样本不足" in st["note"]
+        assert st["t_gross"] is None
+
+    def test_segment_stats_subtracts_cost_per_round_trip(self):
+        idx = pd.date_range("2024-01-01", periods=40, freq="B")
+        r = pd.Series(0.0, index=idx)
+        for a in range(1, 40, 4):
+            r.iloc[a:a + 2] = 0.01
+        segs = mpr._holding_segments((r != 0).astype(float))
+        assert len(segs) == 10
+        st0 = mpr._segment_stats(r, segs, 0.0)
+        st1 = mpr._segment_stats(r, segs, 0.0011)
+        assert st1["mean_return_pct"] < st0["mean_return_pct"]
+        assert st1["mean_return_pct"] == pytest.approx(
+            st0["mean_return_pct"] - 0.11, abs=0.02)
+
+    def test_cost_params_read_from_engine_not_hardcoded(self):
+        """成本口径不许写第二份 —— 必须等于 backtest/engine.py 的默认值。"""
+        from backtest.engine import BacktestEngine
+        e = BacktestEngine({})
+        c = mpr._cost_params()
+        assert c["commission"] == e.commission
+        assert c["stamp_tax"] == e.stamp_tax
+        assert c["slippage"] == e.slippage
+        assert c["round_trip"] == pytest.approx(e.commission * 2 + e.stamp_tax)
+        assert c["round_trip_with_slippage"] > c["round_trip"]
+
+
+class TestShadowReplayCaliber:
+    """§16.2 / §15.1 / §15.4: 毛净并列 / 显著性 / 双窗口 / 措辞口径。"""
+
+    def _run(self):
+        _write_cache(n_days=400)
+        mpr.collect(bars=0, write=True)
+        return mpr.shadow_replay()
+
+    def test_gross_and_net_side_by_side(self):
+        sd = self._run()
+        assert sd["ok"], sd.get("reason")
+        assert sd["cost"]["round_trip_pct"] == pytest.approx(0.11, abs=0.005)
+        assert sd["cost"]["round_trip_with_slippage_pct"] > sd["cost"]["round_trip_pct"]
+        for r in sd["rows"] + [sd["buy_hold"]]:
+            assert r["net"]["annualized_pct"] <= r["annualized_pct"] + 1e-9
+            assert r["round_trips"] >= 1
+            assert "未计滑点" in sd["caliber"]
+
+    def test_every_row_has_significance_and_windows(self):
+        sd = self._run()
+        for r in sd["rows"]:
+            assert {"t", "ci_low_pct", "ci_high_pct", "n_eff"} <= set(r["net"])
+            assert r["net"]["ci_low_pct"] < r["net"]["ci_high_pct"]
+            assert 0 < r["net"]["n_eff"] <= r["days"]
+            w = r["windows"]
+            assert set(w) >= {"in", "out", "consistent"}
+            assert w["in"]["annualized_pct"] is not None
+            assert w["out"]["annualized_pct"] is not None
+            assert w["consistent"] in (True, False)
+            seg = r["segments"]
+            assert seg["n"] == r["round_trips"]
+            if seg["n"] < mpr.MIN_SEGMENTS_FOR_T:
+                assert seg["t"] is None and "样本不足" in seg["note"]
+
+    def test_net_deducts_exactly_one_round_trip_per_segment(self):
+        """净口径总成本 = 建仓次数 × 单次往返 (构造一个必然开过仓的场景)。"""
+        sd = self._run()
+        r = sd["rows"][0]
+        gross_total = r["total_pct"]
+        net_total = r["net"]["total_pct"]
+        expect = r["round_trips"] * sd["cost"]["round_trip_pct"]
+        assert (gross_total - net_total) == pytest.approx(expect, abs=1.0)
+
+
 class TestCacheLayoutContract:
     def test_parquet_path_matches_kline_cache_layout(self, tmp_path):
         """直读 parquet 是性能取舍 —— 靠这条契约测试防缓存布局改了静默读空。

@@ -22,7 +22,8 @@ open=high=low=close 且 volume=0)。不掩码就会拿盘前价冒充收盘价�
     last_valid_date(volume_df, *, min_ratio) -> Timestamp | None
     limit_counts(close_df, volume_df, ratios, date) -> dict
     limit_counts_series(close_df, volume_df, ratios, dates) -> dict
-    similar_days(target, history, *, top_n, gap, features) -> list[dict]
+    similar_days(target, history, *, top_n, exclude_recent, min_gap,
+                 quantile, max_band, features) -> dict
     forward_return(closes, start, horizon) -> float | None
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ import pandas as pd
 
 __all__ = [
     "PCT_WINDOW_BARS", "MA_WINDOW", "HL_WINDOW", "RET_1Y_BARS",
+    "RECENT_EXCLUDE_BARS", "MIN_MATCH_GAP_BARS",
     "SIMILAR_FEATURES", "HISTORY_COLUMNS", "POSITION_COLUMNS",
     "index_position", "index_position_series", "breadth_frame",
     "last_valid_date", "limit_counts", "limit_counts_series",
@@ -46,6 +48,11 @@ MA_WINDOW = 20
 HL_WINDOW = 60
 #: 一年 ≈ 243 个交易日 (实测 2016-01~2026-09 共 2602 个交易日 / 10.7 年)
 RET_1Y_BARS = 243
+#: 照镜子时排除最近多少个交易日 (**2026-09-17 由 20 改为 252**: 原值等于允许
+#: 拿"上个月"当历史参照, 是数据窥探。252 = 一年)
+RECENT_EXCLUDE_BARS = 252
+#: 两个入选"相似日"之间至少隔多少个交易日 (避免一次照出一串连续同一天)
+MIN_MATCH_GAP_BARS = 20
 #: 相似日匹配用的特征列 (必须全部是"当日已知"的量, 不含任何未来信息)
 SIMILAR_FEATURES = ("sh_pct", "hs300_pct", "above_ma20_pct",
                     "hl_spread_pct", "vol_ann_20", "amount_pct_1y")
@@ -251,52 +258,98 @@ def limit_counts_series(close_df: pd.DataFrame, volume_df: pd.DataFrame,
 
 
 def similar_days(target: dict, history: pd.DataFrame, *, top_n: int = 5,
-                 gap: int = 20,
-                 features: tuple = SIMILAR_FEATURES) -> list[dict]:
+                 gap: int | None = None,
+                 exclude_recent: int = RECENT_EXCLUDE_BARS,
+                 min_gap: int = MIN_MATCH_GAP_BARS,
+                 quantile: float | None = None,
+                 max_band: int = 300,
+                 features: tuple = SIMILAR_FEATURES) -> dict:
     """历史照镜子: 找出与 target 指标向量最像的历史交易日。
 
-    做法: 对每个特征按历史全序列 z-score 标准化 (减均值除标准差) 后算欧氏距离,
-    距离最小的优先。两条纪律:
-      ① 排除最近 gap 个交易日 —— 否则"最像的"永远是昨天前天, 毫无信息量;
-      ② 已选中的日子前后 gap 个交易日内不再选 —— 否则一次照出 20 个连续同一天。
+    做法: 对每个特征按历史全序列 z-score 标准化 (减均值除标准差) 后算欧氏距离。
 
-    返回 [{"date": "2018-06-19", "distance": 0.83}, ...], 少于 2 个可用样本返 []。
-    调用方负责补 forward_return (本函数不碰收益, 只管相似度)。
+    **两条纪律 (2026-09-17 修正, 原来只有 20 天 = 数据窥探)**:
+
+    - `exclude_recent` (默认 **252** 个交易日): 排除最近这一段, 不许拿"上个月"当历史。
+      原默认 20 天等于允许拿一个月前的日子当"历史参照", 是**数据窥探**。
+      这个门槛是从外部研究产物学来的 (那封邮件写的是"排除最后 252 天避免数据窥探")。
+    - `min_gap` (默认 20): 两个入选的"相似日"之间至少隔这么多交易日,
+      否则一次会照出一串连续的同一天。
+
+    `gap` 是**已废弃的兼容参数**: 传了就同时覆盖上面两个 (老调用方/老测试用)。
+
+    `quantile` (如 0.05): 额外给出"**距离最近的这一档**"全体 (前 5%)。
+    为什么要它: 只报 top-5 的中位数**在统计上没有意义** (5 个样本不构成统计量);
+    给一档样本才能看分布。`max_band` 给档内样本数封顶, 防它大到离谱。
+
+    Returns:
+        dict, 键::
+
+            {"picks":       [{"date","distance"}, ...] 最像的几天 (top_n 个),
+             "band":        [{"date","distance"}, ...] 距离最近的一档 (quantile 为 None 时 []),
+             "n_band":      int   档内样本数,
+             "eligible":    int   可参与类比的历史日总数 (已排除最近 exclude_recent 天),
+             "exclude_recent": int, "min_gap": int, "quantile": float|None}
+
+        **无可用样本时 picks/band 均为空表**, 不抛异常。
+        `n_eff` (有效独立样本) 由调用方按 `n_band / 持有期交易日数` 估 —— 前向收益
+        窗口高度重叠, 原始样本数会严重高估信息量, 所以必须由知道持有期的一方算。
     """
     feats = list(features)
+    empty = {"picks": [], "band": [], "n_band": 0, "eligible": 0,
+             "exclude_recent": int(exclude_recent), "min_gap": int(min_gap),
+             "quantile": quantile}
+    if gap is not None:                      # 已废弃参数: 同时覆盖两条纪律
+        exclude_recent = min_gap = int(gap)
+        empty["exclude_recent"] = int(exclude_recent)
+        empty["min_gap"] = int(min_gap)
+    exclude_recent, min_gap = int(exclude_recent), int(min_gap)
     if history is None or len(history) == 0:
-        return []
-    missing = [f for f in feats if f not in history.columns]
-    if missing:
-        return []
+        return empty
+    if any(f not in history.columns for f in feats):
+        return empty
     h = history[feats].sort_index().dropna()
-    if len(h) < gap * 2:
-        return []
+    if len(h) < max(exclude_recent + 1, min_gap * 2):
+        return empty
     tvec = pd.Series({f: target.get(f) for f in feats}, dtype=float)
     if tvec.isna().any():
-        return []
+        return empty
     mu = h.mean()
     sd = h.std(ddof=0)
     sd = sd.where(sd > 0)          # 零方差特征无法标准化 → 整题放弃 (不硬算)
     if sd.isna().any():
-        return []
+        return empty
     z = (h - mu) / sd
     tz = (tvec - mu) / sd
     dist = np.sqrt(((z - tz) ** 2).sum(axis=1))
-    order = list(dist.sort_values(kind="stable").index)
-    cutoff = h.index[-gap]
+    cutoff = h.index[-exclude_recent]        # 纪律①: 只在这天(含)之前找
+    elig = dist[dist.index <= cutoff]
+    if len(elig) == 0:
+        return empty
+    order = list(elig.sort_values(kind="stable").index)
     pos = {d: i for i, d in enumerate(h.index)}
     picked: list = []
     for d in order:
-        if d > cutoff:                      # 纪律① 排除最近 gap 个交易日
-            continue
-        if any(abs(pos[d] - pos[p]) <= gap for p in picked):   # 纪律② 去重
+        if any(abs(pos[d] - pos[p]) <= min_gap for p in picked):   # 纪律② 去重
             continue
         picked.append(d)
         if len(picked) >= top_n:
             break
-    return [{"date": pd.Timestamp(d).date().isoformat(),
-             "distance": round(float(dist[d]), 3)} for d in picked]
+    band: list = []
+    if quantile and 0 < float(quantile) < 1:
+        n_band = max(5, min(int(len(elig) * float(quantile)), int(max_band)))
+        band = order[:n_band]
+    return {
+        "picks": [{"date": pd.Timestamp(d).date().isoformat(),
+                   "distance": round(float(dist[d]), 3)} for d in picked],
+        "band": [{"date": pd.Timestamp(d).date().isoformat(),
+                  "distance": round(float(dist[d]), 3)} for d in band],
+        "n_band": len(band),
+        "eligible": int(len(elig)),
+        "exclude_recent": exclude_recent,
+        "min_gap": min_gap,
+        "quantile": quantile,
+    }
 
 
 def forward_return(closes, start, horizon: int) -> float | None:

@@ -31,10 +31,12 @@ import re
 import threading
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from core.limit_ratio import limit_ratio
-from core.market_position import (POSITION_COLUMNS, SIMILAR_FEATURES,
+from core.market_position import (POSITION_COLUMNS, RECENT_EXCLUDE_BARS,
+                                  RET_1Y_BARS, SIMILAR_FEATURES,
                                   breadth_frame, forward_return,
                                   index_position_series, last_valid_date,
                                   limit_counts_series, similar_days)
@@ -74,9 +76,27 @@ AMOUNT_WAN_PER_YI = 1e4
 SHADOW_RULES = ("ma20", "breadth50", "regime")
 #: 照镜子必须原样带出的警告 (写成常量, 不靠各处自觉)
 MIRROR_WARNING = (
-    "样本只有 {n} 个, 且 A 股几十年只经历过屈指可数的几轮周期 —— "
-    "「历史相似」不是预测, 只是提供一个参照系: 上表说的是\"那几次之后实际怎么走\", "
-    "不等于这次也会那样走。")
+    "「历史相似」不是预测 —— 上表说的是「历史上跟今天像的那些日子, 之后实际怎么走」, "
+    "不等于这次也会那样走。命中 {n} 个交易日看着不少, 但它们挨得很近、涨跌高度重叠, "
+    "**真正独立的信息只有大约 {n_eff} 份**; 而 A 股几十年也只经历过屈指可数的几轮周期。")
+#: 结论被单一年份主导时的点名警告 (§14.3; 有测试锁住"必须出现")
+YEAR_DOMINANCE_WARNING = (
+    "⚠ **本结论由 {year} 年主导** —— 这一年在 {n} 个命中日里占了 {share}。"
+    "换句话说, 上面的\"历史上像今天的时候之后怎么走\", 主要是\"{year} 年那一次怎么走\", "
+    "不是很多次独立经验的平均。")
+#: 照镜子的结论依据 = 「距离最近的一档」(前 5%), 不再拿 top-5 的中位数当结论 (§14.2)。
+#: 原因: 5 个样本的中位数不是统计量, 报它等于虚报精度。
+MIRROR_BAND_QUANTILE = 0.05
+#: 分位带内样本数上限 (防"最近的一档"大到几百天)
+MIRROR_BAND_MAX = 300
+#: 单个年份占分位带比例 > 该值 → 必须点名"本结论由该年主导" (§14.3)
+YEAR_DOMINANCE = 0.5
+#: 持有段数 < 该值 → 不给 t 值, 只给描述统计并标"样本不足" (§16.7 MED-4)
+MIN_SEGMENTS_FOR_T = 30
+#: 双窗口切分点: 前一半 / 后一半 (复用《公式因子体检方法论》纪律 2「双窗口一致才算数」)。
+#: 为什么不是 70/30: 全样本 13.7 年, 70/30 会让后段只剩约 4 年, 而 `regime` 规则
+#: 全样本只有 15 个持有段 → 后段约 4 段, 根本判不了。对半切每段仍有 ~6.9 年。
+WINDOW_SPLIT = 0.5
 #: 体温表尾部铁律提示 + 已知偏差 (写成常量, 不靠各处自觉)
 CALIBER_FOOTER = (
     "只读参考, 不联入任何仓位调度 (业务铁律 1)。指标口径唯一真相源 = "
@@ -381,6 +401,186 @@ def latest() -> dict | None:
     return h[-1] if h else None
 
 
+# ───────────────── 内部: 统计 (成本 / HAC / 持有段 / 双窗口) ─────────────────
+#
+# 这些不是"大盘位置指标", 而是**评估一套择时规则好不好**要用的统计工具,
+# 所以放在 IO 层的私有接缝里, 不占 core/market_position.py 的公开名额 (§8.1)。
+
+#: 默认成本参数进程内缓存一次 (构造空配置引擎只为读三个默认值)
+_COST_CACHE: dict = {}
+
+
+def _cost_params() -> dict | None:
+    """项目默认交易成本 —— **现读 `backtest/engine.py`, 不在这里写第二份**。
+
+    单一真相源 = `BacktestEngine.__init__` 里 `config.get("commission"/"stamp_tax"/
+    "slippage")` 的默认值 (实测 0.0003 / 0.0005 / 0.001)。构造一个空配置的引擎只读
+    这三个数, 结果进程内缓存 (首次约 0.5 秒, 全是 import 开销)。
+
+    **口径 (§16.2)**: 这里给出的 `round_trip` = 佣金×2 + 印花税 (卖出单边)
+    = 0.11%, **不含滑点** —— 这是"单次往返至少花掉多少"的**下限**。
+    另给 `round_trip_with_slippage` = 再加滑点×2 = 0.31%, 报告里一并披露,
+    免得"只计 0.11%"被误读成"成本已经算全了"。
+
+    读失败一律返 None → 上层把净口径标成【缺】, **绝不编一个成本数出来**。
+    """
+    if "v" in _COST_CACHE:
+        return _COST_CACHE["v"]
+    v = None
+    try:
+        from backtest.engine import BacktestEngine
+        e = BacktestEngine({})
+        comm, tax, slip = float(e.commission), float(e.stamp_tax), float(e.slippage)
+        v = {"commission": comm, "stamp_tax": tax, "slippage": slip,
+             "round_trip": comm * 2 + tax,
+             "round_trip_with_slippage": comm * 2 + tax + slip * 2}
+    except Exception as ex:      # fail-soft: 净口径标缺, 不影响毛口径与体温表
+        _logger.warning("大盘位置: 读不到默认成本参数, 净口径标缺: %s", ex)
+    _COST_CACHE["v"] = v
+    return v
+
+
+def _hac_tstat(x: pd.Series, *, lags: int | None = None) -> dict | None:
+    """均值是否显著不为 0 的 **Newey-West (HAC) t 值 + 95% 置信区间**。
+
+    **为什么不能直接用普通 t 检验** (§15.1 E1): 择时规则的日收益**自己跟自己相关**
+    (今天持仓, 明天多半还持仓; 空仓日更是一连串的 0)。普通标准误把"天数"当成
+    "独立样本数", 会把显著性吹大。Newey-West 用 Bartlett 权重给前 L 阶自协方差
+    打折后重算方差, 顺带得到**方差膨胀因子** `vif` 与**有效独立样本数**
+    `n_eff = n / vif` —— 这才是"真正独立的信息有多少份"。
+
+    带宽 `lags=None` 时用经验值 `ceil(4·(n/100)^(2/9))` (n=3365 时约 9 阶)。
+
+    返回的 `ci_low/ci_high` 是**日均收益**的区间; 上层乘 `RET_1Y_BARS` 换成"年化
+    几个百分点"再展示 (t 值对线性缩放不变, 两种写法同一个数)。
+    返回 None = 样本不足 20 天、或序列是常量 (方差 0), 上层标【缺】不硬算。
+    """
+    v = pd.Series(x).astype(float).dropna()
+    n = len(v)
+    if n < 20:
+        return None
+    d = v - float(v.mean())
+    g0 = float((d * d).mean())
+    # 数值噪声兜底: 常量序列的 g0 可能是 1e-35 而不是精确的 0 (浮点减法残留),
+    # 不拦就会算出 t=5.5e7 这种荒唐值。判据 = 方差相对自身量级小到是噪声。
+    if not g0 > 1e-12 * max(1.0, float(v.mean()) ** 2):
+        return None
+    if lags is None:
+        lags = int(np.ceil(4.0 * (n / 100.0) ** (2.0 / 9.0)))
+    lags = max(0, min(int(lags), n - 2))
+    nw = g0
+    dn = d.to_numpy()
+    for k in range(1, lags + 1):
+        gk = float((dn[k:] * dn[:-k]).mean())
+        nw += 2.0 * (1.0 - k / (lags + 1.0)) * gk
+    nw = max(nw, 1e-18)
+    se = (nw / n) ** 0.5
+    mean = float(v.mean())
+    vif = nw / g0
+    return {"mean": mean, "se": se, "t": (mean / se) if se > 0 else None,
+            "ci_low": mean - 1.96 * se, "ci_high": mean + 1.96 * se,
+            "n": n, "lags": lags, "vif": vif, "n_eff": n / vif}
+
+
+def _holding_segments(pos: pd.Series) -> list[tuple[int, int, int]]:
+    """持仓段 = position 连续为 1 的区间 → `[(起下标, 止下标, 长度), ...]`。
+
+    "建仓一次"算一段 (§16.2 实测: ma20 196 次 / breadth50 181 次 / regime 15 次)。
+    **持仓占比 ≠ 换手率**: 前者是"多少天在场内", 后者看的是"翻仓多少次"。
+    """
+    out: list[tuple[int, int, int]] = []
+    start = None
+    for i, on in enumerate(pos.to_numpy()):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            out.append((start, i - 1, i - start))
+            start = None
+    if start is not None:
+        out.append((start, len(pos) - 1, len(pos) - start))
+    return out
+
+
+def _segment_stats(gross: pd.Series, segs: list[tuple[int, int, int]],
+                   cost_rate: float) -> dict:
+    """持有段的描述统计 + **每笔下注盈亏**的 t 检验 (§15.1 E2 + §16.7 MED-4)。
+
+    **段收益的定义 (必须写清楚, 否则这些数没法读)**: 段收益 = 段内日收益复合
+    (从第 a 天拿到第 b 天), 再扣掉 `cost_rate`。检验的是**这些段收益的均值是否为 0**
+    —— 也就是"每开一次仓, 平均是赚还是亏"。
+
+    **为什么不做长度归一化 —— 这是实测出来的坑, 不是个人偏好**: 计划书 §16.7 曾建议
+    「段内日均收益」或「折算年化」。实测 (2013-01-04 ~ 2026-09-16, `ma20` 规则 196 段)
+    发现这两种归一化会**把结论的符号弄反**:
+
+    | 口径 | 结果 |
+    |---|---|
+    | 每笔平均盈亏 (不归一化) | **+0.28%** (中位 −0.74%, 胜率 22%) |
+    | 段内日均收益 (除以段长) | **−0.39%/天** |
+    | 按天数加权的真实日均收益 | **+0.028%/天** |
+
+    原因: 除以段长会给**长段**(赢家)打折, 却不给**短段**(输家)打折 —— 长赢家被稀释、
+    短输家原样保留, 均值必然被推成负数。而按天数加权的口径与"每笔口径"同号。
+    所以这里**只做每笔口径**; 按天数加权的口径由主表的 HAC t 值承担。
+
+    段数 < `MIN_SEGMENTS_FOR_T` (30) → **不给 t 值**, 只给描述统计, 并写明"样本不足"
+    (实测 `regime` 只有 15 段, 硬给一个 t 值就是伪精度)。
+
+    返回的 `t` 是**净口径**(先扣 cost_rate), `t_gross` 是毛口径, 两个一起给,
+    方便看出"成本是不是把结论方向改掉了"。
+    """
+    if not segs:
+        return {"n": 0, "note": "没有持仓段"}
+    rets_net, rets_gross, days = [], [], []
+    for a, b, n in segs:
+        g = float((1.0 + gross.iloc[a:b + 1]).prod()) - 1.0
+        rets_gross.append(g)
+        rets_net.append(g - cost_rate)
+        days.append(n)
+
+    def _t(vals) -> float | None:
+        if len(vals) < MIN_SEGMENTS_FOR_T:
+            return None
+        s = pd.Series(vals)
+        sd = float(s.std(ddof=1))
+        return _f(float(s.mean()) / (sd / len(s) ** 0.5), 2) if sd > 0 else None
+
+    return {"n": len(segs),
+            "median_days": _f(pd.Series(days).median(), 0),
+            "p90_days": _f(pd.Series(days).quantile(0.9), 0),
+            "min_days": int(min(days)), "max_days": int(max(days)),
+            "mean_return_pct": _f(pd.Series(rets_net).mean() * 100, 2),
+            "median_return_pct": _f(pd.Series(rets_net).median() * 100, 2),
+            "win_ratio_pct": _f(sum(1 for r in rets_net if r > 0) / len(rets_net) * 100, 0),
+            "t": _t(rets_net), "t_gross": _t(rets_gross),
+            "note": "" if len(segs) >= MIN_SEGMENTS_FOR_T else
+                    (f"持有段只有 {len(segs)} 个 (<{MIN_SEGMENTS_FOR_T}), "
+                     "样本不足, 不给 t 值")}
+
+
+def _year_breakdown(items: list[dict], key: str) -> list[dict]:
+    """按年份拆解命中日: 该年命中几天、之后涨跌的中位数、上涨占比 (§14.3)。
+
+    **为什么必须有这张表**: 没有它, "命中日之后 20 日中位数 −12.3%" 就是一个没有
+    出处的数字 —— 它可能来自 **5 个不同的年份**(那是 5 份独立经验), 也可能来自
+    **同一个年份的 20 个交易日**(那其实是 1 份经验的 20 个分身, 涨跌还高度重叠)。
+    这两种情况的含义天差地别。
+    """
+    grp: dict[str, list] = {}
+    for it in items:
+        v = it.get(key)
+        if v is None:
+            continue
+        grp.setdefault(str(it["date"])[:4], []).append(float(v))
+    out = []
+    for y in sorted(grp):
+        vs = grp[y]
+        out.append({"year": y, "n": len(vs),
+                    "median_pct": _f(pd.Series(vs).median(), 2),
+                    "up_ratio_pct": _f(sum(1 for x in vs if x > 0) / len(vs) * 100, 0)})
+    return out
+
+
 def _features_frame(recs: list[dict]) -> pd.DataFrame:
     """连续录像 → 照镜子用的特征表 (列 = SIMILAR_FEATURES, 索引 = 日期)。"""
     rows = []
@@ -417,25 +617,75 @@ def mirror(top_n: int = 5) -> dict:
     hist = _features_frame(recs)
     target = {k: hist[k].dropna().iloc[-1] if hist[k].notna().any() else None
               for k in SIMILAR_FEATURES}
-    picks = similar_days(target, hist, top_n=top_n)
+    # 纪律①(排除最近 252 天)与纪律②(命中日之间至少隔 20 天)在 pure 层;
+    # 结论依据 = 距离最近的一档(前 5%), top_n 明细只作"最像的几天"展示 (§14.2)。
+    res = similar_days(target, hist, top_n=top_n, quantile=MIRROR_BAND_QUANTILE,
+                       max_band=MIRROR_BAND_MAX)
+    picks, band = res["picks"], res["band"]
     hs = _index_series("000300.SH")
     sh = _index_series("000001.SH")
-    for p in picks:
-        p["fwd_20_hs300_pct"] = forward_return(hs, p["date"], 20) if hs is not None else None
-        p["fwd_60_hs300_pct"] = forward_return(hs, p["date"], 60) if hs is not None else None
-        p["fwd_20_sh_pct"] = forward_return(sh, p["date"], 20) if sh is not None else None
-    f20 = [p["fwd_20_hs300_pct"] for p in picks if p["fwd_20_hs300_pct"] is not None]
-    f60 = [p["fwd_60_hs300_pct"] for p in picks if p["fwd_60_hs300_pct"] is not None]
+
+    def _add_fwd(items: list[dict]) -> list[dict]:
+        for p in items:
+            p["fwd_20_hs300_pct"] = forward_return(hs, p["date"], 20) if hs is not None else None
+            p["fwd_60_hs300_pct"] = forward_return(hs, p["date"], 60) if hs is not None else None
+            p["fwd_20_sh_pct"] = forward_return(sh, p["date"], 20) if sh is not None else None
+        return items
+
+    _add_fwd(picks)
+    _add_fwd(band)
+    if not band and not picks:
+        used = len(hist.dropna()) if len(hist) else 0
+        return {"ok": False,
+                "reason": f"六个相似度特征齐全的历史交易日只有 {used} 条, 而"
+                          f"「排除最近 {RECENT_EXCLUDE_BARS} 天」这条纪律要求至少 "
+                          f"{RECENT_EXCLUDE_BARS + 1} 条; 先跑全量回填把录像补长。"
+                          "（十年百分位要满 3 年才有数, 所以录像的头几年特征不全。）"}
+
+    def _vals(items, key):
+        return [float(p[key]) for p in items if p.get(key) is not None]
+
+    f20, f60 = _vals(band, "fwd_20_hs300_pct"), _vals(band, "fwd_60_hs300_pct")
+
+    def _n_eff(k: int) -> float | None:
+        """有效独立样本 = 档内命中日数 ÷ 持有期天数 (重叠窗口会严重高估信息量)。
+
+        实测 110 个命中日 / 20 日 ≈ **5.5 份**、/ 60 日 ≈ 1.8 份 —— 看着一百多个样本,
+        真正独立的信息不到 6 份, 这就是为什么必须把它写在结论旁边。
+        """
+        return _f(len(band) / float(k), 1) if k > 0 else None
+
+    s20, s60 = pd.Series(f20), pd.Series(f60)
     summary = {
-        "n": len(picks),
-        "fwd_20_median": _f(pd.Series(f20).median(), 2) if f20 else None,
+        "n": len(band),
+        "n_picks": len(picks),
+        "fwd_20_median": _f(s20.median(), 2) if f20 else None,
+        "fwd_20_mean": _f(s20.mean(), 2) if f20 else None,
+        "fwd_20_q25": _f(s20.quantile(0.25), 2) if f20 else None,
+        "fwd_20_q75": _f(s20.quantile(0.75), 2) if f20 else None,
         "fwd_20_up_ratio": _f(sum(1 for x in f20 if x > 0) / len(f20) * 100, 0) if f20 else None,
-        "fwd_60_median": _f(pd.Series(f60).median(), 2) if f60 else None,
+        "fwd_60_median": _f(s60.median(), 2) if f60 else None,
         "fwd_60_up_ratio": _f(sum(1 for x in f60 if x > 0) / len(f60) * 100, 0) if f60 else None,
+        "n_eff_20": _n_eff(20),
+        "n_eff_60": _n_eff(60),
     }
+    years = _year_breakdown(band, "fwd_20_hs300_pct")
+    total = sum(y["n"] for y in years)
+    dom = None
+    warnings = [MIRROR_WARNING.format(n=len(band), n_eff=summary["n_eff_20"])]
+    if total:
+        top = max(years, key=lambda y: y["n"])
+        if top["n"] / total > YEAR_DOMINANCE:
+            dom = top["year"]
+            warnings.append(YEAR_DOMINANCE_WARNING.format(
+                year=dom, n=f"{total} 个里的 {top['n']} 个",
+                share=_rat(top["n"] / total * 100)))
     return {"ok": True, "asof": recs[-1]["date"], "target": target,
-            "matches": picks, "summary": summary,
-            "warning": MIRROR_WARNING.format(n=len(picks))}
+            "matches": picks, "band": band, "summary": summary,
+            "years": years, "dominance": dom,
+            "eligible": res["eligible"], "exclude_recent": res["exclude_recent"],
+            "min_gap": res["min_gap"], "band_quantile": res["quantile"],
+            "warning": " ".join(warnings)}
 
 
 def shadow_replay() -> dict:
@@ -445,6 +695,21 @@ def shadow_replay() -> dict:
     T+1 日才生效 —— 实现为把当日状态 shift(1) 后再乘当日收益。
     原"T 日当天生效"口径对高频规则系统性乐观, 本项目已因此得出过一次假结论。
     多空只有满仓/空仓两态 (空仓按 0 收益, 不计无风险利率)。
+
+    **2026-09-17 加厚 (计划书 §15.1 / §16.2 / §16.7)**:
+
+    1. **毛/净并列**。原来只有毛口径 —— 省略成本会把结论方向都改掉: 实测
+       `ma20` 与 `breadth50` 每年翻仓约 15 次 (持有中位 4~5 天), 单次往返 ≥0.11%,
+       `breadth50` 毛年化 +0.6% **扣费后转负**。
+    2. **HAC(Newey-West) t 值 + 95% 置信区间 + 有效样本量**。日收益自相关会让
+       普通标准误把显著性吹大; 报 `n_eff` 才知道"真正独立的信息有多少份"。
+    3. **按持有段**的显著性 (§15.1 E2), 且处理**段长异质** (§16.7 MED-4) ——
+       段数 <30 的规则不给 t 值。
+    4. **双窗口** (§15.1 E6): 复用《公式因子体检方法论》**纪律 2「双窗口一致
+       才算数」**, 前一半 / 后一半分别出净口径年化, 同号才算"一致"; 不一致的
+       结论一律标"待复核"。
+    5. 措辞口径 (§15.2 E4): 置信区间含 0 只能写「**无显著净边际**」,
+       **不写"无效"、也不写"跑输"**。
     """
     recs = history(limit=0)
     if len(recs) < 250:
@@ -476,36 +741,110 @@ def shadow_replay() -> dict:
 
     from backtest.metrics import MetricsCalculator  # 指标口径不写第二份
 
-    def _stats(series: pd.Series) -> dict:
+    cost = _cost_params()
+    rt = float(cost["round_trip"]) if cost else 0.0
+
+    def _stats(series: pd.Series, yrs: float) -> dict:
         equity = (1.0 + series).cumprod()
         n = len(equity)
         if n < 2:
             return {}
-        ann = float(equity.iloc[-1]) ** (1.0 / years) - 1   # 按真实跨度年化
+        ann = float(equity.iloc[-1]) ** (1.0 / yrs) - 1   # 按真实跨度年化
         mdd = MetricsCalculator.max_drawdown(equity)
-        return {"annualized_pct": _f(ann * 100, 1),
-                "max_drawdown_pct": _f(mdd * 100, 1),
-                "sharpe": _f(MetricsCalculator.sharpe_ratio(equity), 2),
-                "calmar": _f(MetricsCalculator.calmar_ratio(ann, mdd), 2),
-                "total_pct": _f((float(equity.iloc[-1]) - 1) * 100, 1)}
+        out = {"annualized_pct": _f(ann * 100, 1),
+               "max_drawdown_pct": _f(mdd * 100, 1),
+               "sharpe": _f(MetricsCalculator.sharpe_ratio(equity), 2),
+               "calmar": _f(MetricsCalculator.calmar_ratio(ann, mdd), 2),
+               "total_pct": _f((float(equity.iloc[-1]) - 1) * 100, 1)}
+        sig = _hac_tstat(series)
+        if sig:
+            # 置信区间换成"年化几个百分点"展示 (t 值线性缩放不变, 同一个数)
+            out.update({"t": _f(sig["t"], 2),
+                        "ci_low_pct": _f(sig["ci_low"] * RET_1Y_BARS * 100, 1),
+                        "ci_high_pct": _f(sig["ci_high"] * RET_1Y_BARS * 100, 1),
+                        "n_eff": _f(sig["n_eff"], 0), "hac_lags": sig["lags"]})
+        return out
+
+    def _cost_series(pos: pd.Series) -> pd.Series:
+        """逐日摊成本: 买入当天收佣金, 卖出当天收佣金+印花税。
+
+        单次往返合计 = 佣金×2 + 印花税 = 0.11% (项目默认值, **不含滑点**)。
+        """
+        if not cost:
+            return pd.Series(0.0, index=pos.index)
+        d = pos.diff()
+        buy = (d > 0).astype(float) * float(cost["commission"])
+        sell = (d < 0).astype(float) * (float(cost["commission"]) + float(cost["stamp_tax"]))
+        return buy + sell
+
+    def _windows(pos: pd.Series, entry_cost: float = 0.0) -> dict:
+        """双窗口 (前一半 / 后一半) 的**净口径**成绩 + 是否同向 (§15.1 E6 / §16.3)。
+
+        `entry_cost` = 窗口第一天就另外补一笔成本 (买入持有用: 它在窗口起点建仓,
+        不经过 0→1 的跳变, 逐日摊法抓不到那一笔)。
+        """
+        cut = int(len(pos) * WINDOW_SPLIT)
+        res: dict = {}
+        for name, sub in (("in", pos.iloc[:cut]), ("out", pos.iloc[cut:])):
+            if len(sub) < 2:
+                res[name] = {}
+                continue
+            yrs = max((sub.index[-1] - sub.index[0]).days / 365.25, 1e-9)
+            sub_ret = ret.reindex(sub.index)
+            cs = _cost_series(sub)
+            if entry_cost and len(cs):
+                cs.iloc[0] += entry_cost
+            res[name] = {"start": sub.index[0].date().isoformat(),
+                         "end": sub.index[-1].date().isoformat(),
+                         "years": _f(yrs, 1),
+                         **_stats(sub * sub_ret - cs, yrs)}
+        a, b = res["in"].get("annualized_pct"), res["out"].get("annualized_pct")
+        res["consistent"] = bool(a is not None and b is not None and (a > 0) == (b > 0))
+        return res
 
     rows = []
     for rule in SHADOW_RULES:
         on = (df[rule] == "on")
         pos = on.shift(1, fill_value=False).astype(float)   # T+1 生效
-        st = _stats(pos * ret)
+        gross = pos * ret
+        segs = _holding_segments(pos)
+        st = _stats(gross, years)
         st.update({"rule": rule, "exposure_pct": _f(pos.mean() * 100, 1),
-                   "on_days": int(on.sum()), "days": int(len(on))})
+                   "on_days": int(on.sum()), "days": int(len(on)),
+                   "round_trips": len(segs),
+                   "segments": _segment_stats(gross, segs, rt),
+                   "windows": _windows(pos),
+                   "net": _stats(gross - _cost_series(pos), years)})
         rows.append(st)
-    bh = _stats(ret)
+
+    # 买入持有: 一次性买入 (一个往返), 成本整笔扣在起点 —— 与规则口径一致。
+    bh_gross = ret
+    bh_net = ret.copy()
+    if cost:
+        bh_net.iloc[0] = (1.0 + float(ret.iloc[0])) * (1.0 - rt) - 1.0
+    bh = _stats(bh_gross, years)
     bh.update({"rule": "buy_hold", "exposure_pct": 100.0,
-               "on_days": len(ret), "days": len(ret)})
-    return {"ok": True, "start": df.index[0].date().isoformat(),
-            "end": df.index[-1].date().isoformat(),
-            "years": _f(years, 1), "days": len(df),
-            "rows": rows, "buy_hold": bh,
-            "caliber": "信号 T 日收盘产生 → T+1 生效; 空仓按 0 收益; "
-                       "年化按真实日历跨度折算"}
+               "on_days": len(ret), "days": len(ret), "round_trips": 1,
+               "segments": _segment_stats(bh_gross, [(0, len(ret) - 1, len(ret))], rt),
+               "windows": _windows(pd.Series(1.0, index=ret.index), entry_cost=rt),
+               "net": _stats(bh_net, years)})
+    caliber = ("信号 T 日收盘产生 → T+1 生效; 空仓按 0 收益; 年化按真实日历跨度折算; "
+               "**毛/净并列** —— 净口径按项目默认成本只计佣金×2 + 印花税(卖出单边), "
+               "单次往返 " + (f"{rt * 100:.2f}%" if cost else "【缺】") +
+               ", **未计滑点**(真实只会更差); 显著性用 Newey-West (HAC) t 值, "
+               "有效样本量 = 天数 ÷ 方差膨胀因子")
+    out = {"ok": True, "start": df.index[0].date().isoformat(),
+           "end": df.index[-1].date().isoformat(),
+           "years": _f(years, 1), "days": len(df),
+           "rows": rows, "buy_hold": bh,
+           "cost": ({"round_trip_pct": _f(rt * 100, 3),
+                     "round_trip_with_slippage_pct":
+                         _f(float(cost["round_trip_with_slippage"]) * 100, 3),
+                     "note": "只计佣金+印花税, 未计滑点; 滑点按项目默认 0.1%/边 另加 0.2%"}
+                    if cost else None),
+           "window_split": WINDOW_SPLIT,
+           "caliber": caliber}
+    return out
 
 
 def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
@@ -544,47 +883,151 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
 
     md = mirror_data if isinstance(mirror_data, dict) else mirror()
     if not md.get("ok"):
-        out.append("## 照镜子（历史上最像的几天，之后实际怎么走）\n\n"
+        out.append("## 照镜子（历史上跟今天最像的那些日子，之后实际怎么走）\n\n"
                    f"【缺】{md.get('reason')}")
     else:
         s = md.get("summary") or {}
-        mir = [f"最近 {s.get('n')} 次相似日之后: 沪深300 20日中位数 "
-               f"{_pct(s.get('fwd_20_median'))}、上涨占比 {_rat(s.get('fwd_20_up_ratio'))}; "
-               f"60日中位数 {_pct(s.get('fwd_60_median'))}。",
-               "| 相似日 | 距离 | 之后20日(沪深300) | 之后60日(沪深300) | 之后20日(上证) |",
-               "|---|---|---|---|---|"]
+        mir = [
+            "**先说清楚：这不是预测。** 下面是把今天的六个指标（三大指数各自的十年位置、"
+            "多少股票站在 20 日均线上方、创新高与新低的差、波动大小、成交额高低）"
+            "去跟过去每一天比「像不像」，挑出最像的一批，再看**它们之后实际怎么走**。"
+            "历史像，不等于这次也会照着走。",
+            f"- 能当参照的历史交易日有 **{md.get('eligible')} 天**"
+            f"（已经把最近 {md.get('exclude_recent')} 个交易日排除掉 —— "
+            "不许拿上个月的日子冒充「历史」）。",
+            f"- 最像的一档（距离最近的 {_rat((md.get('band_quantile') or 0) * 100)}"
+            f"，共 {s.get('n')} 天）：这些日子之后 **20 个交易日**（约一个月），"
+            f"沪深300 涨跌的**中位数是 {_pct(s.get('fwd_20_median'))}**，"
+            f"平均 {_pct(s.get('fwd_20_mean'))}，"
+            f"中间一半落在 {_pct(s.get('fwd_20_q25'))} 到 {_pct(s.get('fwd_20_q75'))} 之间，"
+            f"上涨的占 {_rat(s.get('fwd_20_up_ratio'))}。",
+            f"- **但要把这个数字狠狠打个折**：这 {s.get('n')} 天挨得很近、涨跌高度重叠，"
+            f"**真正独立的信息只有大约 {_num(s.get('n_eff_20'), 1)} 份**。"
+            f"再往后看 **60 个交易日**（约三个月），中位数 "
+            f"{_pct(s.get('fwd_60_median'))}、上涨占比 {_rat(s.get('fwd_60_up_ratio'))}"
+            f"（独立信息约 {_num(s.get('n_eff_60'), 1)} 份）。",
+        ]
+        yrs = md.get("years") or []
+        if yrs:
+            top2 = sorted(yrs, key=lambda y: -y["n"])[:2]
+            tot = sum(y["n"] for y in yrs) or 1
+            mir += ["", "**按年份拆开看**（看有没有哪一年在唱独角戏）:", ""]
+            if len(top2) == 2:
+                mir.append(
+                    f"命中日最集中的两年是 **{top2[0]['year']} 年**（{top2[0]['n']} 天）和 "
+                    f"**{top2[1]['year']} 年**（{top2[1]['n']} 天），"
+                    f"两者合计占了 {_rat((top2[0]['n'] + top2[1]['n']) / tot * 100)} —— "
+                    "也就是说，上面的「历史平均」里有多少是这两年的经验，要心里有数。")
+            mir += ["",
+                    "| 命中日所属年份 | 命中几天 | 之后20日(沪深300)中位 | 上涨占比 |",
+                    "|---|---|---|---|"]
+            for y in yrs:
+                mir.append(f"| {y['year']} 年 | {y['n']} 天 | "
+                           f"{_pct(y.get('median_pct'))} | {_rat(y.get('up_ratio_pct'))} |")
+        mir += ["", "**最像的几天（明细）**:", "",
+                "| 相似日 | 像的程度(距离，越小越像) | 之后20日(沪深300) | "
+                "之后60日(沪深300) | 之后20日(上证) |",
+                "|---|---|---|---|---|"]
         for m in md.get("matches") or []:
             mir.append(f"| {m['date']} | {m['distance']} | "
                        f"{_pct(m.get('fwd_20_hs300_pct'))} | "
                        f"{_pct(m.get('fwd_60_hs300_pct'))} | "
                        f"{_pct(m.get('fwd_20_sh_pct'))} |")
-        mir.append(md.get("warning", ""))
-        out.append("## 照镜子（历史上最像的几天，之后实际怎么走）\n"
+        mir += ["", md.get("warning", "")]
+        out.append("## 照镜子（历史上跟今天最像的那些日子，之后实际怎么走）\n"
                    + "\n".join(mir))
 
     sd = shadow_data if isinstance(shadow_data, dict) else shadow_replay()
     sh_now = rec.get("shadow") or {}
-    sd_lines = ["今日状态: " + ", ".join(
-        f"{k}={'多头' if v == 'on' else '空头'}" for k, v in sh_now.items())]
+    _rule_cn = {"ma20": "沪深300 收盘站上自己的 20 日均线就满仓",
+                "breadth50": "全市场有一半以上股票站上 20 日均线就满仓",
+                "regime": "项目牛熊口径判为「牛」就满仓",
+                "buy_hold": "什么都不做，一直拿着（对照用）"}
+    sd_lines = ["**今天这三条规则各自怎么说**: " + "；".join(
+        f"{_rule_cn.get(k, k)} → "
+        f"{'**在场内**' if v == 'on' else '**空仓**'}" for k, v in sh_now.items()),
+        "注意：这只是**影子记录**，系统绝不会按它下单（业务铁律 1：宏观与研判只出报告，"
+        "不接仓位）。"]
     if not sd.get("ok"):
         sd_lines.append(f"【缺】{sd.get('reason')}")
     else:
-        sd_lines.append(f"回放口径: {sd.get('caliber')}"
-                        f"（{sd.get('start')} ~ {sd.get('end')}）")
-        sd_lines += ["| 规则 | 年化 | 最大回撤 | 夏普 | 卡玛 | 持仓占比 |",
-                     "|---|---|---|---|---|---|"]
+        sd_lines.append(
+            f"**下面这段在算什么**: 假设从 {sd.get('start')} 到 {sd.get('end')}"
+            f"（{_num(sd.get('years'), 1)} 年）一直照某一条规则做，事后算账会是多少。"
+            "**毛** = 不算交易费用；**净** = 按项目默认费用扣掉。费用只算了佣金和印花税，"
+            "**没算滑点**，所以真实的净结果只会更差。")
+        sd_lines += ["",
+                     "| 规则 | 毛年化 | 净年化 | 净口径95%区间 | 净最大回撤 | "
+                     "净夏普 | 建仓次数 | 在场时间占比 |",
+                     "|---|---|---|---|---|---|---|---|"]
         for r in (sd.get("rows") or []) + [sd.get("buy_hold") or {}]:
             if not r:
                 continue
-            label = {"ma20": "沪深300 > MA20",
-                     "breadth50": "宽度≥50%",
-                     "regime": "牛熊口径=牛",
-                     "buy_hold": "买入持有（对照）"}.get(r.get("rule"), r.get("rule"))
+            net = r.get("net") or {}
             sd_lines.append(
-                f"| {label} | {_pct(r.get('annualized_pct'))} | "
-                f"{_pct(r.get('max_drawdown_pct'))} | {_num(r.get('sharpe'), 2)} | "
-                f"{_num(r.get('calmar'), 2)} | {_rat(r.get('exposure_pct'))} |")
-    out.append("## 候选择时规则影子记录（只记录不交易）\n" + "\n".join(sd_lines))
+                f"| {_rule_cn.get(r.get('rule'), r.get('rule'))} | "
+                f"{_pct(r.get('annualized_pct'))} | {_pct(net.get('annualized_pct'))} | "
+                f"{_pct(net.get('ci_low_pct'))} ~ {_pct(net.get('ci_high_pct'))} | "
+                f"{_pct(net.get('max_drawdown_pct'))} | {_num(net.get('sharpe'), 2)} | "
+                f"{r.get('round_trips')} 次 | {_rat(r.get('exposure_pct'))} |")
+        sd_lines += ["", f"回放口径: {sd.get('caliber')}", "",
+                     "**怎么读这张表**: 净口径的 95% 区间只要**跨过 0**"
+                     "（左边是负的、右边是正的），就只能说「**看不出显著的优势或劣势**」"
+                     "—— 既不写「这条规则无效」，也不写「跑输买入持有」。"
+                     "只有整个区间都在 0 以下，才能说「明显比一直拿着差」。"]
+        # 逐条写人话结论 (§15.2 E4 措辞纪律: 不说"跑输", 说"无显著净边际")
+        for r in (sd.get("rows") or []):
+            net = r.get("net") or {}
+            lo, hi = net.get("ci_low_pct"), net.get("ci_high_pct")
+            seg = r.get("segments") or {}
+            dtxt = (f"{_num(net.get('t'), 2)}（有效独立样本约 "
+                    f"{_num(net.get('n_eff'), 0)} 天）" if net.get("t") is not None else "【缺】")
+            if lo is None or hi is None:
+                verdict = "数据不足，判不了"
+            elif lo <= 0 <= hi:
+                verdict = "看不出显著的优势或劣势（区间跨过 0）"
+            elif hi < 0:
+                verdict = "明显比一直拿着差（整个区间都在 0 以下）"
+            else:
+                verdict = "明显比一直拿着好（整个区间都在 0 以上）"
+            sd_lines.append(
+                f"- **{_rule_cn.get(r.get('rule'), r.get('rule'))}**："
+                f"这 {_num(sd.get('years'), 1)} 年里一共建仓 {r.get('round_trips')} 次，"
+                f"每次持仓中位 {_num(seg.get('median_days'), 0)} 个交易日"
+                f"（最短 {seg.get('min_days')} 天、最长 {seg.get('max_days')} 天），"
+                f"在场时间占 {_rat(r.get('exposure_pct'))}。"
+                f"按**每一笔**算（扣费后）：平均 {_pct(seg.get('mean_return_pct'))}、"
+                f"中位 {_pct(seg.get('median_return_pct'))}、"
+                f"赚钱的只占 {_rat(seg.get('win_ratio_pct'))}"
+                f"（多数小亏、少数大赚，是趋势类规则的典型长相）；"
+                f"每笔口径 t 值 {_num(seg.get('t'), 2)}。"
+                f"整段的净口径 t 值 {dtxt}；结论：**{verdict}**。"
+                + (f"（{seg.get('note')}）" if seg.get("note") else ""))
+        # 双窗口一致性 (复用《公式因子体检方法论》纪律 2)
+        sd_lines += ["",
+                     "**双窗口一致性**（纪律 2「双窗口一致才算数」：把这段历史对半切开，"
+                     "两半各算一遍，**只有两半同向才算数**，不一致的结论一律标「待复核」）:",
+                     "",
+                     "| 规则 | 前半段净年化 | 后半段净年化 | 一致? |", "|---|---|---|---|"]
+        for r in (sd.get("rows") or []) + [sd.get("buy_hold") or {}]:
+            if not r:
+                continue
+            w = r.get("windows") or {}
+            wi, wo = w.get("in") or {}, w.get("out") or {}
+            sd_lines.append(
+                f"| {_rule_cn.get(r.get('rule'), r.get('rule'))} | "
+                f"{_pct(wi.get('annualized_pct'))}（{wi.get('start')} 起） | "
+                f"{_pct(wo.get('annualized_pct'))}（{wo.get('start')} 起） | "
+                f"{'✅ 同向，算数' if w.get('consistent') else '⚠ 不一致，待复核'} |")
+        c = sd.get("cost") or {}
+        if c:
+            sd_lines += [
+                "",
+                f"成本口径: 单次往返 {_num(c.get('round_trip_pct'), 2)}%"
+                f"（佣金+印花税）；若再按项目默认滑点 0.1%/边 加 0.2%，"
+                f"单次往返就是 {_num(c.get('round_trip_with_slippage_pct'), 2)}% —— "
+                "**上表的净口径是乐观下限**。"]
+    out.append("## 候选择时规则影子回放（只记录不交易）\n" + "\n".join(sd_lines))
     out.append("---\n" + CALIBER_FOOTER)
     return "\n\n".join(out)
 
@@ -594,8 +1037,13 @@ def _num(v, nd: int = 2) -> str:
 
 
 def _pct(v) -> str:
-    """带符号百分数 (收益/偏离/回撤 这类有方向的量)。"""
-    return "【缺】" if v is None else f"{v:+.1f}%"
+    """带符号百分数 (收益/偏离/回撤 这类有方向的量)。
+
+    四舍五入后是 0 时不写符号 —— 写 "+0.0%" / "-0.0%" 会被当成有方向, 误导。
+    """
+    if v is None:
+        return "【缺】"
+    return "0.0%" if abs(float(v)) < 0.05 else f"{float(v):+.1f}%"
 
 
 def _rat(v) -> str:

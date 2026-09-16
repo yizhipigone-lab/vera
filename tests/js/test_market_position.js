@@ -64,16 +64,68 @@ const mr = mp.mirrorRowsHtml(md);
 assert(mr.includes('2022-01-24') && mr.includes('-4.3%'), '相似日与后续涨跌都渲染');
 assert(mr.includes('var(--down)'), '下跌用绿色令牌（A 股红涨绿跌）');
 
-console.log('\nshadowRowsHtml 影子规则表:');
+console.log('\nmirrorSummaryHtml / mirrorYearsHtml 分位带结论与逐年拆解:');
+const mdFull = {
+  ok: true, exclude_recent: 252,
+  summary: { n: 110, fwd_20_median: 1.46, fwd_20_mean: -0.07, fwd_20_q25: -3.19,
+             fwd_20_q75: 3.26, fwd_20_up_ratio: 57.0, fwd_60_median: 1.92,
+             fwd_60_up_ratio: 65.0, n_eff_20: 5.5, n_eff_60: 1.8 },
+  years: [{ year: '2016', n: 45, median_pct: 1.79, up_ratio_pct: 62.0 },
+          { year: '2022', n: 24, median_pct: -6.87, up_ratio_pct: 0.0 }]
+};
+const ms2 = mp.mirrorSummaryHtml(mdFull);
+assert(ms2.includes('110'), '结论句报的是分位带样本数');
+assert(ms2.includes('5.5'), '必须把有效独立样本（不是 110）写出来');
+assert(ms2.includes('排除最近 252'), '写明排除了最近一年');
+assert(mp.mirrorSummaryHtml({ ok: false, reason: '录像太短' }) === '录像太短',
+       '不可用时返回原因');
+const ys = mp.mirrorYearsHtml(mdFull);
+assert(ys.includes('2016 年') && ys.includes('2022 年'), '逐年拆解两行都在');
+assert(ys.includes('-6.9%'), '该年后续中位数带符号渲染');
+assert(mp.mirrorYearsHtml({}).includes('没有可拆解的年份'), '空年份有提示文案');
+
+console.log('\nshadowRowsHtml 影子规则表（毛/净并列）:');
 assert(mp.shadowRowsHtml({ ok: false, reason: '录像太短' }).includes('录像太短'),
        '不可用时显示原因');
-const sd = { ok: true, rows: [{ rule: 'ma20', annualized_pct: 2.6, max_drawdown_pct: -36.0,
-                                sharpe: 0.15, calmar: 0.07, exposure_pct: 52.7 }],
-             buy_hold: { rule: 'buy_hold', annualized_pct: 4.3, max_drawdown_pct: -46.7,
-                         sharpe: 0.24, calmar: 0.09, exposure_pct: 100.0 } };
+const sdRow = { rule: 'ma20', round_trips: 196, annualized_pct: 2.6,
+                exposure_pct: 52.7,
+                net: { annualized_pct: 1.0, ci_low_pct: -6.1, ci_high_pct: 10.0,
+                       max_drawdown_pct: -39.6 },
+                segments: { mean_return_pct: 0.28, win_ratio_pct: 22.0,
+                            median_days: 4, min_days: 1, max_days: 56, note: '' } };
+const sd = { ok: true, rows: [sdRow],
+             buy_hold: { rule: 'buy_hold', round_trips: 1, annualized_pct: 4.3,
+                         exposure_pct: 100.0, net: { annualized_pct: 4.3 },
+                         segments: {} } };
 const sr = mp.shadowRowsHtml(sd);
-assert(sr.includes('沪深300 &gt; MA20') || sr.includes('沪深300 > MA20'), '规则名映射成中文');
-assert(sr.includes('买入持有（对照）'), '买入持有对照也在表里');
+assert(sr.includes(mp.RULE_CN.ma20), '规则名映射成人话（不出现裸键名 ma20）');
+assert(sr.includes(mp.RULE_CN.buy_hold), '买入持有对照也在表里');
+assert(sr.includes('196 次'), '建仓次数进表');
+assert(sr.includes('+2.6%') && sr.includes('+1.0%'), '毛年化与净年化并排');
+assert(sr.includes('-6.1%') && sr.includes('+10.0%'), '净口径 95% 区间进表');
+
+console.log('\nshadowVerdictHtml 措辞纪律:');
+const vCross = mp.shadowVerdictHtml(sd);
+assert(vCross.includes('看不出显著的优势或劣势'), '区间跨过 0 → 只说看不出显著优劣');
+assert(!vCross.includes('无效') && !vCross.includes('跑输'),
+       '措辞纪律：不许写"无效"或"跑输"');
+const vBad = mp.shadowVerdictHtml({ ok: true, rows: [Object.assign({}, sdRow, {
+  net: { annualized_pct: -1.1, ci_low_pct: -8.2, ci_high_pct: -0.4 } })] });
+assert(vBad.includes('明显比一直拿着差'), '区间整体在 0 以下 → 才说明显更差');
+const vGood = mp.shadowVerdictHtml({ ok: true, rows: [Object.assign({}, sdRow, {
+  net: { annualized_pct: 5.0, ci_low_pct: 0.4, ci_high_pct: 9.0 } })] });
+assert(vGood.includes('明显比一直拿着好'), '区间整体在 0 以上 → 说明显更好');
+
+console.log('\nshadowWindowsHtml 双窗口一致性:');
+const swin = mp.shadowWindowsHtml({ ok: true, rows: [Object.assign({}, sdRow, {
+  windows: { 'in': { annualized_pct: 6.2 }, out: { annualized_pct: -4.0 },
+             consistent: false } })] });
+assert(swin.includes('不一致，待复核'), '不同向 → 标待复核');
+assert(swin.includes('+6.2%') && swin.includes('-4.0%'), '两段年化都渲染');
+const swin2 = mp.shadowWindowsHtml({ ok: true, rows: [Object.assign({}, sdRow, {
+  windows: { 'in': { annualized_pct: 6.5 }, out: { annualized_pct: 2.0 },
+             consistent: true } })] });
+assert(swin2.includes('同向，算数'), '同向 → 标算数');
 
 console.log('\ntrendSeries 趋势图数据:');
 const ts = mp.trendSeries([

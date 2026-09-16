@@ -1475,8 +1475,21 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 
   <div class="lab-card">
-    <h2>照镜子（历史上最像的几天，之后实际怎么走）</h2>
+    <h2>照镜子（历史上跟今天最像的那些日子，之后实际怎么走）</h2>
     <div id="mpMirrorSummary" style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)"></div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin:var(--sp-2) 0 var(--sp-1) 0">
+      <b>按年份拆开看</b>（看有没有哪一年在唱独角戏——如果命中日大半挤在同一年，
+      那"历史平均"其实只是那一次经验的很多分身）
+    </div>
+    <div class="trade-table-wrap" style="max-height:none">
+      <table class="trade-table">
+        <thead><tr><th>命中日所属年份</th><th>命中几天</th><th>之后20日(沪深300)中位</th><th>上涨占比</th></tr></thead>
+        <tbody id="mpMirrorYears"><tr><td colspan="4" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin:var(--sp-2) 0 var(--sp-1) 0">
+      <b>最像的几天（明细）</b>——只作展示，"像"是按六个指标的距离算出来的
+    </div>
     <div class="trade-table-wrap" style="max-height:none">
       <table class="trade-table">
         <thead><tr><th>相似日</th><th>距离(越小越像)</th><th>之后20日(沪深300)</th><th>之后60日(沪深300)</th><th>之后20日(上证)</th></tr></thead>
@@ -1492,8 +1505,19 @@ input:focus-visible,select:focus-visible{outline:none}
     <div id="mpShadowCaliber" style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)"></div>
     <div class="trade-table-wrap" style="max-height:none">
       <table class="trade-table">
-        <thead><tr><th>规则</th><th>年化</th><th>最大回撤</th><th>夏普</th><th>卡玛</th><th>持仓占比</th></tr></thead>
-        <tbody id="mpShadowBody"><tr><td colspan="6" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+        <thead><tr><th>规则</th><th>建仓次数</th><th>毛年化<br><span style="font-weight:400">(不算费用)</span></th><th>净年化<br><span style="font-weight:400">(扣费用)</span></th><th>净年化95%区间</th><th>净最大回撤</th><th>在场时间占比</th><th>每笔平均<br><span style="font-weight:400">(扣费后)</span></th></tr></thead>
+        <tbody id="mpShadowBody"><tr><td colspan="8" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div id="mpShadowVerdict" style="font-size:var(--fs-sm);margin-top:var(--sp-2);line-height:1.7"></div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin:var(--sp-3) 0 var(--sp-1) 0">
+      <b>双窗口一致性</b>——把这段历史对半切开，两半各算一遍，只有<b>两半同向</b>才算数
+      （项目《公式因子体检方法论》纪律 2）
+    </div>
+    <div class="trade-table-wrap" style="max-height:none">
+      <table class="trade-table">
+        <thead><tr><th>规则</th><th>前半段净年化</th><th>后半段净年化</th><th>两半一致?</th></tr></thead>
+        <tbody id="mpShadowWindows"><tr><td colspan="4" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
       </table>
     </div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">

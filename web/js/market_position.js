@@ -44,6 +44,21 @@ function fmtNum(v, nd) {
 
 var REGIME_CN = { bull: '牛', bear: '熊', range: '震荡' };
 
+// 三条候选规则的"人话名字"（页面上不许出现裸英文键名）
+var RULE_CN = {
+  ma20: '沪深300 收盘站上自己的 20 日均线就满仓',
+  breadth50: '全市场一半以上股票站上 20 日均线就满仓',
+  regime: '项目牛熊口径判为「牛」就满仓',
+  buy_hold: '什么都不做，一直拿着（对照用）'
+};
+
+function pctColor(v) {
+  if (v == null) return 'var(--text2)';
+  var n = Number(v);
+  if (!isFinite(n) || n === 0) return 'var(--text2)';
+  return n > 0 ? 'var(--up)' : 'var(--down)';
+}
+
 // 三大指数位置表（口径与体温表 Markdown 完全一致）
 function positionRowsHtml(rec) {
   var idx = (rec && rec.indices) || {};
@@ -78,8 +93,7 @@ function mirrorRowsHtml(md) {
   return ms.map(function (m) {
     function cell(v) {
       if (v == null) return '<td>—</td>';
-      var c = v > 0 ? 'var(--up)' : (v < 0 ? 'var(--down)' : 'var(--text2)');
-      return '<td style="color:' + c + '">' + fmtPct(v, true) + '</td>';
+      return '<td style="color:' + pctColor(v) + '">' + fmtPct(v, true) + '</td>';
     }
     return '<tr><td>' + esc(m.date) + '</td><td>' + fmtNum(m.distance, 2) + '</td>'
       + cell(m.fwd_20_hs300_pct) + cell(m.fwd_60_hs300_pct) + cell(m.fwd_20_sh_pct)
@@ -87,22 +101,96 @@ function mirrorRowsHtml(md) {
   }).join('');
 }
 
+// 照镜子结论句（基于"距离最近的一档"，不是 top-5 的中位数 —— 5 个样本不构成统计量）
+function mirrorSummaryHtml(md) {
+  if (!md || !md.ok) return esc((md && md.reason) || '不可用');
+  var s = md.summary || {};
+  return '能当参照的历史交易日有 <b>' + s.n + '</b> 天（最像的一档，'
+    + '已排除最近 ' + md.exclude_recent + ' 个交易日 —— 不许拿上个月冒充"历史"）。'
+    + '这些日子之后 20 个交易日（约一个月），沪深300 涨跌的<b>中位数是 '
+    + fmtPct(s.fwd_20_median, true) + '</b>，平均 ' + fmtPct(s.fwd_20_mean, true)
+    + '，中间一半落在 ' + fmtPct(s.fwd_20_q25, true) + ' 到 '
+    + fmtPct(s.fwd_20_q75, true) + ' 之间，上涨的占 ' + fmtPct(s.fwd_20_up_ratio)
+    + '。<br><b>但要狠狠打个折</b>：这些命中日挨得很近、涨跌高度重叠，'
+    + '<b>真正独立的信息只有大约 ' + fmtNum(s.n_eff_20, 1) + ' 份</b>；'
+    + '往后看 60 个交易日（约三个月）中位数 ' + fmtPct(s.fwd_60_median, true)
+    + '、上涨占比 ' + fmtPct(s.fwd_60_up_ratio)
+    + '（独立信息约 ' + fmtNum(s.n_eff_60, 1) + ' 份）。';
+}
+
+// 按年份拆解：看有没有哪一年在唱独角戏
+function mirrorYearsHtml(md) {
+  var ys = (md && md.years) || [];
+  if (!ys.length) return '<tr><td colspan="4" style="text-align:left;color:var(--text2)">'
+    + '没有可拆解的年份</td></tr>';
+  return ys.map(function (y) {
+    return '<tr><td>' + esc(y.year) + ' 年</td><td>' + y.n + ' 天</td>'
+      + '<td style="color:' + pctColor(y.median_pct) + '">' + fmtPct(y.median_pct, true)
+      + '</td><td>' + fmtPct(y.up_ratio_pct) + '</td></tr>';
+  }).join('');
+}
+
 function shadowRowsHtml(sd) {
   if (!sd || !sd.ok) {
-    return '<tr><td colspan="6" style="text-align:left;color:var(--text2)">'
+    return '<tr><td colspan="8" style="text-align:left;color:var(--text2)">'
       + esc((sd && sd.reason) || '不可用') + '</td></tr>';
   }
-  var name = { ma20: '沪深300 > MA20', breadth50: '宽度≥50%',
-               regime: '牛熊口径=牛', buy_hold: '买入持有（对照）' };
   var rows = (sd.rows || []).concat(sd.buy_hold ? [sd.buy_hold] : []);
   return rows.map(function (r) {
     if (!r) return '';
-    return '<tr><td>' + esc(name[r.rule] || r.rule) + '</td>'
+    var net = r.net || {}, seg = r.segments || {};
+    return '<tr><td>' + esc(RULE_CN[r.rule] || r.rule) + '</td>'
+      + '<td>' + (r.round_trips == null ? '—' : r.round_trips + ' 次') + '</td>'
       + '<td>' + fmtPct(r.annualized_pct, true) + '</td>'
-      + '<td>' + fmtPct(r.max_drawdown_pct, true) + '</td>'
-      + '<td>' + fmtNum(r.sharpe, 2) + '</td>'
-      + '<td>' + fmtNum(r.calmar, 2) + '</td>'
-      + '<td>' + fmtPct(r.exposure_pct) + '</td></tr>';
+      + '<td style="font-weight:600;color:' + pctColor(net.annualized_pct) + '">'
+      + fmtPct(net.annualized_pct, true) + '</td>'
+      + '<td>' + fmtPct(net.ci_low_pct, true) + ' ~ ' + fmtPct(net.ci_high_pct, true)
+      + '</td>'
+      + '<td style="color:' + pctColor(net.max_drawdown_pct) + '">'
+      + fmtPct(net.max_drawdown_pct, true) + '</td>'
+      + '<td>' + fmtPct(r.exposure_pct) + '</td>'
+      + '<td style="color:' + pctColor(seg.mean_return_pct) + '">'
+      + fmtPct(seg.mean_return_pct, true)
+      + ' <span style="color:var(--text2)">(' + fmtPct(seg.win_ratio_pct)
+      + ' 笔赚钱)</span></td></tr>';
+  }).join('');
+}
+
+// 逐条人话结论（措辞纪律：区间跨过 0 只说"看不出显著优劣"，不说"无效/跑输"）
+function shadowVerdictHtml(sd) {
+  if (!sd || !sd.ok) return '';
+  return (sd.rows || []).map(function (r) {
+    var net = r.net || {}, seg = r.segments || {};
+    var lo = net.ci_low_pct, hi = net.ci_high_pct, verdict;
+    if (lo == null || hi == null) verdict = '数据不足，判不了';
+    else if (lo <= 0 && hi >= 0) verdict = '看不出显著的优势或劣势（区间跨过 0）';
+    else if (hi < 0) verdict = '明显比一直拿着差（整个区间都在 0 以下）';
+    else verdict = '明显比一直拿着好（整个区间都在 0 以上）';
+    return '<div><b>' + esc(RULE_CN[r.rule] || r.rule) + '</b>：'
+      + '一共建仓 ' + r.round_trips + ' 次，每次持仓中位 '
+      + fmtNum(seg.median_days, 0) + ' 个交易日（最短 ' + seg.min_days
+      + ' 天、最长 ' + seg.max_days + ' 天），在场时间占 ' + fmtPct(r.exposure_pct)
+      + '。按每一笔算（已扣费）：平均 ' + fmtPct(seg.mean_return_pct, true)
+      + '、中位 ' + fmtPct(seg.median_return_pct, true) + '、赚钱的只占 '
+      + fmtPct(seg.win_ratio_pct) + ' —— 多数小亏、少数大赚，是趋势类规则的典型长相。'
+      + '结论：<b>' + verdict + '</b>。'
+      + (seg.note ? '<span style="color:var(--text2)">（' + esc(seg.note) + '）</span>' : '')
+      + '</div>';
+  }).join('');
+}
+
+function shadowWindowsHtml(sd) {
+  if (!sd || !sd.ok) return '';
+  var rows = (sd.rows || []).concat(sd.buy_hold ? [sd.buy_hold] : []);
+  return rows.map(function (r) {
+    if (!r) return '';
+    var w = r.windows || {}, wi = w['in'] || {}, wo = w.out || {};
+    return '<tr><td>' + esc(RULE_CN[r.rule] || r.rule) + '</td>'
+      + '<td style="color:' + pctColor(wi.annualized_pct) + '">'
+      + fmtPct(wi.annualized_pct, true) + '</td>'
+      + '<td style="color:' + pctColor(wo.annualized_pct) + '">'
+      + fmtPct(wo.annualized_pct, true) + '</td>'
+      + '<td>' + (w.consistent ? '✅ 同向，算数' : '⚠ 不一致，待复核') + '</td></tr>';
   }).join('');
 }
 
@@ -121,8 +209,14 @@ function trendSeries(items) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { esc: esc, positionLabel: positionLabel, fmtPct: fmtPct,
-                     fmtNum: fmtNum, positionRowsHtml: positionRowsHtml,
-                     mirrorRowsHtml: mirrorRowsHtml, shadowRowsHtml: shadowRowsHtml,
+                     fmtNum: fmtNum, pctColor: pctColor, RULE_CN: RULE_CN,
+                     positionRowsHtml: positionRowsHtml,
+                     mirrorRowsHtml: mirrorRowsHtml,
+                     mirrorSummaryHtml: mirrorSummaryHtml,
+                     mirrorYearsHtml: mirrorYearsHtml,
+                     shadowRowsHtml: shadowRowsHtml,
+                     shadowVerdictHtml: shadowVerdictHtml,
+                     shadowWindowsHtml: shadowWindowsHtml,
                      trendSeries: trendSeries };
   return;
 }
@@ -163,8 +257,10 @@ function refresh() {
         + ' 家 / 跌停 ' + lim.down + ' 家。';
       $('mpPositionBody').innerHTML = positionRowsHtml(rec);
       var sh = rec.shadow || {};
-      $('mpShadowNow').textContent = '今日状态: ' + ['ma20', 'breadth50', 'regime']
-        .map(function (k) { return k + '=' + (sh[k] === 'on' ? '多头' : '空头'); }).join('，');
+      $('mpShadowNow').textContent = '今天这三条规则各自怎么说：' + ['ma20', 'breadth50', 'regime']
+        .map(function (k) {
+          return RULE_CN[k] + ' → ' + (sh[k] === 'on' ? '在场内' : '空仓');
+        }).join('；') + '（只是影子记录，系统绝不会按它下单）';
     }).catch(function (e) { setHint('mpHint', '加载失败: ' + e, 'var(--up)'); });
 }
 
@@ -203,17 +299,17 @@ function loadMirror() {
     .then(function (d) {
       if (!d.success) { $('mpMirrorBody').innerHTML = '<tr><td colspan="5">加载失败</td></tr>'; return; }
       if (!d.ok) {
-        $('mpMirrorBody').innerHTML = '<tr><td colspan="5" style="text-align:left;color:var(--text2)">'
+        var msg = '<tr><td colspan="5" style="text-align:left;color:var(--text2)">'
           + esc(d.reason || '不可用') + '</td></tr>';
+        $('mpMirrorBody').innerHTML = msg;
+        $('mpMirrorYears').innerHTML = '<tr><td colspan="4" style="text-align:left;color:var(--text2)">不可用</td></tr>';
+        $('mpMirrorSummary').textContent = '';
         $('mpMirrorWarn').textContent = '';
         return;
       }
       $('mpMirrorBody').innerHTML = mirrorRowsHtml(d);
-      var s = d.summary || {};
-      $('mpMirrorSummary').textContent =
-        '这 ' + s.n + ' 次之后：沪深300 20日中位数 ' + fmtPct(s.fwd_20_median, true)
-        + '、上涨占比 ' + fmtPct(s.fwd_20_up_ratio) + '；60日中位数 '
-        + fmtPct(s.fwd_60_median, true) + '。';
+      $('mpMirrorSummary').innerHTML = mirrorSummaryHtml(d);
+      $('mpMirrorYears').innerHTML = mirrorYearsHtml(d);
       $('mpMirrorWarn').textContent = d.warning || '';
     }).catch(function () { });
 }
@@ -223,6 +319,9 @@ function loadShadow() {
     .then(function (d) {
       if (!d.success) return;
       $('mpShadowBody').innerHTML = shadowRowsHtml(d);
+      $('mpShadowVerdict').innerHTML = shadowVerdictHtml(d);
+      $('mpShadowWindows').innerHTML = shadowWindowsHtml(d)
+        || '<tr><td colspan="4" style="text-align:left;color:var(--text2)">不可用</td></tr>';
       $('mpShadowCaliber').textContent = d.ok
         ? ('回放口径: ' + d.caliber + '（' + d.start + ' ~ ' + d.end + '）') : '';
     }).catch(function () { });
