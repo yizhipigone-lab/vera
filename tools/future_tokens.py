@@ -25,6 +25,9 @@ FUTURE_TOKEN_BLACKLIST = [
     "DCLOSE", "DHIGH", "DLOW", "DOPEN", "DVOL",
     # 漂移画图/未来平滑
     "DRAWLINE", "POLYLINE", "XMA", "FFT",
+    # 即时行情/财务/股本 (回测里拿到的是当前值, 等于偷看现在; 2026-09-16 用户清单补录,
+    # 与 formula_pipeline PROPRIETARY_FUNCS 口径对齐)
+    "DYNAINFO", "FINANCE", "CAPITAL",
     # 其它 (信号闪烁类)
     "ZXNH",
 ]
