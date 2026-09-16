@@ -1,6 +1,6 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
-import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport } from './api.js?v=20260906c';
+import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport } from './api.js?v=20260911a';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
 import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js?v=20260906d';
 import { renderDeepCharts } from './charts_deep.js?v=20260906c';
@@ -452,7 +452,8 @@ document.getElementById('tabBtnFarm')?.addEventListener('click', () => switchTab
 document.getElementById('tabBtnAi')?.addEventListener('click', () => switchTab('ai'));
 document.getElementById('btnFarmCheck')?.addEventListener('click', () => farmGate(farmCheck, '检查增量'));
 document.getElementById('btnFarmOnboard')?.addEventListener('click', () => farmGate(farmOnboard, '一键入库'));
-document.getElementById('btnFarmBacktest')?.addEventListener('click', () => farmGate(farmBacktest, '开始回测'));
+document.getElementById('btnFarmVerify')?.addEventListener('click', () => farmGate(farmVerify, '定量复核'));
+document.getElementById('btnFarmBacktest')?.addEventListener('click', () => farmGate(farmBacktest, '开始粗扫'));
 document.getElementById('btnFarmStop')?.addEventListener('click', () => farmStop().then(() => showToast('已请求停止')).catch(() => {}));
 
 // ═══════════════════════════════════════════
@@ -471,7 +472,8 @@ function refreshFarmStatus() {
       if (cur && cur.gate === gate && cur.status !== 'running') { el.textContent = (cur.status === 'done' ? '✅ 完成 ' : '❌ 失败 ') + (cur.finished_at || '') + (cur.error ? ' — ' + cur.error : ''); return; }
       const l = last[gate];
       el.textContent = l ? ('上次: ' + (l.status === 'done' ? '✅' : '❌') + ' ' + (l.finished_at || '')) : '未运行'; };
-    setS('farmCheckStatus', 'check'); setS('farmOnboardStatus', 'onboard'); setS('farmBacktestStatus', 'backtest');
+    setS('farmCheckStatus', 'check'); setS('farmOnboardStatus', 'onboard');
+    setS('farmVerifyStatus', 'verify'); setS('farmBacktestStatus', 'backtest');
     const box = document.getElementById('farmNewList');
     if (box && cur && cur.status === 'running') {
       box.innerHTML = '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);padding:var(--sp-2);border-radius:6px;margin-top:var(--sp-2)">'

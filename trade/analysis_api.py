@@ -11,6 +11,7 @@ view_calc; 本文件只做"取数 + 渲染"。
 """
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime
 
@@ -29,6 +30,35 @@ def analysis_router(trade_app) -> APIRouter:
 
     def _daily_asset_rows():
         return trade_app.store.daily_asset.get()
+
+    def _gapfill_history(limit: int = 20) -> list[dict]:
+        """最近若干次停机日补算留痕 (audit 读回, 新的在前; 无记录/读失败 → [])。
+
+        2026-09-10: 补算由 trade_main 在消费者线程/启动路径跑 (自动 + 人工命令),
+        结果落 audit(kind='gapfill_*')。取多次而不是只取最后一次 —— 一轮补算可能
+        有多个缺口 (有的写成功、有的被拒), 只读最后一条会让"被拒的缺口"从界面上
+        消失 (自审发现)。
+        """
+        try:
+            ro = trade_app.store.open_readonly()
+            try:
+                rows = ro.execute(
+                    "SELECT ts, kind, message, detail_json FROM audit "
+                    "WHERE kind LIKE 'gapfill%' ORDER BY id DESC LIMIT ?",
+                    (int(limit),)).fetchall()
+            finally:
+                ro.close()
+        except Exception:
+            logger.warning("读补算留痕失败", exc_info=True)
+            return []
+        out = []
+        for ts, kind, message, detail_json in rows:
+            try:
+                detail = json.loads(detail_json or "{}")
+            except Exception:
+                detail = {}
+            out.append({"ts": ts, "kind": kind, "message": message, **detail})
+        return out
 
     @router.get("/api/trade/analysis/equity")
     def analysis_equity():
@@ -153,7 +183,7 @@ def analysis_router(trade_app) -> APIRouter:
                     daily_trades[d]["sell"].add(traded_id)
         finally:
             ro.close()
-        win_days = loss_days = 0
+        win_days = loss_days = derived_days = 0
         for i, r in enumerate(rows):
             # 首日基准 = 前月最后一行 (2026-09-04 修复: 旧代码 i==0 恒 0);
             # 账户首月无前月行 → prev=None, 首日盈亏不可算, 如实给 0
@@ -168,6 +198,11 @@ def analysis_router(trade_app) -> APIRouter:
                 win_days += 1
             elif pnl_rate < 0:
                 loss_days += 1
+            src = r.get("source") or "eod"
+            if src == "derived":
+                # 2026-09-10: 停机日推算行 —— 照常参与盈亏链 (用户拍板"要"),
+                # 但要标出来, 界面上写明哪天是推算的。
+                derived_days += 1
             date_str = r["date"]
             tinfo = daily_trades.get(date_str, {"buy": set(), "sell": set()})
             result[date_str] = {
@@ -175,6 +210,7 @@ def analysis_router(trade_app) -> APIRouter:
                 "pnl_amount": round(pnl_amount, 2),
                 "buy_count": len(tinfo["buy"]),
                 "sell_count": len(tinfo["sell"]),
+                "source": src,
             }
         # 月买卖笔数按整月成交聚合, 不随快照行累加 —— 快照洞日 (停机缺
         # 资产行) 的成交同样计入月汇总 (对手审计 2026-09-04 修复)
@@ -200,9 +236,38 @@ def analysis_router(trade_app) -> APIRouter:
                 "loss_days": loss_days,
                 "buy_count": buy_total,
                 "sell_count": sell_total,
+                # 2026-09-10: 本月有几天是停机日推算的 (界面注明)
+                "derived_days": derived_days,
             }
         else:
             result["_month"] = None
+        # 2026-09-10: 停机日补算的两块附加信息 (键以 "_" 开头, 不碰日期键):
+        # _missing = 没补上的缺口日 (界面把"无成交"换成"未归档·差¥X"),
+        # _gapfill = 最近一次补算留痕 (界面一行 + 手工按钮的预览结果)。
+        history = _gapfill_history()
+        last = history[0] if history else None
+        missing: dict = {}
+        for rep in history:
+            for run in (rep.get("runs") or []):
+                if run.get("status") == "write":
+                    continue
+                for ds in (run.get("dates") or []):
+                    if not str(ds).startswith(prefix):
+                        continue      # _missing 只报本月 (日历一次只显示一个月)
+                    if ds in result:
+                        continue      # 后来补上了 → 不再标 (自愈, 不留陈旧标记)
+                    missing.setdefault(ds, {"reason": run.get("reason", ""),
+                                            "residual": run.get("residual", 0.0),
+                                            "status": run.get("status", "")})
+        result["_missing"] = missing
+        result["_gapfill"] = ({"ts": last.get("ts"), "kind": last.get("kind"),
+                               "message": last.get("message"),
+                               "status": last.get("status"),
+                               "dates": last.get("dates") or [],
+                               "residual": last.get("residual", 0.0),
+                               "reason": last.get("reason", ""),
+                               "dry_run": bool(last.get("dry_run"))}
+                              if last else None)
         return result
 
     @router.get("/api/trade/analysis/daily_report")
@@ -219,6 +284,24 @@ def analysis_router(trade_app) -> APIRouter:
         else:
             rep = trade_app.store.daily_report.load_latest()
         return {"report": rep}
+
+    @router.post("/api/trade/analysis/gapfill")
+    def analysis_gapfill(dry_run: bool = Query(default=True)):
+        """停机日资产补算 (2026-09-10, 人工触发): dry_run=1 只预览不写。
+
+        入队给消费者线程执行 (补算要读 QMT 日线, 不在 HTTP 线程碰网关);
+        结果与预览都落 audit, 用下面的 gapfill_last 读回展示。
+        """
+        trade_app.submit_command({"action": "gapfill",
+                                  "dry_run": bool(dry_run),
+                                  "source": "manual_api"})
+        return {"accepted": True, "dry_run": bool(dry_run)}
+
+    @router.get("/api/trade/analysis/gapfill_last")
+    def analysis_gapfill_last():
+        """最近一次停机日补算结果 (无记录 → {"last": null})。"""
+        history = _gapfill_history(limit=1)
+        return {"last": history[0] if history else None}
 
     @router.get("/api/trade/analysis/summary")
     def analysis_summary():

@@ -22,9 +22,13 @@ from core.tdx_path import tdx_home
 
 BASE = "output/gs_5m_sweep"
 OUT_MD = os.path.join(BASE, "EVAL_REPORT.md")
-TARGET_ANN = 0.30
-TARGET_MAXDD = 0.15
-MIN_TRADES = 1000
+# 2026-09-11: 达标线收口到 core/farm_rules (单一真相源, 年化≥15% 且 |回撤|≤15% 且 笔数≥20)。
+# 此前本文件硬编码 0.30/0.15/1000, 与 09-09 批实际在用的 15% 冲突。
+from core import farm_rules  # noqa: E402
+
+TARGET_ANN = farm_rules.TARGET_ANN
+TARGET_MAXDD = farm_rules.TARGET_MAXDD
+MIN_TRADES = farm_rules.MIN_TRADES
 
 # 未来函数排除 (权威清单, 2026-07-20 网上核实). 报告只含干净公式
 GS_DIR = os.path.join(tdx_home(), "T0001", "export", "gs_txt")
@@ -99,8 +103,7 @@ def main():
                          "best_maxdd": None, "best_trades": None,
                          "best_combo": ""})
             continue
-        hit = df[(df["annret"] > TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
-                 & (df["trades"] >= MIN_TRADES)]
+        hit = df[df.apply(farm_rules.is_pass, axis=1)]
         if not hit.empty:
             best = hit.loc[hit["calmar"].idxmax()]
             rows.append({"formula": formula, "n_combos": len(df), "hit": len(hit),
@@ -125,8 +128,7 @@ def main():
     lines.append("# gs_txt 5m 全参数扫描 — 评测报告\n")
     lines.append("> 生成: 阶段C 汇总 | 区间 2024-08-01 ~ 2026-07-17 | "
                  "5m | T收盘买入 | 沪深300 | 300万/单票2万 | 移动止盈优先\n")
-    lines.append(f"> 达标硬口径: 年化>{TARGET_ANN*100:.0f}% 且 回撤≤{TARGET_MAXDD*100:.0f}% "
-                 f"且 交易≥{MIN_TRADES}笔\n")
+    lines.append(f"> {farm_rules.describe()}\n")
     lines.append("> **已排除未来函数** (权威清单: ZIG/PEAK/TROUGH/BACKSET/REFX/DCLOSE/DRAWLINE/XMA/FFT/#周期等) "
                  "— 含 DCLOSE/DRAWLINE 的公式(之前回测虚高)已剔除\n")
     lines.append("\n## 一、总览\n")

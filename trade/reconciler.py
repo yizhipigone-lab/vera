@@ -384,7 +384,47 @@ class Reconciler:
         local_orders = self._book.snapshot()["orders"]
         updated = 0
         stale = 0
-        for o in self._gateway.query_orders():
+        # 2026-09-07 T5: 同花顺占位号回填认亲 —— THS GUI 下单未取到
+        # 合同编号时网关发本地占位号 THS{mmdd}-{seq} (gateway_ths.order),
+        # 券商侧只有真实合同编号, 按 order_id 归因查无此号会把系统单
+        # 误当手工单。占位号订单按 (code,方向,价格,数量,时间窗±5min)
+        # 与券商当日委托认亲, 唯一命中 → 重绑为合同编号 (book+store),
+        # audit 留痕; 多笔歧义不猜, 交人工。
+        gateway_orders = list(self._gateway.query_orders())
+        if any(k.startswith("THS") for k in local_orders):
+            try:
+                open_map = self._store.load_open_orders()
+            except Exception:
+                open_map = {}
+            for o in gateway_orders:
+                boid = str(o.get("order_id", ""))
+                bts = o.get("ts")
+                if not boid or boid in local_orders or not bts:
+                    continue
+                cands = [
+                    ph for ph in open_map.values()
+                    if ph["order_id"].startswith("THS")
+                    and ph["code"] == str(o.get("code", ""))
+                    and ph["direction"] == int(o.get("direction", 0))
+                    and abs(float(ph["price"]) - float(o.get("price", 0.0))) <= 0.005
+                    and int(ph["qty"]) == int(o.get("qty", 0))
+                    and abs(float(ph.get("created_ts") or 0.0) - float(bts)) <= 300
+                ]
+                if len(cands) != 1:
+                    continue
+                phid = cands[0]["order_id"]
+                # 顺序: store 先落 (可持久) → book 后换; book 失败回滚
+                # store (双写原子性难保, 失败方向让两边回到原位最安全)
+                if self._store.rebind_order(phid, boid):
+                    if not self._book.rebind_order(phid, boid):
+                        self._store.rebind_order(boid, phid)  # 回滚
+                    else:
+                        self._store.write_audit("ths_backfill",
+                            f"同花顺占位号回填: {phid} → {boid}",
+                            {"old": phid, "new": boid,
+                             "code": o.get("code", "")})
+                        local_orders = self._book.snapshot()["orders"]
+        for o in gateway_orders:
             oid = str(o.get("order_id", ""))
             if not oid:
                 continue

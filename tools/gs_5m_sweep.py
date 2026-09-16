@@ -46,10 +46,15 @@ logger = get_logger("gs_5m_sweep")
 WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓冲
 DEFAULT_CAPITAL = 3_000_000.0
 DEFAULT_MAX_BUY = 20_000.0
-# 达标硬口径 (用户拍板: 年化>30% + 回撤<15% + 交易≥1000)
-TARGET_ANN = 0.30
-TARGET_MAXDD = 0.15
-MIN_TRADES = 1000
+# 2026-09-11: 达标口径收口到 core/farm_rules (单一真相源)。
+# 用户拍板 15%: 年化≥15% 且 |最大回撤|≤15% 且 笔数≥20 (不足 20 笔记「样本不足」)。
+# 此前本文件硬编码 0.30/0.15/1000, 与 09-09 批农场粗扫实际在用的 15% 冲突 —— 两套口径
+# 并存是 2026-09-11 审计认定的缺陷 (详见 docs/plan/2026-09-11_公式农场粗扫报告修复_计划书.md)。
+from core import farm_rules  # noqa: E402
+
+TARGET_ANN = farm_rules.TARGET_ANN
+TARGET_MAXDD = farm_rules.TARGET_MAXDD
+MIN_TRADES = farm_rules.MIN_TRADES
 
 
 def _safe_dir(name: str) -> str:
@@ -63,7 +68,10 @@ PRIORITY = "trailing_first"  # 默认移动止盈优先; stop_first=止损优先
 
 
 def _formula_dir(formula: str) -> str:
-    return os.path.join(BASE, _safe_dir(formula))
+    # 2026-09-09: 样本外分段验证 — SWEEP_TAG 环境变量隔离目录 (仿 quantqq_5m_sweep_2010)
+    tag = os.environ.get("SWEEP_TAG", "")
+    base = os.path.join(BASE, tag) if tag else BASE
+    return os.path.join(base, _safe_dir(formula))
 
 
 def _cache_dir(formula: str, window_td: int) -> str:
@@ -101,10 +109,13 @@ def do_prep(args):
     else:
         defaults = ConfigLoader.load_defaults()
         sel_tpl = defaults.get("selection", {})
+        uni = sel_tpl.get("universe", {"type": "50", "exclude_st": True})
+        if getattr(args, "universe_type", None):  # 2026-09-06: 公式农场批量可加池, 默认不变
+            uni = dict(uni, type=str(args.universe_type))
         sel_cfg = {
             "formula_name": formula,
             "formula_arg": args.formula_arg if args.formula_arg is not None else "",
-            "universe": sel_tpl.get("universe", {"type": "50", "exclude_st": True}),
+            "universe": uni,
             "period": "1d",
             "dividend_type": 1,
         }
@@ -137,6 +148,15 @@ def do_prep(args):
         dividend_type="front", fill_data=False, use_cache=True,
     )
     logger.info("[prep:%s] 窗口取数完成 %.1fs", formula, time.time() - t0)
+
+    # get_kline_windowed 返回 dict {'Open':df,...,'Close':df}; 空结果 = {} (dict 无 Close 键)。
+    # 2026-09-08: 上次误用 hasattr(dict,'columns') 判空 → 真数据全被误标 no_kline (GS1072 冤案)。
+    if not kline or "Close" not in kline:
+        # 池内某股取数全空 → kline 空 dict, 原代码 KeyError 崩批。
+        # 空数据多为瞬时(补数据后即有), 打标返回, 由批量层下轮重试。
+        logger.warning("[prep:%s] 窗口取数为空, 本轮跳过(下轮重试)", formula)
+        print(json.dumps({"status": "no_kline", "formula": formula}))
+        return
 
     close = engine._ensure_index(kline["Close"])
     high_df = engine._ensure_index(kline["High"])
@@ -331,15 +351,18 @@ def do_report(args):
     df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["key"], keep="last")
     n_err = int(df["error"].fillna("").ne("").sum())
     df = df[df["annret"].notna()]
-    tgt = df[(df["annret"] > TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
-             & (df["trades"] >= MIN_TRADES)]
+    n_pass = int(df.apply(farm_rules.is_pass, axis=1).sum())
+    n_thin = int(sum(1 for _, r in df.iterrows()
+                     if farm_rules.verdict(r["annret"], r["maxdd"],
+                                           r["trades"])["code"] == farm_rules.THIN))
     print(f"[{formula}] 总组合:{len(df)} 失败:{n_err} "
-          f"达标(年化>{TARGET_ANN*100:.0f}% 回撤≤{TARGET_MAXDD*100:.0f}% 交易≥{MIN_TRADES}):{len(tgt)}")
+          f"达标:{n_pass} 样本不足:{n_thin} | {farm_rules.describe()}")
     cols = ["cost", "act", "dd", "ladder", "time_days", "cond_days", "cond_profit",
             "annret", "maxdd", "calmar", "sharpe", "winrate", "trades"]
-    if len(tgt):
+    passed = df[df.apply(farm_rules.is_pass, axis=1)]       # 2026-09-11: 原来是 tgt (已并入 n_pass)
+    if len(passed):
         print("\n=== 达标 Top (按 Calmar) ===")
-        print(tgt.sort_values("calmar", ascending=False).head(15)[cols].to_string(index=False))
+        print(passed.sort_values("calmar", ascending=False).head(15)[cols].to_string(index=False))
     print("\n=== 全体 Top 5 (按年化, 不看约束) ===")
     print(df.sort_values("annret", ascending=False).head(5)[cols].to_string(index=False))
     df.to_csv(os.path.join(fdir, "report_merged.csv"), index=False)
@@ -364,6 +387,8 @@ def main():
     ap.add_argument("--priority", default="trailing_first",
                     choices=["trailing_first", "stop_first"],
                     help="trailing_first=移动止盈优先(默认), stop_first=止损优先")
+    ap.add_argument("--universe-type", default=None,
+                    help="股票池 type 覆盖(默认取 config; 23=沪深300 50=全A), 公式农场批量加速用")
     args = ap.parse_args()
 
     global BASE, PRIORITY

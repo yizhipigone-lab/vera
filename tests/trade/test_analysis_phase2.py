@@ -224,10 +224,15 @@ def test_daily_pnl_first_month_no_prev_baseline(client):
 
 
 def test_daily_pnl_empty_month(client):
-    """无数据月份: 只有 {"_month": None}, 无日期键。"""
+    """无数据月份: _month 为 None, 无日期键。
+
+    2026-09-10 停机日补算: 响应追加 _missing / _gapfill 两个 "_" 键
+    (与 _month 同款加法演进, 按日期键取值的老消费方自动忽略), 故此处
+    不再整体等值比较, 改为断言"没有日期键 + _month 为 None"。"""
     c, _ = client
     d = c.get("/api/trade/analysis/daily_pnl?year=2025&month=1").json()
-    assert d == {"_month": None}
+    assert d["_month"] is None
+    assert [k for k in d if not k.startswith("_")] == []
 
 
 # ---------- 2026-09-04 对手审计修复回归 (独立复审 FAIL 裁决后的补测) ----------

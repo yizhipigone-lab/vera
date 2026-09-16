@@ -3,7 +3,7 @@ import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc,
 import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260906c';
 import { bucketReason, isKnownReason } from './reason_util.mjs';
 // 2026-09-05 (治理III W4-e): 同源取数收敛到统一 client
-import { fetchBenchmarkHistory, fetchCalendar } from './api.js?v=20260906c';
+import { fetchBenchmarkHistory, fetchCalendar } from './api.js?v=20260911a';
 
 const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
 const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
@@ -20,6 +20,7 @@ let _calendarYear, _calendarMonth;
 let _selectedDate = '';
 let _dailyReportSeq = 0;  // 2026-08-07 审计 HIGH#2: showDailyReport 请求序号, 防快连点慢响应覆盖快响应
 let _calLoadSeq = 0;      // 2026-09-04 对手审计: 日历月度数据请求序号, 防切月/进页竞态 (慢的旧月响应后到覆盖新月渲染)
+let _lastDailyPnl = null; // 2026-09-10: 最近一次 daily_pnl 响应 (日报面板/补算提示复用, 免二次请求)
 let _allDeals = [];
 let _dealPage = 0;
 const DEAL_PAGE_SIZE = 200;
@@ -179,13 +180,20 @@ function renderKpiCards(s) {
 }
 
 // ── Calendar ──
+// 2026-09-10 (9/9 停机事件): 日历格四态 —— 实测 / 推算(source='derived') /
+// 未归档(没采到数据, 带差额) / 待归档(今天还没到 15:05)。
+// 旧代码把"没有资产行"一律显示成「无成交」, 把"没采到数据"和"当天没成交"
+// 混为一谈 (9/9 那格就是); 而且缺行会让下一格把多日涨跌算成单日。
 function renderCalendar(calData, dailyPnl) {
   const grid = document.getElementById('analysisCalendarGrid');
   const title = document.getElementById('calTitle');
   if (!grid) return;
+  _lastDailyPnl = dailyPnl || null;   // 日报面板/补算提示复用同一份数据
+  const missing = (dailyPnl && dailyPnl._missing) ? dailyPnl._missing : {};
   title.textContent = _calendarYear + '年' + _calendarMonth + '月';
   // 2026-09-04: 月度收益行随日历一起渲染 — 首载/切月/今天按钮三条路径都走这里
   renderMonthSummary(dailyPnl);
+  renderGapfillNote(dailyPnl);
 
   // Get days in month
   const daysInMonth = new Date(_calendarYear, _calendarMonth, 0).getDate();
@@ -204,6 +212,8 @@ function renderCalendar(calData, dailyPnl) {
     const calInfo = calData && calData.trading_calendar ? calData.trading_calendar[dateStr] : null;
     const isTrading = calInfo ? calInfo.is_trading : (new Date(_calendarYear, _calendarMonth - 1, d).getDay() !== 0 && new Date(_calendarYear, _calendarMonth - 1, d).getDay() !== 6);
     const pnl = dailyPnl && dailyPnl[dateStr];
+    const miss = missing[dateStr] || null;
+    const isDerived = !!(pnl && pnl.source === 'derived');
     const isToday = dateStr === todayStr;
     const isSel = dateStr === _selectedDate;
 
@@ -222,14 +232,29 @@ function renderCalendar(calData, dailyPnl) {
     const pnlRateStr = pnl ? (pnl.pnl_rate >= 0 ? '+' : '') + (pnl.pnl_rate * 100).toFixed(2) + '%' : '—';
     const pnlAmtStr = pnl ? ((pnl.pnl_amount >= 0 ? '+¥' : '-¥') + Math.abs(pnl.pnl_amount).toLocaleString('zh-CN', {maximumFractionDigits: 0})) : '';
     const pnlCls = pnl && pnl.pnl_rate > 0 ? 'cal-up' : pnl && pnl.pnl_rate < 0 ? 'cal-down' : '';
-    const tradeInfo = pnl ? ('买' + pnl.buy_count + ' 卖' + pnl.sell_count) : isTrading ? '无成交' : '休市';
+    // 没补上的停机日: 把差额摆在格子里 (「未归档·差¥1,847」), 不再是含糊的"无成交"
+    const missAmt = miss ? Math.abs(Math.round(Number(miss.residual || 0))) : 0;
+    const missAmtStr = missAmt >= 1
+      ? '<span style="color:var(--warn);font-size:var(--fs-xs)">差¥' + missAmt.toLocaleString('zh-CN') + '</span>' : '';
+    const tradeInfo = pnl ? ('买' + pnl.buy_count + ' 卖' + pnl.sell_count)
+      : !isTrading ? '休市'
+      : isToday ? '待归档' : '未归档';
+    // 推算日标出来 (程序没开机那天是算出来的, 不是 QMT 报出来的)
+    const badge = isDerived
+      ? '<span title="停机日推算值: 程序没开机那天按 持仓×当日收盘价 推出来, 并与右端实测夹逼校验过" style="color:var(--warn);font-size:var(--fs-xs)">推算</span> '
+      : '';
+    const aria = d + '日 ' + tradeInfo + ' ' + pnlRateStr
+      + (isDerived ? ' (推算值)' : '') + (miss ? ' ' + (miss.reason || '未归档') : '');
 
-    const dataAttrs = isTrading && pnl ? ' data-date="' + dateStr + '"' : '';
-    cells.push('<div class="cal-cell' + (isTrading && pnl ? ' cal-clickable' : '') + '" style="' + bgStyle + ';' + borderStyle + '"' + dataAttrs +
-      ' role="button" tabindex="' + (isTrading ? '0' : '-1') + '" aria-label="' + (d + '日 ' + tradeInfo + ' ' + pnlRateStr) + '">' +
-      '<span class="cal-day">' + d + '</span>' +
+    // 2026-09-10: 未归档日也可点开 —— 面板说明为什么没数据、差多少
+    const clickable = isTrading && (pnl || miss);
+    const dataAttrs = clickable ? ' data-date="' + dateStr + '"' : '';
+    cells.push('<div class="cal-cell' + (clickable ? ' cal-clickable' : '') + '" style="' + bgStyle + ';' + borderStyle + '"' + dataAttrs +
+      ' role="button" tabindex="' + (isTrading ? '0' : '-1') + '" aria-label="' + esc(aria) + '">' +
+      '<span class="cal-day">' + badge + d + '</span>' +
       '<span class="cal-pnl ' + pnlCls + '">' + pnlRateStr + '</span>' +
       (pnlAmtStr ? '<span class="cal-amt ' + pnlCls + '">' + pnlAmtStr + '</span>' : '') +
+      missAmtStr +
       '<span class="cal-trades">' + tradeInfo + '</span></div>');
   }
   grid.innerHTML = cells.join('');
@@ -272,6 +297,10 @@ function renderMonthSummary(dailyPnl) {
     ', 截止本月最后一个有数据的交易日 (当月未过完 = 月至今)。' +
     '注意: 月内入金/出金会被当作盈亏计入, 与日历格子、权益曲线同口径。';
   const sep = '<span style="color:var(--border)">|</span>';
+  // 2026-09-10: 本月含推算日时明说 (推算日照常参与盈亏链, 但用户有权知道哪天是算的)
+  const derivedTxt = m.derived_days
+    ? sep + '<span style="color:var(--warn)" title="程序没开机的交易日, 用 持仓×当日收盘价 推算补齐; 已与相邻实测日两端夹逼校验">含 <b>' + m.derived_days + '</b> 天推算</span>'
+    : '';
   el.innerHTML =
     '<span style="color:var(--text2)">本月收益 <span style="cursor:help;color:var(--text2);font-size:var(--fs-xs)" title="' + tip + '">?</span></span>' +
     '<span style="font-size:var(--fs-lg);font-weight:700;color:' + cls + ';font-family:var(--mono)">' + rateStr + '</span>' +
@@ -279,7 +308,78 @@ function renderMonthSummary(dailyPnl) {
     sep +
     '<span>交易日 <b>' + m.trading_days + '</b> 天 · 盈 <span style="color:var(--up)">' + m.win_days + '</span> · 亏 <span style="color:var(--down)">' + m.loss_days + '</span></span>' +
     sep +
-    '<span>买 <b>' + m.buy_count + '</b> · 卖 <b>' + m.sell_count + '</b></span>';
+    '<span>买 <b>' + m.buy_count + '</b> · 卖 <b>' + m.sell_count + '</b></span>' +
+    derivedTxt;
+}
+
+// ── 停机日补算留痕行 (2026-09-10) ──
+// 数据源 = daily_pnl 响应的 "_gapfill" (最近一次补算 audit 留痕) 与 "_missing"
+// (没补上的缺口日)。没有记录时说明"没开机的日子会在启动后自动补"。
+function renderGapfillNote(dailyPnl) {
+  const el = document.getElementById('calGapfillNote');
+  if (!el) return;
+  const g = dailyPnl ? dailyPnl._gapfill : null;
+  const missKeys = (dailyPnl && dailyPnl._missing) ? Object.keys(dailyPnl._missing).sort() : [];
+  const sep = '<span style="color:var(--border)">|</span>';
+  const parts = [];
+  if (g) {
+    const when = g.ts ? new Date(g.ts * 1000).toLocaleString('zh-CN', { hour12: false }) : '';
+    const state = { write: '已推算', reject: '拒写', skip: '跳过' }[g.status] || esc(g.kind || '');
+    parts.push('<span style="color:var(--text2)">上次补算 ' + esc(when) + (g.dry_run ? ' (仅预览)' : '') + '</span>');
+    parts.push('<span>' + state + (g.dates && g.dates.length ? ' ' + esc(g.dates.join('、')) : '') + '</span>');
+    if (g.residual) parts.push('<span style="color:var(--warn)">两端差 ¥' + Math.abs(Number(g.residual)).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + '</span>');
+    if (g.reason) parts.push('<span style="color:var(--text2)" title="' + esc(g.reason) + '">' + esc(String(g.reason).slice(0, 60)) + '</span>');
+  } else {
+    parts.push('<span style="color:var(--text2)">还没有补算记录 —— 程序没开机的交易日会在下次启动时自动补算</span>');
+  }
+  if (missKeys.length) {
+    parts.push('<span style="color:var(--warn)">未补齐 ' + missKeys.length + ' 天: ' + esc(missKeys.join('、')) + ' (补录成交后点「补算停机日」重跑)</span>');
+  }
+  el.innerHTML = parts.join(sep);
+}
+
+// ── 手工补算 (先预览再写, 2026-09-10) ──
+// POST 只入队 (铁律: 状态写入归消费者线程), 结果轮询 gapfill_last 读回。
+let _gapfillBusy = false;
+
+async function _pollGapfill(beforeTs, tries) {
+  for (let i = 0; i < (tries || 10); i++) {
+    await new Promise(res => setTimeout(res, 600));
+    try {
+      const r = await fetch(API_BASE + '/gapfill_last').then(x => x.json());
+      const last = r && r.last;
+      if (last && (!beforeTs || last.ts !== beforeTs)) return last;
+    } catch (e) { /* 继续轮询 */ }
+  }
+  return null;
+}
+
+async function submitGapfill(dryRun) {
+  if (_gapfillBusy) return;
+  _gapfillBusy = true;
+  const btn = document.getElementById(dryRun ? 'calGapfillBtn' : 'calGapfillApply');
+  const apply = document.getElementById('calGapfillApply');
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '计算中…'; }
+  try {
+    const before = (_lastDailyPnl && _lastDailyPnl._gapfill) ? _lastDailyPnl._gapfill.ts : 0;
+    await fetch(API_BASE + '/gapfill?dry_run=' + (dryRun ? 1 : 0), { method: 'POST' });
+    const last = await _pollGapfill(before);
+    if (last) { _lastDailyPnl = _lastDailyPnl || {}; _lastDailyPnl._gapfill = last; renderGapfillNote(_lastDailyPnl); }
+    // 预览成功 (有可写的日子) 才亮出「确认写入」
+    if (apply) apply.style.display = (dryRun && last && last.status === 'write') ? '' : 'none';
+    if (!dryRun) { await refreshCalendarMonth(); if (apply) apply.style.display = 'none'; }
+  } catch (e) {
+    elNote('补算请求失败: ' + e.message);
+  } finally {
+    _gapfillBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
+}
+
+function elNote(msg) {
+  const el = document.getElementById('calGapfillNote');
+  if (el) el.innerHTML = '<span style="color:var(--warn)">' + esc(msg) + '</span>';
 }
 
 // ── 盘后日报详情 (2026-08-07): 点击日历格子展示当日全明细 ──
@@ -397,6 +497,42 @@ function renderDailyReport(payload, dateStr) {
   box.style.display = '';
 }
 
+// 推算日/未归档日面板 (2026-09-10): 没有盘后日报, 但要把"为什么"说清楚 ——
+// 推算日给数值与口径, 未归档日给拒写原因与差额。
+function renderGapfillPanel(dateStr, day, miss) {
+  const box = document.getElementById('analysisDailyReportBox');
+  const body = document.getElementById('analysisDailyReport');
+  const title = document.getElementById('analysisDailyReportTitle');
+  if (!box || !body || !title) return;
+  const rows = [];
+  if (day) {
+    title.innerHTML = '停机日推算 · ' + esc(dateStr);
+    rows.push(['当日盈亏',
+      '<span style="color:' + _pnlColor(day.pnl_amount) + ';font-weight:600">' +
+      _fmtSigned(day.pnl_amount) + ' (' + (day.pnl_rate >= 0 ? '+' : '') +
+      (day.pnl_rate * 100).toFixed(2) + '%)</span>']);
+    rows.push(['买 / 卖', '买 ' + (day.buy_count || 0) + ' · 卖 ' + (day.sell_count || 0)]);
+  } else {
+    title.innerHTML = '未归档 · ' + esc(dateStr);
+  }
+  if (miss) {
+    rows.push(['状态', '<span style="color:var(--warn)">未补齐' +
+      (miss.status ? ' (' + esc(miss.status) + ')' : '') + '</span>']);
+    if (Math.abs(Number(miss.residual || 0)) >= 1) {
+      rows.push(['两端差额', '<span style="color:var(--warn)">¥' +
+        Math.abs(Number(miss.residual)).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + '</span>']);
+    }
+    if (miss.reason) rows.push(['原因', '<span style="font-size:var(--fs-xs)">' + esc(miss.reason) + '</span>']);
+  }
+  rows.push(['口径', '<span style="font-size:var(--fs-xs);color:var(--text2)">' +
+    (day ? '程序没开机那天没有 QMT 实测快照, 该数值由「上一实测日现金 + 缺口内成交回放 + 当日不复权收盘价」推算, 并与相邻实测日两端夹逼校验; 该日无盘后日报。'
+         : '该交易日没有实测快照, 补算也未能闭合 (见上); 补录停机期间的成交后可点「补算停机日」重跑。') +
+    '</span>']);
+  body.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--sp-3)">' +
+    _drSection(day ? '推算口径' : '未归档说明', rows) + '</div>';
+  box.style.display = '';
+}
+
 async function showDailyReport(dateStr) {
   const seq = ++_dailyReportSeq;  // 序号守卫: 丢弃被更新点击取代的旧响应
   const box = document.getElementById('analysisDailyReportBox');
@@ -408,6 +544,12 @@ async function showDailyReport(dateStr) {
   try {
     const resp = await fetch(API_BASE + '/daily_report?date=' + dateStr).then(r => r.json());
     if (seq !== _dailyReportSeq) return;  // 已被更新的点击取代, 丢弃陈旧响应
+    if (!resp.report) {
+      // 2026-09-10: 推算日/未归档日没有盘后日报 —— 用补算信息说明白, 别只说"无记录"
+      const day = _lastDailyPnl ? _lastDailyPnl[dateStr] : null;
+      const miss = (_lastDailyPnl && _lastDailyPnl._missing) ? _lastDailyPnl._missing[dateStr] : null;
+      if (day || miss) { renderGapfillPanel(dateStr, day, miss); return; }
+    }
     renderDailyReport(resp.report, dateStr);
   } catch (e) {
     if (seq === _dailyReportSeq && body) body.innerHTML = '<div style="padding:var(--sp-6);text-align:center;color:var(--text2);font-size:var(--fs-sm)">加载失败，请确认 trade 服务运行中</div>';
@@ -437,6 +579,11 @@ function wireCalendarNav() {
     refreshCalendarMonth();
     filterDealsByDate('');
   };
+  // 2026-09-10: 停机日补算按钮 (先预览 dry_run=1, 再「确认写入」)
+  const gfBtn = document.getElementById('calGapfillBtn');
+  if (gfBtn) gfBtn.onclick = () => submitGapfill(true);
+  const gfApply = document.getElementById('calGapfillApply');
+  if (gfApply) gfApply.onclick = () => submitGapfill(false);
 }
 
 async function refreshCalendarMonth() {

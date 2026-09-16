@@ -142,6 +142,11 @@ class ThsGuiGateway(BaseGateway):
         self._trader = None
         self._seq = 0
 
+    def set_armed(self, armed: bool) -> None:
+        """武装锁 (ChannelManager 调用)。order() 下单前检查 _armed,
+        False 直接 raise —— GUI 下单不可撤回, 探针不过谁也别想放行。"""
+        self._armed = bool(armed)
+
     @staticmethod
     def _easytrader():
         """lazy import 唯一入口。缺库时给一句人话。"""

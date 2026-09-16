@@ -11,9 +11,14 @@ import pandas as pd
 
 BASE = "output/gs_1d_sweep"
 OUT = os.path.join(BASE, "EVAL_REPORT_1d_detail.md")
-TARGET_ANN = 0.30
-TARGET_MAXDD = 0.15
-MIN_TRADES = 1000
+# 2026-09-11: 达标线收口到 core/farm_rules (单一真相源; 原硬编码 0.30/0.15/1000)
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core import farm_rules  # noqa: E402
+
+TARGET_ANN = farm_rules.TARGET_ANN
+TARGET_MAXDD = farm_rules.TARGET_MAXDD
+MIN_TRADES = farm_rules.MIN_TRADES
 
 LADDER_CN = {"off": "无阶梯", "s5_100": "单档5%全平", "s8_100": "单档8%全平",
              "s12_100": "单档12%全平", "m2_5-12_30": "双档5%+12%各30%",
@@ -53,8 +58,7 @@ def main():
             continue
         L.append(f"\n---\n\n## {formula}\n")
         top = df.loc[df["annret"].idxmax()]
-        hit = df[(df["annret"] > TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
-                 & (df["trades"] >= MIN_TRADES)]
+        hit = df[df.apply(farm_rules.is_pass, axis=1)]
         summary.append((formula, top, hit, len(df)))
 
         L.append(f"**最优组合**（按年化）: {combo_cn(top)}\n")

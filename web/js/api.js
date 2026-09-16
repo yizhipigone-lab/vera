@@ -71,11 +71,12 @@ export const fetchLabStatus = () => get('/api/lab/status');
 export const fetchLabHistory = () => get('/api/lab/history');
 export const fetchLabReport = formula => get('/api/lab/report?formula=' + encodeURIComponent(formula));
 
-// ── 公式农场 (2026-09-06, 三段闸门) ──
+// ── 公式农场 (2026-09-06 三段闸门; 2026-09-11 补第四闸门「定量复核」) ──
 
 export const fetchFarmStatus = () => get('/api/farm/status');
 export const farmCheck = () => post('/api/farm/check', {});
 export const farmOnboard = () => post('/api/farm/onboard', {});
+export const farmVerify = () => post('/api/farm/verify', {});
 export const farmBacktest = () => post('/api/farm/backtest', {});
 export const farmStop = () => post('/api/farm/stop', {});
 export const fetchFarmReports = () => get('/api/farm/reports');

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping
 
@@ -139,6 +139,16 @@ class Book:
         self._tiers: dict[str, dict[str, set[int]]] = {}
         self._seen_trades: set[str] = set()
         self._lock = threading.Lock()
+
+    def rebind_order(self, old_id: str, new_id: str) -> bool:
+        """占位号换绑真实合同编号 (2026-09-07 T5): 内存订单簿键迁移。
+        新键已占用或旧键不存在 → False (不覆盖真相, 不猜测)。"""
+        with self._lock:
+            if new_id in self._orders or old_id not in self._orders:
+                return False
+            rec = replace(self._orders.pop(old_id), order_id=new_id)
+            self._orders[new_id] = rec
+        return True
 
     def apply_order_update(
         self,

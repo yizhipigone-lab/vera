@@ -54,6 +54,12 @@ class BaseGateway(ABC):
         # 撤单失败回报 (XtCancelError: order_id/error_id/error_msg)
         self._on_cancel_error = on_cancel_error
 
+    def set_armed(self, armed: bool) -> None:
+        """通道级武装门 (默认空实现)。实盘下单前必须武装的通道
+        (如 THS GUI 网关) 覆写为写 armed 锁; 其余通道无此概念,
+        下单安全由风控闸门兜底。"""
+        pass
+
     @abstractmethod
     def connect(self) -> bool: ...
 
@@ -347,6 +353,52 @@ class RealGateway(BaseGateway):
         转换与接线逻辑", 不是 xtdata 本身 (审计H5修复)。"""
         from xtquant import xtdata  # lazy
         return xtdata
+
+    @staticmethod
+    def _closes_by_date(df) -> dict[str, float]:
+        """日线 DataFrame → {'YYYY-MM-DD': close} (索引取日期, 过滤 NaN/非正)。"""
+        out: dict[str, float] = {}
+        try:
+            for idx, close in zip(df.index, df["close"].tolist()):
+                digits = "".join(ch for ch in str(idx) if ch.isdigit())[:8]
+                if len(digits) != 8 or not (close == close and close > 0):
+                    continue
+                out[f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"] = float(close)
+        except Exception as e:                      # noqa: BLE001
+            _logger.warning("日线转日期字典失败: %s", e)
+            return {}
+        return out
+
+    def query_daily_closes_range(self, code: str, start: str = "",
+                                 end: str = "") -> dict[str, float]:
+        """不复权日线 close, 按日期取: {'YYYY-MM-DD': 收盘价} (2026-09-10)。
+
+        停机日资产补算用 (trade/asset_gapfill): 补过去某一天的市值必须
+        "哪一天取哪一天"的价, 而 query_daily_closes 只返回"最近 N 根"的无日期
+        序列, 无法对齐。口径与它一致 (get_market_data_ex, 'none' 不复权,
+        与实盘成交价/成本同维度); 取空时 download_history_data 重试一次。
+        start/end 为 'YYYYMMDD' (空 = 不限)。失败/无数据返回 {} (调用方 fail-closed)。
+        """
+        xtdata = self._xtdata()
+        df = None
+        for attempt in range(2):
+            raw = _call_with_timeout(
+                xtdata.get_market_data_ex, self._timeout,
+                [], [code], "1d", start, end, -1, "none", False)
+            df = (raw or {}).get(code)
+            if df is not None and not df.empty:
+                break
+            if attempt == 0:
+                _logger.warning("query_daily_closes_range(%s) 取空, 尝试下载", code)
+                try:
+                    _call_with_timeout(xtdata.download_history_data,
+                                       self._timeout * 4, code, "1d", start, end)
+                except Exception as e:              # noqa: BLE001
+                    _logger.warning("download_history_data(%s) 失败: %s", code, e)
+        if df is None or df.empty:
+            _logger.warning("query_daily_closes_range(%s) 无数据", code)
+            return {}
+        return self._closes_by_date(df)
 
     @staticmethod
     def _tick_to_quote(t: dict) -> dict:
@@ -669,6 +721,12 @@ class FakeGateway(BaseGateway):
         count 不做裁剪 —— 测试注入的是全序列, 信号计算自己裁窗口。"""
         with self._lock:
             return list(self._daily_closes.get(code, []))
+
+    def query_daily_closes_range(self, code: str, start: str = "",
+                                 end: str = "") -> dict[str, float]:
+        """Fake 无历史日历数据 → 空字典 (补算侧 fail-closed: 拒写而不是瞎猜)。
+        需要补算路径的测试直接注入 close_at 回调, 不走网关。"""
+        return {}
 
     # ── 测试钩子 (脚本化订单行为) ───────────────────────────────
 
