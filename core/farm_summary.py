@@ -115,6 +115,18 @@ def _latest_check(root):
     return (_read_json(fp) or {}) if fp else None
 
 
+def _voided(root):
+    """作废名单 {gs: {reason, date, ...}} (2026-09-17 GS1318/PLOYLINE 漏网事件)。
+
+    独立于 archive.json 的单一真相源: --rebuild-archive 全量重建档案会冲掉
+    写在档案里的任何标记, 放独立文件才不会被重建抹掉。
+    文件不存在 → {}(零行为变化, 老数据/测试 fixture 不受影响)。
+    """
+    d = _read_json(os.path.join(root, "voided.json")) or {}
+    items = d.get("items")
+    return items if isinstance(items, dict) else {}
+
+
 def _latest_onboard(root):
     fp = _latest(os.path.join(_runs(root), "*", "onboard.json"))
     return (_read_json(fp) or {}) if fp else None
@@ -279,11 +291,16 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
     """按 GS 编号从档案构建回测页回填包 (公开接口 3/3)。
 
     口径一律取 farm_rules.SWEEP_CALIBER (单一真相源, 与报告抬头同对象)。
-    gs 不在档案 → KeyError; best 为空或六项数值参数有缺 → ValueError。
+    gs 不在档案 → KeyError; 已作废(voided.json 登记) → ValueError;
+    best 为空或六项数值参数有缺 → ValueError。
     """
     arch = _read_json(os.path.join(data_root, "archive.json")) or {}
     if gs not in arch:
         raise KeyError(gs)
+    # 2026-09-17: 作废公式禁止回填复跑 (踩未来函数黑名单, 复跑只会再烧一次机时)
+    v = _voided(data_root).get(gs)
+    if v:
+        raise ValueError("该公式已作废, 不再回填复跑 — %s" % (v.get("reason") or "踩黑名单"))
     e = arch[gs]
     best = e.get("best") or {}
     p = best.get("params") or {}
@@ -347,7 +364,7 @@ def _board_row(gs, e):
 
 #: 榜单各组下发上限 (审计 F-B: 全量 822 条 = 343 KB/次, 2 秒轮询扛不动;
 #: 计数在 board_totals 全给, 截尾组前端标「仅列前 N 条」)
-_BOARD_CAP = {"pass": 200, "insufficient": 50, "fail": 30}
+_BOARD_CAP = {"pass": 200, "insufficient": 50, "fail": 30, "void": 50}
 
 
 def overview(data_root: str) -> dict:
@@ -383,9 +400,19 @@ def overview(data_root: str) -> dict:
                 verify_pass = int(m.group(1))
     arch = _read_json(os.path.join(data_root, "archive.json")) or {}
     rows = [_board_row(gs, e) for gs, e in arch.items()]
-    swept = [r for r in rows if r["verdict_code"] != "invalid"]
-    by = {"pass": [], "insufficient": [], "fail": []}
+    # 作废名单: 从达标/样本不足/未达标三组里摘出来单独成组 (2026-09-17)
+    void_map = _voided(data_root)
+    void_rows, live_rows = [], []
     for r in rows:
+        v = void_map.get(r["gs"])
+        if v:
+            r["void_reason"] = v.get("reason", "")
+            void_rows.append(r)
+        else:
+            live_rows.append(r)
+    swept = [r for r in rows if r["verdict_code"] != "invalid"]
+    by = {"pass": [], "insufficient": [], "fail": [], "void": void_rows}
+    for r in live_rows:
         key = (r["verdict_code"] if r["verdict_code"] in ("pass", "insufficient")
                else "fail")
         by[key].append(r)
@@ -411,6 +438,7 @@ def overview(data_root: str) -> dict:
             {"key": "verified", "label": "抽检(已复核)",
              "count": verified_n, "pass": verify_pass},
             {"key": "swept", "label": "试穿有结果", "count": len(swept)},
+            {"key": "void", "label": "作废(踩黑名单)", "count": len(void_rows)},
             {"key": "pass", "label": "达标",
              "count": totals["pass"]}],
         "top_reasons": [[c, n] for c, n in top],

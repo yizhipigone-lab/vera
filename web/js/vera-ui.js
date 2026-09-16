@@ -577,6 +577,13 @@ function renderFarmOverview(d) {
     if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + totals.pass + ' 条' + capNote(b.pass, totals.pass) + '</div>' + table(b.pass, true);
     if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + totals.insufficient + ' 条 (数字好看但笔数不足 20, 不作数)' + capNote(b.insufficient, totals.insufficient) + '</div>' + table(b.insufficient);
     if (b.fail.length) html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">未达标 / 无有效组合 ' + totals.fail + ' 条 (点击展开' + capNote(b.fail, totals.fail) + ')</summary>' + table(b.fail) + '</details>';
+    // 2026-09-17 作废组: 入库后才发现踩未来函数黑名单的公式, 成绩不计入达标
+    if (b.void && b.void.length) {
+      const reasons = {};
+      b.void.forEach(r => { const k = (r.void_reason || '未注明').split('(')[0]; reasons[k] = (reasons[k] || 0) + 1; });
+      const rtxt = Object.keys(reasons).map(k => k + ' ×' + reasons[k]).join(' · ');
+      html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">⛔ 作废 ' + totals.void + ' 条 (踩黑名单, 成绩不计入: ' + esc(rtxt) + '; 点击展开' + capNote(b.void, totals.void) + ')</summary>' + table(b.void) + '</details>';
+    }
     board.innerHTML = html;
   }
 }

@@ -358,3 +358,63 @@ def test_backtest_prefill_caliber_text_discloses_engine_gap(root):
     from core import farm_rules
     assert farm_rules.SWEEP_CALIBER["trailing_confirm"] == "intraday"
     assert farm_rules.SWEEP_CALIBER["min_buy"] == 2000.0
+
+
+# ── 2026-09-17 作废名单 (GS1318/PLOYLINE 漏网事件) ──
+
+def _archive_pass(root, gs="GS0607", annret=0.244):
+    _wj(root / "archive.json", {gs: {
+        "file": "a.md", "url": "", "onboard_date": "2026-09-06",
+        "best": {"key": "k", "annret": annret, "maxdd": -0.034,
+                 "calmar": 7.16, "winrate": 0.70, "trades": 2669},
+        "verdict": {"code": "pass", "label": "达标", "reason": "ok"}}})
+
+
+def _void(root, gs="GS0607", reason="未来函数:PLOYLINE(漂移画线)"):
+    _wj(root / "voided.json", {
+        "updated": "2026-09-17",
+        "items": {gs: {"date": "2026-09-17", "reason": reason}}})
+
+
+def test_voided_formula_dropped_from_pass_board(root):
+    """作废公式不许再挂达标组, 但要单独成组保留可追溯 (数据不删)。"""
+    _archive_pass(root)
+    _void(root)
+    ov = fs.overview(str(root))
+    assert ov["board"]["pass"] == []                     # 达标组清空
+    assert ov["board_totals"]["pass"] == 0
+    assert [r["gs"] for r in ov["board"]["void"]] == ["GS0607"]
+    assert ov["board_totals"]["void"] == 1
+    assert "PLOYLINE" in ov["board"]["void"][0]["void_reason"]
+    assert ov["board_total"] == 1                        # 原始成绩仍在档案里
+    funnel = {f["key"]: f for f in ov["funnel"]}
+    assert funnel["void"]["count"] == 1
+    assert funnel["pass"]["count"] == 0
+
+
+def test_no_voided_file_is_zero_behavior_change(root):
+    """没有 voided.json 时行为与从前完全一致 (老数据/测试 fixture 不受影响)。"""
+    _archive_pass(root)
+    ov = fs.overview(str(root))
+    assert [r["gs"] for r in ov["board"]["pass"]] == ["GS0607"]
+    assert ov["board"]["void"] == []
+    assert ov["board_totals"]["void"] == 0
+    funnel = {f["key"]: f for f in ov["funnel"]}
+    assert funnel["void"]["count"] == 0
+
+
+def test_backtest_prefill_refuses_voided(root):
+    """作废公式禁止回填回测页复跑 (与「→ 回测页」按钮口径一致)。"""
+    _archive_with_params(root)
+    _void(root, "GS0607", reason="未来函数:PLOYLINE(漂移画线)")
+    fs._CACHE.clear()
+    import pytest as _pt
+    with _pt.raises(ValueError) as ei:
+        fs.backtest_prefill(str(root), "GS0607")
+    assert "作废" in str(ei.value) and "PLOYLINE" in str(ei.value)
+    # 未作废的公式照常回填
+    fs._CACHE.clear()
+    _wj(root / "voided.json", {"updated": "2026-09-17", "items": {}})
+    fs._CACHE.clear()
+    assert fs.backtest_prefill(str(root), "GS0607")["gs"] == "GS0607"
+
