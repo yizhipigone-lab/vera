@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS daily_asset (
     total_asset REAL NOT NULL,      -- 总资产
     available   REAL NOT NULL,      -- 可用资金
     market_value REAL NOT NULL,     -- 持仓市值
-    ts          REAL NOT NULL       -- 写入时间戳
+    ts          REAL NOT NULL,      -- 写入时间戳
+    source      TEXT NOT NULL DEFAULT 'eod'
+                -- 2026-09-10 停机日补算: 'eod'=QMT 实测日终 / 'derived'=推算
+                -- (程序没开机那天由 trade/asset_gapfill 用收盘价推出来的)
 );
 CREATE TABLE IF NOT EXISTS orders (
     order_id    TEXT PRIMARY KEY,
@@ -124,6 +127,30 @@ CREATE TABLE IF NOT EXISTS rotation_state (
     signal_json TEXT NOT NULL DEFAULT '{}',
     updated_ts  REAL NOT NULL
 );
+-- ETF 轮动份内虚拟持仓簿记 (2026-09-16 三份错峰改造, 计划书 D2):
+-- QMT 账户级同码持仓合并, 各份 (tranche) 的归属只记在这里;
+-- entry_high = 该份该腿的移动止损基准 (持仓期最高价)。只告警不改账 (铁律1)。
+CREATE TABLE IF NOT EXISTS rotation_lots (
+    tranche    INTEGER NOT NULL,
+    code       TEXT NOT NULL,
+    qty        INTEGER NOT NULL,
+    entry_high REAL NOT NULL DEFAULT 0,
+    updated_ts REAL NOT NULL,
+    PRIMARY KEY (tranche, code)
+);
+-- ETF 轮动逐份最近信号 (2026-09-16 三份错峰, 计划书 D5): 每份一行,
+-- 取代单行 rotation_state (旧表停写保留, 供迁移继承 entry_high)
+CREATE TABLE IF NOT EXISTS rotation_tranche_state (
+    tranche     INTEGER PRIMARY KEY,
+    signal_json TEXT NOT NULL DEFAULT '{}',
+    updated_ts  REAL NOT NULL
+);
+-- ETF 轮动元数据 (2026-09-16, 计划书 D4): 「已初始化」等一次性标志,
+-- 防 lots 表误删后重启静默重排份归属
+CREATE TABLE IF NOT EXISTS rotation_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -141,48 +168,59 @@ class DailyAssetStore:
         self._lock = lock
 
     def save(self, date: str, total_asset: float,
-             available: float, market_value: float) -> None:
-        """EOD 日终资产快照。date=YYYY-MM-DD。幂等 (冲突覆盖)。"""
+             available: float, market_value: float,
+             source: str = "eod") -> bool:
+        """日终资产快照。date=YYYY-MM-DD。幂等 (冲突覆盖)。
+
+        source: 'eod'=QMT 实测 (默认, 老调用方零行为变化) /
+        'derived'=停机日推算 (trade/asset_gapfill 写)。
+        返回 False = 拒绝写入 —— **实测行 (eod) 永不被推算值覆盖**
+        (2026-09-10: 存储层的最后一道保险, 不只靠上层自律)。
+        反向允许: 同日先有推算行、后来真归档了 → 实测值覆盖推算值。
+        """
         with self._lock, self._conn:
+            if source != "eod":
+                row = self._conn.execute(
+                    "SELECT source FROM daily_asset WHERE date=?", (date,)
+                ).fetchone()
+                if row and (row[0] or "eod") == "eod":
+                    return False
             self._conn.execute(
                 """INSERT INTO daily_asset (date, total_asset, available,
-                   market_value, ts) VALUES (?,?,?,?,?)
+                   market_value, ts, source) VALUES (?,?,?,?,?,?)
                    ON CONFLICT(date) DO UPDATE SET
                     total_asset=excluded.total_asset,
                     available=excluded.available,
                     market_value=excluded.market_value,
-                    ts=excluded.ts""",
-                (date, total_asset, available, market_value, time.time()),
+                    ts=excluded.ts,
+                    source=excluded.source""",
+                (date, total_asset, available, market_value, time.time(), source),
             )
+        return True
+
+    _COLS = "date, total_asset, available, market_value, ts, source"
 
     def get(self, start: str = "", end: str = "") -> list[dict]:
-        """读日终资产序列 (YYYY-MM-DD)。缺省 start/end = 全部。"""
-        with self._lock:
-            if start and end:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset WHERE date >= ? AND date <= ? "
-                    "ORDER BY date ASC", (start, end),
-                ).fetchall()
-            elif start:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset WHERE date >= ? ORDER BY date ASC",
-                    (start,),
-                ).fetchall()
-            elif end:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset WHERE date <= ? ORDER BY date ASC",
-                    (end,),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT date, total_asset, available, market_value, ts "
-                    "FROM daily_asset ORDER BY date ASC",
-                ).fetchall()
+        """读日终资产序列 (YYYY-MM-DD)。缺省 start/end = 全部。
+
+        source: 'eod'=实测 / 'derived'=推算 (老库迁移后老行回填 'eod')。
+        """
+        def _q(where: str = "", args: tuple = ()):
+            with self._lock:
+                return self._conn.execute(
+                    f"SELECT {self._COLS} FROM daily_asset {where} "
+                    "ORDER BY date ASC", args).fetchall()
+        if start and end:
+            rows = _q("WHERE date >= ? AND date <= ?", (start, end))
+        elif start:
+            rows = _q("WHERE date >= ?", (start,))
+        elif end:
+            rows = _q("WHERE date <= ?", (end,))
+        else:
+            rows = _q()
         return [{"date": r[0], "total_asset": r[1], "available": r[2],
-                 "market_value": r[3], "ts": r[4]} for r in rows]
+                 "market_value": r[3], "ts": r[4],
+                 "source": r[5] or "eod"} for r in rows]
 
     def load_prev(self, before_date: str) -> dict | None:
         """before_date 之前最近一日的日终资产 (当日盈亏的基准)。
@@ -287,6 +325,113 @@ class RotationSignalStore:
             return None
 
 
+class RotationLotsStore:
+    """ETF 轮动份内虚拟持仓簿记 (2026-09-16 三份错峰, 计划书 D2)。
+
+    拥有 rotation_lots 表的全部 SQL。{(tranche, code): {qty, entry_high}}
+    整表快照式读写 —— 行数 ≤ 份数×4, 每次执行 pass 结束整体替换,
+    共享父 TradeStore 的同一 `_conn`/`_lock`。唯一写者 = rotation 的消费者
+    线程路径 (铁律 3); 与 QMT 漂移只告警不回写 (铁律 1)。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    def load_all(self) -> dict:
+        """读全表 → {(tranche, code): {"qty": int, "entry_high": float}}。
+        损坏行跳过 (fail-soft)。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tranche, code, qty, entry_high FROM rotation_lots"
+            ).fetchall()
+        out = {}
+        for tranche, code, qty, eh in rows:
+            try:
+                out[(int(tranche), str(code))] = {
+                    "qty": int(qty), "entry_high": float(eh or 0.0)}
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    def replace_all(self, lots: dict) -> None:
+        """整表替换 (qty ≤ 0 的行不落库 = 删除)。单事务, 要么全成要么全败。"""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM rotation_lots")
+            self._conn.executemany(
+                "INSERT INTO rotation_lots (tranche, code, qty, entry_high,"
+                " updated_ts) VALUES (?,?,?,?,?)",
+                [(int(t), str(c), int(v["qty"]), float(v.get("entry_high") or 0.0),
+                  time.time())
+                 for (t, c), v in lots.items() if int(v.get("qty", 0)) > 0])
+
+
+class RotationTrancheStateStore:
+    """ETF 轮动逐份最近信号 (2026-09-16 三份错峰, 计划书 D5)。
+
+    拥有 rotation_tranche_state 表的全部 SQL。每份一行 (tranche 主键),
+    结构同旧 rotation_state 的 signal blob (含 pending_target/entry_high/
+    has_target 注入键)。fail-soft 读语义, 共享父 `_conn`/`_lock`。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    def save(self, tranche: int, record: dict) -> None:
+        """落某份的最近信号记录 (含 ts/source/signal)。单行 upsert。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO rotation_tranche_state
+                   (tranche, signal_json, updated_ts) VALUES (?,?,?)
+                   ON CONFLICT(tranche) DO UPDATE SET
+                     signal_json=excluded.signal_json,
+                     updated_ts=excluded.updated_ts""",
+                (int(tranche), json.dumps(record, ensure_ascii=False),
+                 time.time()),
+            )
+
+    def load_all(self) -> dict:
+        """读全部份记录 → {tranche: record}; 损坏行跳过 (fail-soft)。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tranche, signal_json FROM rotation_tranche_state"
+            ).fetchall()
+        out = {}
+        for tranche, sj in rows:
+            try:
+                out[int(tranche)] = json.loads(sj)
+            except (ValueError, TypeError):
+                continue
+        return out
+
+
+class RotationMetaStore:
+    """ETF 轮动元数据键值 (2026-09-16, 计划书 D4「已初始化」标志闸)。
+
+    拥有 rotation_meta 表的全部 SQL。通用 key-value, 防误删重迁移用。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    def get(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM rotation_meta WHERE key=?", (key,)
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def set(self, key: str, value: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO rotation_meta (key, value) VALUES (?,?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (key, str(value)),
+            )
+
+
 class TierStateStore:
     """每日预埋阶梯止盈档位 (表域内聚续作, 治理III W4-f)。
 
@@ -339,6 +484,7 @@ class TradeStore:
         self._migrate_trades_reason()
         self._migrate_orders_status_msg()
         self._migrate_trades_pnl()
+        self._migrate_daily_asset_source()
         self._lock = threading.Lock()
 
         # 分析/展示数据快照关切 (2026-08-16 M7 重新论证): 各子 store 拥有
@@ -347,6 +493,10 @@ class TradeStore:
         self.daily_asset = DailyAssetStore(self._conn, self._lock)
         self.daily_report = DailyReportStore(self._conn, self._lock)
         self.rotation_signal = RotationSignalStore(self._conn, self._lock)
+        # 2026-09-16 三份错峰: 份内簿记 + 逐份状态 + 元数据标志 (计划书 D2/D4/D5)
+        self.rotation_lots = RotationLotsStore(self._conn, self._lock)
+        self.rotation_tranche = RotationTrancheStateStore(self._conn, self._lock)
+        self.rotation_meta = RotationMetaStore(self._conn, self._lock)
         self.tier_state = TierStateStore(self._conn, self._lock)  # 治理III W4-f
 
         raw_path = Path(raw_log_path)
@@ -357,6 +507,36 @@ class TradeStore:
         self._raw_writer = _RawLogWriter(self._raw_fp)
 
     # ── 写接口 (消费者线程) ─────────────────────────────────────
+
+    def rebind_order(self, old_id: str, new_id: str) -> bool:
+        """占位号重绑 (2026-09-07 T5): orders.order_id 是主键 ——
+        读旧行 → 删旧 → 按新主键重插 (业务字段与时间戳全保留);
+        trades.order_id 旧值级联改绑 (成交归因对齐)。新主键已存在
+        或旧行不存在 → False, 不猜测不覆盖。"""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT order_id, remark, code, direction, price, qty, "
+                "filled_qty, status, status_msg, created_ts, updated_ts "
+                "FROM orders WHERE order_id=?", (old_id,)).fetchone()
+            if row is None:
+                return False
+            if self._conn.execute("SELECT 1 FROM orders WHERE order_id=?",
+                                  (new_id,)).fetchone():
+                return False
+            self._conn.execute("DELETE FROM orders WHERE order_id=?",
+                                (old_id,))
+            self._conn.execute(
+                """INSERT INTO orders
+                   (order_id, remark, code, direction, price, qty,
+                    filled_qty, status, status_msg, created_ts, updated_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (new_id, row[1], row[2], row[3], row[4], row[5], row[6],
+                 row[7], row[8], row[9], row[10]))
+            self._conn.execute(
+                "UPDATE trades SET order_id=? WHERE order_id=?",
+                (new_id, old_id))
+        return True
 
     def save_order(self, record: dict) -> None:
         """按 order_id upsert 委托记录 (回报乱序/重复都以最新状态覆盖)。
@@ -555,6 +735,16 @@ class TradeStore:
             with self._conn:
                 self._conn.execute(
                     "ALTER TABLE orders ADD COLUMN status_msg TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_daily_asset_source(self) -> None:
+        """2026-09-10: daily_asset 表加 source 列 (实测/推算之分)。
+        幂等演进, 历史行默认 'eod' —— 9/9 停机事件前写的行都是 QMT 实测,
+        回填 'eod' 即正确口径, 零行为变化。"""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(daily_asset)")]
+        if cols and "source" not in cols:
+            with self._conn:
+                self._conn.execute(
+                    "ALTER TABLE daily_asset ADD COLUMN source TEXT NOT NULL DEFAULT 'eod'")
 
     def write_audit(self, kind: str, message: str, detail: dict | None = None) -> None:
         """审计流水 (风控拒绝/对账告警等)。只增不改。"""

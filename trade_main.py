@@ -62,6 +62,7 @@ from trade.events import (  # noqa: E402
 )
 from trade.executor import Executor, PlaceRequest  # noqa: E402
 from trade.gateway import FakeGateway, RealGateway  # noqa: E402
+from trade.gateway_ths import ThsGuiGateway  # noqa: E402 (lazy: easytrader 只在方法内 import)
 from trade.monitor import SESSION_NAMES, Monitor, is_trading_day_cached, trading_session  # noqa: E402
 from trade.notifier import FeishuNotifier  # noqa: E402
 from trade.pool_money import (  # noqa: E402 (2026-09-05 治理III W2-1: 资金口径单一真相源)
@@ -271,13 +272,23 @@ class TradeApp:
             },
             audit_sink=self.store.write_audit,  # 审计M4: 队列满丢弃要留痕
         )
-        gw_cls = FakeGateway if fake else RealGateway
+        gw_cls = FakeGateway if fake else (ThsGuiGateway if config.channel == "ths" else RealGateway)
         # FakeGateway 期初持仓/资金可注入 (e2e 测试接缝; 生产真网关不需要)
         if fake:
             gw_kwargs = dict(fake_gateway_kwargs or {})
             # 2026-08-14: 注入 app 时钟到 FakeGateway, 成交/委托 ts 与 TradeApp
             # 同源 —— 修掉周末跑测试时真实 time.time() 与注入时钟跨日的误拦
             gw_kwargs["clock"] = clock
+        elif config.channel == "ths":
+            # 同花顺 GUI 通道 (2026-09-07 T1): easytrader 模拟键鼠操作已登录客户端。
+            # armed 一律 False (启动态) —— 武装由 channel_manager 按探针结果运行时置位。
+            if not config.ths_exe_path or not config.ths_title_re:
+                raise RuntimeError(
+                    "同花顺 GUI 通道需要 ths_exe_path 与 ths_title_re, "
+                    "请在 --config 指定的 yaml 中配置; 或用 --fake 跑测试模式")
+            gw_kwargs = {"exe_path": config.ths_exe_path,
+                         "title_re": config.ths_title_re,
+                         "armed": False, "clock": clock}
         else:
             # 启动预检: 真网关缺账号/路径时给能看懂的报错, 而不是 QMT 的 rc=-1
             if not config.account_id or not config.qmt_path:
@@ -297,6 +308,23 @@ class TradeApp:
             on_cancel_error=_wire(self._engine, EVENT_CANCEL_ERROR),
             **gw_kwargs,
         )
+
+        # 通道运行时管理器 (2026-09-07 T2/T3, 方案设计书 §5.3): 武装
+        # 双层态 (意图持久 + 探针生效) + 断线哨兵。仅 ths 通道创建
+        # (qmt/fake 无 armed 概念); None 表示通道无管理器。
+        self.channel_mgr = None
+        if config.channel == "ths":
+            from trade.channel_manager import ChannelManager
+            from trade.quote_check_tdx import make_tdx_quote_check
+            self.channel_mgr = ChannelManager(
+                self.gateway,
+                armed_intent=config.ths_armed,
+                retry_sec=config.ths_probe_retry_sec,
+                rounds=config.ths_disconnect_rounds,
+                # T7 方案A (2026-09-07 用户拍板): 验枪走通达信 TQ 单源
+                quote_check=make_tdx_quote_check(),
+                write_audit=self.store.write_audit,
+                clock=clock)
 
         self.reconciler = Reconciler(
             self.gateway, self.book, self.store, self.kill,
@@ -455,6 +483,11 @@ class TradeApp:
         返回启动对账是否通过 (不通过 = 已急停, 调用方应告警人工介入)。"""
         self.gateway.connect()
         self._connected = True
+        # 2026-09-07 T2/T3: ths 通道启动即探针 —— 探针通过且意图开 →
+        # 武装生效; 探针未过 → 悬空 (黄灯), 由 _on_scan 的
+        # probe_retry_due 按 60s 节奏自动补探 (客户端回来自动武装)。
+        if self.channel_mgr is not None:
+            self.channel_mgr.full_probe()
         today = _day_str(self._clock())
         # 冷启动三合一 (审计H4修复: 当日已成交 traded_id 回填幂等集合,
         # 防重启后 QMT 重推当日成交回报双扣持仓):
@@ -539,6 +572,58 @@ class TradeApp:
                     "eod_catchup", f"15:05 后启动 ({hhmm}) 且当日无 EOD, 补偿归档",
                     {"hhmm": hhmm})
                 self._on_eod(notify_daily=False)  # M-功1: 补偿路径不发零盈亏日报
+        # 2026-09-10 停机日资产补算: 接在 EOD 补偿之后 —— 今天一旦归档, 之前
+        # 缺的日子就变成"两端都有实测"的可校验缺口, 补算才有尺子 (9/9 事件)。
+        self._run_gapfill()
+
+    def _run_gapfill(self, dry_run: bool = False, source: str = "startup") -> dict:
+        """停机日资产补算 (2026-09-10, 计划书 docs/plan/2026-09-10_停机日资产补算_计划书.md)。
+
+        VERA 没开机/没归档的交易日, daily_asset 缺行 → 日历那格显示"无成交",
+        下一格把缺失日的涨跌一起吞进去当单日。这里用「最后一个实测锚点 +
+        缺口内成交回放 + 每日不复权收盘价」把缺的日子推算出来, 标 source='derived',
+        两端夹逼对不上账就拒写报差 (trade/asset_gapfill)。
+
+        持仓取 book 快照 (QMT 实时对账过的), 空了回落最近一次 EOD 持仓快照;
+        取价走 QMT 日线 (TDX 兜底)。**全链路 fail-soft** —— 补算只为分析页补齐,
+        绝不牵动交易链; 人工触发限非连续竞价时段 (自动路径在启动/收盘后)。
+        """
+        from trade import asset_gapfill as _gf
+        if source != "startup" and trading_session(self._clock()) == "continuous":
+            self.store.write_audit(
+                "gapfill_skip", "连续竞价时段不补算 (收盘后 15:05 再点)", {})
+            return {"ok": False, "error": "连续竞价时段不补算"}
+        positions: dict[str, int] = {}
+        try:
+            positions = {c: int(p.volume)
+                         for c, p in self.book.snapshot()["positions"].items()
+                         if p.volume > 0}
+        except Exception as e:                      # noqa: BLE001
+            _logger.warning("补算取持仓失败: %s", e)
+        if not positions:
+            try:
+                positions = {c: int(v.get("volume", 0))
+                             for c, v in self.store.load_position_snapshot().items()
+                             if int(v.get("volume", 0)) > 0}
+            except Exception as e:                  # noqa: BLE001
+                _logger.warning("补算取快照持仓失败: %s", e)
+        report = _gf.fill_gaps(
+            self.store, positions=positions,
+            close_at=_gf.make_close_source(self.gateway),
+            today=_dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d"),
+            dry_run=dry_run)
+        if report.get("written"):
+            _logger.info("停机日补算 (%s): 写入 %s", source, report["written"])
+        if report.get("error"):
+            _logger.warning("停机日补算异常: %s", report["error"])
+        if source != "startup" and not report.get("runs"):
+            try:
+                self.store.write_audit(
+                    "gapfill_none", "停机日补算: 没有需要补的交易日",
+                    {"dry_run": bool(dry_run), "source": source})
+            except Exception:                       # noqa: BLE001
+                pass
+        return report
 
     def stop(self) -> None:
         """优雅退出: 先停事件源 (定时器), 再停消费者, 最后断网关/关库。"""
@@ -591,8 +676,25 @@ class TradeApp:
         elif action == "rotation_run":
             # 2026-08-14 接线: 轮动命令转发特性 (算信号 + 调仓)
             self._rotation.start(cmd.get("source", "manual"))
+        elif action == "gapfill":
+            # 2026-09-10: 停机日资产补算 (人工触发, 先预览 dry_run=1 再写)
+            self._run_gapfill(dry_run=bool(cmd.get("dry_run")),
+                              source=cmd.get("source", "manual_api"))
         elif action == "update_config":
             self._apply_config(cmd["config_obj"], cmd.get("changed", []))
+        elif action in ("ths_probe", "ths_arm", "ths_disarm"):
+            # 2026-09-07 T2/T3: 同花顺通道探针/武装/解除 (武装与解除走
+            # 命令队列 —— 武装前先过探针; 解除零摩擦)。探针是 GUI attach,
+            # 秒级, 偶发人工触发不构成消费者阻塞风险 (与手动 buy 同量级)。
+            if self.channel_mgr is None:
+                self.store.write_audit("ths_cmd_ignored",
+                                       "通道非 ths, 忽略命令", {"action": action})
+            else:
+                fn = {"ths_probe": lambda m: m.full_probe(),
+                      "ths_arm": lambda m: m.arm(),
+                      "ths_disarm": lambda m: m.disarm()}[action]
+                res = fn(self.channel_mgr)
+                self.store.write_audit("ths_cmd", f"{action} 已执行", dict(res))
         else:
             _logger.warning("未知命令已丢弃: %s", cmd)
 
@@ -618,12 +720,17 @@ class TradeApp:
         self.executor.apply(new_cfg)
         self.timer.apply(new_cfg)
         self.risk.apply(new_cfg)
+        if self.channel_mgr is not None:
+            self.channel_mgr.apply(armed_intent=new_cfg.ths_armed,
+                                   retry_sec=new_cfg.ths_probe_retry_sec,
+                                   rounds=new_cfg.ths_disconnect_rounds)
         self.store.write_audit(
             "config_update", f"配置已热更新: {', '.join(changed) or '(无差异)'}",
             {"changed": changed,
              "restart_required_for": ["account_id", "qmt_path", "db_path",
                                       "raw_log_path", "kill_flag_path",
-                                      "fake_sdk"]})
+                                      "fake_sdk", "channel", "ths_exe_path",
+                                      "ths_title_re", "ths_armed"]})
 
     # ═══════════════════════════════════════════════════════════
     # 消费者线程 handlers
@@ -790,6 +897,10 @@ class TradeApp:
         if self._reconnect_pending and not self._connected:
             self._try_reconnect()
             return
+        # 2026-09-07 T2/T3: ths 武装悬空态自动补探 (方案设计书 §4.2:
+        # 每 60s 一次; 客户端中途退出/掉登录后回来, 探针过即自动恢复)
+        if self.channel_mgr is not None and self.channel_mgr.probe_retry_due():
+            self.channel_mgr.full_probe()
         # 2026-07-27 ETF 误卖事件裁决②: 心跳/断线检测只在连续竞价
         # 时段进行 —— 午休/收盘后无 tick 是常态, 此前误报断连
         if trading_session(self._clock()) != "continuous":
@@ -959,12 +1070,19 @@ class TradeApp:
             if any(changes.values()):
                 payload["position_changes"] = changes
         # 2026-08-15: 轮动信号进日报 (飞书 AI 复盘 + web 回看用)。只读 last 里的
-        # signal dict (target/momentum/entry_high, 2026-08-20 动量改造后结构), 不下单;
-        # 取不到 (轮动未跑) 就缺省。
+        # signal dict (target/momentum/entry_high), 不下单; 取不到 (轮动未跑) 就缺省。
+        # 2026-09-16 三份错峰: last 带 tranches → 逐份信号列表进 payload
+        # (单份时仍为单个 dict, llm_review 两种形态都认)。
         try:
             rot_last = self._rotation.last
-            if rot_last and rot_last.get("signal"):
-                payload["rotation"] = rot_last["signal"]
+            if rot_last:
+                sigs = [t.get("signal")
+                        for t in (rot_last.get("tranches") or [])
+                        if t.get("signal")]
+                if sigs:
+                    payload["rotation"] = sigs[0] if len(sigs) == 1 else sigs
+                elif rot_last.get("signal"):
+                    payload["rotation"] = rot_last["signal"]
         except Exception:
             pass
         # 飞书 + 落库 (两路 fail-soft 互不影响, 不影响交易)
@@ -1213,6 +1331,21 @@ class TradeApp:
     @property
     def reconciled(self) -> bool:
         return self._reconciled
+
+    @property
+    def channel(self) -> str:
+        return self._cfg.channel
+
+    @property
+    def channel_mgr_state(self) -> dict | None:
+        if self.channel_mgr is None:
+            return None
+        return {
+            "armed_intent": self.channel_mgr.armed_intent,
+            "armed_effective": self.channel_mgr.armed_effective,
+            "last_probe": self.channel_mgr.last_probe,
+            "channel_down": self.channel_mgr.channel_down,
+        }
 
     @property
     def config(self) -> TradeConfig:

@@ -92,19 +92,27 @@ def format_daily_data(payload: dict) -> str:
         reason_s = f" 原因({reason})" if reason else ""
         lines.append(f"{act} {t.get('code', '')}{pnl_s}{hi_s}{sp_s}{reason_s}")
 
-    # 轮动信号 (2026-08-20 动量改造: 目标代码 + 各腿动量 + 移动止损基准)
+    # 轮动信号 (2026-08-20 动量改造: 目标代码 + 各腿动量 + 移动止损基准;
+    # 2026-09-16 三份错峰: rotation 可能是逐份列表, 逐份一句话)
     rot = payload.get("rotation")
-    if rot and ("target" in rot or "momentum" in rot):
-        target = rot.get("target")
-        s = f"轮动信号: 目标 {target or '避险篮子(黄金)'}"
-        mom = rot.get("momentum")
+    rots = rot if isinstance(rot, list) else ([rot] if rot else [])
+    for idx, r in enumerate(rots):
+        if not r or ("target" not in r and "momentum" not in r):
+            continue
+        target = r.get("target")
+        prefix = ""
+        if len(rots) > 1:
+            anchor = r.get("anchor") or ""
+            prefix = f"份{idx + 1}({anchor}) "
+        s = f"{prefix}轮动信号: 目标 {target or '避险篮子(黄金)'}"
+        mom = r.get("momentum")
         if mom:
             parts = []
             for c, m in mom.items():
                 parts.append(f"{c} {float(m)*100:+.1f}%"
                              if m is not None else f"{c} 数据不足")
             s += " (" + " / ".join(parts) + ")"
-        eh = rot.get("entry_high")
+        eh = r.get("entry_high")
         if eh:
             parts = [f"{c}@{float(v):.3f}" for c, v in eh.items()]
             s += f", 移动止损基准 {', '.join(parts)}"

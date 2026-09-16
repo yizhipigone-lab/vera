@@ -99,6 +99,7 @@ function renderStatus(s) {
   badge(document.getElementById('tdQuote'),
         healthy === null ? null : healthy,
         s.monitor_reason || (healthy ? '盘中·订阅正常' : '盘中·轮询兜底'));
+  _renderChannelBadge(s);
   var btn = document.getElementById('tdKillBtn');
   btn.textContent = s.kill_active ? '急停中 · 点击解除' : '急停';
   btn.classList.toggle('armed', !s.kill_active);
@@ -821,8 +822,10 @@ document.getElementById('tdAbRunBtn').addEventListener('click', function () {
 
 function renderRotation(d) {
   var cfgBox = document.getElementById('tdRotCfg');
+  var nTr = (d.config.signal_day && d.config.signal_day.length) || 1;
   cfgBox.textContent = (d.config.enabled ? '已启用' : '已停用')
     + ' · ETF池 ' + Math.round(d.config.etf_ratio * 100) + '%'
+    + (nTr > 1 ? ' · ' + nTr + '份错峰' : '')
     + ' · 执行 ' + d.config.execute_time;
   var box = document.getElementById('tdRotLast');
   var last = d.last;
@@ -833,6 +836,39 @@ function renderRotation(d) {
   if (last.error) {
     box.innerHTML = '<div style="color:var(--down);font-size:var(--fs-sm)">失败: '
       + esc(last.error) + '</div>';
+    return;
+  }
+  // 2026-09-16 三份错峰: 逐份渲染 (每份一行: 信号日/目标/动量/止损基准)
+  var trs = last.tranches;
+  if (trs && trs.length) {
+    var html = '<div style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)">最近 '
+      + fmtTs(last.ts) + ' (' + esc(last.source) + ')</div>';
+    trs.forEach(function (t) {
+      var s = t.signal || {};
+      var line = '<div style="font-size:var(--fs-sm);margin-bottom:var(--sp-1)">'
+        + '<b>份' + (t.tranche + 1) + '·' + esc(t.anchor) + '</b>'
+        + ' 目标 <b style="color:var(--up)">' + esc(s.target || '避险篮子') + '</b>';
+      if (s.momentum) {
+        var legs = [];
+        Object.keys(s.momentum).forEach(function (c) {
+          var m = s.momentum[c];
+          legs.push(c + ' ' + (m == null ? '—' : (m * 100).toFixed(1) + '%'));
+        });
+        line += ' <span style="color:var(--text2)">动量 '
+          + legs.map(function (x) { return esc(x); }).join(' / ') + '</span>';
+      }
+      if (s.entry_high && Object.keys(s.entry_high).length) {
+        var eh = Object.keys(s.entry_high).map(function (c) {
+          return c + '@' + Number(s.entry_high[c]).toFixed(3);
+        }).join(' / ');
+        line += ' <span style="color:var(--text2)">止损基准 ' + esc(eh) + '</span>';
+      }
+      if (s.note) {
+        line += ' <span style="color:var(--text2)">' + esc(s.note) + '</span>';
+      }
+      html += line + '</div>';
+    });
+    box.innerHTML = html;
     return;
   }
   var s = last.signal || {};
@@ -975,7 +1011,13 @@ function fillSettings(cfg) {
   var trailPct = Math.round(((cfg.rotation.trailing_stop_pct != null
                               ? cfg.rotation.trailing_stop_pct : 0.15)) * 100);
   _setv('tdsRotTrail', trailPct); _rotTrailLabel(trailPct);
-  _setv('tdsRotSignalDay', cfg.rotation.signal_day || 'friday');
+  // 2026-09-16 错峰: signal_day 多选 (数组), 兼容旧单字符串
+  var sd = cfg.rotation.signal_day || ['friday'];
+  if (typeof sd === 'string') sd = [sd];
+  var sdSel = document.getElementById('tdsRotSignalDay');
+  for (var sdOi = 0; sdOi < sdSel.options.length; sdOi++) {
+    sdSel.options[sdOi].selected = sd.indexOf(sdSel.options[sdOi].value) >= 0;
+  }
   var hedgePct = Math.round(((cfg.rotation.hedge_ratio != null
                               ? cfg.rotation.hedge_ratio : 1.0)) * 100);
   _setv('tdsRotHedge', hedgePct); _rotHedgeLabel(hedgePct);
@@ -1033,7 +1075,14 @@ function gatherSettings() {
       hedge_ratio: _num('tdsRotHedge') / 100,
       momentum_window: _int('tdsRotMomWin'),
       trailing_stop_pct: _num('tdsRotTrail') / 100,
-      signal_day: document.getElementById('tdsRotSignalDay').value,
+      signal_day: (function () {   // 2026-09-16 错峰: 多选 → 数组 (单份也发数组, 后端归一)
+        var sel = document.getElementById('tdsRotSignalDay');
+        var out = [];
+        for (var oi = 0; oi < sel.options.length; oi++) {
+          if (sel.options[oi].selected) out.push(sel.options[oi].value);
+        }
+        return out.length ? out : ['friday'];
+      })(),
     },
     regime_filter: {
       enabled: _chk('tdsRfEn'),
@@ -1087,5 +1136,251 @@ document.getElementById('tdsSaveBtn').addEventListener('click', function () {
     }).catch(function () { hint.textContent = '保存失败: 交易服务不可达或超时 (4s)'; })
     .finally(function () { clearTimeout(timer); btn.disabled = false; });
 });
+
+// ══════════════════════════════════════════════════════════════
+// T6 通道徽章 + 武装向导 (2026-09-07, 方案设计书 §5.5/§5.7)
+// 徽章 = 状态只读 + 点击开向导。武装仪式 (用户拍板):
+//   ① 探针通过 → ② 打字「确认实盘」→ ③ 武装
+//   (武装意图未开时先热更 ths_armed=true, 再发武装命令, 同为队列命令
+//    顺序消费)。解除武装零摩擦一键 (从危险回安全永远无仪式)。
+// 向导不猜状态: 全部来自 GET /api/trade/channel 的 mgr 快照。
+// ══════════════════════════════════════════════════════════════
+
+// 通道徽章渲染 — badge() 会重写 className, clickable 须补挂
+function _renderChannelBadge(s) {
+  var el = document.getElementById('tdChannel');
+  var ch = s.channel || 'qmt';
+  if (ch === 'qmt') {
+    badge(el, true, '通道 · QMT');
+  } else if (ch === 'fake') {
+    badge(el, null, '通道 · 模拟');
+  } else if (s.channel_down) {
+    badge(el, false, '同花顺 · 断线');
+  } else if (s.armed_effective) {
+    badge(el, true, '同花顺 · 已武装');
+  } else if (s.armed_intent) {
+    // 悬空态 (黄灯): 意图开但探针未过, 实际拒单
+    el.className = 'trade-badge warn';
+    el.textContent = '同花顺 · 悬空待探';
+  } else {
+    badge(el, null, '同花顺 · 未武装');
+  }
+  el.classList.add('clickable');
+  el.title = '通道管理 — 点击查看状态 / 探针 / 武装';
+}
+
+var _chOverlay = null;   // 弹窗根 DOM (同时是"已打开"标记)
+var _chState = null;     // 最近一次 GET /api/trade/channel 响应
+
+function closeChannelWizard() {
+  document.removeEventListener('keydown', _chOnKey);
+  if (_chOverlay) { _chOverlay.remove(); _chOverlay = null; }
+}
+function _chOnKey(e) { if (e.key === 'Escape') closeChannelWizard(); }
+
+// PUT 助手 (与设置保存同款语义; 本文件局部 post 只覆盖 POST)
+function _chPut(u, body) {
+  return fetch(BASE + u, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  }).then(function (r) {
+    return r.json().then(function (d) {
+      if (!r.ok) {
+        var err = new Error('HTTP ' + r.status);
+        err.serverMsg = (d && d.detail) ? String(d.detail) : ('HTTP ' + r.status);
+        throw err;
+      }
+      return d;
+    });
+  });
+}
+
+// 轮询通道状态直到 pred 命中或超时 (命令走队列异步生效, 受理≠完成)
+function _chPollUntil(pred, maxTries, done) {
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    get('/api/trade/channel').then(function (d) {
+      if (pred(d) || tries >= maxTries) {
+        clearInterval(timer);
+        done(d, !(d && pred(d)));
+      }
+    }).catch(function () {
+      if (tries >= maxTries) { clearInterval(timer); done(null, true); }
+    });
+  }, 1000);
+}
+
+function _chProbeText(mgr) {
+  var lp = mgr && mgr.last_probe;
+  if (!lp || !lp.ts) return '尚未探针';
+  return (lp.ok ? '✓ 通过' : '✗ 未过') + ' (' + fmtTs(lp.ts) + ')'
+    + (lp.error ? ' — ' + lp.error : '');
+}
+
+// 向导主体渲染 (innerHTML 重建 — 弹窗低频交互, 不走 W2-1 脏检查)
+function _chRenderBody(d) {
+  var body = document.getElementById('chwBody');
+  if (!body) return;
+  var mgr = d.mgr || null;
+  var chName = { qmt: 'QMT', ths: '同花顺 (GUI)', fake: '模拟' }[d.channel] || d.channel;
+  var html = '<div style="font-size:var(--fs-sm);color:var(--text);line-height:1.9">'
+    + '<div>当前通道: <b>' + esc(chName) + '</b></div>';
+  if (!mgr) {
+    html += '<div style="color:var(--text2);margin-top:var(--sp-2)">'
+      + (d.channel === 'ths' ? '通道管理器未运行 (服务重启后生效)'
+        : '当前通道无武装概念 — QMT 通道由 SDK 连接即真相, 模拟通道不下实盘单。')
+      + '</div><div style="color:var(--text2);margin-top:var(--sp-2)">'
+      + '切换通道: 改配置 + 重启服务生效; 盘中 (连续竞价/集合竞价) 禁切。</div></div>';
+    body.innerHTML = html;
+    return;
+  }
+  html += '<div>武装意图: <b>' + (mgr.armed_intent ? '开' : '关') + '</b>'
+    + ' &nbsp;·&nbsp; 武装生效: <b style="color:'
+    + (mgr.armed_effective ? 'var(--ok)' : 'var(--warn)') + '">'
+    + (mgr.armed_effective ? '是 (实盘下单放行)' : '否 (下单拒绝)') + '</b></div>'
+    + '<div>上次探针: ' + esc(_chProbeText(mgr)) + '</div>'
+    + (mgr.channel_down
+      ? '<div style="color:var(--up);font-weight:600">⚠ 断线哨兵触发: 轮询连续失败, 请检查同花顺客户端</div>' : '')
+    + '</div>';
+
+  if (mgr.armed_effective) {
+    html += '<div style="margin-top:var(--sp-3);display:flex;gap:var(--sp-3);align-items:center">'
+      + '<button id="chwDisarm" class="btn">解除武装</button>'
+      + '<span style="font-size:var(--fs-xs);color:var(--text2)">零摩擦: 从危险回安全, 一键即生效</span></div>';
+  } else {
+    html += '<div style="margin-top:var(--sp-3);border-top:1px solid var(--border);padding-top:var(--sp-3)">'
+      + '<div style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)">① 先探针 (校验客户端连通 + 账本可读 + 行情活着):</div>'
+      + '<button id="chwProbe" class="btn">重新探针</button>'
+      + '<div style="font-size:var(--fs-sm);margin:var(--sp-3) 0 var(--sp-2)">② 打字确认后武装:</div>'
+      + '<input id="chwConfirm" placeholder="输入「确认实盘」" style="padding:var(--sp-2);border:1px solid var(--border);'
+      + 'border-radius:var(--radius-sm);background:var(--card);color:var(--text);width:11em;margin-right:var(--sp-2)">'
+      + '<button id="chwArm" class="btn btn-primary" disabled>武装 (实盘下单)</button></div>';
+  }
+  html += '<div id="chwHint" class="trade-hint" aria-live="polite" style="margin-top:var(--sp-3)"></div>';
+  body.innerHTML = html;
+
+  var hint = document.getElementById('chwHint');
+  var disarmBtn = document.getElementById('chwDisarm');
+  if (disarmBtn) {
+    disarmBtn.addEventListener('click', function () {
+      disarmBtn.disabled = true;
+      hint.textContent = '解除命令已受理, 等待生效…';
+      post('/api/trade/channel/disarm', {}).then(function () {
+        _chPollUntil(function (x) { return x.mgr && x.mgr.armed_effective === false; }, 8, function (x, timeout) {
+          invalidatePayload(); refresh();
+          _chReload(timeout ? '状态未刷新, 请看徽章或审计日志' : '✓ 已解除武装 (下单通道已锁)');
+        });
+      }).catch(function (e) {
+        hint.textContent = '解除被拒: ' + ((e && e.serverMsg) || '服务不可达');
+        disarmBtn.disabled = false;
+      });
+    });
+    return;
+  }
+
+  var probeBtn = document.getElementById('chwProbe');
+  var confirmInput = document.getElementById('chwConfirm');
+  var armBtn = document.getElementById('chwArm');
+
+  function _syncArmBtn() {
+    var lp = _chState && _chState.mgr && _chState.mgr.last_probe;
+    armBtn.disabled = !(confirmInput.value === '确认实盘' && lp && lp.ok === true);
+  }
+  confirmInput.addEventListener('input', _syncArmBtn);
+  _syncArmBtn();
+
+  probeBtn.addEventListener('click', function () {
+    probeBtn.disabled = true;
+    var prevTs = (_chState && _chState.mgr && _chState.mgr.last_probe
+      && _chState.mgr.last_probe.ts) || 0;
+    post('/api/trade/channel/probe', {}).then(function () {
+      hint.textContent = '探针命令已受理, 执行中 (GUI 查询需几秒)…';
+      _chPollUntil(function (x) {
+        var lp = x.mgr && x.mgr.last_probe;
+        return lp && lp.ts && lp.ts !== prevTs;
+      }, 15, function (x, timeout) {
+        probeBtn.disabled = false;
+        var msg = timeout ? '探针超时未回 — 请确认同花顺客户端已登录, 或看审计日志'
+          : (x.mgr.last_probe.ok ? '✓ 探针通过, 可以武装'
+            : ('✗ 探针未过: ' + (x.mgr.last_probe.error || '未知原因')));
+        invalidatePayload(); refresh(); _chReload(msg);
+      });
+    }).catch(function (e) {
+      hint.textContent = '探针被拒: ' + ((e && e.serverMsg) || '服务不可达');
+      probeBtn.disabled = false;
+    });
+  });
+
+  armBtn.addEventListener('click', function () {
+    armBtn.disabled = true;
+    hint.textContent = '武装命令发送中…';
+    // 意图未开先热更配置 (ths_armed=true 走 channel_mgr.apply 即时生效,
+    // 与武装命令同队列顺序消费, 先有意图后武装)
+    var seq = (_chState && _chState.mgr && _chState.mgr.armed_intent)
+      ? Promise.resolve() : _chPut('/api/trade/config', { ths_armed: true });
+    seq.then(function () {
+      return post('/api/trade/channel/arm', { confirm: '确认实盘' });
+    }).then(function () {
+      hint.textContent = '武装命令已受理, 等待生效…';
+      _chPollUntil(function (x) { return x.mgr && x.mgr.armed_effective === true; }, 10, function (x, timeout) {
+        var msg = timeout ? '未生效 — 探针可能已过期/未过, 重新探针后再武装 (详情见审计)'
+          : '✓ 已武装 — 同花顺 GUI 实盘下单放行, 急停随时可锁';
+        invalidatePayload(); refresh(); _chReload(msg);
+      });
+    }).catch(function (e) {
+      hint.textContent = '武装被拒: ' + ((e && e.serverMsg) || '服务不可达');
+      _syncArmBtn();
+    });
+  });
+}
+
+function _chReload(msg) {
+  get('/api/trade/channel').then(function (d) {
+    _chState = d;
+    _chRenderBody(d);
+    // 结果提示在重建后写入 (innerHTML 重渲染会清掉先写的 hint)
+    if (msg) {
+      var hint = document.getElementById('chwHint');
+      if (hint) hint.textContent = msg;
+    }
+  }).catch(function () {
+    var body = document.getElementById('chwBody');
+    if (body) body.textContent = '交易服务 (8081) 不可达';
+  });
+}
+
+function openChannelWizard() {
+  if (_chOverlay) return;   // 已打开不叠层
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999'
+    + ';display:flex;align-items:center;justify-content:center';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-label', '通道管理');
+  var box = document.createElement('div');
+  box.style.cssText = 'width:min(560px,92vw);background:var(--card);border:1px solid var(--border)'
+    + ';border-radius:10px;padding:var(--sp-4);box-shadow:0 8px 32px rgba(0,0,0,.4)';
+  box.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;'
+    + 'margin-bottom:var(--sp-3)">'
+    + '<b style="font-size:var(--fs-lg);color:var(--text)">通道管理</b>'
+    + '<button id="chwClose" class="btn" style="padding:var(--sp-1) var(--sp-3)">×</button></div>'
+    + '<div id="chwBody" style="color:var(--text2);font-size:var(--fs-sm)">加载中…</div>';
+  overlay.appendChild(box);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) closeChannelWizard(); });
+  document.addEventListener('keydown', _chOnKey);
+  document.body.appendChild(overlay);
+  _chOverlay = overlay;
+  document.getElementById('chwClose').addEventListener('click', closeChannelWizard);
+  _chReload();
+}
+
+// 徽章点击/键盘 (Enter/Space) 开向导 — role=button 已在 HTML 标注
+(function () {
+  var el = document.getElementById('tdChannel');
+  el.addEventListener('click', openChannelWizard);
+  el.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openChannelWizard(); }
+  });
+})();
 
 })();

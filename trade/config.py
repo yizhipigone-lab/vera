@@ -137,7 +137,11 @@ class RotationConfig:
     hedge_ratio: float = 1.0               # 黄金在避险篮子的占比 [0,1]
     momentum_window: int = 20              # 动量窗口 (交易日, 20=4周)
     trailing_stop_pct: float = 0.15        # 日频移动止损回撤阈值 (正值)
-    signal_day: str = "friday"             # 周频信号日 (monday~friday)
+    # 周频信号日锚定 (monday~friday)。2026-09-16 三份错峰改造: 由 str 扩为
+    # tuple —— 单元素 = 一份资金 (旧行为); 多元素 = 资金等分 N 份, 各份独立
+    # 按各自锚定日跑同一套动量择腿+移动止损 (计划书
+    # docs/plan/2026-09-16_ETF轮动资金三份错峰改造_计划书.md D1/D3)。
+    signal_day: tuple[str, ...] = ("friday",)
     execute_time: str = "14:54"            # 尾盘「算信号+执行+止损检查」时点 (HH:MM)
 
 
@@ -203,6 +207,18 @@ class TradeConfig:
     reconcile_times: tuple = ("09:35", "11:30", "14:55", "15:05")
     quote_stale_sec: int = 60              # 行情快照超此秒数视为陈旧 (审计M6)
 
+    # ── 下单通道 (2026-09-07 同花顺 GUI 通道接入 T1) ──
+    # channel 三选一: qmt(默认, RealGateway) / ths(ThsGuiGateway, easytrader
+    # 模拟键鼠操作同花顺客户端) / fake(FakeGateway)。兼容: fake_sdk=True 视同
+    # channel="fake", 旧配置行为不变 (决策在组合根)。ths_armed 是"武装意图"
+    # (持久, 重启保留), 实际生效还需探针通过 —— 生效态在 channel_manager。
+    channel: str = "qmt"
+    ths_exe_path: str = r"D:\thsstio\xiadan.exe"  # 同花顺下单客户端路径
+    ths_title_re: str = ".*网上股票交易系统.*"     # 客户端窗口标题正则
+    ths_armed: bool = False                  # 武装意图(持久); 生效需探针通过
+    ths_probe_retry_sec: int = 60            # 武装悬空态自动重探间隔
+    ths_disconnect_rounds: int = 3           # 轮询连续失败判断线 (断线哨兵)
+
 
 # ═══════════════════════════════════════════════════════════════
 # 加载与校验 (审计L6标准: 类型 + 值域都查)
@@ -229,6 +245,12 @@ _FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "tick_heartbeat_sec": (int,),
     "force_market_after": (str,),
     "reconcile_times": (list, tuple),
+    "channel": (str,),
+    "ths_exe_path": (str,),
+    "ths_title_re": (str,),
+    "ths_armed": (bool,),
+    "ths_probe_retry_sec": (int,),
+    "ths_disconnect_rounds": (int,),
     "quote_stale_sec": (int,),
 }
 
@@ -522,9 +544,17 @@ def _coerce_rotation(data: dict) -> RotationConfig:
         kwargs["trailing_stop_pct"] = d
     if "signal_day" in data:
         v = data["signal_day"]
-        if not isinstance(v, str) or v not in _SIGNAL_DAYS:
-            _fail(f"rotation.signal_day 必须是 {sorted(_SIGNAL_DAYS)} 之一, 实际 {v!r}")
-        kwargs["signal_day"] = v
+        # 2026-09-16 三份错峰: 接受 str (一份, 旧形态) 或 1~5 项列表 (N 份错峰),
+        # 逐项 ∈ monday~friday 且不允许重复; 内部统一归一为 tuple (防 str/list 混用)。
+        days = [v] if isinstance(v, str) else v
+        if (not isinstance(days, (list, tuple)) or not (1 <= len(days) <= 5)
+                or any(not isinstance(d, str) or d not in _SIGNAL_DAYS
+                       for d in days)):
+            _fail(f"rotation.signal_day 必须是 {sorted(_SIGNAL_DAYS)} 之一"
+                  f"或其 1~5 项不重复列表, 实际 {v!r}")
+        if len(set(days)) != len(days):
+            _fail(f"rotation.signal_day 不允许重复: {v!r}")
+        kwargs["signal_day"] = tuple(days)
     for k in ("execute_time",):
         if k in data:
             if not isinstance(data[k], str):
@@ -624,6 +654,14 @@ def _coerce(key: str, value: Any) -> Any:
         if not (0.0 < v <= 1.0):
             _fail(f"trade 配置字段 {key} 必须在 (0, 1] 区间, 实际 {v!r}")
         return v
+    if key == "channel":
+        if value not in ("qmt", "ths", "fake"):
+            _fail(f"trade 配置字段 channel 只能是 qmt/ths/fake, 实际 {value!r}")
+        return value
+    if key == "ths_probe_retry_sec" and value < 5:
+        _fail(f"trade 配置字段 {key} 必须 ≥5 秒, 实际 {value!r} (防验证码/敲客户端过频)")
+    if key == "ths_disconnect_rounds" and value < 1:
+        _fail(f"trade 配置字段 {key} 必须 ≥1, 实际 {value!r}")
     return value
 
 
@@ -707,7 +745,7 @@ def trade_config_to_dict(cfg: TradeConfig) -> dict:
         "hedge_ratio": cfg.rotation.hedge_ratio,
         "momentum_window": cfg.rotation.momentum_window,
         "trailing_stop_pct": cfg.rotation.trailing_stop_pct,
-        "signal_day": cfg.rotation.signal_day,
+        "signal_day": list(cfg.rotation.signal_day),   # tuple → list (JSON 序列化; 2026-09-16 错峰)
         "execute_time": cfg.rotation.execute_time,
     }
     out["regime_filter"] = {

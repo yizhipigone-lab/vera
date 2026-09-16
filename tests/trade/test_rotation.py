@@ -210,7 +210,7 @@ def test_rotation_config_defaults():
     assert c.rotation.risk_etf2 == "513100.SH"
     assert c.rotation.momentum_window == 20
     assert c.rotation.trailing_stop_pct == 0.15
-    assert c.rotation.signal_day == "friday"
+    assert c.rotation.signal_day == ("friday",)   # 2026-09-16 错峰: tuple 归一
 
 
 def test_rotation_config_validation(tmp_path):
@@ -456,12 +456,15 @@ def test_trailing_stop_switches_to_hedge(tmp_path):
     app.gateway.push_quote(CYB, _quote(CYB, 0.80, bid=0.80))
     app.gateway.push_quote(GOLD, _quote(GOLD, 2.0, bid=2.0, ask=2.0))
     assert _wait(lambda: app.monitor.quote_of(CYB) is not None)
-    app._rotation._entry_high = {CYB: 1.0}
+    # 2026-09-16 错峰: entry_high 挪进份内簿记 (旧 _entry_high 实例属性注入点
+    # 废止); 预置第 0 份 lots + 跳过迁移 (语义注入, 断言不变)
+    app._rotation._migration_pending = False
+    app._rotation._lots = {(0, CYB): {"qty": 500_000, "entry_high": 1.0}}
     app._rotation.on_signals({"signal": {"target": CYB}, "source": "test"})
     buys, sells = _orders_by(app)
     assert [s["code"] for s in sells] == [CYB]
     assert sells[0]["qty"] == 500_000               # 止损 → 清仓风险腿
-    assert app._rotation._pending_target is None    # §八.4: 清空 pending_target
+    assert app._rotation._tranches[0]["pending_target"] is None  # §八.4: 清空 pending_target
 
 
 def test_trailing_stop_not_triggered(tmp_path):
@@ -473,7 +476,8 @@ def test_trailing_stop_not_triggered(tmp_path):
     app.gateway.push_quote(CYB, _quote(CYB, 0.90, bid=0.90, ask=0.90))
     app.gateway.push_quote(GOLD, _quote(GOLD, 2.0))
     assert _wait(lambda: app.monitor.quote_of(CYB) is not None)
-    app._rotation._entry_high = {CYB: 1.0}
+    app._rotation._migration_pending = False
+    app._rotation._lots = {(0, CYB): {"qty": 500_000, "entry_high": 1.0}}
     app._rotation.on_signals({"signal": {"target": CYB}, "source": "test"})
     _, sells = _orders_by(app)
     assert sells == []                              # 未触发止损 → 不卖
@@ -502,7 +506,8 @@ def test_worker_signal_day_executes_immediately(monkeypatch, tmp_path):
     buys, _ = _orders_by(app)
     assert any(b["code"] == CYB for b in buys)
     # 买单之后 _execute 还有几步微秒级收尾 (写 pending_target), 用 _wait 等落定
-    assert _wait(lambda: app._rotation._pending_target == CYB, timeout=2.0)
+    assert _wait(lambda: app._rotation._tranches[0]["pending_target"] == CYB,
+                 timeout=2.0)
 
 
 def test_worker_executes_pending_target(monkeypatch, tmp_path):
@@ -515,9 +520,9 @@ def test_worker_executes_pending_target(monkeypatch, tmp_path):
     app.gateway.push_quote(CYB, _quote(CYB, 1.0, bid=1.0, ask=1.0))
     app.gateway.push_quote(GOLD, _quote(GOLD, 2.0))
     assert _wait(lambda: app.monitor.quote_of(CYB) is not None)
-    # 预置上个信号日已算好的当前生效 target
-    app._rotation._pending_target = CYB
-    app._rotation._has_target = True
+    # 预置上个信号日已算好的当前生效 target (2026-09-16: 挪入份状态)
+    app._rotation._tranches[0]["pending_target"] = CYB
+    app._rotation._tranches[0]["has_target"] = True
     app._rotation.start("manual")
     assert _wait(lambda: any(
         b["code"] == CYB and b["direction"] == DIRECTION_BUY

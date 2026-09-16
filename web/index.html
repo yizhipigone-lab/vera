@@ -882,11 +882,11 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
-<!-- ===== 公式农场页 (2026-09-06, 三段闸门) ===== -->
+<!-- ===== 公式农场页 (2026-09-06 三段闸门; 2026-09-11 补第四闸门「定量复核」) ===== -->
 <div id="pageFarm">
   <div class="lab-card">
-    <h2>公式农场 · 三段闸门</h2>
-    <div style="font-size:var(--fs-sm);color:var(--text2)">股旁网新公式 → 去重 → 体检(未来函数硬闸) → 入库通达信 → 粗扫回测。闸门①不碰通达信随时可跑; ②③会真实操作通达信(自动启动/关弹窗/开公式管理器), 亮屏点一下就行。</div>
+    <h2>公式农场 · 四段闸门</h2>
+    <div style="font-size:var(--fs-sm);color:var(--text2)">股旁网新公式 → 去重 → 体检(未来函数硬闸) → 入库通达信 → 定量复核 → 粗扫回测。闸门①不碰通达信随时可跑; ②③④会真实操作通达信(自动启动/关弹窗/开公式管理器), 亮屏点一下就行。</div>
   </div>
   <div class="lab-card">
     <h2>① 检查增量 <button class="btn btn-primary" id="btnFarmCheck">▶ 检查增量</button></h2>
@@ -898,8 +898,14 @@ input:focus-visible,select:focus-visible{outline:none}
     <div id="farmOnboardStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
   </div>
   <div class="lab-card">
-    <h2>③ 开始回测 <button class="btn btn-primary" id="btnFarmBacktest">▶ 开始粗扫</button></h2>
+    <h2>③ 定量复核 <button class="btn btn-primary" id="btnFarmVerify">▶ 定量复核</button></h2>
+    <div id="farmVerifyStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">重画检测 + 未来函数甄别(需通达信在运行, 全A选股较慢); 「复核不通过」与「跑失败」分开写, 解析不到一律标「无法判定」不当通过。</div>
+  </div>
+  <div class="lab-card">
+    <h2>④ 开始粗扫 <button class="btn btn-primary" id="btnFarmBacktest">▶ 开始粗扫</button></h2>
     <div id="farmBacktestStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">36 代表组合 5m 粗扫, 达标线 年化≥15% 且 |回撤|≤15% 且 笔数≥20; 未扫完的公式下轮自动补扫, 不会被新批次饿死。</div>
   </div>
   <div class="lab-card">
     <h2>日报与留痕</h2>
@@ -934,12 +940,17 @@ input:focus-visible,select:focus-visible{outline:none}
             <button class="btn btn-sm" id="calNextMonth" title="下月">▶</button>
             <button class="btn btn-sm" id="calNextYear" title="下一年">▶▶</button>
             <button class="btn btn-sm btn-primary" id="calToday">今天</button>
+            <!-- 2026-09-10 停机日资产补算: 先预览再写 (POST 入队, 结果走 gapfill_last) -->
+            <button class="btn btn-sm" id="calGapfillBtn" title="程序没开机的交易日, 按持仓×当日收盘价推算补齐资产行 (两端夹逼校验, 对不上账就拒绝写)">补算停机日</button>
+            <button class="btn btn-sm btn-primary" id="calGapfillApply" style="display:none" title="按预览结果写入">确认写入</button>
           </div>
         </div>
       </div>
       <div class="chart-box-body tall" style="height:auto;padding:var(--sp-2)">
         <!-- 2026-09-04: 月度收益汇总行 — 随月份导航动态刷新, 数据源 daily_pnl 响应 _month 键 -->
         <div id="calMonthSummary" style="display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-3);padding:var(--sp-2) var(--sp-2) var(--sp-2);margin-bottom:var(--sp-1);border-bottom:1px dashed var(--border);font-size:var(--fs-sm);color:var(--text)"></div>
+        <!-- 2026-09-10: 补算留痕行 (上次补了哪天/差多少/有没有没补上的) -->
+        <div id="calGapfillNote" style="display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2);padding:0 var(--sp-2) var(--sp-2);font-size:var(--fs-xs);color:var(--text)"></div>
         <div class="weekdays-header" style="display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:var(--fs-xs);color:var(--text2);font-weight:600;padding:var(--sp-1) 0 var(--sp-2)">
           <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
         </div>
@@ -1059,6 +1070,8 @@ input:focus-visible,select:focus-visible{outline:none}
       <span class="trade-badge wait" id="tdConn">连接 …</span>
       <span class="trade-badge wait" id="tdReconciled">对账 …</span>
       <span class="trade-badge wait" id="tdQuote">行情 …</span>
+      <span class="trade-badge wait clickable" id="tdChannel" role="button" tabindex="0"
+            title="交易通道状态; 点击查看通道管理 (同花顺通道: 探针/武装/解除)">通道 …</span>
       <span style="flex:1"></span>
       <button class="trade-kill-btn" id="tdKillBtn">急停</button>
     </div>
@@ -1207,12 +1220,15 @@ input:focus-visible,select:focus-visible{outline:none}
             <span id="tdsRotTrailLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
           </div>
           <div class="tds-row"><label>信号日</label>
-            <select id="tdsRotSignalDay" class="lab-input" style="font-family:var(--mono)">
+            <select id="tdsRotSignalDay" class="lab-input" multiple size="5"
+                    style="font-family:var(--mono);min-width:90px">
               <option value="monday">周一</option><option value="tuesday">周二</option>
               <option value="wednesday">周三</option><option value="thursday">周四</option>
               <option value="friday">周五</option>
             </select>
-            <span class="hint">(每周此日算信号, 遇节假日前移到最后一个交易日, 当日尾盘执行)</span></div>
+            <span class="hint">(每周此日算信号, 遇节假日前移到最后一个交易日, 当日尾盘执行;
+              <b>多选 = 资金等分多份错峰</b>, 各份按各自信号日独立轮动, 如选周三/四/五 = 三份各 1/3;
+              改份数后需重启生效)</span></div>
         </div>
         <div class="tds-sec">
           <div class="tds-sec-title">弱市择时闸门 (指数跌破年线当日不买)</div>
@@ -1250,7 +1266,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <h2>ETF 轮动系统 <span style="font-weight:400;font-size:var(--fs-xs);color:var(--text2)" id="tdRotCfg">—</span></h2>
     <div style="display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap">
       <button class="btn btn-primary" id="tdRotRunBtn">立即算信号+调仓</button>
-      <span class="trade-hint" id="tdRotHint">每个交易日下午 14:54 临收盘时, 系统会自动算一次信号并照着调仓: 每周信号日 (默认周五) 会重新比较两只主 ETF 最近四周谁的涨幅更猛, 拿动量最高且还在涨的那只, 两只都不涨就整体切到避险篮子 (默认黄金); 其余交易日不重新选腿, 只把仓位朝当前目标补齐。无论哪天, 都会做一遍移动止损检查——看持仓从持有以来的最高价往回撤的幅度有没有超过止损线, 超过了就当天切到避险篮子。盘中点这个按钮等于立刻手动跑一轮同样的流程, 会真实下单; 收盘后再点, 只是用当天收盘价把信号演算一遍显示在卡片上预览, 不会真实买卖, 也不会改动系统记着的当前目标 (时点/信号日/动量窗口可在设置面板调)。</span>
+      <span class="trade-hint" id="tdRotHint">每个交易日下午 14:54 临收盘时, 系统会自动算一次信号并照着调仓: 每周信号日 (默认周五; 设置面板可多选 = 资金等分多份错峰, 各份按各自信号日独立轮动) 会重新比较两只主 ETF 最近四周谁的涨幅更猛, 拿动量最高且还在涨的那只, 两只都不涨就整体切到避险篮子 (默认黄金); 其余交易日不重新选腿, 只把仓位朝当前目标补齐。无论哪天, 都会做一遍移动止损检查——看持仓从持有以来的最高价往回撤的幅度有没有超过止损线, 超过了就当天切到避险篮子。盘中点这个按钮等于立刻手动跑一轮同样的流程, 会真实下单; 收盘后再点, 只是用当天收盘价把信号演算一遍显示在卡片上预览, 不会真实买卖, 也不会改动系统记着的当前目标 (时点/信号日/动量窗口可在设置面板调)。</span>
     </div>
     <div id="tdRotLast" style="margin-top:var(--sp-2)"><div style="color:var(--text2);font-size:var(--fs-sm)">尚未运行</div></div>
   </div>
@@ -1458,7 +1474,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/brain_chat.js?v=20260906c"></script>
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
-<script type="module" src="/web/js/analysis.js?v=20260906c"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260906d"></script>
+<script type="module" src="/web/js/analysis.js?v=20260911a"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260911a"></script>
 </body>
 </html>

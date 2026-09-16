@@ -58,6 +58,15 @@ class CancelRequest(BaseModel):
     order_id: str = Field(min_length=1)
 
 
+class ArmRequest(BaseModel):
+    """武装打字确认 (方案设计书 §5.5: 武装有仪式, 解除零摩擦)。"""
+    confirm: str = Field(min_length=1)
+
+class ChannelRequest(BaseModel):
+    """切换目标通道。"""
+    channel: str = Field(min_length=1)
+
+
 _SECONDS_PER_DAY = 86400
 
 
@@ -95,6 +104,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
 
     @app.get("/api/trade/status")
     def status():
+        st = trade_app.channel_mgr_state
         return {
             "connected": trade_app.connected,
             "kill_active": trade_app.kill.is_active(),
@@ -103,7 +113,22 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             # 2026-07-27 裁决②: 时段 + 人话原因, 前端不再笼统红色"降级"
             "session": trade_app.session,
             "monitor_reason": trade_app.monitor_reason,
+            # 2026-09-07 T4: 通道/武装状态 (ths 通道才有 mgr; 其余 None)
+            "channel": trade_app.channel,
+            "armed_intent": (st or {}).get("armed_intent"),
+            "armed_effective": (st or {}).get("armed_effective"),
+            "last_probe": (st or {}).get("last_probe"),
+            "channel_down": bool((st or {}).get("channel_down", False)),
             "ts": time.time(),
+        }
+
+    @app.get("/api/trade/channel")
+    def channel_info():
+        # 静态通道信息 + 运行时 mgr 状态 (2026-09-07 T4)
+        return {
+            "channel": trade_app.channel,
+            "available": ["qmt", "ths", "fake"],
+            "mgr": trade_app.channel_mgr_state,
         }
 
     @app.get("/api/trade/asset")
@@ -334,6 +359,54 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         trade_app.submit_command({"action": "kill_off"})
         return {"accepted": True}
 
+    # ── 通道管理 (2026-09-07 T4, 方案设计书 §5.5) ──────────
+    @app.post("/api/trade/channel/probe")
+    def channel_probe():
+        if trade_app.channel != "ths":
+            raise HTTPException(409, "仅同花顺通道需要探针 (只读校验)")
+        trade_app.submit_command({"action": "ths_probe"})
+        return {"accepted": True}
+
+    @app.post("/api/trade/channel/arm")
+    def channel_arm(req: ArmRequest):
+        if req.confirm != "确认实盘":
+            raise HTTPException(422, "确认串必须是「确认实盘」")
+        if trade_app.channel != "ths":
+            raise HTTPException(409, "仅同花顺通道有武装概念")
+        trade_app.submit_command({"action": "ths_arm"})
+        return {"accepted": True}
+
+    @app.post("/api/trade/channel/disarm")
+    def channel_disarm():
+        if trade_app.channel != "ths":
+            raise HTTPException(409, "仅同花顺通道有武装概念")
+        trade_app.submit_command({"action": "ths_disarm"})
+        return {"accepted": True}
+
+    @app.post("/api/trade/channel/switch")
+    def channel_switch(req: ChannelRequest):
+        # 盘中禁切 (仿 reload_view 时段门禁): 切换 = 换枪, 休市才许
+        from trade.monitor import trading_session
+        sess = trading_session()
+        if sess in ("continuous", "auction"):
+            raise HTTPException(403, f"盘中 ({sess}) 禁止切通道, 请在盘前/午休/收盘后操作")
+        if req.channel not in ("qmt", "ths", "fake"):
+            raise HTTPException(422, "channel 只能是 qmt/ths/fake")
+        base = trade_config_to_dict(trade_app.config)
+        if base.get("channel") == req.channel:
+            return {"accepted": True, "restart_required": True, "changed": []}
+        merged = deep_merge(base, {"channel": req.channel})
+        new_cfg = trade_config_from_dict(merged)
+        changed = diff_dicts(trade_config_to_dict(trade_app.config),
+                              trade_config_to_dict(new_cfg))
+        # 通道切换走配置热更同路径 (channel 属 restart_required_for)。
+        # 重启后由 channel_mgr 按新通道意图 + 启动探针重新武装 ——
+        # 切通道即切武装依据, 换枪必须重验保险 (方案设计书 §5.5)。
+        trade_app.submit_command({
+            "action": "update_config", "config_obj": new_cfg,
+            "changed": changed + ["channel(需重启生效)"]})
+        return {"accepted": True, "restart_required": True, "changed": changed}
+
     @app.post("/api/trade/buy")
     def buy(req: BuyRequest):
         trade_app.submit_command({
@@ -406,7 +479,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             "hedge_ratio": trade_app.config.rotation.hedge_ratio,
             "momentum_window": trade_app.config.rotation.momentum_window,
             "trailing_stop_pct": trade_app.config.rotation.trailing_stop_pct,
-            "signal_day": trade_app.config.rotation.signal_day,
+            "signal_day": list(trade_app.config.rotation.signal_day),
             "execute_time": trade_app.config.rotation.execute_time,
         }}
 
