@@ -9,6 +9,7 @@ T-H-2 (2026-07-15): 加 FakeTq/FakeConnector mock 工厂 + autouse teardown
 
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
@@ -146,6 +147,18 @@ def _isolate_caches(tmp_path):
     orig_mp_kline = _mpr.KLINE_1D_DIR
     _mpr.DAILY_PATH = tmp_path / "market_position" / "daily.jsonl"
     _mpr.KLINE_1D_DIR = tmp_path / "kline_cache" / "1d"
+    # 2026-09-17 事故修复 (深度审查 HIGH-1): 大脑向量索引漏隔离 ——
+    # test_brain_archive / test_brain 只 monkeypatch 了 arch.ARCHIVE_DIR, 没隔离
+    # brain.search_engine.INDEX_DIR; 于是 archive 落盘后的 update_file(f) 拿到一个
+    # tmp 绝对路径, source 退化成绝对路径并写进**生产** data/brain_vectors/。
+    # 实测: meta.jsonl 641 个 source 里 639 条是 pytest 临时路径, company/ 0 条,
+    # eval 命中率 0.0。与 2026-07-27 缓存投毒事件同一病类 (当时漏了这个缓存)。
+    import brain.search_engine as _se
+    orig_index_dir = _se.INDEX_DIR
+    _se.INDEX_DIR = tmp_path / "brain_vectors"
+    # 双保险: archive 侧有现成开关, 直接关掉归档同步 (brain/archive.py 读它)
+    orig_no_sync = os.environ.get("BRAIN_NO_INDEX_SYNC")
+    os.environ["BRAIN_NO_INDEX_SYNC"] = "1"
     try:
         yield
     finally:
@@ -155,6 +168,11 @@ def _isolate_caches(tmp_path):
             _rot.SHADOW_LOG_PATH = orig_rot_shadow
         _mpr.DAILY_PATH = orig_mp_path
         _mpr.KLINE_1D_DIR = orig_mp_kline
+        _se.INDEX_DIR = orig_index_dir
+        if orig_no_sync is None:
+            os.environ.pop("BRAIN_NO_INDEX_SYNC", None)
+        else:
+            os.environ["BRAIN_NO_INDEX_SYNC"] = orig_no_sync
 
 
 @pytest.fixture(autouse=True)
