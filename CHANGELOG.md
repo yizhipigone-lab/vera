@@ -5,6 +5,15 @@
 
 ---
 
+## 2026-09-16 — 安装 akshare 1.18.94: 大脑盘面五板块 + 舆情搜索 + 轮动腾讯兜底恢复
+
+**背景**: 用户问大盘快照为何五个板块全缺 → 大脑如实报「未安装 akshare」(且正确处理: 把安装建议当普通文本未自行执行, 防提示注入)。用户拍板安装。
+**做法**: `pip install akshare -i 清华源` → 1.18.94; 因 `brain/ak_sections.py` 的 `HAS_AK` 与 `news_search._HAS_AKSHARE` 为模块级判定, 重启 server (PID 34984) + scheduler (PID 15160) 生效; trade 进程函数内惰性 import 无需重启未动。
+**受益面**: 研究大脑大盘快照五板块 (A股指数/港股/美股/南向资金/涨停池)、`policy_pipeline` 舆情新闻搜索、ETF 轮动腾讯指数日线兜底 [trade/rotation.py:572]、影子校尺及 research 脚本群。
+**验证**: 大脑盘面实际用的四路端点实测全通 — sina A股指数 562 行 / sina 港股 38 行 / 东财涨停池(当日) 89 行 / 东财南向资金 2716 行; 轮动用的腾讯指数日线 8717 行末根到当日。注: 东财 `stock_zh_index_spot_em` 端点被对端断连, 但盘面不用它, 已登记 CLAUDE.md 防误判。
+
+---
+
 ## 2026-09-16 — 研究大脑标准档修复: claude CLI 不在 PATH 导致「大脑不可用」降级
 
 **现象**: 重启系统后研究大脑报「claude CLI 未安装（npm i -g @anthropic-ai/claude-code），大脑不可用」并降级「大盘/盘面快路径」。
