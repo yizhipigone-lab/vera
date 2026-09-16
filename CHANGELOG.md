@@ -5,10 +5,10 @@
 
 ---
 
-## 2026-09-16 — QMT 日线新鲜度: 审计两条 + 日历三条 全部落地 (全量测试绿)
+## 2026-09-16 — QMT 日线新鲜度: 审计两条 + 日历三条 + 择时闸门双计 全部落地 (全量测试绿)
 
 **依据**: [审计报告](docs/audit/2026-09-16_QMT日线新鲜度判定_审计报告.md) → [修复实施报告](docs/audit/2026-09-16_QMT日线新鲜度判定修复_实施报告.md)
-**用户拍板**: 「三条日历项 + 审计那两条一并修掉」
+**用户拍板**: 「三条日历项 + 审计那两条一并修掉」→ 追加「顺手修掉」择时闸门双计
 
 ### 落地清单 (行号为**修复后**, 已机器校验)
 
@@ -20,6 +20,7 @@
 | 装精确历库 | `exchange-calendars 4.13.2` 已装 (清华镜像); 2026 年内精度提升 (国庆/调休认得出) |
 | 自带假日表 | **没有编造 2027 年日期** (国务院尚未公告, 编就是错): 把「只覆盖 2026 年」变成代码里的显式事实 [scheduler/trading_calendar.py:59-72] + 覆盖区间常量 [scheduler/trading_calendar.py:83-84] |
 | 可信度判断口 | `calendar_covers` 按**精确历实际覆盖区间**判断 [scheduler/trading_calendar.py:87-92]、[scheduler/trading_calendar.py:105-117]; `is_trading_day` 先判覆盖再查历 [scheduler/trading_calendar.py:120-133] (表外日期不再每次刷 WARNING) |
+| 弱市择时闸门当天计两次 (审计第四条发现, 收尾) | 网关新增只读观测「实际返回序列的末根日期」[trade/gateway.py:132-140] + 写入点 [trade/gateway.py:736]、[trade/gateway.py:751]; 闸门判据 [trade/auto_buy.py:139-153]、[trade/auto_buy.py:164]: 当日已在序列里 → **不再追加实时价**, 不在 (盘中当日 bar 被裁 / 数据源滞后) → 照旧追加 |
 
 ### 两条与原审计建议不同 (理由见实施报告第二节)
 
@@ -31,17 +32,20 @@
 **装库 ≠ 覆盖未来**: `exchange_calendars 4.13.2` 的 XSHG 历**只到 2026-12-31** —— 显式 `end=2030` 直接报错 `The XSHG holidays are only recorded to the year 2026`, 即 2027 年谁都还没有数据。
 第一版 `calendar_covers` 只看「库加载成功」就报「可信」→ 2027 年会被误标可信、严格判据又被启用; 已改为按实际覆盖区间判断。
 
+**收尾择时闸门时差点埋的第二个坑**: 观测值第一版写成「原始日线 DataFrame 的末根日期」, 但盘中 (15:05 前) 当日那根会被网关按无未来函数裁掉 —— 此时原始末根**就是今天**, 闸门会判「当日已在序列里」→ 不追加实时价 → **14:52 那条尾盘生产路径反而看不到当天最新价**。已改为记「实际返回序列的末根」(被裁后取前一根) [trade/gateway.py:751], 并补测试直接锁这个语义 [tests/trade/test_regime.py:245-281]。
+**教训**: 凡「记一个事实供他人判断」的代码, 都要问——这个事实是我**取到的**, 还是我**交付出去的**?
+
 ### 验证
 
-- 全量 `pytest tests -q` **退出码 0**; `pytest tests/trade -q` 退出码 0; 日历相关三文件 78 passed
-- 新增 8 个回归测试 [tests/trade/test_gateway_history_fresh.py:196-296] + [tests/test_scheduler.py:62-75]
+- 全量 `pytest tests -q` **退出码 0**; `pytest tests/trade -q` 退出码 0; 日历相关三文件 78 passed; `tests/trade/test_regime.py` 17 passed
+- 新增 11 个回归测试 [tests/trade/test_gateway_history_fresh.py:196-296] + [tests/test_scheduler.py:62-75] + [tests/trade/test_regime.py:197-281]
 - 两份文档引用机器校验 100% (审计报告 36 处 / 实施报告 23 处)
 
 ### 遗留 (2026 年 12 月待办)
 
 2027 年放假安排公告后二选一即可恢复严格覆盖: 升级 `exchange-calendars` 或补 `_HOLIDAYS_2027` 并顺延覆盖区间常量。
 在那之前系统「知道自己不可信」: 每天一条 WARNING、盘后只要求上一交易日、不再每 600 秒空补。
-另: `auto_buy` 实时价与当日日线双计 (影响弱市择时闸门的指数均线, 非动量参照点) 仍待处理。
+（`auto_buy` 实时价与当日日线双计已在本条一并修掉 —— 见落地清单最后一行。）
 
 ---
 

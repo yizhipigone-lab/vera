@@ -126,6 +126,18 @@ class BaseGateway(ABC):
         self._on_order_error = on_order_error
         # 撤单失败回报 (XtCancelError: order_id/error_id/error_msg)
         self._on_cancel_error = on_cancel_error
+        # 2026-09-16 审计修复(收尾): 最近一次 query_daily_closes 拿到的末根日线日期
+        # (代码 → YYYYMMDD)。弱市择时闸门据此判断"今天这根是否已在序列里", 避免
+        # 盘后把当日收盘价与实时价重复计入均线。只读观测, 不参与网关自身判定。
+        self.daily_last_bar: dict[str, str] = {}
+
+    def last_daily_bar_day(self, code: str) -> str:
+        """最近一次 query_daily_closes 拿到的末根日线日期 (YYYYMMDD); 未知返回 ''。
+
+        2026-09-16 审计修复收尾: `trade/auto_buy` 的弱市择时闸门要判断"当日这根
+        是否已在序列里" —— 未知 ('') 时按"不在"处理 (保持原行为: 追加实时价)。
+        """
+        return self.daily_last_bar.get(code, "")
 
     def set_armed(self, armed: bool) -> None:
         """通道级武装门 (默认空实现)。实盘下单前必须武装的通道
@@ -721,6 +733,7 @@ class RealGateway(BaseGateway):
             df = (raw or {}).get(code)
         if df is None or df.empty:
             _logger.warning("query_daily_closes(%s) 无数据 (补下载后仍空: 指数代码可能无数据)", code)
+            self.daily_last_bar.pop(code, None)
             return []
         self._note_history_result(code, [_last_index_day(df)], expected,
                                   "query_daily_closes")
@@ -732,6 +745,10 @@ class RealGateway(BaseGateway):
         if (last_day and last_day == time.strftime("%Y%m%d", now)
                 and now.tm_hour * 60 + now.tm_min < _CLOSE_READY_HM):
             closes = closes[:-1]     # 日期解析失败 (last_day='') 不裁 (保守)
+            last_day = _last_index_day(df.iloc[:-1]) if len(df) > 1 else ""
+        # 2026-09-16 审计修复收尾: 记**实际返回序列**的末根日期 (盘中当日 bar 已被
+        # 上面裁掉 → 这里自然不是今天), 供弱市择时闸门判"当日是否已在序列里"
+        self.daily_last_bar[code] = last_day
         return closes
 
     @staticmethod

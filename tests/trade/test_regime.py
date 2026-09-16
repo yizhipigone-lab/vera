@@ -190,3 +190,92 @@ def test_regime_disabled_no_gate(tmp_path):
     app._auto_buy.on_signals({"signals": [{"code": CODE, "select_date": "x"}],
                               "source": "test"})
     assert len(app.gateway.query_orders()) == 1
+
+
+# ── 2026-09-16 审计修复收尾: 当日日线已在序列里时不再追加实时价 (不双计) ──
+
+def _day_of(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%Y%m%d")
+
+
+def test_close_bar_present_no_realtime_append(tmp_path):
+    """盘后当日日线已落地 → 不追加实时价 (否则当天计两次, 均线被拉偏)。
+
+    构造: 日线 [10]×5 → MA5=10, 末根=10 恰好站上 → 放行。
+    若仍追加实时价 9.0: MA5 变 9.8, 9.0 < 9.8 → 会被误判成弱市而禁买。
+    """
+    cfg = TradeConfig(account_id="AB", fake_sdk=True,
+                      db_path=str(tmp_path / "t.db"),
+                      raw_log_path=str(tmp_path / "r.jsonl"),
+                      kill_flag_path=str(tmp_path / "KILL"),
+                      regime_filter=RegimeFilterConfig(
+                          enabled=True, index_code=IDX, ma_window=5))
+    clock = [_ts("15:30")]                        # 盘后
+    app = _make(cfg, clock, daily_closes={IDX: [10.0] * 5})
+    app.gateway.daily_last_bar[IDX] = _day_of(clock[0])   # 网关: 末根日线就是今天
+    _push(app, IDX, 9.0, 9.0)                     # 实时价 9.0 低于均线
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+
+    app._auto_buy.on_signals({"signals": [{"code": CODE, "select_date": "x"}],
+                              "source": "test"})
+    assert len(app.gateway.query_orders()) == 1   # 未被实时价拖成弱市
+    assert "auto_buy_skip_regime" not in _audit_kinds(app)
+
+
+def test_stale_daily_bar_still_appends_realtime(tmp_path):
+    """对照: 末根日线不是今天 (数据源滞后/盘中) → 仍追加实时价判"现在"。"""
+    cfg = TradeConfig(account_id="AB", fake_sdk=True,
+                      db_path=str(tmp_path / "t.db"),
+                      raw_log_path=str(tmp_path / "r.jsonl"),
+                      kill_flag_path=str(tmp_path / "KILL"),
+                      regime_filter=RegimeFilterConfig(
+                          enabled=True, index_code=IDX, ma_window=5))
+    clock = [_ts("15:30")]
+    app = _make(cfg, clock, daily_closes={IDX: [10.0] * 5})
+    app.gateway.daily_last_bar[IDX] = "20260915"   # 陈旧: 不是今天
+    _push(app, IDX, 9.0, 9.0)
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+
+    app._auto_buy.on_signals({"signals": [{"code": CODE, "select_date": "x"}],
+                              "source": "test"})
+    assert app.gateway.query_orders() == []
+    assert "auto_buy_skip_regime" in _audit_kinds(app)
+
+
+def test_intraday_bar_trimmed_recorded_as_not_today():
+    """网关记录的是**实际返回序列**的末根: 盘中裁掉当日 bar 后不应记成今天。
+
+    直接锁 gateway 的这一行语义 (auto_buy 的判据就靠它):
+    盘中 df 末根=今天且 <15:05 → 裁剪 → daily_last_bar 记的是前一根。
+    """
+    import pandas as pd
+
+    import trade.gateway as gw_mod
+    from trade.gateway import RealGateway
+
+    today = datetime.now().date()
+    prev = today - timedelta(days=1)
+    idx = pd.to_datetime([prev.strftime("%Y%m%d"), today.strftime("%Y%m%d")],
+                         format="%Y%m%d")
+    frame = pd.DataFrame({"close": [2.0, 3.0]}, index=idx)
+
+    class _Fake:
+        def get_market_data_ex(self, *a, **kw):
+            return {"399006.SZ": frame}
+
+        def download_history_data(self, *a, **kw):
+            return 0
+
+    g = RealGateway(account_id="TEST")
+    g._xtdata = lambda: _Fake()
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(gw_mod, "_expected_last_bar_day",
+                   lambda d, hm: prev.strftime("%Y%m%d"))   # 不该补下载
+    monkey.setattr(gw_mod.time, "localtime", lambda *a: time.struct_time(
+        (today.year, today.month, today.day, 10, 0, 0, 0, 0, -1)))
+    try:
+        out = g.query_daily_closes("399006.SZ", count=21)
+    finally:
+        monkey.undo()
+    assert out == pytest.approx([2.0])                        # 当日盘中 bar 被裁
+    assert g.last_daily_bar_day("399006.SZ") == prev.strftime("%Y%m%d")

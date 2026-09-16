@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import threading
 import time
 
@@ -135,6 +136,22 @@ class AutoBuyFeature:
                                    data={"signals": None, "error": str(e),
                                          "source": source}))
 
+    def _series_contains_today(self, code: str) -> bool:
+        """指数日线序列的末根是否已是"今天" (2026-09-16 审计修复收尾)。
+
+        背景: 本闸门要在"当日这根日线还不在序列里"时追加实时价, 才能判"现在站没
+        站上均线"; 但 2026-09-16 的新鲜度修复会让盘后当日日线主动补下载落地 ——
+        此时再追加实时价等于把当天计两次, 均线(默认 200 日)被拉偏。
+        判据取网关记录的"实际返回序列末根日期" [trade/gateway.py:132-140]:
+        盘中当日 bar 被网关按无未来函数裁掉 → 不是今天 → 照旧追加;
+        盘后已落地 → 是今天 → 不追加。未知('')按"不在"处理(保持原行为)。
+        """
+        last_day = self._gateway.last_daily_bar_day(code)
+        if not last_day:
+            return False
+        now = _dt.datetime.fromtimestamp(self._clock())
+        return last_day == now.strftime("%Y%m%d")
+
     def _regime_allows(self, rf) -> bool:
         """弱市择时闸门: 指数最新价 vs MA 均线。True=放行, False=禁买。
         数据不足/取数失败一律 False (fail-closed, 宁可不买不可瞎买)。"""
@@ -144,7 +161,7 @@ class AutoBuyFeature:
             q = (self._gateway.query_quotes([rf.index_code]) or {}).get(
                 rf.index_code) or {}
             last = q.get("last") or 0.0
-            if last > 0:
+            if last > 0 and not self._series_contains_today(rf.index_code):
                 closes = list(closes) + [last]
             return bool(index_above_ma(closes, rf.ma_window))  # None → False
         except Exception:
