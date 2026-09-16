@@ -5,6 +5,26 @@
 
 ---
 
+## 2026-09-16 — 手机(Tailscale)访问 DSH 对话界面 3080 (信任栅栏 + cookie 十年)
+
+**入口**: 用户问"已连 Tailscale, 为什么手机打不开 100.94.120.22:3080"
+
+### 关键改动 (DSH 侧, 仓库外)
+
+| 类别 | 改动 |
+|---|---|
+| 根因 | 3080 只绑回环 `127.0.0.1`(官方明确不支持 `dsh web --host 0.0.0.0`); 另有 `/api` Host/Origin 信任栅栏 + 启动时打印的一次性 `?token=` cookie 两道门 |
+| 实测证据 | `/api/status`: `127.0.0.1:3080`→401(可信未认证)、`desktop-9r6m55v.tail2f41cc.ts.net:3080`→403(栅栏拒)、`100.94.120.22:3080`→404(tailscale serve 按主机名路由, 纯 IP 不认); 对照: VERA 8080 绑 0.0.0.0, `http://100.94.120.22:8080/m` 手机版实测 200 |
+| 通道 | `tailscale serve --bg --http=3080 http://127.0.0.1:3080` → tailnet 内 `http://desktop-9r6m55v.tail2f41cc.ts.net:3080/` |
+| 配置 | `~/.dsh/profiles/web/cordis.patch.yml` 覆盖 `connection` 行: `trustedHosts: ['desktop-9r6m55v.tail2f41cc.ts.net','desktop-9r6m55v']` + `cookieMaxAgeDays: 3650`(登录 cookie 30 天 → 10 年, 手机贴一次 token 长期免贴) |
+| 校验 | `node apps/cli/lib/bin.js --profile web --dump-config` **不启动**验 compose: EXIT=0, 输出标明该行 "patched by ...cordis.patch.yml" |
+
+**踩坑 (已写入 CLAUDE.md)**: 用户 patch 层**不支持 `!!js`** — 首版照 bundle 写法用 `!!js [...ctx.webRuntime.trustedHosts, 'x']`, dump 直接报 `unknown tag !<tag:yaml.org,2002:js>`(文件头注释却写"`!!js` expressions allowed", 文档与实现不符), 若直接重启会**启动失败**; 改字面量列表后通过。另 patch 是整块替换 config 不深合并。
+
+**未做/边界**: token 无法取消(该 plugin 无关闭认证开关, token 只是首次种 cookie 的引导); 生效需重启 `dsh web`(会中断当前会话, 由用户自己挑时机); 撤销 = `tailscale serve --http=3080 off` + 还原 `cordis.patch.yml.bak-20260916`。
+
+---
+
 ## 2026-09-16 — QMT 本地日线"有数据但陈旧"也补下载 (轮动动量参照点 / 停机日补算)
 
 **入口**: 用户「检查当前 ETF 轮动的规则」→ 顺查取数链, 实测 QMT 本地日线滞后于 TDX
