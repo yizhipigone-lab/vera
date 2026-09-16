@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-09-16 — QMT 本地日线"有数据但陈旧"也补下载 (轮动动量参照点 / 停机日补算)
+
+**入口**: 用户「检查当前 ETF 轮动的规则」→ 顺查取数链, 实测 QMT 本地日线滞后于 TDX
+
+### 关键改动
+
+| 类别 | 改动 |
+|---|---|
+| 根因 | `RealGateway.query_daily_closes` / `query_daily_closes_range` 只在**取空**时 `download_history_data`; 本机 9/16 盘后实测 513100 末根仍停 9/14、159949 停 9/15 (TDX 已有 9/16), 属"有数据但陈旧" |
+| 影响面 | ① 轮动动量: 尾部缺 9/15, 14:54 追加实时价后参照点由「20 个交易日前」变成「21 个交易日前」; ② 停机日补算: 缺 9/15 收盘价 → fail-closed 拒写 9/11、9/14 (审计 `gapfill_reject` 实证) |
+| 修法 | 「何时该补下载」收成**单一判定** `_should_download_history` (空 或 末根 < 应有一根), 两个取数口共用 (原为两处各写一份同语义条件); 应有一根 = `_expected_last_bar_day` (≥15:05 且当日为交易日→当日, 否则上一交易日; 日历不可用→不猜不下载); 同码防抖 `_REFRESH_MIN_INTERVAL_SEC`=600s (数据当天可能晚到, 失败一次不该把每个调用都拖成 20s 阻塞); 历史区间查询按右端 `cap_day` 封顶 (end 在过去不该被判陈旧) |
+| 顺带收口 | 丢「当日未收盘 bar」的 15:05 时点与新鲜度判定同源 (`_CLOSE_READY_HM`); 日期解析 `_last_index_day` 一处实现 |
+
+### 验证
+
+- 新增 `tests/trade/test_gateway_history_fresh.py` **16 例** (时点语义 4 + 纯函数 2 + 陈旧/防抖 5 + 两口接缝 5), `pytest tests/trade` **全绿** (exit 0)
+- **生产端到端**: 重启 trade_main 后日志出现 `query_daily_closes_range(513100.SH) 末根 20260914 落后于应有 20260916, 补下载历史`; 原先 fail-closed 拒写的停机日补算转为 `gapfill_write 补算停机日 2026-09-11、2026-09-14 → 两端夹逼一致 (右端 2026-09-15 分毫不差)`, `daily_asset` 新增 9/11 (1,057,104.92) 与 9/14 (1,054,700.92), `source='derived'`
+- 复核 QMT 本地库: 513100 / 518880 末根已到 9/16 (2.218 / 8.905, 与 TDX 一致)
+
+### 剩余风险
+
+- 159949 未被本轮查询触发 → 仍停 9/15; 周五 14:54 轮动取它时会自动补下载 (同一判定)
+- 若 QMT 当天迟迟不给当日 bar, 15:05 后同一代码最多每 10 分钟重试一次 (有界, 数据落地即停)
+
+---
+
 ## 2026-09-16 — 本机 Python 定位修复 (商店占位符占名)
 
 **入口**: 用户敲 `python` 报 `Python was not found; run without arguments to install from the Microsoft Store`
