@@ -1,0 +1,276 @@
+// ====== VERA 大盘位置 TAB (2026-09-17) — 位置 / 宽度 / 照镜子 / 择时影子 ======
+// 零 import 依赖（data_cache.js 同款 seam 模式）：fetch 由浏览器提供，
+// Node 测试通过 module.exports 拿纯函数。
+// 生命周期钩子由 vera-ui.js switchTab 调用: window.marketPageEnter。
+//
+// 口径说明（页面上的数字全部来自后端，前端不做任何二次计算）:
+//   十年百分位 = 现在的位置比过去十年百分之多少的交易日高；
+//   站上20日均线占比 = 市场宽度（战场上还有多少士兵在冲锋）；
+//   连续录像 = data/market_position/daily.jsonl，一天一行，由调度器盘后写入。
+
+(function () {
+
+// ── 纯函数（Node 可测）─────────────────────────────────
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  });
+}
+
+// 位置分档：只描述"贵不贵"，不做任何买卖建议（业务铁律 1）
+function positionLabel(pct) {
+  if (pct == null) return { text: '【缺】', cls: 'warn' };
+  if (pct >= 80) return { text: '高位', cls: 'hot' };
+  if (pct >= 60) return { text: '偏高', cls: 'warm' };
+  if (pct >= 40) return { text: '中位', cls: 'mid' };
+  if (pct >= 20) return { text: '偏低', cls: 'cool' };
+  return { text: '低位', cls: 'cold' };
+}
+
+function fmtPct(v, signed) {
+  if (v == null) return '—';
+  var n = Number(v);
+  if (!isFinite(n)) return '—';
+  return (signed && n > 0 ? '+' : '') + n.toFixed(1) + '%';
+}
+
+function fmtNum(v, nd) {
+  if (v == null) return '—';
+  var n = Number(v);
+  if (!isFinite(n)) return '—';
+  return n.toFixed(nd == null ? 2 : nd);
+}
+
+var REGIME_CN = { bull: '牛', bear: '熊', range: '震荡' };
+
+// 三大指数位置表（口径与体温表 Markdown 完全一致）
+function positionRowsHtml(rec) {
+  var idx = (rec && rec.indices) || {};
+  var order = [['shanghai', '上证指数', '000001.SH'],
+               ['hs300', '沪深300', '000300.SH'],
+               ['chuangyeban', '创业板指', '399006.SZ']];
+  return order.map(function (o) {
+    var it = idx[o[0]] || {};
+    var lab = positionLabel(it.pct_10y);
+    var color = { hot: 'var(--up)', warm: 'var(--up)', mid: 'var(--text2)',
+                  cool: 'var(--down)', cold: 'var(--down)',
+                  warn: 'var(--text2)' }[lab.cls];
+    return '<tr>'
+      + '<td>' + esc(o[1]) + '(' + esc(o[2]) + ')</td>'
+      + '<td>' + fmtNum(it.close, 2) + '</td>'
+      + '<td style="color:' + color + ';font-weight:600">' + fmtPct(it.pct_10y)
+      + ' <span style="font-weight:400">' + lab.text + '</span></td>'
+      + '<td>' + fmtPct(it.from_high_pct, true) + '</td>'
+      + '<td>' + fmtPct(it.vol_ann_20) + '</td>'
+      + '<td>' + fmtPct(it.ret_1y_pct, true) + '</td>'
+      + '<td>' + fmtPct(it.ma250_dev_pct, true) + '</td>'
+      + '<td>' + (REGIME_CN[it.regime] || '【缺】') + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// 照镜子表格：历史上最像的几天，之后实际怎么走
+function mirrorRowsHtml(md) {
+  var ms = (md && md.matches) || [];
+  if (!ms.length) return '<tr><td colspan="5" style="text-align:left;color:var(--text2)">'
+    + '没有可用的相似日（连续录像太短？先跑一次全量回填）</td></tr>';
+  return ms.map(function (m) {
+    function cell(v) {
+      if (v == null) return '<td>—</td>';
+      var c = v > 0 ? 'var(--up)' : (v < 0 ? 'var(--down)' : 'var(--text2)');
+      return '<td style="color:' + c + '">' + fmtPct(v, true) + '</td>';
+    }
+    return '<tr><td>' + esc(m.date) + '</td><td>' + fmtNum(m.distance, 2) + '</td>'
+      + cell(m.fwd_20_hs300_pct) + cell(m.fwd_60_hs300_pct) + cell(m.fwd_20_sh_pct)
+      + '</tr>';
+  }).join('');
+}
+
+function shadowRowsHtml(sd) {
+  if (!sd || !sd.ok) {
+    return '<tr><td colspan="6" style="text-align:left;color:var(--text2)">'
+      + esc((sd && sd.reason) || '不可用') + '</td></tr>';
+  }
+  var name = { ma20: '沪深300 > MA20', breadth50: '宽度≥50%',
+               regime: '牛熊口径=牛', buy_hold: '买入持有（对照）' };
+  var rows = (sd.rows || []).concat(sd.buy_hold ? [sd.buy_hold] : []);
+  return rows.map(function (r) {
+    if (!r) return '';
+    return '<tr><td>' + esc(name[r.rule] || r.rule) + '</td>'
+      + '<td>' + fmtPct(r.annualized_pct, true) + '</td>'
+      + '<td>' + fmtPct(r.max_drawdown_pct, true) + '</td>'
+      + '<td>' + fmtNum(r.sharpe, 2) + '</td>'
+      + '<td>' + fmtNum(r.calmar, 2) + '</td>'
+      + '<td>' + fmtPct(r.exposure_pct) + '</td></tr>';
+  }).join('');
+}
+
+// 趋势图数据：把连续录像转成 ECharts 需要的两个序列
+function trendSeries(items) {
+  var dates = [], width = [], pct = [];
+  (items || []).forEach(function (r) {
+    dates.push(r.date);
+    var b = r.breadth || {};
+    var sh = ((r.indices || {}).shanghai) || {};
+    width.push(b.above_ma20_pct == null ? null : Number(b.above_ma20_pct));
+    pct.push(sh.pct_10y == null ? null : Number(sh.pct_10y));
+  });
+  return { dates: dates, width: width, pct: pct };
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { esc: esc, positionLabel: positionLabel, fmtPct: fmtPct,
+                     fmtNum: fmtNum, positionRowsHtml: positionRowsHtml,
+                     mirrorRowsHtml: mirrorRowsHtml, shadowRowsHtml: shadowRowsHtml,
+                     trendSeries: trendSeries };
+  return;
+}
+
+// ── 浏览器侧（DOM + fetch）─────────────────────────────
+
+function $(id) { return document.getElementById(id); }
+
+function setHint(id, text, color) {
+  var el = $(id);
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = color || 'var(--text2)';
+}
+
+function refresh() {
+  setHint('mpHint', '加载中…');
+  return fetch('/api/market_position/latest').then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) { setHint('mpHint', d.error || '加载失败', 'var(--up)'); return; }
+      var rec = d.record;
+      if (!rec) {
+        setHint('mpHint', d.reason || '还没有连续录像', 'var(--up)');
+        $('mpSummary').textContent = '【缺】还没有采集过。点「全量回填」先建十年录像。';
+        return;
+      }
+      var stale = rec.stale
+        ? ' ⚠ 数据滞后（最新有效交易日 ' + rec.date + '，应有 ' + rec.expected_date + '）' : '';
+      setHint('mpHint', '数据日期 ' + rec.date + ' · 连续录像 ' + d.lines + ' 条' + stale,
+              rec.stale ? 'var(--up)' : 'var(--down)');
+      var b = rec.breadth || {}, t = rec.turnover || {}, lim = rec.limit || {};
+      $('mpSummary').textContent =
+        '全A ' + b.traded + ' 只有成交；站上20日均线 ' + fmtPct(b.above_ma20_pct)
+        + '；创60日新高 ' + b.new_high_60 + ' 家 vs 新低 ' + b.new_low_60
+        + ' 家（差 ' + b.hl_spread + '）；全A成交额 '
+        + (t.amount_yi == null ? '—' : Number(t.amount_yi).toLocaleString() + '亿元')
+        + '（一年百分位 ' + fmtPct(t.amount_pct_1y) + '）；涨停 ' + lim.up
+        + ' 家 / 跌停 ' + lim.down + ' 家。';
+      $('mpPositionBody').innerHTML = positionRowsHtml(rec);
+      var sh = rec.shadow || {};
+      $('mpShadowNow').textContent = '今日状态: ' + ['ma20', 'breadth50', 'regime']
+        .map(function (k) { return k + '=' + (sh[k] === 'on' ? '多头' : '空头'); }).join('，');
+    }).catch(function (e) { setHint('mpHint', '加载失败: ' + e, 'var(--up)'); });
+}
+
+function drawTrend() {
+  var box = $('mpTrend');
+  if (!box || !window.echarts) return;
+  fetch('/api/market_position/history?limit=250').then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) return;
+      var s = trendSeries(d.items);
+      var chart = echarts.getInstanceByDom(box) || echarts.init(box);
+      chart.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['站上20日均线占比', '上证十年百分位'], textStyle: { color: '#aaa' } },
+        grid: { left: 48, right: 56, top: 36, bottom: 28 },
+        xAxis: { type: 'category', data: s.dates, axisLabel: { color: '#888' } },
+        yAxis: [
+          { type: 'value', name: '宽度%', max: 100, min: 0, axisLabel: { color: '#888' } },
+          { type: 'value', name: '十年分位%', max: 100, min: 0, axisLabel: { color: '#888' } }
+        ],
+        series: [
+          { name: '站上20日均线占比', type: 'line', showSymbol: false, data: s.width,
+            lineStyle: { width: 1.5 }, color: '#4da3ff',
+            markLine: { silent: true, symbol: 'none', label: { color: '#888', formatter: '50%' },
+                        lineStyle: { color: '#888', type: 'dashed' },
+                        data: [{ yAxis: 50 }] } },
+          { name: '上证十年百分位', type: 'line', yAxisIndex: 1, showSymbol: false,
+            data: s.pct, lineStyle: { width: 1.2, type: 'dotted' }, color: '#e0a458' }
+        ]
+      });
+    }).catch(function () { /* 图表失败不影响表格 */ });
+}
+
+function loadMirror() {
+  fetch('/api/market_position/mirror?top_n=5').then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) { $('mpMirrorBody').innerHTML = '<tr><td colspan="5">加载失败</td></tr>'; return; }
+      if (!d.ok) {
+        $('mpMirrorBody').innerHTML = '<tr><td colspan="5" style="text-align:left;color:var(--text2)">'
+          + esc(d.reason || '不可用') + '</td></tr>';
+        $('mpMirrorWarn').textContent = '';
+        return;
+      }
+      $('mpMirrorBody').innerHTML = mirrorRowsHtml(d);
+      var s = d.summary || {};
+      $('mpMirrorSummary').textContent =
+        '这 ' + s.n + ' 次之后：沪深300 20日中位数 ' + fmtPct(s.fwd_20_median, true)
+        + '、上涨占比 ' + fmtPct(s.fwd_20_up_ratio) + '；60日中位数 '
+        + fmtPct(s.fwd_60_median, true) + '。';
+      $('mpMirrorWarn').textContent = d.warning || '';
+    }).catch(function () { });
+}
+
+function loadShadow() {
+  fetch('/api/market_position/shadow').then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) return;
+      $('mpShadowBody').innerHTML = shadowRowsHtml(d);
+      $('mpShadowCaliber').textContent = d.ok
+        ? ('回放口径: ' + d.caliber + '（' + d.start + ' ~ ' + d.end + '）') : '';
+    }).catch(function () { });
+}
+
+function showReport() {
+  var box = $('mpReport');
+  if (!box) return;
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  fetch('/api/market_position/report').then(function (r) { return r.json(); })
+    .then(function (d) {
+      box.textContent = d.success ? d.markdown : ('生成失败: ' + (d.error || d.detail || ''));
+      box.style.display = 'block';
+    }).catch(function (e) { box.textContent = '生成失败: ' + e; box.style.display = 'block'; });
+}
+
+function doCollect(backfill) {
+  var btn = $(backfill ? 'mpBackfillBtn' : 'mpCollectBtn');
+  if (btn) { btn.disabled = true; btn.dataset.old = btn.textContent; btn.textContent = '采集中…'; }
+  setHint('mpHint', backfill ? '全量回填中（约 1 分钟）…' : '采集中（约 30 秒）…');
+  fetch('/api/market_position/collect?backfill=' + (backfill ? 'true' : 'false'),
+        { method: 'POST' })
+    .then(function (r) { return r.json().then(function (j) { return [r.status, j]; }); })
+    .then(function (pair) {
+      var st = pair[0], d = pair[1];
+      if (st >= 400 || !d.success) {
+        setHint('mpHint', d.detail || d.error || d.reason || '采集失败', 'var(--up)');
+      } else {
+        setHint('mpHint', '采集完成: 数据日期 ' + d.asof + '，本次 ' + d.records
+                + ' 条，录像共 ' + d.lines + ' 条', 'var(--down)');
+        refresh(); drawTrend(); loadMirror(); loadShadow();
+      }
+    }).catch(function (e) { setHint('mpHint', '采集失败: ' + e, 'var(--up)'); })
+    .then(function () {
+      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.old || '采集'; }
+    });
+}
+
+function enter() {
+  refresh(); drawTrend(); loadMirror(); loadShadow();
+  var c = $('mpCollectBtn'), b = $('mpBackfillBtn'), r = $('mpRefreshBtn'),
+      rep = $('mpReportBtn');
+  if (c && !c.dataset.bound) { c.dataset.bound = '1'; c.addEventListener('click', function () { doCollect(false); }); }
+  if (b && !b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', function () { doCollect(true); }); }
+  if (r && !r.dataset.bound) { r.dataset.bound = '1'; r.addEventListener('click', function () { enter(); }); }
+  if (rep && !rep.dataset.bound) { rep.dataset.bound = '1'; rep.addEventListener('click', showReport); }
+}
+
+window.marketPageEnter = enter;
+
+})();

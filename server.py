@@ -117,6 +117,9 @@ from data_cache_api import router as data_cache_router  # 2026-08-14: 数据准�
 app.include_router(data_cache_router)
 from ai_api import router as ai_router  # 2026-09-06: AI 设置 TAB (对话大脑三档接入配置)
 app.include_router(ai_router)
+# 2026-09-17: 大盘位置 TAB (十年百分位/市场宽度/照镜子/择时影子; 只读参考不联仓位)
+from market_position_api import router as market_position_router  # noqa: E402
+app.include_router(market_position_router)
 
 
 # ====== 配置端点 ======

@@ -20,7 +20,7 @@ import pandas as pd
 __all__ = [
     "MA_WINDOW", "MIN_PERIODS", "SLOPE_SPAN",
     "BULL", "BEAR", "RANGE",
-    "classify", "regime_series",
+    "classify", "regime_series", "ma_and_slope",
 ]
 
 MA_WINDOW = 250
@@ -37,6 +37,17 @@ def _ma_and_slope(closes: pd.Series) -> tuple[pd.Series, pd.Series]:
     ma = c.rolling(MA_WINDOW, min_periods=MIN_PERIODS).mean()
     slope = ma / ma.shift(SLOPE_SPAN) - 1
     return ma, slope
+
+
+def ma_and_slope(closes) -> tuple[pd.Series, pd.Series]:
+    """全序列的 MA250 与 MA250 的 20 日斜率 (2026-09-17 加入)。
+
+    存在的理由: 需要"偏离年线多少"这类 MA **数值**的消费方 (如大盘位置指标)
+    若各自重算一遍 MA250, 就是把同一个窗口写第二份 —— 本项目已有多次
+    "同一规则 N 份实现必然漂移"的教训 (买卖口径/行情陈旧判定/AI 设置三档)。
+    故把内部实现开一个只读出口, 口径仍只此一处。
+    """
+    return _ma_and_slope(pd.Series(closes))
 
 
 def classify(closes) -> tuple[str | None, float, float]:

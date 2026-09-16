@@ -79,6 +79,8 @@ scratch/
 # 运行时数据库/流水产物 (治理III 2026-09-05 收尾): 研报雷达库 + 影子轮动流水
 data/sgpjbg_radar.db
 data/shadow_rotation.jsonl
+# 大盘位置连续录像 (2026-09-17): 可由 tools/market_position_collect.py --backfill 重建
+data/market_position/
 # DSH 视觉路由会话截图 (工具产物, 可再生成)
 .dsh-vision-router/
 # WorkBuddy 助手记忆 (工具产物)

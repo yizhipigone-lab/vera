@@ -331,7 +331,12 @@ function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade',
   document.getElementById('tabBtnLab').classList.toggle('active', isLab);
   document.getElementById('tabBtnTrade').classList.toggle('active', isTrade);
   var _tabA = document.getElementById('tabBtnAnalysis'); if (_tabA) _tabA.classList.toggle('active', isAnalysis);
-  document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis)?'none':'';
+  // 2026-09-17: 大盘位置 TAB (固定浮层; 切入时加载一次, 无轮询 —— 每天只更新一次)
+  var isMarket = name==='market';
+  var _tabM = document.getElementById('tabBtnMarket'); if (_tabM) _tabM.classList.toggle('active', isMarket);
+  var _pM = document.getElementById('pageMarket'); if (_pM) _pM.classList.toggle('active', isMarket);
+  if (isMarket && window.marketPageEnter) window.marketPageEnter();
+  document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis||isMarket)?'none':'';
   document.getElementById('pageLab').classList.toggle('active', isLab);
   document.getElementById('pageTrade').classList.toggle('active', isTrade);
   var _pa = document.getElementById('pageAnalysis'); if (_pa) _pa.classList.toggle('active', isAnalysis);
@@ -818,7 +823,7 @@ fetchResults().then(list => { if (list&&list.length>0) { document.getElementById
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200); });
 
 // W1-4: 初始 hash 恢复页签 + 浏览器前进后退联动 (白名单与 switchTab 实际入参一致)
-const _validTabs = ['backtest','lab','trade','analysis','research','records','data','farm','ai'];
+const _validTabs = ['backtest','lab','trade','analysis','research','records','data','farm','ai','market'];
 function _applyHashTab() { const h = location.hash.slice(1); if (_validTabs.includes(h)) switchTab(h); }
 _applyHashTab();
 window.addEventListener('hashchange', _applyHashTab);

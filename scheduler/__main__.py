@@ -14,6 +14,8 @@
       防"缓存过期→回测全量重拉"集中爆发, 2026-08-14 5M 回测超时事故)
     - 每日 17:30 sgpjbg 研究热度雷达抓取 (免费元数据落库, 2026-09-04 决策)
     - 每周日 18:30 机构研究动向周报 (独立周报; weekly 语义不看交易日, P0-2 修复)
+    - 每交易日 15:50 大盘位置采集 (读本地日线缓存落连续录像; 排在 15:45 缓存
+      补尾段之后); 次日 09:05 补采 + 推「大盘体温表」到飞书 (2026-09-17)
 
 优雅停机: SIGTERM/SIGINT → graceful_shutdown 的 Event → stop() + 关 dedup。
 """
@@ -111,6 +113,41 @@ def _job_sgpjbg_weekly() -> None:
         _logger.info("sgpjbg 周报已生成: %s", path)
 
 
+# ── 大盘位置连续录像 (2026-09-17) ─────────────────────────────
+# 两个 job 分工: 盘后只采集(让页面当晚就是新数据), 次日盘前采集+推体温表
+# (用户要的"每天早上推一张")。采集读本地日线缓存, 不联网、不触发补拉。
+#
+# 为什么盘前那次也要采集: ①若 15:50 那次因关机没跑, 这里自动补齐(collect
+# 会 upsert 近 300 个交易日的记录, 天然自愈); ②盘前 09:05 时
+# expected_last_trading_day() 返回的是上一交易日, 所以昨天的收盘数据
+# **不算滞后**, 新鲜度判据天然对齐, 不会误报 stale。
+
+
+def _job_market_position_collect() -> None:
+    """每交易日 15:50: 采集大盘位置落连续录像 (不推送)。"""
+    from core import market_position_runner as mpr
+    res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
+    if not res.get("ok"):
+        _logger.warning("大盘位置采集失败: %s", res.get("reason"))
+        return
+    _logger.info("大盘位置: 数据日期 %s%s, 本次 %d 条, 录像共 %d 条",
+                 res["asof"], " (滞后)" if res["stale"] else "",
+                 res["records"], res["lines"])
+
+
+def _job_market_position_morning() -> None:
+    """每交易日 09:05: 补采一次 + 推「大盘体温表」到飞书。"""
+    from core import market_position_runner as mpr
+    res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
+    if not res.get("ok"):
+        _logger.warning("大盘位置盘前采集失败 (仍尝试推已有录像): %s", res.get("reason"))
+    push = mpr.push_thermometer()
+    if push.get("ok"):
+        _logger.info("大盘体温表已推飞书: %s 张卡", push.get("cards"))
+    else:
+        _logger.info("大盘体温表未推送: %s", push.get("reason"))
+
+
 def _register_sentiment(sched: VeraScheduler) -> None:
     """注册盘中舆情扫描 interval job。
 
@@ -168,6 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     sched.add_daily("sgpjbg_fetch", _job_sgpjbg_fetch, hhmm="17:30")
     sched.add_weekly("sgpjbg_weekly", _job_sgpjbg_weekly,
                      weekday=6, hhmm="18:30")
+    # 大盘位置: 15:50 排在 15:45 的 K 线缓存补尾段之后 (缓存没刷新指标就是旧的);
+    # 09:05 盘前补采 + 推体温表 (用户要的"每天早上推一张")。
+    sched.add_daily("market_position_collect", _job_market_position_collect,
+                    hhmm="15:50")
+    sched.add_daily("market_position_morning", _job_market_position_morning,
+                    hhmm="09:05")
     _register_sentiment(sched)
     sched.start(block=False)
 

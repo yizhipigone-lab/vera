@@ -276,8 +276,8 @@ input.invalid~.input-error{display:block}
 .cal-pnl.cal-up{color:var(--up)} .cal-pnl.cal-down{color:var(--down)}
 .cal-amt{font-size:var(--fs-xs);font-family:var(--mono);color:var(--text2)}
 .cal-trades{font-size:var(--fs-xs);color:var(--text2);margin-top:2px}
-#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData,#pageFarm,#pageAi{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:var(--sp-5) var(--sp-6)}
-#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active,#pageFarm.active,#pageAi.active{display:block}
+#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData,#pageFarm,#pageAi,#pageMarket{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:var(--sp-5) var(--sp-6)}
+#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active,#pageFarm.active,#pageAi.active,#pageMarket.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-4) var(--sp-5);margin-bottom:var(--sp-4);box-shadow:var(--shadow-sm)}
 .lab-card h2{margin:0 0 var(--sp-3);font-size:var(--fs-md);color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border-bottom:1px dashed var(--border);font-size:var(--fs-sm)}
@@ -400,6 +400,7 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn" id="tabBtnResearch">研究</button>
   <button class="tab-btn" id="tabBtnData">数据准备</button>
   <button class="tab-btn" id="tabBtnAi" title="对话大脑三档(快速/标准/深度)的 API Key 与模型配置">AI 设置</button>
+  <button class="tab-btn" id="tabBtnMarket" title="大盘位置: 十年百分位/市场宽度/历史照镜子/择时规则影子(只读参考)">大盘位置</button>
   <!-- 2026-09-16: 手机版直达入口 (手机浏览器访问 http://<本机IP 或 tailnet-IP>:8080/m) -->
   <a class="tab-btn" href="/m" target="_blank" rel="noopener"
      style="margin-left:auto;text-decoration:none"
@@ -1430,6 +1431,84 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
+<!-- 2026-09-17: 大盘位置 TAB — 位置/宽度/照镜子/择时影子。
+     数据源 data/market_position/daily.jsonl (调度器每交易日 15:50 落盘,
+     也可点下面按钮手动采集)。口径唯一真相源 core/market_position.py。
+     铁律: 本页只做提示与参考, 绝不联动仓位 (业务铁律 1)。 -->
+<div id="pageMarket">
+  <div class="lab-card">
+    <h2>大盘位置
+      <button class="btn" id="mpRefreshBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button>
+      <button class="btn" id="mpCollectBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="近 300 个交易日重算并写入连续录像 (约 30 秒)">立即采集</button>
+      <button class="btn" id="mpBackfillBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="从本地日线缓存回填十年录像, 让「照镜子」有参照系 (约 1 分钟)">全量回填</button>
+      <button class="btn" id="mpReportBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="展开完整「大盘体温表」Markdown (与飞书推送同一份文案)">完整报告</button>
+      <span class="trade-hint" id="mpHint"></span></h2>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
+      把大盘从"一张照片"变成"连续录像"：十年百分位看贵不贵，市场宽度看
+      "多少股票在涨"，照镜子看历史上像今天的时候之后怎么走。
+      <b>只读参考，不联动任何仓位</b>（业务铁律 1）。
+    </div>
+    <div id="mpSummary" style="font-size:var(--fs-sm);line-height:1.7;padding:var(--sp-2) var(--sp-3);background:var(--card);border-radius:6px;border:1px solid var(--border)">加载中…</div>
+  </div>
+
+  <div class="lab-card">
+    <h2>位置（三大指数，各自独立，不合成总分）</h2>
+    <div class="trade-table-wrap" style="max-height:none">
+      <table class="trade-table" id="mpPositionTable">
+        <thead><tr><th>指数</th><th>收盘</th><th>十年百分位</th><th>距十年最高</th><th>年化波动20日</th><th>近一年</th><th>偏离年线</th><th>牛熊</th></tr></thead>
+        <tbody id="mpPositionBody"><tr><td colspan="8" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
+      十年百分位 = 现在的位置比过去十年百分之多少的交易日高（90% = 偏贵区）。
+      牛熊口径 = 价 vs 年线(MA250) + 年线斜率，与「大盘快照」同源（core/index_regime.py）。
+    </div>
+  </div>
+
+  <div class="lab-card">
+    <h2>位置趋势（近 250 个交易日）</h2>
+    <div id="mpTrend" style="width:100%;height:280px"></div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
+      蓝实线 = 站上 20 日均线的股票占比（市场宽度，虚线为 50% 中性线）；
+      橙点线 = 上证指数十年百分位。两条线背离时（指数高、宽度低）说明只有少数大票在拉。
+    </div>
+  </div>
+
+  <div class="lab-card">
+    <h2>照镜子（历史上最像的几天，之后实际怎么走）</h2>
+    <div id="mpMirrorSummary" style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)"></div>
+    <div class="trade-table-wrap" style="max-height:none">
+      <table class="trade-table">
+        <thead><tr><th>相似日</th><th>距离(越小越像)</th><th>之后20日(沪深300)</th><th>之后60日(沪深300)</th><th>之后20日(上证)</th></tr></thead>
+        <tbody id="mpMirrorBody"><tr><td colspan="5" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div id="mpMirrorWarn" style="font-size:var(--fs-xs);color:var(--up);margin-top:var(--sp-2);line-height:1.6"></div>
+  </div>
+
+  <div class="lab-card">
+    <h2>候选择时规则（只记录不交易）</h2>
+    <div id="mpShadowNow" style="font-size:var(--fs-sm);margin-bottom:var(--sp-1)"></div>
+    <div id="mpShadowCaliber" style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)"></div>
+    <div class="trade-table-wrap" style="max-height:none">
+      <table class="trade-table">
+        <thead><tr><th>规则</th><th>年化</th><th>最大回撤</th><th>夏普</th><th>卡玛</th><th>持仓占比</th></tr></thead>
+        <tbody id="mpShadowBody"><tr><td colspan="6" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
+      三条候选规则按「T 日收盘出信号 → T+1 生效」回放（空仓按 0 收益）。
+      这是研究记录，<b>不是交易建议</b>；换规则要人工拍板。
+    </div>
+  </div>
+
+  <div class="lab-card">
+    <h2>完整体温表</h2>
+    <div class="lab-pre" id="mpReport" style="display:none;max-height:520px;overflow-y:auto"></div>
+    <div id="mpReportHint" style="font-size:var(--fs-xs);color:var(--text2)">点上方「完整报告」展开（与飞书推送内容一致）。</div>
+  </div>
+</div>
+
 <!-- 2026-09-06: AI 设置 TAB — 对话大脑三档 (快速/标准/深度) 接入配置。
      快速档 (OpenAI 兼容, 走 llm.providers, 影响对话大脑+政策提取+交易复盘);
      标准档 (Anthropic 兼容, claude CLI, 不碰 ~/.claude 原文件);
@@ -1516,6 +1595,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/brain_chat.js?v=20260906c"></script>
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
+<script src="/web/js/market_position.js?v=20260917a"></script>
 <script type="module" src="/web/js/analysis.js?v=20260911a"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260916g"></script>
 </body>

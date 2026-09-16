@@ -139,6 +139,13 @@ def _isolate_caches(tmp_path):
     if _rot is not None:
         orig_rot_shadow = _rot.SHADOW_LOG_PATH
         _rot.SHADOW_LOG_PATH = tmp_shadow
+    # 2026-09-17: 大盘位置连续录像 + 日线缓存目录 —— 同一投毒风险 (测试若真跑
+    # collect 会把假指标写进生产 data/market_position/daily.jsonl)。
+    import core.market_position_runner as _mpr
+    orig_mp_path = _mpr.DAILY_PATH
+    orig_mp_kline = _mpr.KLINE_1D_DIR
+    _mpr.DAILY_PATH = tmp_path / "market_position" / "daily.jsonl"
+    _mpr.KLINE_1D_DIR = tmp_path / "kline_cache" / "1d"
     try:
         yield
     finally:
@@ -146,6 +153,8 @@ def _isolate_caches(tmp_path):
         _shadow.SHADOW_LOG_PATH = orig_shadow_path
         if _rot is not None:
             _rot.SHADOW_LOG_PATH = orig_rot_shadow
+        _mpr.DAILY_PATH = orig_mp_path
+        _mpr.KLINE_1D_DIR = orig_mp_kline
 
 
 @pytest.fixture(autouse=True)
