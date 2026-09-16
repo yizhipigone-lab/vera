@@ -15,7 +15,9 @@
     - 每日 17:30 sgpjbg 研究热度雷达抓取 (免费元数据落库, 2026-09-04 决策)
     - 每周日 18:30 机构研究动向周报 (独立周报; weekly 语义不看交易日, P0-2 修复)
     - 每交易日 15:50 大盘位置采集 (读本地日线缓存落连续录像; 排在 15:45 缓存
-      补尾段之后); 次日 09:05 补采 + 推「大盘体温表」到飞书 (2026-09-17)
+      补尾段之后); **15:55 补采 + 推「大盘体温表」到飞书**; 次日 09:05 只补采
+      (兜底不推送)。2026-09-17 用户纠错: 体温表是收盘价算出来的, 天生属于"盘后",
+      原"次日 09:05 推"实测与前一天 15:50 得到同一天数据、记录逐字段相同 → 零新信息
 
 优雅停机: SIGTERM/SIGINT → graceful_shutdown 的 Event → stop() + 关 dedup。
 """
@@ -114,17 +116,26 @@ def _job_sgpjbg_weekly() -> None:
 
 
 # ── 大盘位置连续录像 (2026-09-17) ─────────────────────────────
-# 两个 job 分工: 盘后只采集(让页面当晚就是新数据), 次日盘前采集+推体温表
-# (用户要的"每天早上推一张")。采集读本地日线缓存, 不联网、不触发补拉。
+# 三个 job 分工 (2026-09-17 用户指出设计错误后重定):
+#   15:50  只采集 —— 让页面当晚就是新数据
+#   15:55  **补采 + 推「大盘体温表」** —— 体温表是收盘价算出来的, 天生属于"盘后"
+#   09:05  只补采 (不推送) —— 兜底用; 隔夜简报尚未实现
 #
-# 为什么盘前那次也要采集: ①若 15:50 那次因关机没跑, 这里自动补齐(collect
-# 会 upsert 近 300 个交易日的记录, 天然自愈); ②盘前 09:05 时
-# expected_last_trading_day() 返回的是上一交易日, 所以昨天的收盘数据
-# **不算滞后**, 新鲜度判据天然对齐, 不会误报 stale。
+# 【为什么不在早上推】(用户 2026-09-17 指出 + 实测确认)
+#   `expected_last_trading_day()` 在"当日 15:50"与"次日 09:05"返回**同一天**
+#   (次日 09:05 还没到 15:00, 函数回退到上一交易日) → 两次 collect 算出的记录
+#   **逐字段相同** → 早上那张卡一个新数字都没有, 等于把昨天的作业今早再交一遍。
+#   体温表用的全是当天收盘价, 拖到第二天早上不会变。
+#   计划书: docs/plan/2026-09-17_大盘位置与趋势研判_计划书.md §17
+#
+# 采集读本地日线缓存, 不联网、不触发补拉。
 
 
 def _job_market_position_collect() -> None:
-    """每交易日 15:50: 采集大盘位置落连续录像 (不推送)。"""
+    """每交易日 15:50: 采集大盘位置落连续录像 (只采集, 不推送)。
+
+    排在 15:45 K 线缓存补尾段之后 —— 缓存没刷新的话指标就是旧的。
+    """
     from core import market_position_runner as mpr
     res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
     if not res.get("ok"):
@@ -135,17 +146,64 @@ def _job_market_position_collect() -> None:
                  res["records"], res["lines"])
 
 
-def _job_market_position_morning() -> None:
-    """每交易日 09:05: 补采一次 + 推「大盘体温表」到飞书。"""
+def _job_market_position_push() -> None:
+    """每交易日 15:55: **先补采再推**「大盘体温表」到飞书。
+
+    为什么这里要再采集一次 (15:50 已经采过): 采集幂等且只要十几秒,
+    而"只推送不采集"有个真实缺口 —— 若 15:50 那次因 TDX 断/机器卡而失败,
+    15:55 就会把**昨天那条旧记录**推出去 (2026-09-17 手动验证时实测复现过)。
+    先采后推把这条缺口堵死。
+    """
     from core import market_position_runner as mpr
     res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
     if not res.get("ok"):
-        _logger.warning("大盘位置盘前采集失败 (仍尝试推已有录像): %s", res.get("reason"))
+        _logger.warning("大盘位置 15:55 补采失败 (仍尝试推已有录像): %s",
+                        res.get("reason"))
+    elif res.get("stale"):
+        _logger.warning("大盘位置数据滞后 (数据日期 %s, 应有 %s) —— 体温表会带滞后标记; "
+                        "排查: 跑 python tools/market_position_collect.py 看 reason",
+                        res.get("asof"), res.get("expected"))
     push = mpr.push_thermometer()
     if push.get("ok"):
         _logger.info("大盘体温表已推飞书: %s 张卡", push.get("cards"))
     else:
         _logger.info("大盘体温表未推送: %s", push.get("reason"))
+
+
+def _job_market_position_morning() -> None:
+    """每交易日 09:05: **只补采, 不推送**。
+
+    2026-09-17 起不再在这里推体温表 —— 已实测证伪 (见文件头注释与
+    `_job_market_position_push`)。保留这个 job 只为**兜底补采**:
+    机器昨天 15:50/15:55 若没开机, 早上把录像补齐, 让页面数据不滞后。
+
+    **待建**: 隔夜简报 (美股三大指数隔夜收盘 / 港股 / 南向资金 / 夜里消息,
+    数据源复用 `brain.market_panel.market_snapshot()` 现成三块),
+    以及"昨天 15:55 没推成则在简报里附带补发"的逻辑
+    (判定依据 `data/scheduler_state.json`)。
+    计划书: docs/plan/2026-09-17_大盘位置与趋势研判_计划书.md §17.4
+    """
+    from core import market_position_runner as mpr
+    res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
+    if not res.get("ok"):
+        _logger.warning("大盘位置盘前兜底补采失败: %s", res.get("reason"))
+        return
+    _logger.info("大盘位置盘前兜底补采完成: 数据日期 %s, 录像共 %d 条 (按设计不推送)",
+                 res["asof"], res["lines"])
+
+
+def _register_market_position(sched: VeraScheduler) -> None:
+    """注册大盘位置三个 job（2026-09-17：抽取成函数以便单测直接验时刻）。
+
+    见文件头注释「为什么不在早上推」。**推送时刻必须 ≥15:45**（缓存补尾段之后），
+    否则会拿旧数据出报告 —— 由 `tests/test_scheduler_main.py` 的回归锁看着。
+    """
+    sched.add_daily("market_position_collect", _job_market_position_collect,
+                    hhmm="15:50")
+    sched.add_daily("market_position_push", _job_market_position_push,
+                    hhmm="15:55")
+    sched.add_daily("market_position_morning", _job_market_position_morning,
+                    hhmm="09:05")
 
 
 def _register_sentiment(sched: VeraScheduler) -> None:
@@ -205,12 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     sched.add_daily("sgpjbg_fetch", _job_sgpjbg_fetch, hhmm="17:30")
     sched.add_weekly("sgpjbg_weekly", _job_sgpjbg_weekly,
                      weekday=6, hhmm="18:30")
-    # 大盘位置: 15:50 排在 15:45 的 K 线缓存补尾段之后 (缓存没刷新指标就是旧的);
-    # 09:05 盘前补采 + 推体温表 (用户要的"每天早上推一张")。
-    sched.add_daily("market_position_collect", _job_market_position_collect,
-                    hhmm="15:50")
-    sched.add_daily("market_position_morning", _job_market_position_morning,
-                    hhmm="09:05")
+    # 大盘位置: 15:50 采集(排在 15:45 缓存补尾段之后) → 15:55 补采+推体温表
+    # → 次日 09:05 只补采(兜底, 不推送)。详见 _register_market_position。
+    _register_market_position(sched)
     _register_sentiment(sched)
     sched.start(block=False)
 
