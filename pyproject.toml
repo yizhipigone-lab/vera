@@ -27,6 +27,9 @@ dependencies = [
 # 可选依赖 (缺失时自动降级, 非必需):
 #   akshare / exchange_calendars / jinja2 / scipy / tushare / playwright
 #   easytrader — 同花顺 GUI 下单网关, 仅 trade/gateway_ths.py 内 lazy import
+# 公式农场闸门②(一键入库) GUI 硬依赖 (farm_onboard/gui_onboard 顶部硬 import, 缺了直接子进程退出码 1):
+#   psutil / pyautogui / pywinauto / pyperclip
+#   补装一条命令: python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple psutil pyautogui pywinauto pyperclip
 
 [tool.ruff]
 target-version = "py310"
