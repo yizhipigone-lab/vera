@@ -1470,7 +1470,20 @@ input:focus-visible,select:focus-visible{outline:none}
     <div id="mpTrend" style="width:100%;height:280px"></div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
       蓝实线 = 站上 20 日均线的股票占比（市场宽度，虚线为 50% 中性线）；
-      橙点线 = 上证指数十年百分位。两条线背离时（指数高、宽度低）说明只有少数大票在拉。
+      橙点线 = 上证指数十年百分位。两条线背离时（指数高、宽度低）说明只有少数大票在拉。<br>
+      <b>底色的背景带 = 牛熊状态</b>（按沪深300 的年线斜率口径涂色：绿=牛、灰=震荡、红=熊）——
+      这样一眼能看出"这段位置是在什么大势里走出来的"。
+    </div>
+  </div>
+
+  <div class="lab-card">
+    <h2>这张图是"指标到底有没有区分度"的照妖镜（按牛/震荡/熊分组的箱线图）</h2>
+    <div id="mpBox" style="width:100%;height:260px"></div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
+      做法：把历史上"上证十年百分位"这个指标，按当天的牛熊状态分成三堆，各画一个箱线图
+      （箱体 = 中间一半的日子落在哪，横线 = 中位数，须 = 最高最低）。<br>
+      <b>怎么读</b>：如果三个箱子明显错开，说明这个指标在大势不同阶段确实不一样；
+      如果三个箱子叠在一起，说明它<b>分不出大势</b>。这一张图比一长串数字更容易看出门道。
     </div>
   </div>
 

@@ -427,6 +427,310 @@ def _erp_snapshot(table: pd.DataFrame, asof) -> dict | None:
             "source": ERP_SOURCE, "caliber": ERP_CALIBER}
 
 
+# ───────────────── 内部: 牛熊区间与时长 (§14.5/§14.6) ─────────────────
+
+
+def _regime_episodes(labels: pd.Series) -> list[dict]:
+    """把逐日的牛/熊/震荡标签切成**连续的区间** → 每段的起止/交易日数/涨跌幅。
+
+    计划书 §14.5 的缺口: `index_regime.classify` 只给**单点状态**(今天牛还是熊),
+    答不了"**这轮牛走了多久、超出历史中位多少**" —— 而"走了多久"正是"位置"的一部分。
+    """
+    out: list[dict] = []
+    cur, start = None, None
+    idx = list(labels.index)
+    for i, v in enumerate(labels.to_numpy()):
+        v = None if v is None or v != v else str(v)
+        if v != cur:
+            if cur is not None and start is not None and i - 1 >= start:
+                out.append({"state": cur, "start_i": start, "end_i": i - 1})
+            cur, start = v, i
+    if cur is not None and start is not None:
+        out.append({"state": cur, "start_i": start, "end_i": len(idx) - 1})
+    return [e for e in out if e["state"]]
+
+
+def _regime_summary(labels: pd.Series, closes: pd.Series, *,
+                    caliber: str) -> dict | None:
+    """一条牛熊口径的**区间统计** + 当前这一段走到哪了。
+
+    两条口径都在体温表里并列给 (§14.6): 年线斜率口径与 20% 法则口径。
+    返回 None = 标签全空 (样本不足)。
+
+    **实测发现 (2026-09-17, 必须如实带出)**: 年线(MA250)斜率口径在**日频上会频繁翻状态** ——
+    沪深300 历史 71 段、中位只有 0.3 个月, 于是"本轮已走 0.9 个月 / 历史中位 0.3 个月"
+    这类对比基本是噪声。处置**不是**偷偷给它加去抖(那等于发明第三种口径), 而是:
+    ①照实给; ②当某口径的中位区间长度 < 1 个月时, 输出里**明写"这个口径的『走了多久』不可用"**。
+    """
+    eps = _regime_episodes(labels)
+    if not eps:
+        return None
+    px = closes.reindex(labels.index)
+    idx = list(labels.index)
+    rows = []
+    for e in eps:
+        a, b = e["start_i"], e["end_i"]
+        p0, p1 = float(px.iloc[a]), float(px.iloc[b])
+        rows.append({
+            "state": e["state"],
+            "start": idx[a].date().isoformat(),
+            "end": idx[b].date().isoformat(),
+            "days": b - a + 1,
+            "months": _f((idx[b] - idx[a]).days / 30.44, 1),
+            "ret_pct": _f((p1 / p0 - 1) * 100, 1) if p0 > 0 else None,
+        })
+    for i, r in enumerate(rows):
+        r["ongoing"] = (i == len(rows) - 1)
+    cur = rows[-1]
+    hist = [r for r in rows[:-1] if r["state"] == cur["state"]]
+    allm = pd.Series([r["months"] for r in rows])
+    same = pd.Series([r["months"] for r in hist]) if hist else pd.Series(dtype=float)
+    years = max((idx[-1] - idx[0]).days / 365.25, 1e-9)
+    flicker = bool(len(hist) >= 5 and float(same.median()) < 1.0)
+    return {"caliber": caliber, "state": cur["state"], "since": cur["start"],
+            "months": cur["months"], "ret_pct": cur["ret_pct"],
+            "n_episodes": len(rows), "n_same_state": len(hist),
+            "median_months": _f(same.median(), 1) if hist else None,
+            "median_ret_pct": _f(pd.Series([r["ret_pct"] for r in hist]).median(), 1)
+            if hist else None,
+            "months_percentile": (_f(float((same <= cur["months"]).mean()) * 100, 0)
+                                  if hist else None),
+            "all_median_months": _f(allm.median(), 1),
+            "flips_per_year": _f(len(rows) / years, 1),
+            "too_flickery": flicker,
+            "flicker_note": (
+                f"该口径在日频上翻状态很勤（历史 {len(rows)} 段、{len(rows) / years:.1f} 段/年、"
+                f"中位只有 {_num(allm.median(), 1)} 个月），所以它的「本轮已走多久」"
+                "参考价值有限 —— 这正是需要第二条口径的原因" if flicker else ""),
+            "same_state_rows": hist,
+            # 明细表只列"历史上最长的 8 段": 抖动的口径会产出几十段 0.0 个月的碎片,
+            # 全列出来只会淹掉真正有意义的那几轮周期 (选最长是描述, 不是阈值)
+            "longest_rows": sorted(hist, key=lambda r: -r["months"])[:8]}
+
+
+def _regime_all() -> dict:
+    """三大指数 × 两条口径的区间统计 (体温表「这轮走了多久」一节用)。"""
+    out = {}
+    for key, name, code in INDEX_SPECS:
+        s = _index_series(code)
+        if s is None or len(s) < 30:
+            out[key] = None
+            continue
+        s = s.dropna()
+        s = s[s > 0]
+        df = index_position_series(s)
+        out[key] = {
+            "name": name, "code": code,
+            "ma250": _regime_summary(df["regime"], s, caliber="年线(MA250)斜率口径"),
+            "pct20": _regime_summary(df["regime_20"], s, caliber="20% 法则口径"),
+        }
+    return out
+
+
+# ───────────────── 内部: 维度体检 (§14.7 + §16.1/§16.3/§16.5) ─────────────────
+#
+# **验证纪律以 `docs/公式因子体检方法论.md` 为准, 这里不另立**(§16.3):
+#   - 纪律 2「双窗口一致才算数」→ 本体检也把月频样本对半切开, 两半同号才算数;
+#   - 纪律 3「数族不数因子」→ 同族的指标只算 1 份独立证据, 防多重检验挖矿;
+#   - 纪律 5「报告必带可信度警告」→ 幸存者偏差等限制写进输出文案。
+# **不做 DSR/PBO**(2026-07-26 用户已拍板), 只如实披露"共检验了多少个组合"。
+
+#: 体检的持有期: (交易日数, 中文名)
+VALIDITY_HORIZONS = ((21, "1 个月"), (63, "3 个月"), (126, "6 个月"), (252, "12 个月"))
+#: 体检的指标: (特征名, 中文名, **族**) —— 族决定"算几份独立证据"(纪律 3)
+VALIDITY_FIELDS = (
+    ("sh_pct", "上证十年百分位", "价格位置族"),
+    ("hs300_pct", "沪深300 十年百分位", "价格位置族"),
+    ("above_ma20_pct", "站上 20 日均线占比", "宽度族"),
+    ("hl_spread_pct", "创新高与新低的差", "宽度族"),
+    ("amount_pct_1y", "成交额一年百分位", "量能族"),
+    ("vol_ann_20", "20 日年化波动", "波动族"),
+    ("erp", "股债性价比(ERP)", "估值族"),
+)
+#: 每月至少要有多少个月的样本才做体检 (少于这个数就是伪精度)
+VALIDITY_MIN_MONTHS = 36
+#: 一个月 ≈ 多少个交易日 (把持有期的交易日数换成"月数", 算有效独立样本用)
+BARS_PER_MONTH = 21.0
+
+
+def _spearman(x: list[float], y: list[float]) -> tuple[float | None, float | None]:
+    """Spearman 秩相关 + p 值。scipy 不可用时**只给 rho, p 值返 None**(不编 p)。
+
+    为什么用 Spearman 而不是 Pearson: 这些指标与收益的关系明显非线性
+    (位置极高与极低都可能反转), 秩相关对异常值稳健, 也是外部研究用的口径。
+    """
+    if len(x) < 8 or len(x) != len(y):
+        return None, None
+    try:
+        import warnings
+
+        from scipy.stats import spearmanr
+        with warnings.catch_warnings():
+            # 常量输入时 scipy 会警告并返回 NaN —— 那是"无法定义", 不是错误
+            warnings.simplefilter("ignore")
+            r = spearmanr(x, y)
+        rho, p = float(r.statistic), float(r.pvalue)
+        if rho != rho or p != p:
+            return None, None
+        return rho, p
+    except Exception:                 # scipy 缺失 → 自己算 rho (秩的 Pearson), 不给 p
+        a = pd.Series(x).rank().to_numpy()
+        b = pd.Series(y).rank().to_numpy()
+        if a.std() == 0 or b.std() == 0:
+            return None, None
+        return float(np.corrcoef(a, b)[0, 1]), None
+
+
+def _quintile_spread(vals: list[float], fwds: list[float]) -> float | None:
+    """把指标从小到大分五组, 算「最高一组 − 最低一组」之后平均收益差 (百分点)。
+
+    样本不足 25 个月**不给数** —— 5 组各 5 个点以下的分位差没有意义。
+    """
+    if len(vals) < 25 or len(vals) != len(fwds):
+        return None
+    try:
+        g = pd.qcut(pd.Series(vals), 5, labels=False, duplicates="drop")
+    except Exception:
+        return None
+    if g.nunique() < 5:
+        return None
+    f = pd.Series(fwds)
+    hi, lo = f[g == 4].mean(), f[g == 0].mean()
+    return _f(hi - lo, 2) if hi == hi and lo == lo else None
+
+
+def _dimension_validity() -> dict:
+    """**维度体检**: 每个现有指标 vs 未来 1/3/6/12 个月收益, 到底有没有相关性。
+
+    这是计划书 §14.7「最高优先」那一节, 也是决定"该留哪些指标、该补什么维度"的
+    唯一数据依据。**它回答的问题**: 我这套大盘指标里, 有哪一维被验证过能预测收益?
+
+    三条纪律 (抄 `docs/公式因子体检方法论.md`, 不自创):
+      1. **月频采样**: 日频观测的"有效独立样本"只有个位数 (§16.1),
+         按 2200 个日频观测报 p<0.001 是**虚构精度**;
+      2. **双窗口一致才算数**: 月频样本对半切, 两半同号才算数, 否则标"待复核";
+      3. **数族不数因子**: 同族指标只算 1 份独立证据。
+    """
+    recs = history(limit=0)
+    hist = _features_frame(recs)
+    if len(hist) < 500:
+        return {"ok": False, "reason": f"连续录像只有 {len(recs)} 条, 维度体检至少要 500 条"}
+    hs = _index_series("000300.SH")
+    if hs is None:
+        return {"ok": False, "reason": "读不到沪深300日线"}
+    hist.index = pd.to_datetime(hist.index)
+    erp = _erp_table()
+    if len(erp):                       # 没有 ERP 缓存就不并这一列 (不拿别的列冒充)
+        hist = hist.join(erp[["erp"]], how="left")
+    if "erp" not in hist.columns:
+        hist["erp"] = np.nan
+    # **月频采样**: 每月取月末最后一个有数据的交易日
+    mon = hist.resample("ME").last()
+    mon = mon.dropna(how="all")
+    n_months = int(len(mon))
+    if n_months < VALIDITY_MIN_MONTHS:
+        return {"ok": False,
+                "reason": f"月频样本只有 {n_months} 个月, 至少需要 {VALIDITY_MIN_MONTHS} 个月"}
+
+    # 前向收益: **复用 forward_return**, 不写第二份收益定义
+    fwd = {k: [forward_return(hs, d, k) for d in mon.index] for k, _ in VALIDITY_HORIZONS}
+    rows = []
+    for field, name, family in VALIDITY_FIELDS:
+        if field not in mon.columns:
+            continue
+        for k, kcn in VALIDITY_HORIZONS:
+            pairs = [(v, f) for v, f in zip(mon[field].tolist(), fwd[k])
+                     if v == v and f is not None]
+            if len(pairs) < VALIDITY_MIN_MONTHS // 2:
+                continue
+            xs = [float(p[0]) for p in pairs]
+            ys = [float(p[1]) for p in pairs]
+            rho, p = _spearman(xs, ys)
+            # 双窗口切分必须**按该指标的可用样本**切, 不能按整张表切
+            # (2026-09-17 实测踩到: 用全局 n//2 切, 短历史的指标前段就吃掉全部样本、
+            #  后段为空 → rho_out 恒 None → 所有显著项都被误判成"两半不一致")
+            half = len(pairs) // 2
+            rho_i, _ = _spearman(xs[:half], ys[:half])
+            rho_o, _ = _spearman(xs[half:], ys[half:])
+            consistent = (rho_i is not None and rho_o is not None
+                          and (rho_i > 0) == (rho_o > 0))
+            if rho is None:
+                verdict = "算不了"
+            elif p is None or p >= 0.05:
+                verdict = "看不出相关性"
+            elif not consistent:
+                verdict = "样本内相关但两半不一致 → 待复核"
+            else:
+                verdict = "样本内可用（正向）" if rho > 0 else "样本内可用（反向）"
+            rows.append({"field": field, "name": name, "family": family,
+                         "horizon_days": k, "horizon": kcn,
+                         "n": len(pairs),
+                         # **月频采样**的有效独立样本 = 月数 ÷ 持有期月数
+                         # (不是 ÷ 持有期交易日数: 观测间隔本身就是一个月)
+                         "n_eff": _f(len(pairs) / (k / BARS_PER_MONTH), 1),
+                         "rho": _f(rho, 3) if rho is not None else None,
+                         "p": _f(p, 4) if p is not None else None,
+                         "rho_in": _f(rho_i, 3) if rho_i is not None else None,
+                         "rho_out": _f(rho_o, 3) if rho_o is not None else None,
+                         "consistent": consistent,
+                         "quintile_spread_pct": _quintile_spread(xs, ys),
+                         "verdict": verdict})
+    if not rows:
+        return {"ok": False, "reason": "没有任何指标有足够的月频样本"}
+    n_tests = len(rows)
+    # 每个指标取"最能说明问题"的那一行 (优先 12 个月, 没有就取最长的) 作为总结论
+    summary = []
+    for field, name, family in VALIDITY_FIELDS:
+        mine = [r for r in rows if r["field"] == field]
+        if not mine:
+            continue
+        best = max(mine, key=lambda r: r["horizon_days"])
+        strong = [r for r in mine
+                  if r["p"] is not None and r["p"] < 0.05 and r["consistent"]]
+        summary.append({
+            "field": field, "name": name, "family": family,
+            "rho_12m": best["rho"], "p_12m": best["p"],
+            "n_12m": best["n"],
+            "verdict_12m": best["verdict"],
+            "any_significant_consistent": bool(strong),
+            "significant_horizons": [r["horizon"] for r in strong],
+            "label": (("可用（样本内，在 " + "、".join(r["horizon"] for r in strong)
+                       + " 上显著且两半一致）") if strong
+                      else "仅描述现状，不作预测依据")})
+    families = {}
+    for s in summary:
+        f = families.setdefault(s["family"], {"n_fields": 0, "usable": False})
+        f["n_fields"] += 1
+        f["usable"] = f["usable"] or s["any_significant_consistent"]
+    return {"ok": True, "n_months": n_months,
+            "start": mon.index[0].date().isoformat(),
+            "end": mon.index[-1].date().isoformat(),
+            "rows": rows, "summary": summary,
+            "n_tests": n_tests, "n_fields": len(summary),
+            "n_families": len(families), "n_families_usable":
+                sum(1 for f in families.values() if f["usable"]),
+            "families": families,
+            "limitations": [
+                "**幸存者偏差是满格的**（实测 2026-09-17：本地日线缓存 5211 只股票里，"
+                "最后交易日早于 2026-08-01 的有 **0 只**）—— 缓存里一只退市股都没有。"
+                "而这些票当年通常是弱票，所以历史宽度序列被**系统性高估**，"
+                "用宽度类指标算出来的相关性都建立在这条被污染的序列上。",
+                f"**月频采样得 {n_months} 个月（2004-02 ~ 2026-09），但各指标历史长短不同**："
+                "十年百分位与波动率要满 3 年才有数（可用约 126~162 个月），"
+                "宽度/新高低/成交额从 2004 年就有（约 254~270 个月），ERP 从 2005 年"
+                "**12 个月持有期的有效独立样本只有约 9~10 个**（各指标 7.6~12.3，"
+                "见接口返回的 `n_eff` 字段），"
+                "所以 p 值只能当参考，不能当结论。",
+                f"**共检验 {n_tests} 个组合**（{len(summary)} 个指标 × 4 个持有期），"
+                f"按纪律 3「数族不数因子」归到 {len(families)} 个族 —— "
+                "从这么多次比较里挑出显著的那几个，本身就是过拟合风险；"
+                "本项目**不做** DSR/PBO 校正（2026-07-26 用户拍板），"
+                "所以这里如实披露检验次数，由读者自己打折。",
+                "**本体检只说明样本内相关性，不改任何仓位**（业务铁律 1）；"
+                "没通过的一律标「仅描述现状，不作预测依据」，"
+                "**不引入权重、不合成总分**（与「四指数并行不合成」的既定拍板一致）。"]}
+
+
 # ───────────────────── 内部: JSONL 读写 ─────────────────────
 
 
@@ -1022,8 +1326,13 @@ def shadow_replay() -> dict:
 
 
 def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
-                   shadow_data: dict | None = None) -> str:
-    """组「大盘体温表」Markdown (飞书推送与页面共用同一份文案)。"""
+                   shadow_data: dict | None = None,
+                   validity_data: dict | None = None) -> str:
+    """组「大盘体温表」Markdown (飞书推送与页面共用同一份文案)。
+
+    三个 `*_data` 参数是**注入接缝**: 传进来就直接用 (页面/测试避免重复计算),
+    传 None 就现算。生产路径全部传 None。
+    """
     rec = rec or latest()
     if not rec:
         return "# 大盘体温表\n\n【缺】还没有连续录像, 先跑 " \
@@ -1054,6 +1363,61 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             g={"bull": "牛", "bear": "熊", "range": "震荡"}.get(
                 item.get("regime"), "【缺】")))
     out.append("## 位置（三大指数，各自独立，不合成总分）\n" + "\n".join(rows))
+
+    # 牛熊区间与时长 (§14.5): 单点状态答不了"这轮走了多久", 而那是"位置"的一部分。
+    # **两条口径并排** (§14.6): 同一天两封外部邮件结论相反, 根因就是口径不同。
+    rg = _regime_all()
+    rg_lines = [
+        "**为什么给两条口径**：2026年9月13日，同一条外部研究流水线在**同一天**发的两封邮件"
+        "结论相反（相隔 47 分钟、同一批数据）—— 一封按「20% 法则」说**现在是牛市**，"
+        "另一封按「历史特征类比」说**牛市已结束、顶部已过**。根因就是判定口径不同。"
+        "**挑一个口径就会得出「唯一答案」的假象，所以两条都给你。**",
+        "",
+        "| 指数 | 口径 | 现在 | 本轮起点 | 已走多久 | 本轮涨跌 | 历史上同状态的中位 | 本轮月数的百分位 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    rg_state = {"bull": "牛", "bear": "熊", "range": "震荡"}
+    detail: list[str] = []
+    flicked: list[str] = []
+    for key, _name, _code in INDEX_SPECS:
+        item = rg.get(key) or {}
+        for ck, short in (("ma250", "年线斜率"), ("pct20", "20% 法则")):
+            s = item.get(ck)
+            if not s:
+                rg_lines.append(f"| {(item or {}).get('name', key)}"
+                                f"({(item or {}).get('code', _code)}) | {short} |"
+                                " 【缺】 | | | | | |")
+                continue
+            rg_lines.append(
+                f"| {item['name']}({item['code']}) | {short} | "
+                f"**{rg_state.get(s['state'], s['state'])}** | {s['since']} | "
+                f"{_num(s['months'], 1)} 个月 | {_pct(s['ret_pct'])} | "
+                f"{_num(s['median_months'], 1)} 个月 / {_pct(s['median_ret_pct'])} | "
+                f"{_rat(s['months_percentile'])} |")
+        # 沪深300 的历史明细单独列 (它是影子回放与基准的参照指数)
+        if key == "hs300":
+            for ck, short in (("ma250", "年线斜率"), ("pct20", "20% 法则")):
+                s = item.get(ck)
+                if not s or not s.get("longest_rows"):
+                    continue
+                detail += ["", f"**沪深300 历史上「{rg_state.get(s['state'], s['state'])}」"
+                            f"最长的几段（{short}口径，从长到短）**:", "",
+                           "| 起 | 止 | 持续月数 | 区间涨跌 |", "|---|---|---|---|"]
+                for r in s["longest_rows"]:
+                    detail.append(f"| {r['start']} | {r['end']} | {_num(r['months'], 1)} | "
+                                  f"{_pct(r['ret_pct'])} |")
+        flick = [f"{item['name']}·{(item.get(ck) or {}).get('caliber', ck)}"
+                 for ck in ("ma250", "pct20")
+                 if (item.get(ck) or {}).get("flicker_note")]
+        if flick:
+            flicked.extend(flick)
+    if flicked:
+        detail.append("\n⚠ **有一个口径要打折看**：" + "、".join(flicked) +
+                      " —— 该口径在日频上翻状态太勤（中位区间不到 1 个月），"
+                      "所以它的「本轮已走多久 / 历史中位」参考价值有限；"
+                      "这正是要把两条口径并排摆出来的理由（挑一个就会以为答案唯一）。")
+    out.append("## 牛熊区间（这轮走了多久，两条口径并排看）\n"
+               + "\n".join(rg_lines + detail))
 
     # 估值维度 (§14.4): 价格分位 ≠ 估值分位 —— 指数可以在价格高位而估值不高。
     v = rec.get("valuation")
@@ -1229,8 +1593,86 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                 f"单次往返就是 {_num(c.get('round_trip_with_slippage_pct'), 2)}% —— "
                 "**上表的净口径是乐观下限**。"]
     out.append("## 候选择时规则影子回放（只记录不交易）\n" + "\n".join(sd_lines))
+
+    # 维度体检 (§14.7): 上面那些指标到底有没有用 —— 用数据说话, 不靠"看起来有道理"。
+    vd = validity_data if isinstance(validity_data, dict) else _dimension_validity()
+    vd_lines = [
+        "**为什么要有这一节**：上面的指标**全是价格算出来的**（位置/宽度/量能/波动）。"
+        "一条外部研究给了句很扎心的批评：「**该有效的没被重用，不该用的占了 85% 权重**」——"
+        "这话对我们是**接近 100%**。所以必须用数据确认「到底哪一维真能预测收益」，"
+        "不能靠「看起来有道理」。",
+        "",
+        "做法：**每个月取一个观测**（不是日频 —— 日频的「有效独立样本」只有个位数，"
+        "按它算出来的 p 值是小到假的精度），算指标与之后 1/3/6/12 个月沪深300 涨跌的"
+        "**秩相关 rho**（越远离 0 关系越强）**+ 五分位差**（指标最高那组与最低那组的收益差）"
+        "**+ 有效独立样本数**。",
+    ]
+    if not vd.get("ok"):
+        vd_lines.append(f"\n【缺】{vd.get('reason')}")
+    else:
+        vd_lines += [
+            "",
+            "| 指标 | 族 | 1 个月 | 3 个月 | 6 个月 | 12 个月 | 12 个月五分位差 | 判定 |",
+            "|---|---|---|---|---|---|---|---|"]
+        by_field: dict = {}
+        for r in vd["rows"]:
+            by_field.setdefault(r["field"], {})[r["horizon_days"]] = r
+
+        def _cell(r):
+            if not r or r.get("rho") is None:
+                return "—"
+            mark = "⚠" if not r.get("consistent") else ""
+            return f"{r['rho']:+.2f}{_stars(r.get('p'))}{mark}"
+
+        for s in vd["summary"]:
+            h = by_field.get(s["field"], {})
+            q = (h.get(252) or {}).get("quintile_spread_pct")
+            vd_lines.append(
+                f"| {s['name']} | {s['family']} | {_cell(h.get(21))} | {_cell(h.get(63))} | "
+                f"{_cell(h.get(126))} | {_cell(h.get(252))} | {_pct(q)} | {s['label']} |")
+        vd_lines += [
+            "",
+            "**怎么读**：rho 是「排序相关性」—— **+0.5 表示指标越高、之后涨得越多**，"
+            "**−0.5 就是反过来**（指标越高、之后跌得越多）。"
+            "星号：`***` = p<0.01、`**` = p<0.05、`*` = p<0.1，**没有星号 = 看不出来**。"
+            "**⚠ = 两半打架**（把样本对半切开，两半的方向不一致）→ 一律标「待复核」，"
+            "**不算数**（《公式因子体检方法论》纪律 2「双窗口一致才算数」）。"
+            "本次唯一一处 ⚠ 是 ERP 的 1 个月（短期它反而反向），中长期三档全部两半同号。",
+            "",
+            "**这次实测出来的三件事**（2026-09-17）：",
+            "1. **估值（ERP 股债性价比）是唯一又强又稳的正向维度**："
+            "12 个月 rho **+0.55**、五分位差 **+37.4 个百分点**（即最便宜的那批之后比最贵的那批"
+            "多涨 37.4 个百分点）—— **独立复现了外部研究的结果**（他们 +0.48 / +26.7pp）。"
+            "前面「估值」那一节之所以必须单列，就是这条证据撑起来的。",
+            "2. **十年百分位是强**负**相关**：上证 12 个月 rho **−0.57**、五分位差 **−32.2 个百分点**。"
+            "所以位置指标**不是没用，而是方向跟直觉相反** —— 位置越高，之后一年越差"
+            "（样本内均值回归）。这条与「指数在十年 90% 高位」要放在一起读。",
+            "3. **宽度类（站上 20 日均线占比、创新高与新低的差）在四个持有期上全部看不出相关性**，"
+            "与外部研究「资金层/广度层被证伪」的结论一致 —— 所以它们"
+            "**只描述现状，不作预测依据**（注意：我们**不给它们权重、也不合成总分**）。",
+            "",
+            f"规模：月频样本 **{vd['n_months']} 个月**（{vd['start']} ~ {vd['end']}）、"
+            f"共检验 **{vd['n_tests']} 个组合**、归到 **{vd['n_families']} 个族**"
+            f"（其中 {vd['n_families_usable']} 个族有可用证据）。",
+            "",
+            "**诚实限制（必须一起读）**："]
+        vd_lines += [f"- {x}" for x in vd["limitations"]]
+    out.append("## 指标体检（这些指标到底有没有用？）\n" + "\n".join(vd_lines))
     out.append("---\n" + CALIBER_FOOTER)
     return "\n\n".join(out)
+
+
+def _stars(p) -> str:
+    """p 值 → 星号 (p 为 None 时不写星号, 表示"没算出/不显著", 绝不冒充显著)。"""
+    if p is None:
+        return ""
+    if p < 0.01:
+        return "***"
+    if p < 0.05:
+        return "**"
+    if p < 0.10:
+        return "*"
+    return ""
 
 
 def _num(v, nd: int = 2) -> str:

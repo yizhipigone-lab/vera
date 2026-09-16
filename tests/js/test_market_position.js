@@ -127,6 +127,42 @@ const swin2 = mp.shadowWindowsHtml({ ok: true, rows: [Object.assign({}, sdRow, {
              consistent: true } })] });
 assert(swin2.includes('同向，算数'), '同向 → 标算数');
 
+console.log('\nregimeBands 牛熊背景带:');
+const bandItems = [
+  { date: '2024-01-01', indices: { hs300: { regime: 'bear' } } },
+  { date: '2024-01-02', indices: { hs300: { regime: 'bear' } } },
+  { date: '2024-01-03', indices: { hs300: { regime: 'range' } } },
+  { date: '2024-01-04', indices: { hs300: { regime: 'range' } } },
+  { date: '2024-01-05', indices: { hs300: { regime: 'bull' } } }
+];
+const bands = mp.regimeBands(bandItems, 'hs300', 'regime');
+eq(bands.length, 3, '三段状态 = 三条背景带');
+eq(bands[0].start + '~' + bands[0].end, '2024-01-01~2024-01-02', '第一段起止正确');
+eq(bands[2].start + '~' + bands[2].end, '2024-01-05~2024-01-05', '最后一段收在末条录像');
+eq(mp.regimeBands([], 'hs300', 'regime').length, 0, '空输入不崩');
+assert(mp.REGIME_BAND_COLOR.bull && mp.REGIME_BAND_COLOR.bear, '三种状态都有底色');
+const band20 = mp.regimeBands(
+  [{ date: 'x', indices: { hs300: { regime: 'bull', regime_20: 'bear' } } }],
+  'hs300', 'regime_20');
+eq(band20[0].state, 'bear', '20% 法则口径取的是 regime_20 字段');
+
+console.log('\nboxStats / boxByRegime 箱线图:');
+eq(mp.boxStats([1, 2, 3, 4, 5]).join(','), '1,2,3,4,5', '五个数正确');
+eq(mp.boxStats([]), null, '空样本返回 null');
+eq(mp.boxStats([5, 1, 3]).join(','), '1,2,3,4,5', '乱序输入也按大小插值算');
+const boxItems = [
+  { indices: { shanghai: { pct_10y: 90, regime: 'bull' } } },
+  { indices: { shanghai: { pct_10y: 80, regime: 'bull' } } },
+  { indices: { shanghai: { pct_10y: 50, regime: 'range' } } },
+  { indices: { shanghai: { pct_10y: 10, regime: 'bear' } } },
+  { indices: { shanghai: { pct_10y: null, regime: 'bear' } } }
+];
+const bg = mp.boxByRegime(boxItems, 'shanghai', 'regime');
+eq(bg.length, 3, '牛/震荡/熊三组都在');
+eq(bg[2].n, 1, '缺值不计数（bear 只剩 1 个）');
+eq(bg[0].box[2], 85, '牛组中位数 = (80+90)/2');
+eq(mp.boxByRegime([], 'shanghai', 'regime').length, 0, '空输入不崩');
+
 console.log('\ntrendSeries 趋势图数据:');
 const ts = mp.trendSeries([
   { date: '2026-09-14', breadth: { above_ma20_pct: 29.1 }, indices: { shanghai: { pct_10y: 91.2 } } },

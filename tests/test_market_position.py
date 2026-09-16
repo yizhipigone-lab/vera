@@ -47,7 +47,7 @@ class TestIndexPosition:
         single = mp.index_position(s)
         assert single["pct_10y"] is not None
         for col in mp.POSITION_COLUMNS:
-            if col == "regime":
+            if col in ("regime", "regime_20"):
                 assert single[col] == last[col]
             else:
                 assert single[col] == pytest.approx(float(last[col]), abs=1e-6), col
@@ -296,6 +296,40 @@ class TestSimilarDays:
         h["vol_ann_20"] = 12.0
         target = {f: float(h[f].iloc[-1]) for f in mp.SIMILAR_FEATURES}
         assert mp.similar_days(target, h)["picks"] == []
+
+
+# ── 20% 法则牛熊口径 ──────────────────────────────────────────────────
+
+
+class TestRegime20Pct:
+    """20% 法则: 从低点涨 20% 确认牛、从高点跌 20% 确认熊 (第二条牛熊口径)。"""
+
+    def test_rise_then_fall_switches_state(self):
+        # 100 → 130 (涨 30% → 牛) → 100 (从 130 跌 23% → 熊)
+        s = _series([100.0, 110.0, 120.0, 130.0, 125.0, 118.0, 100.0])
+        lab = mp._regime_20pct(s)
+        assert list(lab) == ["range", "range", "bull", "bull", "bull", "bull", "bear"]
+
+    def test_small_moves_stay_range(self):
+        """涨跌都不到 20% → 一直震荡 (状态粘滞, 不天天跳)。"""
+        s = _series([100.0, 110.0, 105.0, 115.0, 108.0, 118.0])
+        assert set(mp._regime_20pct(s)) == {"range"}
+
+    def test_threshold_is_configurable(self):
+        s = _series([100.0, 106.0])
+        assert list(mp._regime_20pct(s, threshold=0.05)) == ["range", "bull"]
+        assert list(mp._regime_20pct(s, threshold=0.20)) == ["range", "range"]
+
+    def test_column_present_and_independent_of_ma(self):
+        """regime_20 不依赖均线, 所以短样本里它也有值 (不能被 MA 连坐置空)。"""
+        df = mp.index_position_series(_rising(30))
+        assert "regime_20" in df.columns
+        assert df["regime"].isna().all(), "30 根不足以成 MA250"
+        assert df["regime_20"].notna().all(), "20% 法则不需要均线"
+
+    def test_short_series_does_not_crash(self):
+        assert list(mp._regime_20pct(_series([100.0]))) == ["range"]
+        assert len(mp._regime_20pct(_series([]))) == 0
 
 
 # ── forward_return ────────────────────────────────────────────────────

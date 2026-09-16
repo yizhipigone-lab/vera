@@ -43,6 +43,10 @@ function fmtNum(v, nd) {
 }
 
 var REGIME_CN = { bull: '牛', bear: '熊', range: '震荡' };
+// 牛熊背景带的颜色（照外部研究报告的做法：牛绿 / 震荡灰 / 熊红，浅色打底不盖线）
+var REGIME_BAND_COLOR = { bull: 'rgba(61,190,120,0.10)',
+                          range: 'rgba(150,150,150,0.10)',
+                          bear: 'rgba(230,90,90,0.10)' };
 
 // 三条候选规则的"人话名字"（页面上不许出现裸英文键名）
 var RULE_CN = {
@@ -207,6 +211,60 @@ function trendSeries(items) {
   return { dates: dates, width: width, pct: pct };
 }
 
+// 取某条录像里指定指数/口径的牛熊标签
+function regimeOf(rec, key, caliber) {
+  var it = ((rec || {}).indices || {})[key || 'hs300'] || {};
+  var v = caliber === 'regime_20' ? it.regime_20 : it.regime;
+  return v == null ? null : String(v);
+}
+
+// **牛熊背景着色带**（照抄外部研究报告的做法）：把连续的同一状态合成一段，
+// 供 ECharts markArea 在时间轴上按牛/震荡/熊涂底色。一眼看出"位置是在什么大势里"。
+function regimeBands(items, key, caliber) {
+  var out = [], cur, prev = null;
+  (items || []).forEach(function (r) {
+    var st = regimeOf(r, key, caliber);
+    if (st !== cur) {
+      if (cur != null && prev != null) { out[out.length - 1].end = prev; }
+      out.push({ start: r.date, end: r.date, state: st });
+      cur = st;
+    }
+    prev = r.date;
+  });
+  if (out.length) { out[out.length - 1].end = prev; }
+  return out.filter(function (b) { return b.state; });
+}
+
+// 箱线图的五个数：最小 / 下四分位 / 中位 / 上四分位 / 最大
+function boxStats(vals) {
+  var s = (vals || []).filter(function (v) {
+    return v != null && isFinite(Number(v));
+  }).map(Number).sort(function (a, b) { return a - b; });
+  if (!s.length) return null;
+  function q(p) {
+    var i = (s.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i);
+    return lo === hi ? s[lo] : s[lo] + (s[hi] - s[lo]) * (i - lo);
+  }
+  return [+s[0].toFixed(1), +q(0.25).toFixed(1), +q(0.5).toFixed(1),
+          +q(0.75).toFixed(1), +s[s.length - 1].toFixed(1)];
+}
+
+// **按牛/震荡/熊分组的箱线图**（外部研究里的那张"验证图"）：
+// 如果某个指标真有区分度，箱体应该明显错开；箱体叠在一起就说明它没区分度。
+function boxByRegime(items, key, caliber) {
+  return ['bull', 'range', 'bear'].map(function (st) {
+    var vals = [];
+    (items || []).forEach(function (r) {
+      if (regimeOf(r, key, caliber) !== st) return;
+      var it = ((r.indices || {})[key || 'hs300']) || {};
+      var v = it.pct_10y;
+      if (v != null) vals.push(Number(v));
+    });
+    var b = boxStats(vals);
+    return b ? { state: st, n: vals.length, box: b } : null;
+  }).filter(Boolean);
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { esc: esc, positionLabel: positionLabel, fmtPct: fmtPct,
                      fmtNum: fmtNum, pctColor: pctColor, RULE_CN: RULE_CN,
@@ -217,7 +275,10 @@ if (typeof module !== 'undefined' && module.exports) {
                      shadowRowsHtml: shadowRowsHtml,
                      shadowVerdictHtml: shadowVerdictHtml,
                      shadowWindowsHtml: shadowWindowsHtml,
-                     trendSeries: trendSeries };
+                     trendSeries: trendSeries,
+                     regimeOf: regimeOf, regimeBands: regimeBands,
+                     boxStats: boxStats, boxByRegime: boxByRegime,
+                     REGIME_BAND_COLOR: REGIME_BAND_COLOR };
   return;
 }
 
@@ -271,6 +332,11 @@ function drawTrend() {
     .then(function (d) {
       if (!d.success) return;
       var s = trendSeries(d.items);
+      // 牛熊背景着色带（照外部研究报告的做法）：一眼看出"这段位置处在什么大势里"
+      var bands = regimeBands(d.items, 'hs300', 'regime').map(function (b) {
+        return [{ xAxis: b.start, itemStyle: { color: REGIME_BAND_COLOR[b.state] } },
+                { xAxis: b.end }];
+      });
       var chart = echarts.getInstanceByDom(box) || echarts.init(box);
       chart.setOption({
         tooltip: { trigger: 'axis' },
@@ -284,12 +350,44 @@ function drawTrend() {
         series: [
           { name: '站上20日均线占比', type: 'line', showSymbol: false, data: s.width,
             lineStyle: { width: 1.5 }, color: '#4da3ff',
+            markArea: { silent: true, data: bands },
             markLine: { silent: true, symbol: 'none', label: { color: '#888', formatter: '50%' },
                         lineStyle: { color: '#888', type: 'dashed' },
                         data: [{ yAxis: 50 }] } },
           { name: '上证十年百分位', type: 'line', yAxisIndex: 1, showSymbol: false,
             data: s.pct, lineStyle: { width: 1.2, type: 'dotted' }, color: '#e0a458' }
         ]
+      });
+    }).catch(function () { /* 图表失败不影响表格 */ });
+}
+
+// 按牛/震荡/熊分组的箱线图：这张图是"指标有没有区分度"的照妖镜 ——
+// 真有区分度 → 三个箱子明显错开；没区分度 → 三个箱子叠在一起。
+function drawBox() {
+  var box = $('mpBox');
+  if (!box || !window.echarts) return;
+  fetch('/api/market_position/history?limit=0').then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) return;
+      var items = d.items || [];
+      var groups = boxByRegime(items, 'shanghai', 'regime');
+      var chart = echarts.getInstanceByDom(box) || echarts.init(box);
+      if (!groups.length) {
+        chart.clear();
+        chart.setOption({ title: { text: '数据不足，画不了', textStyle: { color: '#888', fontSize: 13 } } });
+        return;
+      }
+      chart.setOption({
+        tooltip: { trigger: 'item' },
+        grid: { left: 48, right: 24, top: 36, bottom: 28 },
+        xAxis: { type: 'category',
+                 data: groups.map(function (g) { return REGIME_CN[g.state] + '（' + g.n + ' 天）'; }),
+                 axisLabel: { color: '#888' } },
+        yAxis: { type: 'value', name: '上证十年百分位%', max: 100, min: 0,
+                 axisLabel: { color: '#888' } },
+        series: [{ name: '上证十年百分位', type: 'boxplot',
+                   data: groups.map(function (g) { return g.box; }),
+                   itemStyle: { color: '#4da3ff', borderColor: '#4da3ff' } }]
       });
     }).catch(function () { /* 图表失败不影响表格 */ });
 }
@@ -352,7 +450,7 @@ function doCollect(backfill) {
       } else {
         setHint('mpHint', '采集完成: 数据日期 ' + d.asof + '，本次 ' + d.records
                 + ' 条，录像共 ' + d.lines + ' 条', 'var(--down)');
-        refresh(); drawTrend(); loadMirror(); loadShadow();
+        refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow();
       }
     }).catch(function (e) { setHint('mpHint', '采集失败: ' + e, 'var(--up)'); })
     .then(function () {
@@ -361,7 +459,7 @@ function doCollect(backfill) {
 }
 
 function enter() {
-  refresh(); drawTrend(); loadMirror(); loadShadow();
+  refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow();
   var c = $('mpCollectBtn'), b = $('mpBackfillBtn'), r = $('mpRefreshBtn'),
       rep = $('mpReportBtn');
   if (c && !c.dataset.bound) { c.dataset.bound = '1'; c.addEventListener('click', function () { doCollect(false); }); }

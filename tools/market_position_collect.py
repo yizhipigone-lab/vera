@@ -37,10 +37,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--push-only", action="store_true", help="不采集, 只推当前最新一条")
     ap.add_argument("--mirror", action="store_true", help="只打印历史照镜子结果")
     ap.add_argument("--shadow", action="store_true", help="只打印择时规则影子回放")
+    ap.add_argument("--regime", action="store_true",
+                    help="只打印牛熊区间与时长 (两条口径并列) + 指标体检")
+    ap.add_argument("--validity", action="store_true", help="只打印指标体检 (维度有效性)")
     ap.add_argument("--md", metavar="PATH", default=None, help="把体温表 Markdown 写到该文件")
     args = ap.parse_args(argv)
 
-    if args.mirror or args.shadow:
+    if args.mirror or args.shadow or args.regime or args.validity:
         return _show_only(args)
 
     if not args.push_only:
@@ -144,6 +147,44 @@ def _show_only(args) -> int:
                   f"未计滑点; 含滑点则 {c.get('round_trip_with_slippage_pct')}%")
         print("\n措辞纪律: 净口径 95% 区间跨过 0 → 只能说「看不出显著的优势或劣势」, "
               "不写「无效」也不写「跑输」。")
+    if args.regime:
+        rg = mpr._regime_all()
+        cn = {"bull": "牛", "bear": "熊", "range": "震荡"}
+        for key, name, code in mpr.INDEX_SPECS:
+            it = rg.get(key) or {}
+            print(f"\n=== {name}({code}) ===")
+            for ck in ("ma250", "pct20"):
+                s = it.get(ck)
+                if not s:
+                    print("  【缺】")
+                    continue
+                print(f"  {s['caliber']}: 现在={cn.get(s['state'], s['state'])} "
+                      f"起点={s['since']} 已走 {s['months']} 月 涨跌 {s['ret_pct']}%"
+                      f" | 历史同状态 {s['n_same_state']} 段, 中位 {s['median_months']} 月"
+                      f" / {s['median_ret_pct']}%, 月数百分位 {s['months_percentile']}%"
+                      f" (全部 {s['n_episodes']} 段, {s['flips_per_year']} 段/年)")
+                if s["flicker_note"]:
+                    print(f"    ⚠ {s['flicker_note']}")
+                for r in s["longest_rows"]:
+                    print(f"      {r['start']} ~ {r['end']}  {r['months']:>5} 月  "
+                          f"{r['ret_pct']:>7}%")
+    if args.validity:
+        r = mpr._dimension_validity()
+        if not r.get("ok"):
+            print(f"指标体检不可用: {r.get('reason')}")
+            return 1
+        print(f"指标体检: 月频 {r['n_months']} 个月 ({r['start']} ~ {r['end']}), "
+              f"共检验 {r['n_tests']} 个组合 / {r['n_families']} 个族")
+        print(f"\n{'指标':<20}{'族':<8}{'持有期':<8}{'n':>5}{'N_eff':>7}"
+              f"{'rho':>8}{'p':>9}{'前段':>8}{'后段':>8}{'五分位差':>10}  判定")
+        for row in r["rows"]:
+            print(f"{row['name']:<20}{row['family']:<8}{row['horizon']:<8}{row['n']:>5}"
+                  f"{row['n_eff']:>7}{str(row['rho']):>8}{str(row['p']):>9}"
+                  f"{str(row['rho_in']):>8}{str(row['rho_out']):>8}"
+                  f"{str(row['quintile_spread_pct']):>10}  {row['verdict']}")
+        print("\n诚实限制:")
+        for x in r["limitations"]:
+            print("  *", x)
     return 0
 
 

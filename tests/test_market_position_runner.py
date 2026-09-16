@@ -477,6 +477,111 @@ class TestErpValuation:
         assert "【缺】没有本地 ERP" in md
 
 
+class TestRegimeEpisodes:
+    """牛熊区间与时长 (计划书 §14.5): 单点状态答不了"这轮走了多久"。"""
+
+    def test_episodes_split_runs(self):
+        idx = pd.date_range("2024-01-01", periods=8, freq="B")
+        lab = pd.Series(["range", "range", "bull", "bull", "bull", "bear", "bear", "bear"],
+                        index=idx)
+        eps = mpr._regime_episodes(lab)
+        assert [(e["state"], e["start_i"], e["end_i"]) for e in eps] == [
+            ("range", 0, 1), ("bull", 2, 4), ("bear", 5, 7)]
+
+    def test_episodes_skip_none_labels(self):
+        idx = pd.date_range("2024-01-01", periods=4, freq="B")
+        lab = pd.Series([None, None, "bull", "bull"], index=idx)
+        eps = mpr._regime_episodes(lab)
+        assert len(eps) == 1 and eps[0]["state"] == "bull" and eps[0]["start_i"] == 2
+
+    def test_summary_counts_months_and_marks_ongoing(self):
+        idx = pd.date_range("2024-01-01", periods=6, freq="B")
+        lab = pd.Series(["bull", "bull", "bull", "bear", "bear", "bear"], index=idx)
+        px = pd.Series([100.0, 110.0, 120.0, 110.0, 100.0, 90.0], index=idx)
+        s = mpr._regime_summary(lab, px, caliber="测试口径")
+        assert s["state"] == "bear" and s["since"] == "2024-01-04"
+        assert s["n_episodes"] == 2 and s["n_same_state"] == 0
+        assert s["months"] > 0 and s["ret_pct"] is not None
+        assert s["median_months"] is None, "没有历史同状态段 → 中位数不给数 (不编)"
+
+    def test_flicker_flagged_when_episodes_are_tiny(self):
+        """日频抖动太勤的口径必须被标记 (实测年线口径中位只有 0.2 个月)。"""
+        idx = pd.date_range("2024-01-01", periods=600, freq="B")
+        states = ["bull" if i % 2 == 0 else "bear" for i in range(600)]
+        lab = pd.Series(states, index=idx)
+        px = pd.Series(range(100, 700), index=idx, dtype=float)
+        s = mpr._regime_summary(lab, px, caliber="抖动口径")
+        assert s["too_flickery"] is True and s["flicker_note"]
+        assert s["n_episodes"] > 100
+
+    def test_longest_rows_capped(self):
+        idx = pd.date_range("2024-01-01", periods=200, freq="B")
+        lab = pd.Series(["bull" if (i // 5) % 2 == 0 else "bear" for i in range(200)],
+                        index=idx)
+        px = pd.Series(range(100, 300), index=idx, dtype=float)
+        s = mpr._regime_summary(lab, px, caliber="测试")
+        assert len(s["longest_rows"]) <= 8
+
+
+class TestDimensionValidity:
+    """维度体检 (计划书 §14.7 + §16.1/§16.3/§16.5)。"""
+
+    def test_needs_enough_history(self):
+        _write_cache(n_days=400)
+        mpr.collect(bars=0, write=True)
+        r = mpr._dimension_validity()
+        assert r["ok"] is False
+        assert "500" in r["reason"]
+
+    def test_runs_and_carries_the_discipline_notes(self):
+        _write_cache(n_days=1200)
+        mpr.collect(bars=0, write=True)
+        r = mpr._dimension_validity()
+        assert r["ok"], r.get("reason")
+        assert r["n_months"] >= mpr.VALIDITY_MIN_MONTHS
+        assert r["rows"], "至少要产出一行体检结果"
+        for row in r["rows"]:
+            assert set(row) >= {"field", "family", "horizon", "n", "n_eff",
+                                "rho", "rho_in", "rho_out", "consistent", "verdict"}
+            assert row["n_eff"] is not None and row["n_eff"] > 0
+            assert row["verdict"]
+        # 纪律 3「数族不数因子」: 结果里必须有族, 且披露共检验多少组合
+        assert r["n_families"] >= 2 and r["n_tests"] == len(r["rows"])
+        notes = " ".join(r["limitations"])
+        assert "幸存者偏差" in notes, "§16.5 要求把幸存者偏差写成显式限制"
+        assert "DSR" in notes, "必须说明为何不做多重检验校正"
+        assert "不作预测依据" in notes and "不合成总分" in notes, "§16.4 措辞"
+
+    def test_erp_absent_when_no_erp_cache(self):
+        """没有 ERP 缓存 → ERP 那一行必须缺席, 不能拿别的列冒充。"""
+        _write_cache(n_days=1200)
+        mpr.collect(bars=0, write=True)
+        r = mpr._dimension_validity()
+        assert r["ok"]
+        assert all(row["field"] != "erp" for row in r["rows"])
+
+    def test_erp_included_when_cache_present(self):
+        _write_cache(n_days=1200)
+        _write_erp(n=1200, start="2024-01-01")
+        mpr.collect(bars=0, write=True)
+        r = mpr._dimension_validity()
+        assert r["ok"], r.get("reason")
+        assert any(row["field"] == "erp" for row in r["rows"])
+
+    def test_markdown_has_the_validity_section(self):
+        _write_cache(n_days=1200)
+        mpr.collect(bars=0, write=True)
+        md = mpr.thermometer_md()
+        assert "## 指标体检" in md
+        assert "仅描述现状，不作预测依据" in md or "可用（样本内" in md
+
+    def test_markdown_has_the_regime_section(self):
+        _write_cache(n_days=400)
+        mpr.collect(bars=300, write=True)
+        md = mpr.thermometer_md()
+        assert "## 牛熊区间" in md and "20% 法则" in md and "年线" in md
+
+
 class TestCacheLayoutContract:
     def test_parquet_path_matches_kline_cache_layout(self, tmp_path):
         """直读 parquet 是性能取舍 —— 靠这条契约测试防缓存布局改了静默读空。

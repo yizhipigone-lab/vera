@@ -33,7 +33,7 @@ import pandas as pd
 
 __all__ = [
     "PCT_WINDOW_BARS", "MA_WINDOW", "HL_WINDOW", "RET_1Y_BARS",
-    "RECENT_EXCLUDE_BARS", "MIN_MATCH_GAP_BARS",
+    "RECENT_EXCLUDE_BARS", "MIN_MATCH_GAP_BARS", "REGIME_20_THRESHOLD",
     "SIMILAR_FEATURES", "HISTORY_COLUMNS", "POSITION_COLUMNS",
     "index_position", "index_position_series", "breadth_frame",
     "last_valid_date", "limit_counts", "limit_counts_series",
@@ -71,8 +71,54 @@ def _clean(closes) -> pd.Series:
 
 
 #: 位置序列的输出列 (index_position 的 dict 键即此列名)
+#: `regime` = 年线(MA250)斜率口径; `regime_20` = **20% 法则**口径。
+#: **两条口径必须并列给, 不许挑一个** (§14.6): 同一天同两封外部研究邮件,
+#: 一条 20% 法则说"现在是牛市", 一条十特征历史类比说"牛市已结束" —— 相差 47 分钟、
+#: 同一批数据, 结论相反。根因就是口径不同。挑一个口径就会得出"唯一答案"的假象。
 POSITION_COLUMNS = ("close", "pct_10y", "from_high_pct", "vol_ann_20",
-                    "vol_ann_60", "ret_1y_pct", "ma250_dev_pct", "regime")
+                    "vol_ann_60", "ret_1y_pct", "ma250_dev_pct", "regime",
+                    "regime_20")
+#: 20% 法则的阈值: 从低点涨 20% 确认牛, 从高点跌 20% 确认熊
+REGIME_20_THRESHOLD = 0.20
+
+
+def _regime_20pct(closes, *, threshold: float = REGIME_20_THRESHOLD) -> pd.Series:
+    """**20% 法则**的牛熊划分 (与年线斜率口径并列的第二把尺子)。
+
+    规则 (口语版): 从最近的低点**涨够 20%** 就算牛, 从最近的高点**跌够 20%**
+    就算熊, 都没够就是震荡。状态**粘滞** —— 不到 20% 不换状态, 所以不会天天跳。
+
+    为什么要有它: 年线斜率口径偏"慢而钝"(要跌破年线且年线走平才转),
+    20% 法则偏"看幅度"。两者**经常不一致**, 而不一致本身就是信息
+    (例如价格已从高点跌 18%、但还在年线上方 → 一个口径说震荡、一个说牛)。
+
+    实现要点: 牛/熊各自记住"本轮起点"(牛记起点低点、熊记起点高点), 换状态时
+    把起点重置为当天 —— 这样每一轮区间的涨跌幅都能从真正的转折点算起。
+    """
+    s = _clean(closes)
+    if len(s) == 0:
+        return pd.Series(dtype=object)
+    labels = np.empty(len(s), dtype=object)
+    vals = s.to_numpy(dtype=float)
+    state = "range"
+    peak = trough = vals[0]
+    for i, px in enumerate(vals):
+        if state == "bull":
+            peak = max(peak, px)
+            if px <= peak * (1.0 - threshold):
+                state, peak, trough = "bear", px, px
+        elif state == "bear":
+            trough = min(trough, px)
+            if px >= trough * (1.0 + threshold):
+                state, peak, trough = "bull", px, px
+        else:                                   # range: 双向都可能突破
+            peak, trough = max(peak, px), min(trough, px)
+            if px >= trough * (1.0 + threshold):
+                state, peak = "bull", px        # trough 保留 = 本轮牛市起点
+            elif px <= peak * (1.0 - threshold):
+                state, trough = "bear", px      # peak 保留 = 本轮熊市起点
+        labels[i] = state
+    return pd.Series(labels, index=s.index, dtype=object)
 
 
 def index_position_series(closes, *,
@@ -113,9 +159,11 @@ def index_position_series(closes, *,
     ma, _slope = ma_and_slope(s)
     out["ma250_dev_pct"] = ((s / ma - 1) * 100).round(1)
     out["regime"] = regime_series(s)
+    out["regime_20"] = _regime_20pct(s)
     # 只有 MA 未成形处才不给牛熊/偏离年线 (短样本不冒充)。
     # **不可**拿十年分位的可用性连坐: 400 根数据足以判牛熊, 但不足以给十年百分位,
     # 两者门槛不同 (2026-09-17 首版把两者绑在一起, 导致 3 年样本判不出牛熊)。
+    # regime_20 不依赖均线, 故**不**跟着置空 (它从第一根就有定义)。
     out.loc[ma.isna(), ["ma250_dev_pct", "regime"]] = None
     return out[list(POSITION_COLUMNS)]
 
@@ -125,7 +173,8 @@ def index_position(closes, *, window_bars: int = PCT_WINDOW_BARS) -> dict:
 
     键: close / pct_10y(十年百分位) / from_high_pct(距十年最高) /
         vol_ann_20 / vol_ann_60(年化波动率) / ret_1y_pct /
-        ma250_dev_pct(偏离年线) / regime(牛熊, 单一真相源)。
+        ma250_dev_pct(偏离年线) / regime(牛熊, 年线斜率口径) /
+        regime_20(牛熊, 20% 法则口径)。
     """
     out = {k: None for k in POSITION_COLUMNS}
     df = index_position_series(closes, window_bars=window_bars)
@@ -136,7 +185,7 @@ def index_position(closes, *, window_bars: int = PCT_WINDOW_BARS) -> dict:
         v = last[k]
         if v is None or (isinstance(v, float) and v != v):
             out[k] = None
-        elif k == "regime":
+        elif k in ("regime", "regime_20"):
             out[k] = str(v)
         elif k == "close":
             out[k] = round(float(v), 2)
