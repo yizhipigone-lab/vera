@@ -515,7 +515,12 @@ class RotationFeature:
         try:
             closes = self._gateway.query_daily_closes(code, count=count)
             if closes and len(closes) >= min_bars:
-                return [float(c) for c in closes], "QMT"
+                # 2026-09-16 审计修复①: 补下载后仍陈旧时网关会落 history_stale
+                # 标记 —— 这里把"陈旧"写进来源名, 让交易页看得见 (不再静默)。
+                stale = getattr(self._gateway, "history_stale", {}).get(code)
+                if stale:
+                    _logger.warning("轮动信号 %s 用陈旧 QMT 日线 (%s)", code, stale)
+                return [float(c) for c in closes], ("QMT(陈旧)" if stale else "QMT")
             _logger.warning("轮动信号 QMT 取数不足(%s 根), 降级 TDX", len(closes or []))
         except Exception as e:
             _logger.warning("轮动信号 QMT 取数失败, 降级 TDX: %s", e)

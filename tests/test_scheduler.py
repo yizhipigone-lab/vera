@@ -59,6 +59,20 @@ class TestTradingCalendar:
             assert tc.is_trading_day(dt.date(2026, 1, 5)) is True
         assert "降级" in caplog.text
 
+    def test_precise_calendar_available_reflects_latch(self, monkeypatch):
+        """精确历可用性即 _load_xshg 的闩状态 (失败也置闩 → 装库要重启才生效)。"""
+        monkeypatch.setattr(tc, "_XCAL", None)
+        monkeypatch.setattr(tc, "_XCAL_TRIED", True)
+        assert tc.precise_calendar_available() is False
+
+    def test_calendar_covers_inside_outside_table(self, monkeypatch):
+        """表内可信 (走内置假日表); 表外年份不可信 (2027 年放假安排公告前写不准)。"""
+        monkeypatch.setattr(tc, "_XCAL", None)
+        monkeypatch.setattr(tc, "_XCAL_TRIED", True)
+        assert tc.calendar_covers(dt.date(2026, 1, 5)) is True    # 表首
+        assert tc.calendar_covers(dt.date(2026, 12, 31)) is True  # 表尾
+        assert tc.calendar_covers(dt.date(2027, 1, 4)) is False   # 表外
+
 
 # ── 定时器触发逻辑 (纯函数 + run_pending 注入时间) ───────────
 

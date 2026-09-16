@@ -189,3 +189,108 @@ def test_intraday_bar_dropped_before_close(gw, monkeypatch):
         (today.year, today.month, today.day, 16, 0, 0, 0, 0, -1)))
     assert gw.query_daily_closes("513100.SH", count=21) == pytest.approx(
         [2.196, 2.218])
+
+
+# ── 2026-09-16 审计修复回归 (报告 docs/audit/2026-09-16_QMT日线新鲜度判定_审计报告.md) ──
+
+class FailingXtdata(FakeXtdata):
+    """补下载永远抛异常 (模拟 QMT 未连接/接口报错)。"""
+
+    def download_history_data(self, code, period, start, end):
+        self.downloads.append((code, period, start, end))
+        raise RuntimeError("模拟补下载失败")
+
+
+def test_still_stale_after_download_is_marked_not_silent(gw):
+    """修复①: 补下载后仍陈旧 → 行为不变 (仍返回序列) 但不再静默。"""
+    stale = _df(["2026-09-13", "2026-09-14"], [2.190, 2.191])
+    gw._xtdata = lambda: FakeXtdata([stale])      # 补下载后拿到的还是同一份
+
+    out = gw.query_daily_closes("513100.SH", count=21)
+    assert out == pytest.approx([2.190, 2.191])
+    assert gw.history_stale["513100.SH"] == "末根 20260914 < 应有 20260916"
+
+
+def test_still_stale_range_keeps_past_days(gw):
+    """修复① (区间口): 仍返回已有历史价 —— 不因"最新一根不够新"丢掉过去那几天。"""
+    stale = _df(["2026-09-13", "2026-09-14"], [2.190, 2.191])
+    gw._xtdata = lambda: FakeXtdata([stale])
+
+    out = gw.query_daily_closes_range("513100.SH", "20260901", "")
+    assert sorted(out) == ["2026-09-13", "2026-09-14"]
+    assert gw.history_stale.get("513100.SH")
+
+
+def test_history_stale_cleared_when_fresh(gw):
+    """标记是"当下状态": 下一次取到新鲜数据要清掉。"""
+    stale = _df(["2026-09-14"], [2.190])
+    fresh = _df(["2026-09-15", "2026-09-16"], [2.196, 2.218])
+    fake = FakeXtdata([stale, stale, fresh])       # 同一实例: 帧按调用次序消耗
+    gw._xtdata = lambda: fake
+
+    gw.query_daily_closes("513100.SH", count=21)
+    assert gw.history_stale.get("513100.SH")
+
+    gw.query_daily_closes("513100.SH", count=21)   # 这次拿到新鲜数据
+    assert "513100.SH" not in gw.history_stale
+
+
+def test_download_failure_retries_in_60s_not_600s(gw):
+    """修复②: 补下载失败 → 短间隔重试, 一次失败不再压住一整天。"""
+    gw._xtdata = lambda: FailingXtdata([_df(["2026-09-14"], [2.190])])
+
+    out = gw.query_daily_closes("513100.SH", count=21)
+    assert out == pytest.approx([2.190])           # 失败也要给调用方旧数据
+    assert "513100.SH" in gw._refresh_failed
+
+    need, why = gw._should_download_history(
+        "513100.SH", ["20260914"], time.time() + 1.0)
+    assert need is False and "60s 内已补过" in why
+
+    need2, _ = gw._should_download_history(
+        "513100.SH", ["20260914"],
+        time.time() + gw_mod._REFRESH_FAIL_RETRY_SEC + 1.0)
+    assert need2 is True
+
+
+def test_download_success_keeps_600s_debounce(gw):
+    """对照: 补下载成功仍按 600s 防抖 (失败一次别把每个调用都拖成 20s 阻塞)。"""
+    gw._xtdata = lambda: FakeXtdata([_df(["2026-09-14"], [2.190])])
+
+    gw.query_daily_closes("513100.SH", count=21)
+    assert gw._refresh_failed == set()
+
+    need, why = gw._should_download_history(
+        "513100.SH", ["20260914"], time.time() + 61.0)
+    assert need is False and "600s 内已补过" in why
+
+
+def test_untrusted_calendar_drops_today_demand(monkeypatch, caplog):
+    """修复③: 精确历不可用 + 内置表未覆盖该年 (2027) → 盘后只要求上一交易日。
+
+    否则 2027 年落在工作日里的法定假日会被粗判成交易日, "应有一根=当日"
+    永远校验不过 → 每 600s 空补一次。
+    """
+    import scheduler.trading_calendar as cal
+
+    monkeypatch.setattr(cal, "_XCAL", None)
+    monkeypatch.setattr(cal, "_XCAL_TRIED", True)
+    monkeypatch.setattr(gw_mod, "_CAL_NOT_COVERED_WARNED", set())
+
+    with caplog.at_level("WARNING", logger="trade.gateway"):
+        assert _expected_last_bar_day(dt.date(2027, 1, 8), 16 * 60) == "20270107"
+        assert _expected_last_bar_day(dt.date(2027, 1, 8), 16 * 60) == "20270107"
+    assert caplog.text.count("交易日历不可信") == 1     # 每天一条, 不刷屏
+
+
+def test_covered_calendar_still_demands_today(monkeypatch, caplog):
+    """对照: 内置表覆盖的 2026 年 (精确历缺失) 仍按严格判据要求当日。"""
+    import scheduler.trading_calendar as cal
+
+    monkeypatch.setattr(cal, "_XCAL", None)
+    monkeypatch.setattr(cal, "_XCAL_TRIED", True)
+    monkeypatch.setattr(gw_mod, "_CAL_NOT_COVERED_WARNED", set())
+
+    with caplog.at_level("WARNING", logger="trade.gateway"):
+        assert _expected_last_bar_day(dt.date(2026, 9, 16), 16 * 60) == "20260916"
+    assert "交易日历不可信" not in caplog.text

@@ -41,8 +41,10 @@ _logger = get_logger("trade.gateway")
 # 取数口 (query_daily_closes / query_daily_closes_range) 共用 —— 同语义
 # 手写两份必然漂移 (沉淀经验#1)。
 _CLOSE_READY_HM = 15 * 60 + 5        # 盘后"当日线应已落地"时点 (与丢盘中 bar 同源)
-_REFRESH_MIN_INTERVAL_SEC = 600.0    # 同代码补下载防抖间隔 (数据当天可能晚到)
+_REFRESH_MIN_INTERVAL_SEC = 600.0    # 同代码补下载**成功**后的防抖间隔 (数据当天可能晚到)
+_REFRESH_FAIL_RETRY_SEC = 60.0       # 补下载**失败**后的重试间隔 (一次失败不该压住一整天)
 _HOLIDAY_LOOKBACK_DAYS = 15          # 连休最长回溯 (春节)
+_CAL_NOT_COVERED_WARNED: set[str] = set()   # 日历不可信告警去重 (按日期, 防取数次次刷屏)
 
 
 def _last_index_day(df) -> str:
@@ -53,16 +55,45 @@ def _last_index_day(df) -> str:
         return ""
 
 
+def _warn_calendar_not_covered(today: dt.date) -> None:
+    """日历不可信时按日期告警一次 (每天一条, 不随取数次数刷屏)。"""
+    key = today.isoformat()
+    if key in _CAL_NOT_COVERED_WARNED:
+        return
+    _CAL_NOT_COVERED_WARNED.add(key)
+    _logger.warning(
+        "交易日历不可信 (%s 超出精确历与内置假日表的覆盖区间, 两者目前都只到 2026-12-31): "
+        "盘后不再要求当日日线, 只要求上一交易日 —— 等 2027 年放假安排公告后补表/升级库即恢复", key)
+
+
+def _behind_expected(seen_days: list[str], expected: str) -> tuple[bool, str]:
+    """(末根是否落后于应有日线, 末根)。expected 为空(日历判不出) → 不落后(不猜)。"""
+    days = [d for d in (seen_days or []) if d]
+    last = max(days) if days else ""
+    if not expected:
+        return False, last
+    return (not last) or last < expected, last
+
+
 def _expected_last_bar_day(today: dt.date, now_hm: int) -> str:
     """当前时点本地日线"应该"已有的最新一根交易日 (YYYYMMDD); 判不出 ''。
 
-    >= 15:05 且今天是交易日 → 今天 (盘后当日线应已落地);
-    否则 → 今天之前最近的交易日 (盘中当日 bar 未收盘、非交易日都不要求)。
+    判据随**日历可信度**分两档 (2026-09-16 审计修复③):
+      日历可信 (精确历可用, 或内置假日表覆盖该日):
+        >= 15:05 且今天是交易日 → 今天 (盘后当日线应已落地);
+        否则 → 今天之前最近的交易日 (盘中当日 bar 未收盘、非交易日都不要求)。
+      日历**不可信** (精确历缺失且是表外年份, 如 2027 年):
+        只要求"今天之前最近的交易日" —— 表外日期按"周一~周五"粗判, 落在工作日里
+        的法定假日会被误判成交易日, 若仍要求当日就会永远等一根不存在的数据
+        (每 600s 空补一次, 且永远校验不过)。
     日历不可用/异常 → '' (判不出就不猜, 调用方不补下载)。
     """
     try:
-        from scheduler.trading_calendar import is_trading_day
-        if is_trading_day(today) and now_hm >= _CLOSE_READY_HM:
+        from scheduler.trading_calendar import calendar_covers, is_trading_day
+        trusted = calendar_covers(today)
+        if not trusted:
+            _warn_calendar_not_covered(today)
+        if trusted and is_trading_day(today) and now_hm >= _CLOSE_READY_HM:
             return today.strftime("%Y%m%d")
         d = today - dt.timedelta(days=1)
         for _ in range(_HOLIDAY_LOOKBACK_DAYS):
@@ -241,6 +272,12 @@ class RealGateway(BaseGateway):
         self._connect_failures = 0
         # 2026-09-16 日线补下载防抖: 代码 → 上次补下载时刻 (见 _should_download_history)
         self._refresh_ts: dict[str, float] = {}
+        # 2026-09-16 审计修复②: 上次补下载失败的代码 —— 改按短间隔重试,
+        # 一次失败不再压住一整天 (见 _download_history)
+        self._refresh_failed: set[str] = set()
+        # 2026-09-16 审计修复①: 只读观测 —— 补下载后仍陈旧的代码 → 人话说明
+        # (页面/测试可读; 不参与任何判定, 清空时机见 _note_history_result)
+        self.history_stale: dict[str, str] = {}
         # 审计H5修复: 行情订阅状态 —— code → 订阅序号 (unsubscribe 用),
         # run 线程全进程只启一次 (库级全局事件循环)
         self._quote_seqs: dict[str, int] = {}
@@ -413,32 +450,84 @@ class RealGateway(BaseGateway):
             return {}
         return out
 
+    def _expected_bar_day(self, now_ts: float, cap_day: str = "") -> str:
+        """当前"应有一根"的日线 (YYYYMMDD); 历史区间查询按右端封顶。
+
+        cap_day 非空 = 本次查询右端: 应有一根不超过它 —— 历史区间查询 (end 在
+        过去) 不该被判成陈旧。判定口 (补不补) 与复检口 (补完够不够新) 共用,
+        避免同一条封顶规则手写两份 (2026-09-16 审计修复①)。
+        """
+        now = dt.datetime.fromtimestamp(now_ts)
+        expected = _expected_last_bar_day(now.date(), now.hour * 60 + now.minute)
+        if cap_day and expected and cap_day < expected:
+            expected = cap_day
+        return expected
+
     def _should_download_history(self, code: str, seen_days: list[str],
                                  now_ts: float,
                                  cap_day: str = "") -> tuple[bool, str]:
         """本地日线是否需要补下载 → (是否下载, 原因人话)。两个取数口共用。
 
         判据: 空 或 末根 < "应有一根" (`_expected_last_bar_day`, 盘后要求当日,
-        盘中/非交易日只要求上一交易日)。cap_day 非空 = 本次查询右端, 应有一根
-        不超过它 —— 历史区间查询 (end 在过去) 不该被判成陈旧。
+        盘中/非交易日只要求上一交易日; 日历不可信时只要求上一交易日)。
+        cap_day 非空 = 本次查询右端, 应有一根不超过它 —— 历史区间查询 (end 在
+        过去) 不该被判成陈旧。
         防抖: 同代码 _REFRESH_MIN_INTERVAL_SEC 内不重复下载 (数据当天可能晚到,
-        失败一次别把每个调用都拖成 20s 阻塞)。日历判不出 → 不下载 (不猜)。
+        失败一次别把每个调用都拖成 20s 阻塞)。2026-09-16 审计修复②: 上一次
+        补下载**失败过**的代码改按 _REFRESH_FAIL_RETRY_SEC 重试 (失败标记由
+        `_download_history` 落), 避免"一次失败 = 当天不再补"。
+        日历判不出 → 不下载 (不猜)。
         """
-        now = dt.datetime.fromtimestamp(now_ts)
-        expected = _expected_last_bar_day(now.date(), now.hour * 60 + now.minute)
-        if cap_day and expected and cap_day < expected:
-            expected = cap_day
-        days = [d for d in (seen_days or []) if d]
-        last = max(days) if days else ""
+        expected = self._expected_bar_day(now_ts, cap_day=cap_day)
+        _, last = _behind_expected(seen_days, expected)
         if not expected:
             return False, "日历判不出应有日线, 不补下载"
         if last and last >= expected:
             return False, f"末根 {last} 已达应有 {expected}"
-        if now_ts - self._refresh_ts.get(code, 0.0) < _REFRESH_MIN_INTERVAL_SEC:
+        interval = (_REFRESH_FAIL_RETRY_SEC if code in self._refresh_failed
+                    else _REFRESH_MIN_INTERVAL_SEC)
+        if now_ts - self._refresh_ts.get(code, 0.0) < interval:
             return False, (f"末根 {last or '空'} 落后于应有 {expected}, "
-                           f"但 {int(_REFRESH_MIN_INTERVAL_SEC)}s 内已补过")
+                           f"但 {int(interval)}s 内已补过")
         self._refresh_ts[code] = now_ts
         return True, f"末根 {last or '空'} 落后于应有 {expected}, 补下载历史"
+
+    def _download_history(self, xtdata: Any, code: str, start: str, end: str) -> bool:
+        """补下载一次历史日线; 成功 (未抛异常) 返回 True。
+
+        防抖戳由判定口 `_should_download_history` 在"决定要下载"那一刻盖上
+        (那是为了限住阻塞时间, 不是"成功"的证明), 本方法只负责**记录成败**:
+        失败 → `_refresh_failed` → 下一次判定改用短重试间隔 (审计修复②)。
+        两处取数口共用本方法 —— 同一条规则不写两份 (沉淀经验#1)。
+        """
+        try:
+            _call_with_timeout(xtdata.download_history_data,
+                               self._timeout * 4, code, "1d", start, end)
+        except Exception as e:              # noqa: BLE001
+            self._refresh_failed.add(code)
+            _logger.warning("download_history_data(%s) 失败 (%.0fs 后允许重试): %s",
+                            code, _REFRESH_FAIL_RETRY_SEC, e)
+            return False
+        self._refresh_failed.discard(code)
+        return True
+
+    def _note_history_result(self, code: str, seen_days: list[str],
+                             expected: str, where: str) -> bool:
+        """补下载后复检: 仍落后于应有日线 → 记 WARN + 落 `history_stale` 标记。
+
+        2026-09-16 审计修复①: 原实现重取后只判"空不空", 陈旧序列原样返回且不
+        给调用方任何信号 → "有数据但陈旧"静默流到下游 (动量只数根数不看日期)。
+        @returns True = 仍陈旧 (由调用方决定 fail-closed 还是带标记返回)。
+        """
+        stale, last = _behind_expected(seen_days, expected)
+        if not stale:
+            self.history_stale.pop(code, None)
+            return False
+        note = f"末根 {last or '空'} < 应有 {expected}"
+        self.history_stale[code] = note
+        _logger.warning("%s(%s) 补下载后仍陈旧 (%s) —— 数据源当天可能还没落地",
+                        where, code, note)
+        return True
 
     def query_daily_closes_range(self, code: str, start: str = "",
                                  end: str = "") -> dict[str, float]:
@@ -450,6 +539,11 @@ class RealGateway(BaseGateway):
         与实盘成交价/成本同维度); 本地数据**空或陈旧**时 download_history_data
         后重取一次 (2026-09-16: 原只判空 → 缺 9/15 收盘价让补算 fail-closed 拒写)。
         start/end 为 'YYYYMMDD' (空 = 不限)。失败/无数据返回 {} (调用方 fail-closed)。
+        **补下载后仍陈旧**: 仍返回已有数据 + 记 WARN + 落 `history_stale` 标记
+        (2026-09-16 审计修复①, 原为静默返回)。这里**不**因陈旧而拒收: 本口是按
+        日期问价的, 要的就是"历史某天"的价 (缺哪天由调用方 fail-closed 处理),
+        若因"最新一根不够新"整段拒收, 反而会把 2026-09-16 那次修复要救的
+        9/15 收盘价一起丢掉。
         """
         xtdata = self._xtdata()
         raw = _call_with_timeout(
@@ -457,15 +551,14 @@ class RealGateway(BaseGateway):
             [], [code], "1d", start, end, -1, "none", False)
         df = (raw or {}).get(code)
         seen = [_last_index_day(df)] if df is not None and not df.empty else []
+        now_ts = time.time()
+        cap_day = str(end or "")
         need, why = self._should_download_history(
-            code, seen, time.time(), cap_day=str(end or ""))
+            code, seen, now_ts, cap_day=cap_day)
+        expected = self._expected_bar_day(now_ts, cap_day=cap_day)
         if need:
             _logger.warning("query_daily_closes_range(%s) %s", code, why)
-            try:
-                _call_with_timeout(xtdata.download_history_data,
-                                   self._timeout * 4, code, "1d", start, end)
-            except Exception as e:              # noqa: BLE001
-                _logger.warning("download_history_data(%s) 失败: %s", code, e)
+            self._download_history(xtdata, code, start, end)
             raw = _call_with_timeout(
                 xtdata.get_market_data_ex, self._timeout,
                 [], [code], "1d", start, end, -1, "none", False)
@@ -473,6 +566,8 @@ class RealGateway(BaseGateway):
         if df is None or df.empty:
             _logger.warning("query_daily_closes_range(%s) 无数据 (补下载后仍空)", code)
             return {}
+        self._note_history_result(code, [_last_index_day(df)], expected,
+                                  "query_daily_closes_range")
         return self._closes_by_date(df)
 
     @staticmethod
@@ -600,25 +695,26 @@ class RealGateway(BaseGateway):
         秒回) —— 陈旧判据见 _should_download_history (2026-09-16 修: 原只判空,
         本机实测 9/16 盘后末根仍停 9/14, 动量参照点整体前移 ~1 个交易日)。
         无未来函数: 剔除「当日未收盘」bar (盘中取数可能含今日盘中 bar)。
-        返回按交易日升序; 过滤 NaN/非正数; 仍空记 WARN 便于排查。"""
+        返回按交易日升序; 过滤 NaN/非正数; 仍空记 WARN 便于排查。
+        **补下载后仍陈旧**: 本口**仍返回该序列** (不改实盘选腿行为), 但记 WARN 并
+        落 `history_stale[代码]` 标记供页面/调用方观察 (2026-09-16 审计修复①:
+        原实现静默返回陈旧序列)。"""
         xtdata = self._xtdata()
         raw = _call_with_timeout(
             xtdata.get_market_data_ex, self._timeout,
             [], [code], "1d", "", "", count, "none", False)
         df = (raw or {}).get(code)
         seen = [_last_index_day(df)] if df is not None and not df.empty else []
-        need, why = self._should_download_history(code, seen, time.time())
+        now_ts = time.time()
+        need, why = self._should_download_history(code, seen, now_ts)
+        expected = self._expected_bar_day(now_ts)
         if need:
             _logger.warning("query_daily_closes(%s) %s", code, why)
             days_back = int(count * 1.6) + 30   # count 根交易日 ≈ 1.6× 自然日 + 余量
             # 注 (审计 L7): 下载窗口用真实 time.time(); 生产真网关时钟即真实
             # 时间, 与信号日期同源无分叉; 仅测试注入时钟偏移时才有理论差异。
-            start = time.strftime("%Y%m%d", time.localtime(time.time() - days_back * 86400))
-            try:
-                _call_with_timeout(xtdata.download_history_data, self._timeout * 4,
-                                   code, "1d", start, "")
-            except Exception as e:
-                _logger.warning("download_history_data(%s) 失败: %s", code, e)
+            start = time.strftime("%Y%m%d", time.localtime(now_ts - days_back * 86400))
+            self._download_history(xtdata, code, start, "")
             raw = _call_with_timeout(
                 xtdata.get_market_data_ex, self._timeout,
                 [], [code], "1d", "", "", count, "none", False)
@@ -626,6 +722,8 @@ class RealGateway(BaseGateway):
         if df is None or df.empty:
             _logger.warning("query_daily_closes(%s) 无数据 (补下载后仍空: 指数代码可能无数据)", code)
             return []
+        self._note_history_result(code, [_last_index_day(df)], expected,
+                                  "query_daily_closes")
         closes = [float(x) for x in df["close"].tolist() if x == x and x > 0]
         # 无未来函数(审计 CRITICAL#1): 最后一根是"今天"且当前<15:05(未收盘) →
         # 丢弃当日盘中 bar, 信号只用已收盘完整日线 (时点常量与新鲜度判定同源)
