@@ -13,22 +13,25 @@ core 引 tools 的说明: formula_farm/common 只依赖 stdlib + tools.future_to
 引用链无环; 收口收益大于分层洁癖。
 
 性能: status 轮询 2 秒一次, check.json 含千条公式源码(MB 级), 一律按
-(路径, mtime) 进程内缓存; onboard 索引/断点集按 glob 最大 mtime 缓存。
+(路径, mtime) 进程内缓存 (容量 32 条 LRU 淘汰, 防长跑内存膨胀, 审计 M1);
+onboard 索引/断点集按 (文件数, 最大 mtime) 签名缓存 (审计 M5: 旧 mtime
+恢复/删非最新文件也会变签名)。
 """
 import glob
 import json
 import os
 import re
 
-from tools.formula_farm.common import load_done_files, load_onboard_index
+from core.farm_ledger import load_done_files, load_onboard_index
 
 _CACHE: dict = {}
+_CACHE_CAP = 32
 
 
 # ── 小工具 ────────────────────────────────────────────────
 
 def _read_json(path):
-    """读 json, 按 (path, mtime) 缓存; 不存在/坏文件 → None。"""
+    """读 json, 按 (path, mtime) 缓存; 不存在/坏文件 → None。LRU 容量淘汰。"""
     try:
         m = os.path.getmtime(path)
     except OSError:
@@ -41,13 +44,23 @@ def _read_json(path):
             v = json.load(f)
     except Exception:
         return None
+    while len(_CACHE) >= _CACHE_CAP:          # dict 保序: 逐最旧 (审计 M1)
+        _CACHE.pop(next(iter(_CACHE)))
     _CACHE[path] = (m, v)
     return v
 
 
+def _mtime(p):
+    """getmtime 的安全版 (审计 L1: glob 完到 stat 之间文件被删的 TOCTOU)。"""
+    try:
+        return os.path.getmtime(p)
+    except OSError:
+        return -1.0
+
+
 def _latest(pattern):
-    cands = glob.glob(pattern)
-    return max(cands, key=os.path.getmtime) if cands else None
+    cands = [c for c in glob.glob(pattern) if _mtime(c) >= 0]
+    return max(cands, key=_mtime) if cands else None
 
 
 def _md(date_str):
@@ -69,7 +82,9 @@ def _onboard_files(root):
 
 
 def _glob_sig(files):
-    return max((os.path.getmtime(f) for f in files), default=0.0)
+    """缓存签名 = (文件数, 最大 mtime) —— 审计 M5: 只取 max mtime 会漏
+    「保留时间戳恢复旧目录」「删除非最新文件」两类变化。"""
+    return (len(files), max((_mtime(f) for f in files), default=0.0))
 
 
 def _onboard_index(root):
@@ -137,8 +152,11 @@ def _onboard_card(root):
         _md(latest.get("date")), ok_n, fail_n, len(idx))
     chk = _latest_check(root)
     if chk:
+        # 2026-09-16 审计 F-A: _done_files 必须提出循环 —— 在推导式里调用
+        # 会对每个 vetted 条目各做一次 glob+stat (1055 条 → 每次轮询白烧 ~290ms)
+        done = _done_files(root)
         remain = len([v for v in (chk.get("vetted") or [])
-                      if v.get("file") not in _done_files(root)])
+                      if v.get("file") not in done])
         text += " · 还剩 %d 条待入" % remain
     return {"text": text, "ready": True, "hint": ""}
 
@@ -201,7 +219,8 @@ def gate_summaries(data_root: str) -> dict:
              "onboard": _onboard_card(data_root),
              "verify": _verify_card(data_root),
              "backtest": _backtest_card(data_root)}
-    has_check = _latest_check(data_root) is not None
+    has_check = bool(_latest_check(data_root))   # 审计 L2: 坏 check.json
+    # (_read_json 失败回落 {}) 不算"已检查", 不能解锁②
     latest_ob = _latest_onboard(data_root)
     latest_has_ok = bool(latest_ob) and any(
         it.get("ok") for it in latest_ob.get("items", []))
@@ -238,15 +257,25 @@ def _board_row(gs, e):
             "reason": v.get("reason", "")}
 
 
+#: 榜单各组下发上限 (审计 F-B: 全量 822 条 = 343 KB/次, 2 秒轮询扛不动;
+#: 计数在 board_totals 全给, 截尾组前端标「仅列前 N 条」)
+_BOARD_CAP = {"pass": 200, "insufficient": 50, "fail": 30}
+
+
 def overview(data_root: str) -> dict:
-    """漏斗 + 达标榜 + 淘汰原因 Top3。数量全部唯一键口径, 不虚报。"""
+    """漏斗 + 达标榜 + 淘汰原因 Top3。数量全部唯一键口径, 不虚报。
+
+    2026-09-16 审计 F-B: 榜单分组**截尾下发** (计数全给, 行只给前 N 条) ——
+    实测全量 822 条归档 = 343 KB/次, status 2 秒轮询扛不动; 折叠组用户
+    本来就少展开, 前 30 条足够代表。
+    """
     # 漏斗: 进货 → 上架 → 抽检 → 试穿 → 达标
     intake_n = len(glob.glob(os.path.join(data_root, "intake", "**", "*.md"),
                              recursive=True))
     idx = _onboard_index(data_root)
     verified, verify_pass = {}, 0
     for fp in sorted(glob.glob(os.path.join(_runs(data_root), "*", "verify.json")),
-                     key=os.path.getmtime):
+                     key=_mtime):
         d = _read_json(fp) or {}
         for gs, f in (d.get("formulas") or {}).items():
             verified[gs] = f          # 同日/跨日重跑: 新的覆盖旧的
@@ -274,6 +303,8 @@ def overview(data_root: str) -> dict:
         by[key].append(r)
     for lst in by.values():
         lst.sort(key=lambda r: (r["annret"] is None, -(r["annret"] or 0)))
+    totals = {k: len(v) for k, v in by.items()}
+    capped = {k: v[:_BOARD_CAP[k]] for k, v in by.items()}
     # 淘汰原因 Top3 (最新一轮检查)
     top = []
     chk = _latest_check(data_root)
@@ -293,8 +324,9 @@ def overview(data_root: str) -> dict:
              "count": verified_n, "pass": verify_pass},
             {"key": "swept", "label": "试穿有结果", "count": len(swept)},
             {"key": "pass", "label": "达标",
-             "count": len(by["pass"])}],
+             "count": totals["pass"]}],
         "top_reasons": [[c, n] for c, n in top],
-        "board": by,
+        "board": capped,
+        "board_totals": totals,
         "board_total": len(rows),
     }

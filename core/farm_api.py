@@ -67,7 +67,7 @@ def create_farm_router(farm, pipeline_status):
         """
         if gate not in GATE_NAMES:
             raise HTTPException(400, "未知闸门")
-        last = (farm.status().get("last") or {}).get(gate) or {}
+        last = (farm.last_status() or {}).get(gate) or {}
         lf = last.get("log_file")
         # 复审 LOW: last_status.json 可被手工改动, 非字符串/坏路径不能炸成 500
         p = Path(lf) if isinstance(lf, str) and lf else None

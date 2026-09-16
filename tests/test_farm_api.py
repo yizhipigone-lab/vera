@@ -204,6 +204,21 @@ def test_farm_log_truncates_long_file(client, monkeypatch):
     assert body["log"].endswith("x" * 100)
 
 
+def test_farm_log_does_not_pay_summary_cost(client, monkeypatch):
+    """审计 L4: 读日志走 last_status() 轻路径 —— 全程不触发全量汇总。"""
+    import core.farm_api as fa
+    from core import farm_summary as fsm
+    c, farm = client
+    monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
+    d = fa.RUNS / "2026-09-16"
+    d.mkdir(parents=True)
+    (d / "check.log").write_text("x", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(fsm, "gate_summaries", lambda *a: calls.append(1) or {})
+    assert c.get("/api/farm/log", params={"gate": "check"}).status_code == 200
+    assert not calls
+
+
 def test_backtest_rejected_when_pipeline_busy(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "LAST", tmp_path / "last_status.json")
     farm = fr.FarmRunner(runner=lambda run: 0)

@@ -131,25 +131,23 @@ def merge_verdicts(formulas, repaint: dict, future: dict,
             for gs in formulas}
 
 
-def summarize(merged: dict) -> dict:
-    """总览: 两项都通过 = pass; 任一项明确不通过 = fail; 其余 = unknown。"""
-    stat = {"total": len(merged), "pass": 0, "fail": 0, "unknown": 0}
-    for v in merged.values():
-        oks = [v["repaint"].get("ok"), v["future"].get("ok")]
-        if False in oks:
-            stat["fail"] += 1
-        elif all(o is True for o in oks):
-            stat["pass"] += 1
-        else:
-            stat["unknown"] += 1
-    return stat
-
-
 def concl_of(v: dict) -> str:
-    """单公式复核总结论 (md 报告与 verify.json 共用, 防同规则第三份手写)。"""
+    """单公式复核总结论 (md 报告/verify.json/summarize 共用, 防同规则第三份手写)。"""
     oks = [v["repaint"].get("ok"), v["future"].get("ok")]
     return ("未通过" if False in oks
             else ("通过" if all(o is True for o in oks) else "无法判定"))
+
+
+def summarize(merged: dict) -> dict:
+    """总览: 两项都通过 = pass; 任一项明确不通过 = fail; 其余 = unknown。
+
+    2026-09-16 看板审计 M4: 三态判断统一走 concl_of (原此处又手写一份)。
+    """
+    stat = {"total": len(merged), "pass": 0, "fail": 0, "unknown": 0}
+    _KEY = {"通过": "pass", "未通过": "fail", "无法判定": "unknown"}
+    for v in merged.values():
+        stat[_KEY[concl_of(v)]] += 1
+    return stat
 
 
 def write_verify_json(path, merged: dict, ctx: dict) -> dict:

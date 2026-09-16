@@ -137,9 +137,20 @@ class FarmRunner:
             from core import farm_summary
             base["summary"] = farm_summary.gate_summaries(str(DATA))
             base["overview"] = farm_summary.overview(str(DATA))
+            self._summary_failed = False
         except Exception:
-            _logger.warning("farm_summary 汇总失败", exc_info=True)
+            # 审计 L3: 持续失败只记一次 (否则每 2 秒刷一条带堆栈的 warning)
+            if not getattr(self, "_summary_failed", False):
+                self._summary_failed = True
+                _logger.warning("farm_summary 汇总失败 (后续失败不再重复记, 恢复后自动复位)",
+                                exc_info=True)
         return base
+
+    def last_status(self):
+        """轻量读 last_status (farm_api 读日志接口用 —— 审计 L4:
+        读日志不该白付一次全量汇总)。"""
+        with self._lock:
+            return dict(self._last)
 
     # ── 执行 ────────────────────────────────────────────────
     def start(self, gate):

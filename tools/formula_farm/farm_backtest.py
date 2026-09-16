@@ -180,6 +180,20 @@ def _sweep(gs: str, start: str, end: str) -> str:
     return ""
 
 
+# ────────────────────────── 判定装配 (2026-09-16 审计 M4 收口) ──────────────────────────
+
+def _verdict_of_rows(rows):
+    """组合行 → (best, verdict)。装配唯一实现 —— build_report / archive_entry /
+    _stats_of 三处共用 (原三份手写, best=None 的 invalid 字典逐字重复, 必然漂移)。
+    阈值本身仍归 farm_rules (单一真相源), 本函数只做装配。"""
+    best = farm_rules.pick_best(rows or [])
+    if best is None:
+        return None, {"code": farm_rules.INVALID, "label": "无有效组合",
+                      "reason": "36 组全部失败 或 区间内零信号"}
+    return best, farm_rules.verdict(best.get("annret"), best.get("maxdd"),
+                                    best.get("trades"))
+
+
 # ────────────────────────── 报告 (纯函数, 可单测) ──────────────────────────
 
 def build_report(results: list, ctx: dict) -> str:
@@ -207,13 +221,7 @@ def build_report(results: list, ctx: dict) -> str:
     stats = {"pass": 0, "fail": 0, "insufficient": 0, "invalid": 0}
     table_rows, pending = [], []
     for item in results:
-        best = farm_rules.pick_best(item.get("rows") or [])
-        if best is None:
-            v = {"code": farm_rules.INVALID, "label": "无有效组合",
-                 "reason": "36 组全部失败 或 区间内零信号"}
-        else:
-            v = farm_rules.verdict(best.get("annret"), best.get("maxdd"),
-                                   best.get("trades"))
+        best, v = _verdict_of_rows(item.get("rows"))
         stats[v["code" if v["code"] in stats else "invalid"]] += 1
         if best is None:
             table_rows.append("| %s | %s | — | — | — | — | — | — | %s |" % (
@@ -281,14 +289,8 @@ def _slim_best(best):
 
 
 def archive_entry(gs, info, rows, window):
-    """单公式归档条目 (纯函数)。判定/最优组合走 farm_rules (单一真相源)。"""
-    best = farm_rules.pick_best(rows)
-    if best is None:
-        v = {"code": farm_rules.INVALID, "label": "无有效组合",
-             "reason": "36 组全部失败 或 区间内零信号"}
-    else:
-        v = farm_rules.verdict(best.get("annret"), best.get("maxdd"),
-                               best.get("trades"))
+    """单公式归档条目 (纯函数)。判定/最优组合走 _verdict_of_rows (装配唯一实现)。"""
+    best, v = _verdict_of_rows(rows)
     return {"file": info.get("file", ""), "url": info.get("url", ""),
             "onboard_date": info.get("date", ""),
             "best": _slim_best(best), "verdict": v,
@@ -318,14 +320,11 @@ def update_archive(path, gs_list, idx, rebuild=False):
 
 
 def _stats_of(results):
-    """本轮判定计数 (报告与 backtest_summary.json 共用同一判定源 farm_rules)。"""
+    """本轮判定计数 (报告与 backtest_summary.json 共用同一装配 _verdict_of_rows)。"""
     stats = {"pass": 0, "fail": 0, "insufficient": 0, "invalid": 0}
     for item in results:
-        best = farm_rules.pick_best(item.get("rows") or [])
-        code = (farm_rules.INVALID if best is None else
-                farm_rules.verdict(best.get("annret"), best.get("maxdd"),
-                                   best.get("trades"))["code"])
-        stats[code if code in stats else "invalid"] += 1
+        _, v = _verdict_of_rows(item.get("rows"))
+        stats[v["code"] if v["code"] in stats else "invalid"] += 1
     return stats
 
 

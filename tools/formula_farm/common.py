@@ -4,14 +4,11 @@
 v0 纪律: 只增不改、只读 gongshi/TDX gs_txt、绝不写 TDX。
 token 清单复刻 gongshi 实战(_batch_import.py + _clean_formulas.json 基线)。
 """
-import glob
 import hashlib
-import json
 import os
 import re
 import subprocess
 import sys
-import time
 
 from tools.future_tokens import FUTURE_TOKEN_BLACKLIST
 
@@ -78,73 +75,8 @@ def push_feishu(md_path, title, logger=None):
         _log("飞书推送: 异常 %r" % e)
 
 
-# ---- 入库索引/断点集 (2026-09-16 计划书防漂移收口: done_files 原内联在
-# farm_onboard.main, _onboard_index 原在 farm_backtest, 看板还需要第三份 ——
-# 同一条规则手写 N 份必然漂移, 合一; 两脚本改为引用) ----
-
-def load_done_files(runs_dir):
-    """断点跳过集: 所有 onboard.json 里 ok 或「编译失败」的 file 集合。
-
-    编译失败同样终态跳过 (TDX 确定性拒绝, 重试永远失败, 2026-09-06 熔断空转教训)。
-    """
-    done = set()
-    for p in glob.glob(os.path.join(runs_dir, "*", "onboard.json")):
-        try:
-            with open(p, encoding="utf-8") as f:
-                for it in json.load(f).get("items", []):
-                    if it.get("ok") or "编译失败" in (it.get("msg") or ""):
-                        done.add(it.get("file"))
-        except Exception:
-            pass
-    return done
-
-
-def load_onboard_index(runs_dir, logger=None):
-    """所有 onboard.json 的 ok 条目 → {gs: {file, url, date}} (取最早入库批次)。"""
-    _log = logger or (lambda s: None)
-    idx = {}
-    for fp in glob.glob(os.path.join(runs_dir, "*", "onboard.json")):
-        try:
-            with open(fp, encoding="utf-8") as f:
-                d = json.load(f)
-        except Exception as e:                                   # noqa: BLE001
-            _log("   ! 读 %s 失败: %r" % (os.path.basename(fp), e))
-            continue
-        date = d.get("date") or os.path.basename(os.path.dirname(fp))
-        for it in d.get("items", []):
-            gs = it.get("gs")
-            if not gs or not it.get("ok"):
-                continue
-            cur = idx.get(gs)
-            if cur is None or date < cur["date"]:
-                idx[gs] = {"file": it.get("file", ""), "url": it.get("url", ""),
-                           "date": date}
-    return idx
-
-
-# ---- 入库账本 (2026-09-16 自 farm_onboard 迁入: 账本落盘是纯数据逻辑,
-# 不该拖着 psutil/pyautogui/pywinauto 的 GUI 硬依赖 —— 否则测试 import
-# 链在新环境收集即炸, 复审 M4) ----
-
-def save_onboard(ob_path, date_str, items):
-    """合并写 onboard.json (读旧 → 按文件合并 → 原子替换落盘)。
-
-    2026-09-06 血泪教训: 覆盖写会把历史 ok 记录冲掉 → 断点失效重复入库,
-    所以一律合并写 (同文件取最新一轮的结果)。
-    供 farm_onboard「每入一条立即记账」逐条调用 (中途停止不丢账)。
-    """
-    merged = {}
-    if os.path.exists(ob_path):
-        try:
-            with open(ob_path, encoding="utf-8") as f:
-                for it in json.load(f).get("items", []):
-                    merged[it.get("file")] = it
-        except Exception:
-            pass
-    for it in items:
-        merged[it["file"]] = it
-    tmp = ob_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"date": date_str, "finished_at": time.strftime("%H:%M:%S"),
-                   "items": list(merged.values())}, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, ob_path)
+# ---- 入库索引/断点集/账本 (2026-09-16 看板审计 M2/M3: 正主已迁
+# core/farm_ledger.py —— core/farm_summary 也要用, 放 tools 会造成 core→tools
+# 分层倒挂, 且本文件不再继续增肥; 此处兼容再导出, 既有调用方
+# (farm_onboard/farm_backtest/tests) 零改动, 新代码请直接引 core.farm_ledger) ----
+from core.farm_ledger import load_done_files, load_onboard_index, save_onboard  # noqa: E402,F401

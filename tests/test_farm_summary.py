@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """core/farm_summary 看板汇总测试 (2026-09-16 计划书阶段 2, 全 tmp 目录造假产物)。"""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import farm_summary as fs  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """模块级 _CACHE 跨测试隔离 (复审指出: 此前靠 tmp 路径不同碰巧安全)。"""
+    fs._CACHE.clear()
+    yield
+    fs._CACHE.clear()
 
 
 @pytest.fixture()
@@ -105,7 +114,7 @@ def test_verify_md_fallback_tolerates_stars_and_parens(root):
     assert funnel["verified"]["pass"] == 2
 
 
-def test_backtest_json_and_md_fallback(root):
+def test_backtest_json_card(root):
     _wj(root / "runs" / "2026-09-16" / "backtest_summary.json", {
         "date": "2026-09-16", "batch_date": "2026-09-16",
         "stats": {"pass": 1, "fail": 14, "insufficient": 3, "invalid": 0},
@@ -150,3 +159,87 @@ def test_overview_board_groups_sorted(root):
     row = ov["board"]["pass"][0]
     assert row["annret"] == 0.20 and row["url"] == "http://a"
     assert row["onboard_date"] == "2026-09-06"
+
+
+def test_overview_board_capped_but_totals_full(root):
+    """审计 F-B: 行截尾下发 (payload 防爆), 计数全给。"""
+    arch = {}
+    for i in range(60):
+        arch["GS1%03d" % i] = {
+            "file": "f.md", "url": "", "onboard_date": "2026-09-06",
+            "best": {"key": "A", "annret": 0.30, "maxdd": -0.01,
+                     "calmar": 8.0, "winrate": 1.0, "trades": 3},
+            "verdict": {"code": "insufficient", "label": "样本不足", "reason": "3 笔"}}
+    _wj(root / "archive.json", arch)
+    ov = fs.overview(str(root))
+    assert ov["board_totals"]["insufficient"] == 60      # 计数全
+    assert len(ov["board"]["insufficient"]) == 50        # 行截尾 (cap=50)
+    funnel = {f["key"]: f for f in ov["funnel"]}
+    assert funnel["swept"]["count"] == 60
+
+
+# ── 2026-09-16 看板审计: 复审缺口补锁 ──
+
+def test_read_json_cache_invalidates_on_mtime_change(root):
+    """缓存失效主场景: 文件改写 (mtime 变) 后必须读到新内容。"""
+    p = root / "runs" / "2026-09-16" / "check.json"
+    _wj(p, {"date": "2026-09-16", "vetted": [{"file": "a.md"}], "excluded": [], "dup": []})
+    os.utime(p, (1_000_000_000, 1_000_000_000))
+    assert "新增可入库 1 条" in fs.gate_summaries(str(root))["check"]["text"]
+    _wj(p, {"date": "2026-09-16",
+            "vetted": [{"file": "a.md"}, {"file": "b.md"}, {"file": "c.md"}],
+            "excluded": [], "dup": []})
+    os.utime(p, (1_000_000_100, 1_000_000_100))
+    assert "新增可入库 3 条" in fs.gate_summaries(str(root))["check"]["text"]
+
+
+def test_onboard_sig_covers_file_count_not_just_max_mtime(root):
+    """审计 M5: 保留时间戳拷入旧目录 (文件数变, max mtime 不变) 也必须刷新。"""
+    _wj(root / "runs" / "2026-09-15" / "onboard.json", {
+        "date": "2026-09-15",
+        "items": [{"gs": "GS0001", "file": "a.md", "url": "", "ok": True, "msg": ""}]})
+    os.utime(root / "runs" / "2026-09-15" / "onboard.json", (1_000_000_000,) * 2)
+    assert "全库已入库 1 条" in fs.gate_summaries(str(root))["onboard"]["text"]
+    # 第二个日期目录以更旧的 mtime 出现 —— 只看 max mtime 的签名会漏
+    _wj(root / "runs" / "2026-09-14" / "onboard.json", {
+        "date": "2026-09-14",
+        "items": [{"gs": "GS0002", "file": "b.md", "url": "", "ok": True, "msg": ""}]})
+    os.utime(root / "runs" / "2026-09-14" / "onboard.json", (999_000_000,) * 2)
+    assert "全库已入库 2 条" in fs.gate_summaries(str(root))["onboard"]["text"]
+
+
+def test_corrupt_check_json_does_not_unlock_onboard(root):
+    """审计 L2: 坏 check.json (解析失败) 不算"已检查", ② 保持置灰。"""
+    (root / "runs" / "2026-09-16" / "check.json").write_text("{损坏", encoding="utf-8")
+    s = fs.gate_summaries(str(root))
+    assert s["onboard"]["ready"] is False
+    assert "先跑①" in s["onboard"]["hint"]
+
+
+def test_verify_md_generator_matches_fallback_regex(root):
+    """防漂移锁: build_verify_report 的当前输出必须能被兜底正则解析 —
+    报告措辞哪天改了, 兜底会静默退化, 本测试先红。"""
+    from tools.formula_farm import farm_verify as fv
+    merged = {"GS0001": {"repaint": {"ok": True, "verdict": "x"},
+                         "future": {"ok": True, "verdict": "y"}}}
+    md = fv.build_verify_report(merged, {"date": "2026-09-16", "cutoff": "20260801"})
+    m = fs._RE_VERIFY_MD.search(md)
+    assert m and m.groups() == ("1", "0", "0")
+
+
+def test_backtest_md_generator_matches_fallback_regex(root):
+    """防漂移锁: build_report 的当前输出必须能被兜底正则解析。"""
+    from tools.formula_farm import farm_backtest as fb
+    results = [{"gs": "GS0001", "file": "a.md",
+                "rows": [{"key": "A", "annret": "0.20", "maxdd": "-0.10",
+                          "calmar": "2.0", "winrate": "0.60", "trades": "30"}]}]
+    ctx = {"date": "2026-09-16", "declared": ("20240801", "20260916"),
+           "actual": None, "total": 2, "done": 1, "remaining": ["GS0002"],
+           "sweep_errors": [], "universe": "沪深300", "period": "5m",
+           "dividend": "前复权", "capital": 3_000_000, "max_buy": 20_000,
+           "priority": "移动止盈优先"}
+    md = fb.build_report(results, ctx)
+    m = fs._RE_BT_MD.search(md)
+    assert m and m.groups() == ("1", "0", "0", "0")
+    r = fs._RE_BT_REMAIN.search(md)
+    assert r and r.group(1) == "1"

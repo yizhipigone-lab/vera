@@ -558,17 +558,21 @@ function renderFarmOverview(d) {
       + '<td>' + esc(r.key || '—') + '</td><td class="num">' + _pct(r.annret) + '</td>'
       + '<td class="num">' + (r.calmar == null ? '—' : Number(r.calmar).toFixed(2)) + '</td>'
       + '<td class="num">' + _pct(r.maxdd) + '</td><td class="num">' + _pct(r.winrate, 0) + '</td>'
-      + '<td class="num">' + (r.trades == null ? '—' : r.trades) + '</td>'
+      + '<td class="num">' + (r.trades == null ? '—' : esc(String(r.trades))) + '</td>'
       + '<td>' + esc(r.onboard_date || '') + '</td>'
-      + '<td>' + (r.url ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td></tr>';
+      // 2026-09-16 审计 L5: url 源自股旁网抓取 HTML, 只放行 http(s) —— escAttr
+      // 不拦 javascript: 协议, 源站被挂马时可落成存储型 XSS (需点击, LOW 但便宜)
+      + '<td>' + (/^https?:\/\//i.test(r.url || '') ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td></tr>';
     const table = rows => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th></tr></thead><tbody>'
       + rows.map(rowHtml).join('') + '</tbody></table>';
     const b = ov.board || { pass: [], insufficient: [], fail: [] };
+    const totals = ov.board_totals || { pass: b.pass.length, insufficient: b.insufficient.length, fail: b.fail.length };
+    const capNote = (rows, total) => rows.length < total ? ' (仅列前 ' + rows.length + ' 条)' : '';
     let html = '';
     if (!ov.board_total) html = '<div style="color:var(--text2);font-size:var(--fs-sm)">粗扫还没跑出结果——点下方「④ 开始粗扫」试第一批。</div>';
-    if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + b.pass.length + ' 条</div>' + table(b.pass);
-    if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + b.insufficient.length + ' 条 (数字好看但笔数不足 20, 不作数)</div>' + table(b.insufficient);
-    if (b.fail.length) html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">未达标 / 无有效组合 ' + b.fail.length + ' 条 (点击展开)</summary>' + table(b.fail) + '</details>';
+    if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + totals.pass + ' 条' + capNote(b.pass, totals.pass) + '</div>' + table(b.pass);
+    if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + totals.insufficient + ' 条 (数字好看但笔数不足 20, 不作数)' + capNote(b.insufficient, totals.insufficient) + '</div>' + table(b.insufficient);
+    if (b.fail.length) html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">未达标 / 无有效组合 ' + totals.fail + ' 条 (点击展开' + capNote(b.fail, totals.fail) + ')</summary>' + table(b.fail) + '</details>';
     board.innerHTML = html;
   }
 }
