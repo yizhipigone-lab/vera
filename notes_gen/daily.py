@@ -219,20 +219,29 @@ def _stock_label(code) -> str:
     """标的 → 「中文简称(代码)」。
 
     审计 F-03：原来只印裸代码 `513100.SH`，违反 AGENTS 沟通风格第 6 条
-    （「标的写全名+代码，不写裸代码」）。名称取自既有 `core.data_fetcher.get_name_map`
+    （「标的写全名+代码，不写裸代码」）。名称取自既有 `DataFetcher.get_name_map`
     （**不新建名称源**）；取不到就退回裸代码并标注，不编一个名字出来。
+
+    **2026-09-17 M7 又抓到一个静默降级（和 N-01 同一类）**：这里原来写的是
+    `from core.data_fetcher import get_name_map` —— 而 `get_name_map` 是
+    `DataFetcher` 的**类方法**，模块级根本没有这个名字 → `ImportError` 被
+    `except Exception` **无声吞掉** → 每一只标的都印「（查不到中文简称）」，
+    而名称表里其实有 7300 条、这些代码全都在。**"查不到"是假的，是取名字那一步坏了**。
+    现在改成 `DataFetcher.get_name_map()`（与 trade/analysis.py 等既有调用方同一写法），
+    并且**取名字失败要吭声**（打 WARNING），不再装作"查不到"。
     """
     c = str(code or "").strip()
     if not c:
         return "【缺】"
     if c not in _NAME_CACHE:
         try:
-            from core.data_fetcher import get_name_map
-            _NAME_CACHE[c] = (get_name_map() or {}).get(c) or ""
-        except Exception:
+            from core.data_fetcher import DataFetcher
+            _NAME_CACHE[c] = (DataFetcher.get_name_map() or {}).get(c) or ""
+        except Exception as e:
+            _logger.warning("取名称表失败（本次标签只能显示裸代码，不代表市场里没这只票）: %s", e)
             _NAME_CACHE[c] = ""
     name = _NAME_CACHE[c]
-    return f"{name}({c})" if name else f"{c}（查不到中文简称）"
+    return f"{name}({c})" if name else f"{c}（名称表里没有这只票）"
 
 
 def _rotation_plain(rot) -> str:

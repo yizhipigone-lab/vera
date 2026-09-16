@@ -355,6 +355,45 @@ class TestRunAndWrite:
         assert out["ok"] is False and "FEISHU_WEBHOOK_URL" in out["feishu"]["reason"]
 
 
+class TestStockLabel:
+    """标的标签 —— 「中文简称(代码)」（AGENTS 沟通风格第 6 条）。
+
+    **2026-09-17 M7 回归锁**：这里曾经写 `from core.data_fetcher import get_name_map`，
+    而它是 `DataFetcher` 的**类方法**、模块级没有 → `ImportError` 被 `except Exception`
+    无声吞掉 → **每一只标的都印「查不到中文简称」**（名称表里其实有 7300 条）。
+    这条测试注入一张假名称表，断言名字**真的被取到**，而不是"看起来尝试过"。
+    """
+
+    def test_resolves_name_from_the_shared_name_map(self, monkeypatch):
+        from core.data_fetcher import DataFetcher
+        monkeypatch.setattr(DataFetcher, "get_name_map",
+                            classmethod(lambda cls, refresh=False: {"513100.SH": "纳指ETF国泰"}))
+        drev._NAME_CACHE.pop("513100.SH", None)
+        assert drev._stock_label("513100.SH") == "纳指ETF国泰(513100.SH)"
+
+    def test_says_so_when_the_code_is_really_absent(self, monkeypatch):
+        from core.data_fetcher import DataFetcher
+        monkeypatch.setattr(DataFetcher, "get_name_map",
+                            classmethod(lambda cls, refresh=False: {}))
+        drev._NAME_CACHE.pop("999999.SH", None)
+        lab = drev._stock_label("999999.SH")
+        assert "999999.SH" in lab and "名称表里没有" in lab
+
+    def test_name_map_import_path_is_the_classmethod(self, monkeypatch):
+        """把"取名字那一步坏了"和"市场里真没有这只票"分开：前者必须吭声。"""
+        from core.data_fetcher import DataFetcher
+        calls = []
+
+        def boom(cls, refresh=False):
+            calls.append(1)
+            raise RuntimeError("名称源坏了")
+        monkeypatch.setattr(DataFetcher, "get_name_map", classmethod(boom))
+        drev._NAME_CACHE.pop("600519.SH", None)
+        lab = drev._stock_label("600519.SH")
+        assert calls, "必须真的调用过名称表（否则就是又走错 import 路径了）"
+        assert "600519.SH" in lab
+
+
 class TestAstGuards:
     """铁律 1 的守护是**双向**的（§13.3 M8）。"""
 
