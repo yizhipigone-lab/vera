@@ -37,6 +37,7 @@ PY = sys.executable
 
 from core import farm_rules  # noqa: E402
 from tools.formula_farm.common import load_onboard_index, push_feishu  # noqa: E402  # F6/收口
+from tools.formula_farm import voided_scan  # noqa: E402  # 2026-09-17 扫前复检闸门
 
 RUNS = os.path.join(ROOT, "data", "formula_farm", "runs")
 REPORTS = os.path.join(ROOT, "data", "formula_farm", "reports")
@@ -381,6 +382,17 @@ def main():
     if args.max_formulas and len(targets) > args.max_formulas:
         targets = targets[:args.max_formulas]
 
+    # 2026-09-17 扫前复检闸门 (PLOYLINE 漏网事件的治本项):
+    # 已登记作废的直接剔除; 其余每条开扫前再跑一次体检, 命中即登记作废并跳过。
+    # 这样以后黑名单再加 token, 旧公式只要被重新扫到就自动拦下, 不依赖人记得回扫。
+    voided_now = voided_scan.load_voided().get("items") or {}
+    skipped = [g for g in targets if g in voided_now]
+    targets = [g for g in targets if g not in voided_now]
+    if skipped:
+        log("   ⛔ %d 条已在作废名单, 跳过: %s" % (
+            len(skipped), ",".join(sorted(skipped)[:8]) + ("..." if len(skipped) > 8 else "")))
+    records = voided_scan.intake_records()
+
     log("入库总表 %d 条; 最新批次 %s 共 %d 条" % (len(idx), batch_date, len(batch_items)))
     log("本轮待扫 %d 条%s (含跨批次补扫: 旧的优先, 不会被新批次饿死)" % (
         len(targets), "" if targets else " (无)"))
@@ -391,6 +403,10 @@ def main():
         log("[%d/%d] %s <- %s (入库 %s)" % (i, len(targets), gs,
                                             str(info.get("file", ""))[:34],
                                             info.get("date", "?")))
+        hit = voided_scan.guard(gs, info.get("file", ""), records)
+        if hit:
+            log("   ⛔ 扫前复检命中黑名单 → 登记作废并跳过: %s" % hit)
+            continue
         err = _sweep(gs, args.start, args.end)
         _ROWS_CACHE.pop(gs, None)          # 重扫后清缓存, 报告读新结果
         rows = _rows_of(gs)

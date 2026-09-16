@@ -8,11 +8,13 @@ core→tools 分层倒挂。迁来 core 后引用方向归正 (tools→core, 与
 
 - save_onboard: 每入一条立即合并记账 (中途停止不丢账, 2026-09-16);
 - load_done_files: 断点跳过集 (ok + 编译失败终态);
-- load_onboard_index: 全库 ok 条目索引 (取最早入库批次)。
+- load_onboard_index: 全库 ok 条目索引 (取最早入库批次);
+- next_gs_number: 下一个可用 GS 编号 (发号防撞号, 2026-09-17)。
 """
 import glob
 import json
 import os
+import re
 import time
 
 
@@ -78,3 +80,32 @@ def load_onboard_index(runs_dir, logger=None):
                 idx[gs] = {"file": it.get("file", ""), "url": it.get("url", ""),
                            "date": date}
     return idx
+
+
+def next_gs_number(gs_txt_dir, runs_dir, tree_max=0):
+    """下一个可用的 GS 编号 = max(gs_txt 文件名里的号, 账本里发过的号, TDX 树里的号) + 1。
+
+    2026-09-17 撞号事件: 发号起点原先只看 gs_txt 文件名 + TDX 公式树里的最大编号,
+    而 gs_txt 导出是另一个步骤 —— 两次入库之间这个最大值可能还没刷新, 于是号被
+    重复发放 (同一天就撞: 2026-09-06 批 GS0649 指向两个不同公式)。后果是后批次
+    那条公式因 GS 号已被占用而永远不进粗扫目标集 (累计入库 857 条, 实际只评估 822)。
+
+    账本是「发过哪些号」的唯一权威记录 (每入一条立即写, 中途停止不丢账), 故并入取值。
+    纯函数 (只读目录), GUI 取 TDX 树那步留在调用方, 便于单测。
+    """
+    best = 0
+    for p in glob.glob(os.path.join(gs_txt_dir, "gs_*_GS*.txt")):
+        m = re.search(r"GS(\d+)", os.path.basename(p))
+        if m:
+            best = max(best, int(m.group(1)))
+    for p in glob.glob(os.path.join(runs_dir, "*", "onboard.json")):
+        try:
+            with open(p, encoding="utf-8") as f:
+                items = json.load(f).get("items", [])
+        except Exception:
+            continue
+        for it in items:
+            digits = (it.get("gs") or "")[2:]
+            if digits.isdigit():
+                best = max(best, int(digits))
+    return max(best, tree_max) + 1

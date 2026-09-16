@@ -82,23 +82,26 @@ def step_vet(fresh):
 
 
 def _next_gs_name():
-    """GS 全局计数: 取 gs_txt 文件名 + TDX 其他类型树节点里的最大编号 +1。"""
-    best = 0
-    import glob as _g
-    for p in _g.glob(os.path.join(GS_TXT, "gs_*_GS*.txt")):
-        m = re.search(r"GS(\d+)", os.path.basename(p))
-        if m:
-            best = max(best, int(m.group(1)))
+    """GS 全局计数: gs_txt 文件名 + TDX 树 + **入库账本** 三处最大编号 +1。
+
+    2026-09-17 撞号事件修复: 原先只看前两处, 而 gs_txt 导出是另一步骤、两次入库
+    之间可能还没刷新 → 号被重复发放 (同日 2026-09-06 批 GS0649 即撞两个公式),
+    后批次那条因 GS 号被占而永远不进粗扫目标集 (累计入库 857 条只评估 822 条)。
+    取值规则收口在 core.farm_ledger.next_gs_number (纯函数, 可单测), 此处只负责
+    取 TDX 树那一个输入。
+    """
+    from core import farm_ledger
+    tree_max = 0
     try:
         win = gui_onboard._manager()
         tv = win.child_window(title="Tree1", class_name="SysTreeView32")
         for k in tv.get_item(gui_onboard.TREE_PATH).children():
             m = re.search(r"GS(\d+)", k.text() or "")
             if m:
-                best = max(best, int(m.group(1)))
+                tree_max = max(tree_max, int(m.group(1)))
     except Exception as e:
-        log("   ⚠ 读 TDX 树失败(用 gs_txt 的编号): %r" % e)
-    return best + 1
+        log("   ⚠ 读 TDX 树失败(用 gs_txt + 账本的编号): %r" % e)
+    return farm_ledger.next_gs_number(GS_TXT, RUNS_DIR, tree_max)
 
 
 def step_onboard(cands, max_add, dry_run):
