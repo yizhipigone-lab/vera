@@ -8,6 +8,20 @@ rem ============================================================
 set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
+rem ---- Python 定位(2026-09-16 修)------------------------------------------
+rem 本机 python.exe 没进系统 PATH, 直接敲 python 会命中微软商店的 0 字节占位符
+rem (报 "Python was not found"), 真实解释器在 D:\Program Files\Python313。
+rem 这里把它排到 PATH 最前面, 下面 3 个 start 窗口继承同一份 PATH, 不再撞占位符。
+set "PYDIR=D:\Program Files\Python313"
+if not exist "%PYDIR%\python.exe" (
+  echo [错误] 找不到 Python: "%PYDIR%\python.exe"
+  echo        请改本文件顶部的 PYDIR, 或把 Python 目录加进系统 PATH。
+  pause
+  exit /b 1
+)
+set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
+echo [0/3] Python 解释器: %PYDIR%\python.exe
+
 echo [1/3] 启动回测 Web (8080) ...
 rem 默认稳定模式(2026-09-07 起): 代码改动不会自动重启, 防打断长回测/深度思考
 rem 开发要热更时: 把下行改为 python server.py --reload

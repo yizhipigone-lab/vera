@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-09-16 — 本机 Python 定位修复 (商店占位符占名)
+
+**入口**: 用户敲 `python` 报 `Python was not found; run without arguments to install from the Microsoft Store`
+
+### 关键改动
+
+| 类别 | 改动 |
+|---|---|
+| 根因 | `python` / `python3` 只解析到 `%LOCALAPPDATA%\Microsoft\WindowsApps\` 的 0 字节商店占位符; 真实解释器 `D:\Program Files\Python313\python.exe` (3.13.15, pandas 2.3.3) 从未进 PATH |
+| 系统 | 该目录 + `Scripts` 写入**用户** PATH (HKCU\Environment, 原值 `C:\Users\Administrator\AppData\Local\Microsoft\WindowsApps;` 保留在后); 复核: 新终端 `where python` → 真解释器优先, `python -V` → 3.13.15 |
+| 启动脚本 | `start_vera.bat` / `p0_tick_watch.bat` 顶部加 `PYDIR` 指路 (存在性检查 + 找不到即早退), 不再依赖系统 PATH; 其余 `data/formula_farm/runs/*.bat` 原本就是全路径写法 |
+| 附带 | 8080 回测 Web 因该坑停摆 (8081 交易进程正常), 已用真解释器单独拉起, **未重启交易/调度进程** |
+
+### 验证
+
+- `python -V` → `Python 3.13.15`; `sys.executable` 指向真解释器, pandas import 正常 (CRLF 探针脚本实跑, 探针已删)
+- `http://127.0.0.1:8080/` → 200, title `VERA — 量化回测系统`; 8081 仍返回 404 (交易进程未受影响)
+
+**坑 (写入 CLAUDE.md)**: `.bat` 必须 CRLF 且无 BOM — 纯 LF 时 cmd 把 `set` / `if (` 解析成乱码 (实测 `'ogram' is not recognized`), 同一条命令换 CRLF 即通过。
+
+---
+
 ## 2026-09-16 — 深模块浅模块审计修复波 (13/14 项落地, 两轮自查通过)
 
 **入口**: [docs/audit/2026-09-15_深模块浅模块复查_审计报告.md](docs/audit/2026-09-15_深模块浅模块复查_审计报告.md) (59 引用机器校验 100%) +

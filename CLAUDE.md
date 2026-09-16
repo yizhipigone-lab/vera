@@ -8,6 +8,7 @@
 - **已实盘,处于脆弱期**:v1/v2 跑通,部分策略实盘中,稳定性与工程化是当前瓶颈
 - **本地部署优先**(不云端);策略与资金量级 = 高度机密;董秘/公司身份 = 公开
 - **记忆/知识本地持久化(铁律, 2026-08-18 用户拍板)**:项目知识与会话记忆一律本地持久化,**禁用云端记忆**。Hindsight 已切**本地 daemon 模式**(`~/.hindsight/coding-agent.json` 的 `serverMode: daemon`, 本地服务 127.0.0.1:9077, 数据在 `~/.pg0/instances/`, 插件在 `~/.dsh/cordis.patch.yml`);本地文档(`research/` `docs/` `notes/`)仍是兜底。事实抽取 LLM 走 **DeepSeek `deepseek-v4-flash`**(`.env` 的 `DEEPSEEK_API_KEY`);视觉读图走 **modlens + GLM `glm-4.5v`**(deepseek-v4-pro 是纯文本, 看不了图, 必须靠 modlens 转文字)。**坑**: 厂商 detectLlm 用 Unix `which`(Windows 误判无 LLM → daemon 不启动, 须显式设 `HINDSIGHT_API_LLM_PROVIDER`)、GBK 编码(须 `PYTHONUTF8=1`)、huggingface 被墙(须 `HF_ENDPOINT=https://hf-mirror.com`)、daemon 5 分钟空闲退出(须 `daemonIdleTimeout:86400`)。完整照着做手册: `docs/2026-08-18_Hindsight记忆与modlens视觉本地化配置_全过程记录.md`。
+- **本机 Python 不在系统 PATH(2026-09-16 修)**:敲 `python` 曾只命中微软商店的 0 字节占位符(报 "Python was not found; ... Microsoft Store"),真实解释器 = `D:\Program Files\Python313\python.exe`(3.13.15, pandas 2.3.3);已把该目录 + `Scripts` 写进**用户 PATH**(HKCU\Environment)。**两个坑**: ①已在运行的进程与 DSH 工具 shell 继承旧环境变量, 不走 PATH 时用全路径 `"D:\Program Files\Python313\python.exe"`(项目内 `data/formula_farm/runs/*.bat` 一直是全路径写法);②`.bat` 必须 **CRLF 且无 BOM**, 纯 LF 会让 cmd 把 `set` / `if (` 解析成乱码(实测 `'ogram' is not recognized`)。`start_vera.bat` / `p0_tick_watch.bat` 顶部已内置 `PYDIR` 指路 + 找不到就早退。
 
 ## 业务铁律(不可违反)
 

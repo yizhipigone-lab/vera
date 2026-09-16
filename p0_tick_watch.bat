@@ -8,6 +8,15 @@ rem ============================================================
 set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
+rem ---- Python 定位(2026-09-16 修): 详见 start_vera.bat 顶部说明 ----------
+set "PYDIR=D:\Program Files\Python313"
+if not exist "%PYDIR%\python.exe" (
+  echo [错误] 找不到 Python: "%PYDIR%\python.exe"
+  pause
+  exit /b 1
+)
+set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
+
 set VERA_QMT_ACCOUNT=180056133
 set VERA_QMT_PATH=D:\Program Files\XCXT\userdata_mini
 
