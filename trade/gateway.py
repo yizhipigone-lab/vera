@@ -198,18 +198,21 @@ class BaseGateway(ABC):
         return []
 
 
+# 审计 T2 (2026-09-16): 常驻共享线程池 —— 原实现每次调用新建
+# ThreadPoolExecutor 且 shutdown(wait=False), QMT 真卡死时每调用泄漏
+# 一个线程 (断线风暴期可堆积数百)。共享小池控制线程总量。
+_CALL_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="qmt-call")
+
+
 def _call_with_timeout(fn: Callable, timeout_sec: float, *args: Any, **kwargs: Any) -> Any:
     """同步调用包超时。QMT 同步接口偶发卡死, 不能让唯一写者线程陪葬。
 
     注意: 超时后底层线程可能仍在跑, 但结果已被放弃 —— 这符合
     "宁可告警重试, 不可无限等待"的处置方向。
     """
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        fut = pool.submit(fn, *args, **kwargs)
-        return fut.result(timeout=timeout_sec)
-    finally:
-        pool.shutdown(wait=False)
+    fut = _CALL_POOL.submit(fn, *args, **kwargs)
+    return fut.result(timeout=timeout_sec)
 
 
 def _build_trader_callback(gw, base):

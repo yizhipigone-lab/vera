@@ -502,9 +502,17 @@ def run_backtest(panel, entries_full, stop_cfg, bt_cfg=None,
     ladder_profits = np.array([lv["profit"] for lv in levels], dtype=np.float64)
     ladder_ratios = np.array([lv["sell_ratio"] for lv in levels], dtype=np.float64)
 
+    # 2026-09-16 B1: 流动性约束数据 (max_turnover_pct<1.0 时引擎才读, 默认 1.0
+    # 不读 → 零行为变化)。口径与 engine 准备段一致: 日成交额 = Σ(volume×close_ff)
+    # 按日聚合 (1d 一天一根, 聚合即本身); 不用 amount 字段 (单位是万元)。
+    turnover_day_np = (
+        panel["volume"].loc[bt_start:bt_end].reindex(
+            index=close_ff.index, columns=close_ff.columns)
+        * close_ff).to_numpy(np.float64)
+
     prepared = PreparedMatrix(
         close=close_ff, entries=entries, high_np=high_np, low_np=low_np,
-        open_np=open_np)
+        open_np=open_np, turnover_day_np=turnover_day_np)
     return eng.run_cached(
         prepared, stop_cfg, ladder_profits, ladder_ratios, len(levels),
         close_raw=close_raw,

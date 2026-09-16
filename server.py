@@ -283,12 +283,15 @@ def run_pipeline(cfg: StrategyConfig):
     # 输入校验（保留）
     if not re.match(r'^\d{8}$', cfg.start_time) or not re.match(r'^\d{8}$', cfg.end_time):
         pipeline_status.running = False
+        pipeline_status.error = ""  # 2026-09-16 审计 P2: 校验失败早退, 不残留上次错误态
         return {"success": False, "error": "日期格式错误，应为 YYYYMMDD（8位数字），如 20240101"}
     if cfg.start_time >= cfg.end_time:
         pipeline_status.running = False
+        pipeline_status.error = ""
         return {"success": False, "error": "起始日期必须早于结束日期"}
     if not cfg.formula_name.strip():
         pipeline_status.running = False
+        pipeline_status.error = ""
         return {"success": False, "error": "选股公式名称不能为空"}
 
     # C1-3: 构建 YAML 配置临时文件，Pipeline(run) 接收路径字符串
@@ -477,6 +480,13 @@ async def api_calendar(year: int = 0, month: int = 0):
     return month_grid(year, month)
 
 
+def _norm_yyyymmdd(s: str) -> str:
+    """日期归一: 前端可能传 YYYY-MM-DD, 数据层只认 YYYYMMDD (去横杠)。
+    2026-09-16 审计 P2: 原 /api/benchmark/history 与 /api/stock/kline 两处
+    各手写一份 replace("-",""), 下沉单一实现。"""
+    return s.replace("-", "")
+
+
 @app.get("/api/benchmark/history")
 async def api_benchmark_history(
     indices: str = "shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500",
@@ -487,8 +497,8 @@ async def api_benchmark_history(
     from core.data_fetcher import DataFetcher
     # 2026-08-08 修复: 前端传 YYYY-MM-DD, get_kline 只认 YYYYMMDD,
     # 此前直接抛 ValueError 被静默吞掉 → 基准恒空 (权益曲线无对比线)
-    start = start.replace("-", "")
-    end = end.replace("-", "")
+    start = _norm_yyyymmdd(start)
+    end = _norm_yyyymmdd(end)
     index_names = [n.strip() for n in indices.split(",") if n.strip()]
     from core.kline_view import close_records  # 变形下沉纯函数 (2026-09-15)
     result: dict = {}
@@ -531,8 +541,8 @@ def api_stock_kline(
 
     code_in = code.strip().upper()
     tdx_code = _normalize_code(code_in) or code_in  # 补默认后缀, 如 600000 → 600000.SH
-    start = start.replace("-", "")
-    end = end.replace("-", "")
+    start = _norm_yyyymmdd(start)
+    end = _norm_yyyymmdd(end)
     try:
         kline = DataFetcher.get_kline(
             [tdx_code], start_time=start, end_time=end,

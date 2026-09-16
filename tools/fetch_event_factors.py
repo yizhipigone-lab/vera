@@ -87,6 +87,17 @@ def main() -> None:
     ti_df.to_parquet(CACHE_DIR / f"top_inst_{tag}.parquet")
     bt_df.to_parquet(CACHE_DIR / f"block_trade_{tag}.parquet")
 
+    # 2026-09-16 审计 U3: 部分日期拉失败仍落 parquet 时, 必须留完整性清单,
+    # 让下游能区分"该天真无数据"与"拉取失败造成的缺口"。
+    if fail_days:
+        print(f"\n[WARNING] {len(fail_days)} 个交易日拉取失败, parquet 中这些日期为缺口"
+              f" (非真实无数据)! 失败日期: {fail_days}")
+        for name in ("moneyflow", "top_inst", "block_trade"):
+            sidecar = CACHE_DIR / f"{name}_{tag}.faildays.txt"
+            sidecar.write_text("\n".join(fail_days) + "\n", encoding="utf-8")
+        print(f"[WARNING] 失败日期清单已写入 {CACHE_DIR} 下 *_"
+              f"{tag}.faildays.txt, 下游使用前请先核对")
+
     print(f"\n[OK] moneyflow {len(mf_df)} 条 | top_inst {len(ti_df)} 条 | block_trade {len(bt_df)} 条")
     print(f"[OK] 失败 {len(fail_days)} 天: {fail_days[:5]}{'...' if len(fail_days)>5 else ''}")
     print(f"[OK] 缓存到 {CACHE_DIR}")

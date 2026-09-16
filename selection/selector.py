@@ -276,6 +276,13 @@ class StockSelector:
             picks = self.run(start_time=start_time, end_time=end_time,
                              stock_list=stocks)
             if use_sel_cache and key is not None and not picks.empty:
+                # 2026-09-16 审计 S1: L0 (5m/1m) 缺"当日不落盘"防线 — 盘中首次
+                # 运行把半成品信号落盘, 当日后续全部命中陈旧缓存 (L2 的当日防线
+                # 不覆盖 5m/1m)。end_time ≥ 当日则跳过落盘, 对齐
+                # signal_day_cache.py 的"当日永不缓存"语义。
+                if not end_time or end_time[:8] >= datetime.now().strftime("%Y%m%d"):
+                    logger.info("选股缓存: end_time 含当日, 跳过落盘 (当日不落盘防线)")
+                    return picks
                 try:
                     from selection import selection_cache as sc
                     sc.save(sc.default_cache_root(), key, picks)

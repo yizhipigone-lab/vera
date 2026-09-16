@@ -119,7 +119,33 @@ def _isolate_caches(tmp_path):
     for name in ("universe_cache", "selection_cache",
                  "signal_day_cache", "matrix_cache"):
         pcu.set_root(name, tmp_path / name)
-    yield
+
+    # E1 (2026-09-16 审计): kline_cache 不走 parquet_cache 注册表, 接缝是
+    # DataFetcher._KLINE_CACHE_DIR (core/data_fetcher.py:48) —— 指到 per-test tmp,
+    # 保存原值 yield 后恢复 (该类属性可能被其他测试自行 monkeypatch, 恢复原值不硬写 None)
+    from core.data_fetcher import DataFetcher
+    orig_kline_dir = DataFetcher._KLINE_CACHE_DIR
+    DataFetcher._KLINE_CACHE_DIR = str(tmp_path / "kline_cache")
+
+    # E4 (2026-09-16 审计): 影子日志是相对路径 data/shadow_rotation.jsonl,
+    # 测试真实触发 _shadow_tick 会把假影子状态写进生产 jsonl —— 同法隔离。
+    # 注意 trade/rotation.py:57 按值 import 了 SHADOW_LOG_PATH, 若已加载需一并改。
+    import trade.shadow as _shadow
+    orig_shadow_path = _shadow.SHADOW_LOG_PATH
+    tmp_shadow = str(tmp_path / "shadow_rotation.jsonl")
+    _shadow.SHADOW_LOG_PATH = tmp_shadow
+    _rot = sys.modules.get("trade.rotation")
+    orig_rot_shadow = None
+    if _rot is not None:
+        orig_rot_shadow = _rot.SHADOW_LOG_PATH
+        _rot.SHADOW_LOG_PATH = tmp_shadow
+    try:
+        yield
+    finally:
+        DataFetcher._KLINE_CACHE_DIR = orig_kline_dir
+        _shadow.SHADOW_LOG_PATH = orig_shadow_path
+        if _rot is not None:
+            _rot.SHADOW_LOG_PATH = orig_rot_shadow
 
 
 @pytest.fixture(autouse=True)
@@ -214,13 +240,47 @@ def _block_network_egress():
         return _FakeResp()
 
     _urlreq.urlopen = _fake_urlopen
+
+    # E3 (2026-09-16 审计): 同一 fixture 内把 requests 与 smtplib 也焊死。
+    # requests: 假 200 空响应 (与 urlopen 同哲学, "安全假成功");
+    # smtplib: 发邮件没有"安全假成功"语义, 假类直接抛 RuntimeError 拦死。
+    import requests as _requests
+    import smtplib as _smtplib
+
+    _orig_session_request = _requests.sessions.Session.request
+    _orig_smtp = _smtplib.SMTP
+    _orig_smtp_ssl = _smtplib.SMTP_SSL
+
+    class _FakeRequestsResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {}
+
+    def _fake_session_request(self, *args, **kwargs):
+        blocked["n"] += 1
+        return _FakeRequestsResp()
+
+    class _FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            blocked["n"] += 1
+            raise RuntimeError(
+                "[conftest] 测试期间禁止真实 SMTP 发信 (E3 网络焊死)")
+
+    _requests.sessions.Session.request = _fake_session_request
+    _smtplib.SMTP = _FakeSMTP
+    _smtplib.SMTP_SSL = _FakeSMTP
     try:
         yield
     finally:
         _urlreq.urlopen = _orig
+        _requests.sessions.Session.request = _orig_session_request
+        _smtplib.SMTP = _orig_smtp
+        _smtplib.SMTP_SSL = _orig_smtp_ssl
         if blocked["n"]:
-            print(f"\n[conftest] session 焊死拦截 urllib.request.urlopen "
-                  f"{blocked['n']} 次 (全部吞掉未触网)")
+            print(f"\n[conftest] session 焊死拦截网络出口 "
+                  f"{blocked['n']} 次 (urlopen/requests/smtplib 合计, 全部未触网)")
 
 
 class FakeLoop:

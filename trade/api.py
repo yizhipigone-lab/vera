@@ -26,6 +26,7 @@ from trade.analysis import (  # 2026-08-19 深模块治理: 计算逻辑下沉
     diff_dicts,
     name_of,
     rows_to_dicts,
+    today_range,  # 2026-09-16 P2-2: 本模块逐字副本删除, 单一实现
 )
 from trade.config import (
     trade_config_from_dict,
@@ -68,13 +69,6 @@ class ChannelRequest(BaseModel):
 
 
 _SECONDS_PER_DAY = 86400
-
-
-def _today_range() -> tuple[float, float]:
-    """当日 [00:00, 次日 00:00) epoch 秒。"""
-    start = datetime.now().replace(
-        hour=0, minute=0, second=0, microsecond=0).timestamp()
-    return start, start + _SECONDS_PER_DAY
 
 
 def _day_range(date: str) -> tuple[float, float]:
@@ -215,7 +209,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         QMT order_id 跨会话复用, 同一 order_id 可能先创建于旧日期、
         今天被新订单更新, created_ts 仍指旧日期会漏掉。"""
         try:
-            start, end = _day_range(date) if date else _today_range()
+            start, end = _day_range(date) if date else today_range()
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         ro = trade_app.store.open_readonly()
@@ -254,7 +248,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             elif date:
                 start_ts, end_ts = _day_range(date)
             else:
-                start_ts, end_ts = _today_range()
+                start_ts, end_ts = today_range()
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         ro = trade_app.store.open_readonly()

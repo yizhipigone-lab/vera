@@ -238,7 +238,12 @@ def analysis_router(trade_app) -> APIRouter:
         qmt_total = None
         try:
             qmt_asset = trade_app.gateway.query_asset()
-            qmt_total = float(qmt_asset.get("totalAsset", rows[-1]["total_asset"]))
+            # 审计 P0-5 (2026-09-16): 键名是 "total_asset" (gateway 实际
+            # 返回口径, trade/gateway.py query_asset), 原写 "totalAsset"
+            # 恒落到本地兜底 → 对账告警永远不触发 (fail-open)。取不到
+            # 保持 None 交给视图层告警, 不给本地兜底。
+            _v = qmt_asset.get("total_asset")
+            qmt_total = float(_v) if _v is not None else None
         except Exception:
             logger.exception("QMT 对账资产查询失败, 视为对账告警 (资产数字未与 QMT 核对)")
         return build_summary_view(rows, total_trades, buy_map, sell_map, qmt_total)

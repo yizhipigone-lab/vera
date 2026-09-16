@@ -4,8 +4,12 @@
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core import farm_rules  # noqa: E402  # G1: 最优公式笔数守卫口径
 
 if sys.platform == "win32":
     try:
@@ -129,7 +133,11 @@ def gen_html(results: list, excluded: list, args) -> str:
     med_ret = sorted(returns)[n_ok // 2] if n_ok else 0
     avg_wr = sum(win_rates) / n_ok if n_ok else 0
     avg_sharpe = sum(sharpes) / n_ok if n_ok else 0
-    best = ok[0] if ok else None
+    # G1: 「最佳」只在笔数 ≥ MIN_TRADES 的公式里选 (防"3 笔 100% 胜率当最优");
+    # 全不足样本退回累计收益第一, 但标注「样本不足（笔数<20），数字不作数」
+    enough = [r for r in ok if (r.get("n_trades") or 0) >= farm_rules.MIN_TRADES]
+    best = enough[0] if enough else (ok[0] if ok else None)
+    best_thin = bool(ok) and not enough
     worst = ok[-1] if ok else None
 
     html = f"""<!DOCTYPE html>
@@ -181,7 +189,7 @@ tr:hover {{ background:#1a2332; }}
 <div class="card"><div class="label">平均夏普</div><div class="value" style="color:#4fc3f7">{avg_sharpe:.2f}</div></div>
 </div>
 
-{f'<div class="note">🏆 最佳: <b>{best["formula"]}</b> 累计收益 {pct(best["metrics"]["cumulative_return"])} (胜率 {pct(best["metrics"]["win_rate"])}, 交易 {best["n_trades"]} 笔) | 最差: <b>{worst["formula"]}</b> 累计收益 {pct(worst["metrics"]["cumulative_return"])}</div>' if best else ''}
+{f'<div class="note">🏆 最佳: <b>{best["formula"]}</b> 累计收益 {pct(best["metrics"]["cumulative_return"])} (胜率 {pct(best["metrics"]["win_rate"])}, 交易 {best["n_trades"]} 笔){"⚠ 样本不足（笔数<20），最佳不作数" if best_thin else ""} | 最差: <b>{worst["formula"]}</b> 累计收益 {pct(worst["metrics"]["cumulative_return"])}</div>' if best else ''}
 
 <h2>📈 图表分析</h2>
 

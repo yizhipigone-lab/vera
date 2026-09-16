@@ -7,6 +7,10 @@ token 清单复刻 gongshi 实战(_batch_import.py + _clean_formulas.json 基线
 import hashlib
 import os
 import re
+import subprocess
+import sys
+
+from tools.future_tokens import FUTURE_TOKEN_BLACKLIST
 
 # ---- 路径 ----
 GONGSHI_DIR = r"E:\1target\gongshi"          # 历史语料(只读)
@@ -29,13 +33,8 @@ SKIP_NAMES = [
 EXCLUDE_TOKENS = ["COST(", "WINNER(", "PPART", "DHIGH", "DLOW"]
 
 # ---- L2 未来函数更严黑名单(仅信息报告, 不做 v0 硬闸) ----
-L2_FUTURE_TOKENS = [
-    "BACKSET", "REFX", "REFXV", "REFXR", "BARSNEXT",
-    "DCLOSE", "DOPEN", "DVOL",
-    "ZIG", "ZIGA", "ZIGBARS", "FLATZIG",
-    "PEAK", "PEAKA", "PEAKBARS", "TROUGH", "TROUGHA", "TROUGHBARS",
-    "XMA", "FFT", "ZXNH",
-]
+# 2026-09-16 F4 收口: 权威清单在 tools/future_tokens.py (三份清单并集)
+L2_FUTURE_TOKENS = FUTURE_TOKEN_BLACKLIST
 
 
 def normalize_code(code: str) -> str:
@@ -50,3 +49,27 @@ def code_hash(code: str) -> str:
 def read_text(path, enc="utf-8", errors="ignore"):
     with open(path, "rb") as f:
         return f.read().decode(enc, errors=errors)
+
+
+# ---- 飞书推送 (2026-09-16 F6 收口: 原 farm_onboard/farm_backtest/farm_verify
+# 三份近乎逐行相同的实现合一; 推送是通知不是闸门, 失败只记日志不抛) ----
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
+
+def push_feishu(md_path, title, logger=None):
+    """把 MD 报告推飞书卡片; logger 可传各脚本的 log 函数 (缺省 print)。"""
+    _log = logger or (lambda s: print(s, flush=True))
+    try:
+        r = subprocess.run(
+            [sys.executable, "-X", "utf8",
+             os.path.join(_PROJECT_ROOT, "tools", "send_report_feishu.py"),
+             md_path, title],
+            cwd=_PROJECT_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120)
+        _log("飞书推送: %s" % ("成功" if r.returncode == 0
+                              else "失败 rc=%d %s" % (
+                                  r.returncode,
+                                  (r.stderr or r.stdout or "")[-120:])))
+    except Exception as e:                                       # noqa: BLE001
+        _log("飞书推送: 异常 %r" % e)

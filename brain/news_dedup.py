@@ -5,7 +5,7 @@
    全量拉取, 没这层会重复喂 LLM (费钱) + 重复推送 (骚扰)。
 2. 标的级推送抑制: 同一股票代码 N 分钟内只推一次 (alert_rules 调用)。
 
-SCHEMA_VERSION (memory 铁律: 改缓存逻辑必 bump): 当前 v1。
+SCHEMA_VERSION (memory 铁律: 改缓存逻辑必 bump): 当前 v2。
 
 fail-soft: DB 异常不阻塞 (返 False/空, 降级为"全当新新闻"——宁可重复处理
 也不卡住 sentiment 流水线)。永不碰 data/trade/ (守业务铁律 1)。

@@ -110,7 +110,7 @@ def main():
         gs = it["gs"]
         if gs in zero_memo:
             stats["memo_skip"] += 1
-            continue  # 历史已判零信号/窗口空, 免重复 prep
+            continue  # 历史已判零信号, 免重复 prep
         st = prep_one(gs, args.start, args.end, args.universe_type)
         if st == "ok":
             ready.append(it)
@@ -121,8 +121,8 @@ def main():
                 stats["fail"] = stats.get("fail", 0) + 1
             else:
                 stats[st] = stats.get(st, 0) + 1
-            if st in ("no_signals", "no_kline"):
-                zero_memo.add(gs)
+            if st == "no_signals":
+                zero_memo.add(gs)  # no_kline 是暂态(下轮重试), 不进永久记忆 (F2)
             log("[prep %d/%d] %s %s (%.0fs)" % (i, len(pending), gs, st[:80], time.time() - t_p))
             t_p = time.time()
     save_zero_memo(zero_memo)

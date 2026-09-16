@@ -13,7 +13,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
+from backtest._constants import (
+    BARS_PER_DAY,
+    PERIODS_PER_YEAR,
+    STD_5M_BAR_TIMES,
+    detect_limit_up,
+)
 from backtest.degrade_5m import (
     apply_5m_degradation,
     recompute_last_tradable_idx,
@@ -36,6 +41,10 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 ENGINE_VERSION = "v3.7-entry-t1-open-20260820"
+
+# 2026-09-16 P2: 硬止损阈值缺省值单一真相源 (原 -0.12 在 build 调用与
+# degrade 报告两处各自硬编码)。与 config/default.yaml cost_stop.threshold 对齐。
+_DEFAULT_COST_STOP_THRESHOLD = -0.12
 
 # ═══════════════════════════════════════════════════════════════
 # VeraCore 设计要点 — 核心循环实现已迁至 backtest/loop/ (候选 A 阶段 2, 2026-07-14)
@@ -364,6 +373,13 @@ class BacktestEngine:
         返回 (equity_arr, raw_trades, resolved); resolved 携带调用方后续需要的
         解析值 (目前仅 run() 的 degrade 报告用 trailing 缺省后值)。
         """
+        # 2026-09-16 B1: 流动性约束静默失效 → 有声。约束已配置但无换手数据时
+        # (run_cached 调用方未提供 turnover_day_np / run() 取数缺 Volume),
+        # loop 层实际不执行约束, 必须显式告警而非静默跑完全程。
+        if float(self.max_turnover_pct) < 1.0 and turnover_day_np is None:
+            logger.warning(
+                "流动性约束已配置 (max_turnover_pct=%s) 但无换手数据 "
+                "(turnover_day_np=None), 约束不生效", self.max_turnover_pct)
         # 2026-08-16 药2 (回测提速): 价格矩阵降 float32 — 价格只需 ~7 位有效数字,
         # float64 是浪费 (内存减半 + CPU 缓存友好); 资金/权益账 (cash/equity/
         # trade buffer) 仍 float64 保精度。两入口 (run/run_cached) 都经此收口,
@@ -424,7 +440,7 @@ class BacktestEngine:
             float(self.initial_capital), float(self.eff_commission),
             float(self.min_buy_amount), float(self.max_buy_amount),
             int(self.lot_size), int(self.min_lots),
-            cost.get("enabled", True), float(cost.get("threshold", -0.12)),
+            cost.get("enabled", True), float(cost.get("threshold", _DEFAULT_COST_STOP_THRESHOLD)),
             trail.get("enabled", True), float(trailing_activation),
             float(trailing_drawdown),
             ladder.get("enabled", True), ladder_profits, ladder_ratios, n_ladder,
@@ -540,7 +556,10 @@ class BacktestEngine:
         win_td = self._resolve_window_td(stop)
         use_mc = (self.matrix_cache
                   and not (self.degrade_5m and self.bars_per_day == 48)
-                  and not (self.max_turnover_pct < 1.0 and self.bars_per_day == 48))
+                  # 2026-09-16 B2: 约束开启即不用矩阵缓存 — _ARRAY_FIELDS 不含
+                  # turnover_day, 缓存命中时约束静默丢失 (原条件只对 5m 生效,
+                  # 1d/1m 漏网)
+                  and not (self.max_turnover_pct < 1.0))
         from core import progress as _progress
         _progress.report("fetch", 0.0, "准备取数...")  # 2026-07-26
         prep = None
@@ -581,6 +600,7 @@ class BacktestEngine:
         # P-v3.4: 公式卖出 (formula_sell) — 一次性预计算信号矩阵
         formula_exit_np = None
         formula_exit_ratio = 1.0
+        formula_sell_failed = None  # 2026-09-16 B4: 构造失败标记 (进 result)
         fs_cfg = stop.get("formula_sell", {})
         if fs_cfg.get("enabled", False):
             formula_name = str(fs_cfg.get("formula_name", "")).strip()
@@ -640,6 +660,10 @@ class BacktestEngine:
                 except Exception as e:
                     logger.error("formula_sell 构造失败, 回退禁用: %s", e)
                     formula_exit_np = None
+                    # 2026-09-16 B4: 容错保留 (不抛, 怕破坏批量流程), 但结果带
+                    # 标记 — 否则报告读者不知道公式卖出根本没生效
+                    formula_sell_failed = (
+                        f"formula_sell 构造失败已回退禁用: {formula_name}: {e}")
             elif not formula_name:
                 logger.warning("formula_sell: enabled=true 但 formula_name 为空, 跳过")
             else:
@@ -717,7 +741,7 @@ class BacktestEngine:
                 degradation.update(compute_impact_report(
                     raw_trades, degraded_np, high_np, low_np, bpday,
                     cost_enabled=cost.get("enabled", True),
-                    cost_threshold=float(cost.get("threshold", -0.12)),
+                    cost_threshold=float(cost.get("threshold", _DEFAULT_COST_STOP_THRESHOLD)),
                     trailing_enabled=trail.get("enabled", True),
                     # 2026-08-01 批次 3b C2: 缺省后值取自共享段 resolved (口径一致)
                     trailing_activation=resolved["trailing_activation"],
@@ -777,6 +801,8 @@ class BacktestEngine:
             bt_kwargs["degradation"] = degradation
         if entry_t1_info is not None:
             bt_kwargs["entry_mode_info"] = entry_t1_info
+        if formula_sell_failed is not None:
+            bt_kwargs["formula_sell_failed"] = formula_sell_failed
         if open_positions:
             bt_kwargs["open_positions"] = open_positions
         return BacktestResult(**bt_kwargs)
@@ -855,7 +881,7 @@ class BacktestEngine:
             formula_exit_np, formula_exit_ratio,
             formula_exit_lag_bars=formula_exit_lag_bars,
             buy_price_np=buy_price_np,
-            turnover_day_np=getattr(prepared, "turnover_day_np", None),
+            turnover_day_np=prepared.turnover_day_np,  # 2026-09-16 B1: 原 getattr 恒 None
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
@@ -940,7 +966,8 @@ class BacktestEngine:
             "pnl": [round(float(v), 2) for v in raw[:, 6]],
             "return": [round(float(v), 4) for v in raw[:, 7]],
             "profit_pct": [round(float(v), 4) for v in raw[:, 7]],
-            "exit_reason": [reason_map.get(v, "换股卖出") for v in raw[:, 8]],
+            # 2026-09-16 P2: 未知原因码不再误标"换股卖出", 显式暴露异常码值
+            "exit_reason": [reason_map.get(v, f"未知原因({v})") for v in raw[:, 8]],
             "hold_days": list(hold),
         })
 
@@ -1178,7 +1205,8 @@ class BacktestEngine:
             prev[0] = np.nan
             prev[1:] = cv[:-1]
         # 接近涨停价(0.3%容差)则取消买入信号
-        limit_up = cv >= prev * (1.0 + ratio_vec) * 0.997
+        # 2026-09-16 B3: 公式下沉 detect_limit_up (浮点顺序 prev*(1+ratio) 再 *0.997 不变)
+        limit_up = detect_limit_up(cv, prev, ratio_vec)
         vals = entries.values.copy()
         vals[limit_up] = False
         result = pd.DataFrame(vals, index=entries.index, columns=entries.columns)

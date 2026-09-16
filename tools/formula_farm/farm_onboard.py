@@ -23,6 +23,7 @@ import pyautogui  # noqa: E402
 from pywinauto import Application, Desktop  # noqa: E402
 
 from tools.formula_farm import gui_onboard  # noqa: E402
+from tools.formula_farm.common import push_feishu  # noqa: E402  # F6 收口
 
 TDX_EXE = r"E:\NEW_TDX\TdxW.exe"
 MAIN_TITLE_KEY = "通达信金融终端"
@@ -130,16 +131,6 @@ def _latest_check(date_str=None):
             return None, None
         fp = max(cands, key=os.path.getmtime)
     return json.load(open(fp, encoding="utf-8")), fp
-
-
-def push_feishu(md_path, title):
-    try:
-        r = subprocess.run([PY, "-X", "utf8", os.path.join(ROOT, "tools", "send_report_feishu.py"),
-                            md_path, title], cwd=ROOT, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
-        log("   飞书推送: %s" % ("成功" if r.returncode == 0 else "跳过/失败(%s)" % (r.stderr or r.stdout)[-120:]))
-    except Exception as e:
-        log("   飞书推送失败(不影响入库): %r" % e)
 
 
 def main():

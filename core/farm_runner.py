@@ -17,6 +17,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from utils.logger import get_logger
+
+_logger = get_logger("core.farm_runner")
+
 ROOT = Path(__file__).resolve().parent.parent
 FARM = ROOT / "tools" / "formula_farm"
 DATA = ROOT / "data" / "formula_farm"
@@ -66,7 +70,8 @@ class FarmRunner:
             tmp.write_text(json.dumps(self._last, ensure_ascii=False), "utf-8")
             os.replace(tmp, LAST)
         except Exception:
-            pass
+            # 2026-09-16 P2: 裸 except 静默吞 → 留痕 (状态丢失曾无迹可查)
+            _logger.warning("farm_runner: last_status.json 落盘失败", exc_info=True)
 
     @property
     def running(self):

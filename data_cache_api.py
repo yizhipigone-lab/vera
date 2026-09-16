@@ -41,7 +41,12 @@ async def data_cache_backfill(body: dict):
     start = (body.get("start") or "").strip()
     end = (body.get("end") or "").strip()
     universe = (body.get("universe") or "").strip() or None
-    limit = int(body.get("limit") or 0)
+    try:
+        # 2026-09-16 审计 P2 修复: 原在 try 外, 非法值 (如 "abc") 的 ValueError
+        # 直接穿透 → 500; 移入 try 走既有错误返回
+        limit = int(body.get("limit") or 0)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "limit 需为整数 (0~10000)"}
     if period not in _VALID_PERIODS:
         return {"success": False, "error": f"period 限 {_VALID_PERIODS}"}
     if not _DATE_RE.match(start):

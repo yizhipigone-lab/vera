@@ -18,12 +18,13 @@ import pandas as pd
 
 @dataclass(frozen=True, slots=True)
 class PreparedMatrix:
-    """run_cached 预取矩阵束。7 个 K 线/能力矩阵打包, 消除位置顺序陷阱 +
+    """run_cached 预取矩阵束。K 线/能力矩阵打包, 消除位置顺序陷阱 +
     配对不变量 (tradable_np 与 last_tradable_idx 恒成对存在于同一对象)。
 
     close / entries 必须是 DataFrame (engine 里 entries.values、close.index 都
     按 DataFrame 语义用); high_np/low_np/open_np/tradable_np/last_tradable_idx
-    是 ndarray; 后三者可为 None (对应能力关闭)。
+    是 ndarray; 后三者可为 None (对应能力关闭); turnover_day_np 为流动性约束
+    当日成交额矩阵 (天×股, 元), None=约束数据未提供。
     """
 
     close: pd.DataFrame
@@ -33,6 +34,10 @@ class PreparedMatrix:
     open_np: np.ndarray | None = None        # 跳空保护能力, None=off
     tradable_np: np.ndarray | None = None    # 退市检测, 与 last_tradable_idx 成对
     last_tradable_idx: np.ndarray | None = None
+    # 2026-09-16 B1: 流动性约束 (max_turnover_pct<1.0) 当日成交额矩阵 (元, 天×股)。
+    # 原 engine.run_cached 用 getattr(prepared, "turnover_day_np", None) 取值,
+    # 而本类根本没这字段 → 恒 None → 约束静默失效。
+    turnover_day_np: np.ndarray | None = None
 
     def __post_init__(self):
         # 陷阱 2 从"靠人背"变"靠类型约束": 配对不变量在构造期 fail-fast,

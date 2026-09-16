@@ -31,8 +31,12 @@ from utils.config_loader import ConfigLoader
 @pytest.fixture(scope="module")
 def cfg():
     """读 default.yaml 配置 (止损止盈 + 回测资金)."""
+    bt = dict(ConfigLoader.load_defaults().get("backtest", {}))
+    # E2 (2026-09-16 审计): 真实引擎测试显式关 kline 缓存,
+    # 防止 engine 默认 use_kline_cache=True 把数据写进生产 data/kline_cache
+    bt["use_kline_cache"] = False
     return {
-        "bt": ConfigLoader.load_defaults().get("backtest", {}),
+        "bt": bt,
         "stop": ConfigLoader.load_defaults().get("stop_loss", {}),
     }
 

@@ -44,16 +44,39 @@ def default_cache_root() -> Path:
                         Path(__file__).resolve().parent.parent / "data" / "selection_cache")
 
 
+# 2026-09-16 审计 P0-1 修复: selector 中缺省为 True 的键 (exclude_quit,
+# 见 selection/selector.py:146 的 u.get("exclude_quit", True)), 显式 False
+# 是"保留退市股"非缺省语义, 绝不能当假值剔掉 — 否则 exclude_quit: False
+# 与缺键撞 key, 两种池子内容不同却共用一份缓存 (回测池语义被偷换)。
+# 这类键: 显式 False 保留在 key 里; 值恰为 True (= 缺省) 才剔除
+# (与"缺键"语义相同, 维持 web/yaml 两入口 key 收敛)。其余键维持原假值剔除。
+_DEFAULT_TRUE_KEYS = {"exclude_quit"}
+
+
+def _keep_universe_key(k: str, v) -> bool:
+    """归一化单键判定 (2026-09-16 P0-1 缺省表驱动)。
+
+    - _DEFAULT_TRUE_KEYS (缺省为 True 的键): 仅 True (= 缺省值) 与 None 剔除,
+      显式 False 必须保留在 key 里 (语义与缺省相反 — 保留退市股);
+      注意不能走通用假值链 — Python 里 False == 0, 会被 v != 0 误剔
+    - 其余键维持原假值剔除逻辑 (False/""/[]/None/0)
+    """
+    if k in _DEFAULT_TRUE_KEYS:
+        return v is not None and v is not True
+    return v is not None and v is not False and v != "" and v != 0 and v != []
+
+
 def _normalize_universe(cfg: dict) -> dict:
     """universe 配置归一化 (R5: 完整配置哈希, 新增字段自动纳入)。
 
     - 剔除假值键 (False/""/[]/None/0): selector 全部 u.get(k, 假值默认),
       "缺键" 与 "显式默认值" 语义相同 — web 路径 (补全默认键) 与 yaml 路径
-      (省略默认键) 应产出同 key, 否则跨入口永远 miss
+      (省略默认键) 应产出同 key, 否则跨入口永远 miss。
+      例外: _DEFAULT_TRUE_KEYS 的显式 False 保留 (见 _keep_universe_key)
     - 列表值排序: sectors/stocks 语义上是集合, 顺序无关, 防顺序漂移假 miss
     """
     u = {k: v for k, v in dict(cfg or {}).items()
-         if v is not None and v is not False and v != "" and v != 0 and v != []}
+         if _keep_universe_key(k, v)}
     for k, v in u.items():
         if isinstance(v, (list, tuple)) and all(
                 isinstance(x, (str, int, float, bool)) for x in v):

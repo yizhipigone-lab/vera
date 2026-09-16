@@ -36,6 +36,21 @@ BARS_PER_DAY = MappingProxyType(_BARS_PER_DAY)
 PERIODS_PER_YEAR = MappingProxyType(_PERIODS_PER_YEAR)
 
 
+def detect_limit_up(close, prev_close, limit_ratio):
+    """涨停判定单一真相源 (2026-09-16 B3 收口): close >= prev*(1+ratio)*0.997。
+
+    0.997 = 0.3% 容差 ("接近涨停价即算涨停")。原公式在 engine._filter_limit_up /
+    degrade_5m._detect_1d_limit_up / entry_next_open 一字板判定手写三份 —
+    "同规则 N 份必漂移"坑类, 收编为三处共调。
+
+    ⚠️ 浮点乘法顺序是敏感口径 (2026-07-17 Phase 1 刻意对齐, 快照基线锁):
+    必须先 prev*(1+ratio) 再 *0.997, 逐元素不得重结合, 不可改写成
+    prev*((1+ratio)*0.997) 等"等价"形式 (浮点结果不同)。
+    参数为 numpy 数组或 pandas 对象均可 (逐元素语义一致)。
+    """
+    return close >= prev_close * (1.0 + limit_ratio) * 0.997
+
+
 def _std_5m_bar_times() -> tuple:
     """A股 5m 标准 48 根 bar 时刻 (HH:MM): 9:35..11:30 (24) + 13:05..15:00 (24)。
 

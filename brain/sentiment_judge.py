@@ -1,8 +1,9 @@
 """brain/sentiment_judge.py — 新闻情绪量化器 (LLM 打分, 仿 eval_judge 范式)。
 
 设计要点 (先读, 含刻意取舍):
-- 仿 eval_judge.py: 自己发最小 claude subprocess, 不调 ask_brain()
-  (它会拼研究助理 system prompt, 污染情绪判断)。judge 需干净上下文。
+- 仿 eval_judge.py: 不调 ask_brain() (它会拼研究助理 system prompt, 污染
+  情绪判断)。judge 需干净上下文; 子进程执行走 claude_cli._run_cli_oneshot
+  共享实现 (2026-09-16 N1+N2 收口: env 注入 + 杀进程树单一份)。
 - 输出严格 JSON schema: {polarity∈[-1,1], strength∈{0,1,2},
   confidence∈[0,1], evidence_quote, hit_pool}。解析仿 parse_judge_output,
   越界/缺字段返 {"error":...} 不抛 (审计 M1: 禁 eval, JSON 走 json.loads
@@ -16,16 +17,12 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 
 from utils.logger import get_logger
-from utils.sysutil import close_subprocess_pipes, project_root
 
 logger = get_logger(__name__)
-
-VERA_ROOT = project_root()
 
 # 审计 M2: scheduler 单线程串行, 每条 LLM 硬超时 25s
 DEFAULT_TIMEOUT_SEC = 25
@@ -95,18 +92,6 @@ def parse_sentiment_output(text: str) -> dict | None:
     }
 
 
-def _run_coro_sync(coro):
-    """在同步上下文运行协程。若本线程已有 event loop, 放新线程跑独立 loop。
-    (与 eval_judge._run_coro_sync 同实现; scheduler 进程无 loop 走 asyncio.run。)"""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
-
-
 def judge_sentiment(news_text: str, timeout: int = DEFAULT_TIMEOUT_SEC) -> dict:
     """给一条新闻文本打情绪分。
 
@@ -117,7 +102,7 @@ def judge_sentiment(news_text: str, timeout: int = DEFAULT_TIMEOUT_SEC) -> dict:
     if not news_text:
         return {"error": "新闻文本为空"}
 
-    from brain.claude_cli import _find_cli
+    from brain.claude_cli import _find_cli, _run_cli_oneshot, _run_coro_sync
     cli = _find_cli()
     if not cli:
         return {"error": "claude CLI 未安装"}
@@ -130,7 +115,9 @@ def judge_sentiment(news_text: str, timeout: int = DEFAULT_TIMEOUT_SEC) -> dict:
     )
 
     try:
-        result = _run_coro_sync(_run_judge(cli, full_prompt, timeout))
+        result = _run_coro_sync(_run_cli_oneshot(
+            cli, full_prompt, timeout,
+            timeout_msg=f"情绪量化超时 (>{timeout}s"))
         parsed = parse_sentiment_output(result)
         if parsed is None:
             return {"error": "解析情绪输出失败", "raw": result[:300]}
@@ -140,32 +127,6 @@ def judge_sentiment(news_text: str, timeout: int = DEFAULT_TIMEOUT_SEC) -> dict:
     except Exception as e:
         logger.warning(f"judge_sentiment 异常: {e}")
         return {"error": str(e)}
-
-
-async def _run_judge(cli: str, prompt: str, timeout: int) -> str:
-    """调 claude CLI, stdin 传 prompt, 返 stdout 文本。超时 kill。"""
-    proc = await asyncio.create_subprocess_exec(
-        cli, "-p", "--output-format", "text", "--max-turns", "1",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(VERA_ROOT),
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(prompt.encode("utf-8")), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        raise TimeoutError(f"情绪量化超时 (>{timeout}s)")
-    finally:
-        close_subprocess_pipes(proc)  # 消 Windows Proactor "closed pipe" 噪音
-    if proc.returncode != 0:
-        err = (stderr or b"").decode("utf-8", "replace")[:200]
-        logger.warning(f"sentiment CLI 非零退出 rc={proc.returncode}: {err}")
-    return (stdout or b"").decode("utf-8", "replace").strip()
 
 
 def judge_batch(news_items: list[dict], timeout: int = DEFAULT_TIMEOUT_SEC,

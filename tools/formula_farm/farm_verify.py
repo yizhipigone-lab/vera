@@ -30,13 +30,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 PY = sys.executable
 
+# 判定阈值以被测工具为唯一真相源 (2026-09-16 F5 收口, 原此处硬编码 0.02/0.6)
+from tools.repaint_check import REPAINT_MAX_RATE  # noqa: E402 重画不一致率上限 (>2% = 重画实锤)
+from tools.future_func_check import FUTURE_MIN_KEEP  # noqa: E402 T+1 保留率下限 (<0.6 = 显著衰减)
+from tools.formula_farm.common import push_feishu  # noqa: E402  # F6 收口
+
 RUNS = os.path.join(ROOT, "data", "formula_farm", "runs")
 REPORTS = os.path.join(ROOT, "data", "formula_farm", "reports")
-
-#: 重画不一致率上限 (与 tools/repaint_check.py 的判定一致: >2% = 重画实锤)
-REPAINT_MAX_RATE = 0.02
-#: 未来函数甄别: T+1 保留率下限 (与 tools/future_func_check.py 的"显著衰减"一致)
-FUTURE_MIN_KEEP = 0.6
 
 # repaint_check: "  GS1285: 窗口信号 截断=12 全量=12 消失=0 新增=0 不一致率=0.00%"
 _RE_REPAINT = re.compile(r"^\s*([\w\u4e00-\u9fff\.\-！]+):\s*窗口信号.*不一致率=([\d.]+)%")
@@ -219,17 +219,6 @@ def _run_retry(cmd: list, timeout: int, retries: int, label: str) -> tuple:
             log("   · %d 秒后重试 (常见原因: TDX 连接被上一个工具关掉)" % RETRY_PAUSE)
             time.sleep(RETRY_PAUSE)
     return out, err
-
-
-def push_feishu(md_path, title):
-    try:
-        r = subprocess.run([PY, "-X", "utf8", os.path.join(ROOT, "tools", "send_report_feishu.py"),
-                            md_path, title], cwd=ROOT, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
-        log("飞书推送: %s" % ("成功" if r.returncode == 0
-                            else "失败 rc=%d" % r.returncode))
-    except Exception as e:                                       # noqa: BLE001
-        log("飞书推送: 异常 %r" % e)
 
 
 def main():

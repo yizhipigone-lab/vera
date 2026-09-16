@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from quantqq_5m_sweep import COARSE, combo_stop_config  # noqa: E402
 
 from backtest.engine import BacktestEngine  # noqa: E402
+from core import farm_rules  # noqa: E402  # G1: 最优参数笔数守卫口径
 
 YEARS = [("2023H2", "20230801", "20231231"),
          ("2024", "20240101", "20241231"),
@@ -39,7 +40,12 @@ def best_params(formula):
               "cond_profit", "calmar", "maxdd", "trades"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df[df["annret"].notna()]
-    return df.loc[df["annret"].idxmax()]
+    # G1: 最优参数只在笔数 ≥ farm_rules.MIN_TRADES 的组合里选;
+    # 全不足样本 → None (调用方标注「样本不足」并跳过, 不拿噪声参数分年回测)
+    enough = df[df["trades"] >= farm_rules.MIN_TRADES]
+    if enough.empty:
+        return None
+    return enough.loc[enough["annret"].idxmax()]
 
 
 def run_year(sel, c_dict, start, end):
@@ -66,6 +72,10 @@ def main():
             continue
         sel = pd.read_csv(sel_path, dtype={"stock_code": str})
         bp = best_params(formula)
+        if bp is None:
+            print(f"[{formula}] 样本不足（笔数<{farm_rules.MIN_TRADES}），"
+                  f"无达标统计意义的最优参数, 跳过分年回测", flush=True)
+            continue
         c_dict = {"cost": bp["cost"], "act": bp["act"], "dd": bp["dd"],
                   "ladder": bp["ladder"], "levels": LADDER[bp["ladder"]][1],
                   "time_days": bp["time_days"], "cond_days": bp["cond_days"],

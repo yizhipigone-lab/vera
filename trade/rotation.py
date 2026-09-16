@@ -253,6 +253,11 @@ class RotationFeature:
                 "rotation_skip", "上一次信号计算仍在运行, 本次忽略",
                 {"source": source})
             return
+        # 审计 T4 (2026-09-16): 份状态对齐 (锚定热变更重建 + audit 留痕)
+        # 从信号工作线程挪到此处 —— 交易状态唯一写者=消费者线程,
+        # 工作线程只读 self._tranches (start→Thread 启动的 happens-before
+        # 保证读到本次对齐结果)。
+        self._sync_tranches()
         self._running = True
         try:
             threading.Thread(target=self._worker, args=(source,),
@@ -316,6 +321,10 @@ class RotationFeature:
         冷启动时从 tranche_state 表恢复 pending_target/has_target
         (has_target 兼容旧记录: 无显式键时以 "pending_target" in signal 判);
         锚定热变更 → 份状态清零重来 (计划书 §七: 改份数/锚定建议重启)。
+
+        调用纪律 (审计 T4, 2026-09-16): 仅在消费者线程调用 (构造函数 /
+        start() 发起工作线程前) —— 本函数重建共享状态并写 audit,
+        交易状态唯一写者=消费者线程; 信号工作线程只读 self._tranches。
         """
         anchors = tuple(self._cfg_getter().rotation.signal_day)
         if anchors == self._anchors_key and self._tranches:
@@ -394,7 +403,6 @@ class RotationFeature:
                           "note": "非交易日, 不动作", "source": source}))
                 return
             cfg = self._cfg_getter().rotation
-            self._sync_tranches()
             self._shadow_tick(today)   # 2026-08-23 P0: 影子三态每日落盘 (只记录不交易)
 
             # 迁移挂起 (D4): 查账户里有没有轮动池持仓, 有则取近 20 日收盘
@@ -971,7 +979,13 @@ class RotationFeature:
             if drift:
                 self._store.write_audit(
                     "rotation_lots_drift",
-                    f"轮动份簿记与 QMT 持仓不一致 (只告警不改账): {drift}",
+                    f"轮动份簿记与 QMT 持仓不一致 (只告警不改账): {drift}; "
+                    "簿记可能因买侧废单/部成失真 (买入为「委托发出即全额"
+                    "记份簿记」, 无自动核销路径), 幻影持仓会压制后续补仓 —— "
+                    "请人工核对 QMT 实际持仓; 确认失真后的人工修账入口: "
+                    "直接改 SQLite 库 rotation_lots 表, 或清除 "
+                    "rotation_meta 的 lots_initialized 标志后重启 "
+                    "(触发迁移按 QMT 持仓重建簿记)",
                     drift)
         except Exception:
             _logger.debug("份簿记对账异常 (不影响交易)")

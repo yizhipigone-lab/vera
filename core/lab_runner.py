@@ -240,27 +240,32 @@ class LabQueue:
     # ── 执行器(可注入) ───────────────────────────────────────
 
     def _subprocess_run(self, cmd: list[str], on_line=None) -> tuple[int, str]:
-        """跑子进程, 逐行回调(进度解析), 返回 (rc, 全量输出尾部)。
+        """跑子进程, 逐行流式回调(进度解析), 返回 (rc, 全量输出)。
 
         2026-07-25: subprocess.run → Popen, 句柄存 _current_proc,
         stop_current() 可中途杀掉 (停止体检)。
+        2026-09-16 C4: communicate() 死后重放 → Popen 流式逐行读 (farm_runner
+        同款), [S0]~[S5] 进度运行期间即时更新, 不再等子进程跑完才补回调。
+        Windows 编码保持 utf-8/errors=replace。
         """
         proc = subprocess.Popen(
             [sys.executable] + cmd, cwd=ROOT,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace")
         self._current_proc = proc
+        chunks: list[str] = []
         try:
-            out, _ = proc.communicate()
+            for ln in proc.stdout:  # 流式: 子进程每吐一行就回调一次
+                chunks.append(ln)
+                if on_line:
+                    try:
+                        on_line(ln.rstrip("\n"))
+                    except Exception:
+                        pass
+            rc = proc.wait()
         finally:
             self._current_proc = None
-        if on_line:
-            for ln in (out or "").splitlines():
-                try:
-                    on_line(ln)
-                except Exception:
-                    pass
-        return proc.returncode, out or ""
+        return rc, "".join(chunks)
 
     @staticmethod
     def _universe_note() -> str:

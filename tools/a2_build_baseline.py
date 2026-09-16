@@ -27,7 +27,9 @@ def build_baseline():
     pkl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             'output', 'gupiao012_a2_real.pkl')
     if not os.path.exists(pkl_path):
-        raise FileNotFoundError(f"缺少 {pkl_path}, 请先跑 tools/a2_recompute_equity.py")
+        raise FileNotFoundError(
+            f"缺少 {pkl_path}。生成该基线 pkl 的 tools/a2_recompute_equity.py "
+            f"已随 2026-07-13 清理删除 (commit d3b44fa), 如需重建基线请联系维护者")
 
     eq = pd.read_pickle(pkl_path)
     df = pd.DataFrame({'date': pd.DatetimeIndex(eq.index), 'equity': eq.values})
@@ -78,7 +80,7 @@ def build_baseline():
             'sharpe_ratio': round(sharpe, 2),
             'daily_winrate': round(daily_winrate, 4),
             'daily_winrate_pct': round(daily_winrate * 100, 2),
-            'calmar_ratio': round(annret / abs(maxdd), 2),
+            'calmar_ratio': round(m['calmar_ratio'], 2),  # metrics.py 现成口径 (maxdd≈0 死区归零, 不除零)
         },
         'real_pickle_path': 'output/gupiao012_a2_real.pkl',
         'baseline_purpose': (

@@ -25,6 +25,7 @@ from trade.book import (
     PRICE_TYPE_SZ_5LEVEL_CANCEL,
     TERMINAL_STATUSES,
     is_etf,
+    ladder_tier_qty,  # 2026-09-16 P2-1: 阶梯档手数计算单一真相源
     round_price,  # 治理III W1-c: 唯一真相源迁 book.py (本模块内部+auto_buy 经此引用)
 )
 from trade.quote_stale import is_quote_stale
@@ -262,6 +263,13 @@ class Executor:
         """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
         self._cfg = cfg
 
+    def set_on_pending_died(self, cb: Callable[[str], None]) -> None:
+        """延迟接线 pending 终态回调 (审计 W2, 2026-09-16: 替代外部直写
+        _on_pending_died 私有属性 —— 直写改名时静默失效)。构造顺序约束
+        (Monitor 依赖 Executor) 下构造器形参用不上, 由组合根在两端
+        都建好后调本方法接线。"""
+        self._on_pending_died = cb
+
     # ── 唯一下单口 (计划书 2026-09-05 唯一下单口收口) ──────────
 
     def place_order(self, req: PlaceRequest,
@@ -292,8 +300,18 @@ class Executor:
         if not ok:
             return None, why
         remark = self._next_remark(req.remark_prefix)
-        order_id = self._gw.order(req.code, req.direction, req.price,
-                                  req.qty, req.price_type, remark)
+        try:
+            order_id = self._gw.order(req.code, req.direction, req.price,
+                                      req.qty, req.price_type, remark)
+        except Exception as e:
+            # 审计 P2-4 (2026-09-16): 下单提交异常原本裸上抛无 audit,
+            # 对账排障时看不到死单原因; 留痕后原样上抛, 语义不变。
+            self._store.write_audit(
+                "order_submit_error",
+                f"{req.code} 下单提交异常: {e}",
+                {"code": req.code, "direction": req.direction,
+                 "price": req.price, "qty": req.qty, "error": str(e)})
+            raise
         self.fill_ctx.register(order_id, req.fill_payload)
         if req.account_immediately:
             self._book.apply_order_update(
@@ -364,6 +382,15 @@ class Executor:
             done = self._book.tier_done(code, date_str)
             remaining = pos.volume
             for tier, (profit, ratio) in enumerate(self._cfg.stop.ladder_tp.levels):
+                # 审计 T3 (2026-09-16): 成本缺失守卫 —— avg_cost≤0 时档位价
+                # 会算成 0.00 元照样挂出卖单。fail-closed, 对齐
+                # monitor._hit_ladder 的守卫语义 (avg_cost<=0 → 不评估)。
+                if pos.avg_cost <= 0:
+                    self._store.write_audit(
+                        "ladder_skip",
+                        f"{code} 成本缺失(avg_cost={pos.avg_cost}), 本轮不挂档",
+                        {"code": code, "avg_cost": pos.avg_cost})
+                    break
                 if tier in done:
                     continue  # 已预埋档不重复挂 (乐观标记在, 防废单重复卖)
                 # 审计L10修复: 0.01 对齐用四舍五入 (round_price,
@@ -380,13 +407,14 @@ class Executor:
                 # 审计M2修复: 比例档手数四舍五入 int(x+0.5) (0.5 边界向上),
                 # 不用 int() 截断 —— 1000×0.29 截断成 2 手静默少卖 90 股。
                 # 清仓档仍向下取整: 余 50~99 股时四舍五入会卖出超过持仓的
-                # 100 股, 宁留尾数 (<100) 不超卖
+                # 100 股, 宁留尾数 (<100) 不超卖。
+                # (2026-09-16 P2-1: 四舍五入计算收口 trade/book.ladder_tier_qty,
+                # 与 monitor 兜底同一实现, 上限口径为本票剩余手数。)
                 remaining_lots = int(remaining / 100)
                 if ratio < 1.0:
-                    lots = min(int(pos.volume * ratio / 100 + 0.5), remaining_lots)
+                    qty = ladder_tier_qty(pos.volume, ratio, remaining_lots)
                 else:
-                    lots = remaining_lots
-                qty = lots * 100
+                    qty = remaining_lots * 100
                 if qty <= 0:
                     continue
                 # 唯一下单口 (计划书 T2): 七步脊柱收口, 合法差异经 PlaceRequest 表达

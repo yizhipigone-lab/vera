@@ -180,7 +180,14 @@ def apply_deep_settings() -> bool:
 
 
 def stop_dsh(run_id: str) -> bool:
-    """终止一次运行 (杀进程树)。返回是否找到了该运行。"""
+    """终止一次运行。返回是否找到了该运行。
+
+    注意 (2026-09-16 审计 P2 说实话): 这里只 proc.kill() 杀主进程, 不杀
+    进程树 — 这是有意的: 本通道直调 node.exe + bin.js 单进程 (不经
+    dsh.cmd 批处理, 无 cmd/node 孙进程), 单 kill 即够; 与超时路径的
+    _kill_tree (taskkill /T 杀整树, 那是为 claude_cli 的 cmd.exe→node
+    孙进程双坑准备的) 不同属刻意取舍, 非疏漏。
+    """
     proc = _runs.get(run_id)
     if proc is None:
         return False
@@ -220,6 +227,7 @@ async def run_dsh(question: str, history: list[dict] | None = None,
     task = _pack_task(question, history)
     env = {**os.environ, "DSH_HOME": str(DSH_HOME)}
     t0 = time.monotonic()
+    t0_wall = time.time()  # 2026-09-16 P2: 会话日志只认 mtime >= 本次 run 启动
 
     # AI 设置页签 (deep 档): 用户配置了 provider/model → 改写 DSH settings,
     # 深度思考档用页面选的适配器+模型; 未配置/失败静默按现状运行。
@@ -243,6 +251,19 @@ async def run_dsh(question: str, history: list[dict] | None = None,
             proc = await _spawn(task, env, out_f, err_f)
         except Exception as e:
             result["answer"] = f"深度思考通道启动失败: {type(e).__name__}: {e}"
+            # 2026-09-16 审计 P2 修复: 失败分支原直接 return, 两个临时日志
+            # 残留 workspace; 先关句柄 (Windows 打开中的文件删不掉) 再清理,
+            # 对齐下方 :289-293 正常路径的清理逻辑
+            for f in (out_f, err_f):
+                try:
+                    f.close()
+                except Exception:
+                    pass
+            for p in (out_path, err_path):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
             return result
 
         # 先注册进程再发任何事件 (IRX 踩坑 #5: 保证任意时刻停止都能命中)
@@ -268,7 +289,7 @@ async def run_dsh(question: str, history: list[dict] | None = None,
                     timed_out = True
                     break
                 if on_line:
-                    await on_line(f"[DSH] {_tail_action()} · {int(time.monotonic() - t0)}s")
+                    await on_line(f"[DSH] {_tail_action(t0_wall)} · {int(time.monotonic() - t0)}s")
             await proc.communicate()  # 无管道可读, 此处仅等待退出 (停止/超时已被树杀)
             # 撞车修复 (2026-09-05 实测): stop_dsh 的 kill 会让 wait() 先返回,
             # 循环走"自然结束"分支 break, stopped 漏标记 → 用户点停止却看到
@@ -294,7 +315,7 @@ async def run_dsh(question: str, history: list[dict] | None = None,
 
         rc = proc.returncode
         hits = _archive(run_id, question, answer, rc, stopped or timed_out,
-                        t0, db_path)  # 留档失败=抛 → 显性失败
+                        t0, db_path, since=t0_wall)  # 留档失败=抛 → 显性失败
         if hits:
             result["warnings"].append(f"泄漏扫描命中 {hits}（已告警留档）")
         if timed_out:
@@ -375,11 +396,16 @@ def _pack_task(question: str, history: list[dict] | None) -> str:
     return _TASK_PREFIX + "\n\n" + body
 
 
-def _latest_session_log() -> Path | None:
-    """定位 DSH home 下最新会话日志 (= 本次运行的出网上下文全集)。
+def _latest_session_log(since: float | None = None) -> Path | None:
+    """定位 DSH home 下本次运行的会话日志 (= 本次运行的出网上下文全集)。
 
     .jsonl 与 .jsonl.zstd 都认 (IRX 仓实测为 zstd 压缩, 其 glob 只认
     .jsonl —— 本实现修正该疑点)。
+
+    2026-09-16 审计 P2 修复: 原取全局最新日志, 并发 run 时哈希留档张冠李戴。
+    传 since (本次 run 启动的墙钟时间 time.time()) 时只认 mtime >= since
+    的日志并取其中最早一个 — 最早 = 本次 run 启动后最先创建的那份,
+    并发 run 的日志 mtime 更晚不会被错拿。
     """
     d = DSH_HOME / "sessions"
     if not d.is_dir():
@@ -387,6 +413,9 @@ def _latest_session_log() -> Path | None:
     logs = [p for p in d.rglob("*")
             if p.is_file() and (p.name.endswith(".jsonl")
                                 or p.name.endswith(".jsonl.zstd"))]
+    if since is not None:
+        logs = [p for p in logs if p.stat().st_mtime >= since]
+        return min(logs, key=lambda p: p.stat().st_mtime) if logs else None
     return max(logs, key=lambda p: p.stat().st_mtime) if logs else None
 
 
@@ -398,9 +427,9 @@ def _log_text(raw: bytes, path: Path) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
-def _tail_action() -> str:
+def _tail_action(since: float | None = None) -> str:
     """读会话日志尾部, 把最近事件翻译成等待 UI 动作提示 (zstd 压缩时退化为"工作中")。"""
-    log = _latest_session_log()
+    log = _latest_session_log(since)
     if log is None:
         return "启动中"
     try:
@@ -418,12 +447,14 @@ def _tail_action() -> str:
 
 
 def _archive(run_id: str, question: str, answer: str, exit_code: int | None,
-             stopped: bool, t0: float, db_path: Path | None = None) -> list:
+             stopped: bool, t0: float, db_path: Path | None = None,
+             since: float | None = None) -> list:
     """每问全量留档: 会话日志哈希 + 泄漏扫描 + 落 SQLite。
 
-    失败直接抛 (显性失败)。返回泄漏命中列表 (供调用方写进 warnings 让前端可见)。"""
+    失败直接抛 (显性失败)。返回泄漏命中列表 (供调用方写进 warnings 让前端可见)。
+    since: 本次 run 启动的墙钟时间 (2026-09-16 P2: 只认本次 run 的会话日志)。"""
     db = db_path or DSH_DB
-    log = _latest_session_log()
+    log = _latest_session_log(since)
     ctx_hash, ctx_chars, hits = None, None, []
     if log is not None:
         raw = log.read_bytes()

@@ -78,12 +78,15 @@ def run_combos(formula, seg, combos, out_fp):
     from backtest.prepared import PreparedMatrix
 
     # 断点续跑: 已有结果的 key 跳过 (机器频繁重启, 2026-09-10 教训)
+    # F3: prev 行必须保留并合并回写出文件, 否则整表覆盖写会冲掉上一轮已完成结果
     done_keys = set()
+    prev = None
     if os.path.exists(out_fp):
         try:
             prev = pd.read_csv(out_fp)
             done_keys = set(prev.loc[prev['annret'].notna(), 'key'])
         except Exception:
+            prev = None
             done_keys = set()
     if done_keys:
         before = len(combos)
@@ -93,6 +96,15 @@ def run_combos(formula, seg, combos, out_fp):
     if not combos:
         print(f'[{formula}/{seg}] 全部已完成, 跳过')
         return
+
+    def _write(rows_):
+        """合并历史 prev 行后按 key 去重 (keep='last', 本轮结果优先) 再整表写。"""
+        out_df = pd.DataFrame(rows_)
+        if prev is not None and len(prev):
+            out_df = pd.concat([prev, out_df], ignore_index=True)
+            out_df = out_df.drop_duplicates(subset=['key'], keep='last')
+        os.makedirs(os.path.dirname(out_fp), exist_ok=True)
+        out_df.to_csv(out_fp, index=False)
 
     meta, close_df, entries_df, high_np, low_np, open_np, tradable_np = load_seg(formula, seg)
     lti = recompute_last_tradable_idx(np.asarray(tradable_np, dtype=bool))
@@ -126,9 +138,8 @@ def run_combos(formula, seg, combos, out_fp):
         if i % 10 == 0:
             print(f'  {i}/{len(combos)} ({time.time()-t0:.0f}s)', flush=True)
             # 增量落盘: 机器可能随时重启, 每 10 组写一次保进度
-            pd.DataFrame(rows).to_csv(out_fp, index=False)
-    os.makedirs(os.path.dirname(out_fp), exist_ok=True)
-    pd.DataFrame(rows).to_csv(out_fp, index=False)
+            _write(rows)
+    _write(rows)
     ok = [r for r in rows if r.get('annret') is not None]
     if ok:
         b = max(ok, key=lambda r: r['annret'])

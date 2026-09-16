@@ -196,10 +196,16 @@ def main() -> int:
                     n_skip += 1
                     continue
                 # 除权事件 (全历史)
+                # 2026-09-16 审计 U2: 拉取异常不再吞成空 DataFrame 继续导入
+                # (会把全部除权事件折叠成单一系数, 形状失真写生产 5m 缓存),
+                # 改 fail-closed: 记 error 日志 + 跳过该股, 不写入缓存。
                 try:
                     div = DataFetcher._connector().tq().get_divid_factors(code)
-                except Exception:
-                    div = pd.DataFrame()
+                except Exception as e:
+                    print(f"[lc5导入] [ERROR] {code} 除权表拉取失败: {e}, 跳过该股不导入",
+                          flush=True)
+                    state.setdefault("error", []).append(code)
+                    continue
                 daily_close = df.groupby(df.index.normalize())['close'].last()
                 ratios = compute_factors(div, daily_close) if not div.empty else pd.Series()
                 adj = apply_front_adjust(hist.copy(), ratios)
@@ -214,7 +220,10 @@ def main() -> int:
                     seam_day = df[df.index.normalize() == cutoff.normalize()]
                     if seam_cache and not seam_day.empty:
                         F_seam = factor_at(ratios, cutoff.normalize())
-                        mine = float(seam_day['close'].iloc[0]) * F_seam
+                        # 2026-09-16 P0-2 配套: _close_at 已改为取当日**末根** bar
+                        # (与 manifest last_close 口径对齐), 本侧同步取末根,
+                        # 接缝两侧比较同一根 bar (末日 15:00 bar close = 日收盘)
+                        mine = float(seam_day['close'].iloc[-1]) * F_seam
                         if mine > 0:
                             k = float(seam_cache) / mine
                 k_values[code] = round(k, 4)

@@ -36,6 +36,7 @@ sys.path.insert(0, ROOT)
 PY = sys.executable
 
 from core import farm_rules  # noqa: E402
+from tools.formula_farm.common import push_feishu  # noqa: E402  # F6 收口
 
 RUNS = os.path.join(ROOT, "data", "formula_farm", "runs")
 REPORTS = os.path.join(ROOT, "data", "formula_farm", "reports")
@@ -281,20 +282,6 @@ def _f(v):
 
 
 # ────────────────────────── 主流程 ──────────────────────────
-
-def push_feishu(md_path, title):
-    try:
-        r = subprocess.run([PY, "-X", "utf8", os.path.join(ROOT, "tools", "send_report_feishu.py"),
-                            md_path, title], cwd=ROOT, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
-        if r.returncode == 0:
-            log("飞书推送: 成功")
-        else:
-            log("飞书推送: 失败 rc=%d %s" % (r.returncode,
-                                            (r.stderr or r.stdout or "")[-120:]))
-    except Exception as e:                                       # noqa: BLE001
-        log("飞书推送: 异常 %r" % e)
-
 
 def main():
     ap = argparse.ArgumentParser(description="公式农场粗扫 (闸门④)")

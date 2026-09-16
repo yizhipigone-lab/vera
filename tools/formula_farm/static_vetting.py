@@ -12,6 +12,7 @@ import re
 
 from tools.formula_farm import common
 from tools.formula_farm import intake
+from tools.future_tokens import FUTURE_TOKEN_BLACKLIST
 
 
 def is_main(rec) -> bool:
@@ -71,14 +72,8 @@ def l2_future_scan(clean_records):
 
 # ---- v1 运行时体检(比 gongshi 基线更严: 未来函数/跨周期为硬闸) ----
 
-FUTURE_TOKENS = [
-    "BACKSET", "REFX", "REFXV", "REFXR", "BARSNEXT",
-    "DCLOSE", "DOPEN", "DVOL", "DHIGH", "DLOW",
-    "DRAWLINE", "POLYLINE", "XMA", "FFT",
-    "ZIG", "ZIGA", "ZIGBARS", "FLATZIG",
-    "PEAK", "PEAKA", "PEAKBARS", "TROUGH", "TROUGHA", "TROUGHBARS",
-    "ZXNH",
-]
+# 2026-09-16 F4 收口: 权威清单在 tools/future_tokens.py (三份清单并集)
+FUTURE_TOKENS = FUTURE_TOKEN_BLACKLIST
 CROSS_PERIOD = re.compile(r"#\s*(MONTH|WEEK|DAY|MINUTE|YEAR|SECOND)")
 
 

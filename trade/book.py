@@ -70,6 +70,20 @@ def round_price_etf(x: float) -> float:
     return int(x * 1000 + 0.5) / 1000
 
 
+def ladder_tier_qty(volume: int, ratio: float, cap_lots: int) -> int:
+    """阶梯止盈比例档卖出股数 (口径单一真相源, 2026-09-16 治理 P2-1:
+    monitor 兜底与 executor 预埋原两处手写同款四舍五入, 下沉收口)。
+
+    比例手数四舍五入 int(x+0.5) (0.5 边界向上, 审计M2: int() 截断会让
+    1000×0.29 静默少卖 90 股), 封顶 cap_lots 手 (两处上限口径不同:
+    monitor 用 int(volume/100), executor 用剩余手数)。返回股数;
+    ≤0 表示算不出整手, 由调用方按各自语义处置 (monitor 兜底全卖 /
+    executor 跳过该档)。ratio≥1.0 的清仓档不经本函数 —— 两边都是
+    "卖剩余全部, 向下取整防超卖"。"""
+    lots = min(int(volume * ratio / 100 + 0.5), cap_lots)
+    return max(lots, 0) * 100
+
+
 def is_etf(code: str) -> bool:
     """场内 ETF 判定 (2026-07-27 ETF 误卖事件裁决③): 沪市 51/56/58、
     深市 15/16/18 前缀 (取 '.' 前段)。覆盖场内基金; LOF 501/508 类

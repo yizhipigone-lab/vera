@@ -201,18 +201,49 @@ def test_run_dsh_runtime_missing(monkeypatch, tmp_path):
 
 
 def test_run_dsh_leak_scan_records_hits(monkeypatch, tmp_path):
-    """会话日志含敏感词 → leak_hits 落库。"""
+    """会话日志含敏感词 → leak_hits 落库。
+
+    2026-09-16 审计 P2 同步更新: _latest_session_log 加了 t0 过滤 (只认
+    mtime >= 本次 run 启动的日志, 防并发张冠李戴) — 真实场景日志由 DSH
+    进程在 run 期间创建, 测试改在 fake spawn 里写日志对齐该时序。"""
     _patch_runtime(monkeypatch, tmp_path)
     sess = dsh.DSH_HOME / "sessions" / "s1"
     sess.mkdir(parents=True)
-    (sess / "session.jsonl").write_text("...资金账号 12345...", encoding="utf-8")
-    _patch_spawn(monkeypatch, _FakeProc())
+
+    proc = _FakeProc()
+
+    async def fake_spawn(task, env, out_f, err_f):
+        out_f.write((proc._out or b"").decode("utf-8", "replace"))
+        out_f.flush()
+        (sess / "session.jsonl").write_text(
+            "...资金账号 12345...", encoding="utf-8")  # run 期间创建
+        return proc
+    monkeypatch.setattr(dsh, "_spawn", fake_spawn)
+
     db = tmp_path / "r.db"
     run(dsh.run_dsh("q", db_path=db, poll_seconds=0.01))
     import sqlite3
     hits = sqlite3.connect(str(db)).execute(
         "SELECT leak_hits FROM brain_dsh_runs").fetchone()[0]
     assert "资金账号" in json.loads(hits)
+
+
+def test_latest_session_log_since_filter(monkeypatch, tmp_path):
+    """2026-09-16 审计 P2: since 过滤只认 mtime >= 启动时间的日志 (取最早一个)。"""
+    _patch_runtime(monkeypatch, tmp_path)
+    import os
+    import time
+    sess = dsh.DSH_HOME / "sessions" / "s1"
+    sess.mkdir(parents=True)
+    old = sess / "old.jsonl"
+    old.write_text("旧会话", encoding="utf-8")
+    now = time.time()
+    os.utime(old, (now - 100, now - 100))   # 历史日志: mtime 在启动前
+    assert dsh._latest_session_log(since=now) is None   # 启动前的日志不认
+    new = sess / "new.jsonl"
+    new.write_text("本次会话", encoding="utf-8")        # 启动后创建
+    assert dsh._latest_session_log(since=now) == new
+    assert dsh._latest_session_log() == new             # 不传 since 维持全局最新
 
 
 def test_run_dsh_registers_before_events(monkeypatch, tmp_path):

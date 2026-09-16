@@ -2,12 +2,14 @@
 """formula_pipeline 共用模块 (2026-08-26, 全新编写, 不依赖 tools/ 旧脚本)。
 
 公式流水线的基础设施: 路径、run 目录管理、公式 txt 容错读取与结构解析。
-项目级依赖仅限: core/tdx_path (TDX_HOME 定位)。
+项目级依赖仅限: core/tdx_path (TDX_HOME 定位) 与 tools/future_tokens (黑名单并集)。
 """
 import json
 import re
 import time
 from pathlib import Path
+
+from tools.future_tokens import FUTURE_TOKEN_BLACKLIST
 
 ROOT = Path(__file__).resolve().parent.parent.parent  # 项目根
 PIPELINE_DIR = Path(__file__).resolve().parent
@@ -31,14 +33,9 @@ def gs1_files() -> list:
 OUTPUT_ROOT = ROOT / "output" / "formula_pipeline"
 
 # 静态扫描排除清单 (2026-08-26 00:37 定稿口径, 自建清单)
-FUTURE_FUNCS = [
-    "ZIG", "ZIGA", "ZIGBARS", "FLATZIG", "FLATZIGA",
-    "PEAK", "PEAKA", "PEAKBARS", "PEAKBARSA",
-    "TROUGH", "TROUGHA", "TROUGHBARS",
-    "BACKSET", "REFX", "REFXV", "REFXR", "BARSNEXT",
-    "DCLOSE", "DHIGH", "DLOW", "DOPEN", "DVOL",
-    "DRAWLINE", "XMA", "FFT",
-]
+# 2026-09-16 F4 收口: 权威清单在 tools/future_tokens.py (三份清单并集);
+# 并集新增 FLATZIGA/PEAKBARSA 等, 词边界匹配下只会更严不会误伤
+FUTURE_FUNCS = FUTURE_TOKEN_BLACKLIST
 # 漂移画图 (用户 00:37: 只排影响信号/会漂移的画图; 纯装饰画图不排, 解释器跳过)
 DRIFT_DRAW_FUNCS = ["POLYLINE"]
 # 通达信专有数据函数 (本地无筹码/财务/实时数据, 用户拍板直接排除)

@@ -15,7 +15,7 @@ import time
 from typing import Callable
 
 from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
-from trade.book import is_etf
+from trade.book import is_etf, ladder_tier_qty
 from trade.quote_stale import REASON_STALE, is_quote_stale
 from utils.logger import get_logger
 
@@ -52,16 +52,15 @@ def is_trading_day_cached(d: _dt.date | None = None) -> bool:
 
 def _ladder_tier_qty(volume: int, ratio: float) -> int | None:
     """阶梯兜底档的卖出数量, 口径对齐 executor.place_ladder:
-    ratio<1 → 比例手数四舍五入 (0.5 边界向上); ratio≥1 → 清仓档。
+    ratio<1 → 比例手数四舍五入 (0.5 边界向上, 计算单一真相源
+    trade/book.ladder_tier_qty, 2026-09-16 P2-1 收口); ratio≥1 → 清仓档。
     返回 None = 卖全部可用 (execute_exit 的 qty=None 语义) —— 用于
     清仓档、比例档算不出整手、或 volume 未知 (<=0): 兜底语义宁可
     全卖不漏卖, 与 2026-08-06 前的旧行为一致。"""
     if ratio >= 1.0 or volume <= 0:
         return None
-    lots = min(int(volume * ratio / 100 + 0.5), int(volume / 100))
-    if lots <= 0:
-        return None
-    return lots * 100
+    qty = ladder_tier_qty(volume, ratio, int(volume / 100))
+    return qty if qty > 0 else None
 
 
 def trading_session(now: float | None = None) -> str:
@@ -333,6 +332,11 @@ class Monitor:
                     # cost_stop/高档位兜底保护 (预埋单世界的分工复原:
                     # 档已卖 = 已标记, 其余腿照常评估)
                     self._book.mark_tier(code, tier, today)
+                    # 审计 P0-3 (2026-09-16): 补落 tier_state 表 —— 原只写
+                    # 内存, 盘中重启后该档标记丢失, 同档可再次部分卖
+                    # (双卖)。对齐 executor.place_ladder 的双写。
+                    self._store.tier_state.save(
+                        code, sorted(self._book.tier_done(code, today)), today)
                 else:
                     self._triggered.add(code)
                 triggers.append((code, reason))

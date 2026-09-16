@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.config_loader import ConfigLoader
 from utils.logger import get_logger
+from core.farm_rules import TARGET_ANN, TARGET_MAXDD
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,9 @@ FORMULA = "QUANTQQ"
 WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓冲 (engine 铁律)
 CAPITAL = 3_000_000.0     # 用户拍板: 300万
 MAX_BUY = 20_000.0        # 单票上限 2万 (分散口径, v4 报告 Calmar 9.52 最可信档)
+# 达标口径 (P0-8a 收口): 年化/回撤与 core/farm_rules 统一 (15%/15%),
+# 笔数下限 1000 是本课题 2 年区间统计口径, 属脚本自有
+MIN_TRADES = 1000
 
 def _cache_dir(window_td: int) -> str:
     """窗口长度决定缓存目录 (60=默认; 80 用于 time_stop 50/60 探边)。"""
@@ -388,10 +392,13 @@ def do_report(args):
     df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["key"], keep="last")
     n_err = int(df["error"].fillna("").ne("").sum())
     df = df[df["annret"].notna()]
-    # M2: 达标硬条件 = 年化>23% 且 回撤≤15% 且 交易≥1000 笔 (统计显著)
-    tgt = df[(df["annret"] > 0.23) & (df["maxdd"].abs() <= 0.15) & (df["trades"] >= 1000)]
+    # M2: 达标硬条件 = 年化≥15% 且 回撤≤15% 且 交易≥1000 笔 (统计显著;
+    # 年化/回撤阈值引自 core/farm_rules, 与 1m/2010 版口径统一)
+    tgt = df[(df["annret"] >= TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
+             & (df["trades"] >= MIN_TRADES)]
     print(f"总组合: {len(df)}  失败: {n_err}  "
-          f"达标(年化>23% 且 回撤≤15% 且 交易≥1000): {len(tgt)}")
+          f"达标(年化≥{TARGET_ANN:.0%} 且 回撤≤{TARGET_MAXDD:.0%} "
+          f"且 交易≥{MIN_TRADES}): {len(tgt)}")
     cols = ["cost", "act", "dd", "ladder", "time_days", "cond_days", "cond_profit",
             "annret", "maxdd", "calmar", "sharpe", "winrate", "trades"]
     print("\n=== 达标 Top 20 (按 Calmar) ===")

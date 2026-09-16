@@ -122,7 +122,13 @@ class LLMClient:
             if r.status_code != 200:
                 logger.warning(f"LLM chat HTTP {r.status_code}: {r.text[:200]}")
                 return None
-            msg = r.json()["choices"][0]["message"]
+            # 2026-09-16 审计 S3 修复: 响应解析包进 try — HTTP 200 但结构异常
+            # (代理网关返回非 OpenAI 形状) 时原实现在 try 外异常直接穿透调用方。
+            try:
+                msg = r.json()["choices"][0]["message"]
+            except Exception as e:
+                logger.warning(f"LLM chat 失败(松耦合返None): {type(e).__name__}: {e}")
+                return None
             content = msg.get("content") or ""
             if content:
                 return content

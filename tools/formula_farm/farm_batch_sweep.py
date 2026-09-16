@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
 """farm_batch_sweep: 826 条入库公式全量粗扫 + 淘金留档(winners)。
 
-- 遍历 onboard.json 全部 ok 公式(GSxxxx), 逐条 gs_5m_sweep prep/run(36组合)/report;
+- 遍历最新批次 onboard.json 的 ok 公式(GSxxxx), 逐条 gs_5m_sweep prep/run(36组合)/report;
+  (2026-09-16 F7: 批次目录原硬编码 "2026-09-06", 现按 mtime 取最新批,
+  对齐 farm_backtest.py _latest_onboard_items 的做法)
 - 断点续跑: 已有 sweep csv 的跳过;
 - 达标口径唯一真相源 = core/farm_rules.py (年化≥15% 且 |回撤|≤15% 且 笔数≥20;
   笔数不足记「样本不足」, 不判达标也不参与最优评选 —— GS1292 事件教训)。
   达标者写入 data/formula_farm/winners/<GS>_<标题>.md
   (源码+最优组合+四指标+口径) 和 winners/index.md 总榜;
 - 全量跑完(或被中止)后, 已扫部分也能出榜(--report-only 只出榜不扫)。
+
+**结果源口径差异提醒 (2026-09-16 F7)**: 本脚本 best_row 优先读
+report_merged.csv (gs_5m_sweep report 合并去重后的全集, 含精调分片),
+而 farm_backtest.py (闸门④) 只读 sweep_*.csv 粗扫结果 —— 同一公式的
+「最优/达标」两边可能不同。**建议以 farm_backtest (闸门④) 为准**;
+本脚本的 winners 榜是淘金留档, 判定逻辑保留原样不动 (防改乱历史报告)。
 """
 import argparse
 import csv
@@ -37,7 +45,13 @@ def log(s):
 
 
 def load_ok_formulas():
-    ob = json.load(open(os.path.join(RUNS, "2026-09-06", "onboard.json"), encoding="utf-8"))
+    """最新一次入库批次 (按文件 mtime) 的 ok 条目 —— 对齐 farm_backtest.py
+    _latest_onboard_items (2026-09-16 F7: 原硬编码 "2026-09-06" 批次目录)。"""
+    cands = glob.glob(os.path.join(RUNS, "*", "onboard.json"))
+    if not cands:
+        return []
+    fp = max(cands, key=os.path.getmtime)
+    ob = json.load(open(fp, encoding="utf-8"))
     return [x for x in ob["items"] if x.get("ok")]
 
 

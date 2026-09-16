@@ -98,12 +98,16 @@ async def ai_save_config(body: dict):
 
 
 @router.post("/api/ai/test")
-async def ai_test_connection(body: dict):
+def ai_test_connection(body: dict):
     """连通测试: {which: fast|standard, base_url, api_key, model} → 最小请求。
 
     fast: OpenAI 兼容 POST {base}/chat/completions
     standard: Anthropic 兼容 POST {base}/v1/messages
     只测不写盘; 失败返 success=False + 错误前 200 字 (人话摘要)。
+
+    2026-09-16 审计 W1 修复: 由 async def 改普通 def — 函数体内同步
+    requests.post(timeout=20) 在 async 端点里会阻塞事件循环最长 20 秒
+    (全站进度轮询一起卡); FastAPI 同步端点跑在线程池, 不堵事件循环。
     """
     try:
         which = (body.get("which") or "").strip().lower()

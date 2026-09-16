@@ -232,10 +232,14 @@ class FormulaRunner(ConnectorSeam):
                         date_str = str(entry.get("Date", ""))
                         if not date_str:
                             continue
-                        # TDX API 返回全部 bar 的匹配，需过滤到请求的时间范围
-                        if start_time and date_str < start_time:
+                        # TDX API 返回全部 bar 的匹配，需过滤到请求的时间范围。
+                        # 2026-09-16 P2: 比较统一截前 8 位 (日级) — 分钟级信号
+                        # date_str 是 14 位 (YYYYMMDDHHMMSS), 直接与 8 位 end_time
+                        # 比较恒大于 → 末日信号被误丢 (date_str 恒非空, [:8] 安全)
+                        date_day = date_str[:8]
+                        if start_time and date_day < start_time:
                             continue
-                        if end_time and date_str > end_time:
+                        if end_time and date_day > end_time:
                             continue
                         try:
                             dt = pd.to_datetime(date_str, format="%Y%m%d")

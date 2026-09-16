@@ -10,6 +10,12 @@
                   (A vs C 唯一差异 = 均线过滤 vs 移动止损; B vs A = 他法 vs 我们整体)
 
 口径: 信号日收盘算信号 → T+1 生效 (同 tools/shadow_compare.py 修正口径, 防前视)。
+
+⚠ 口径互斥提醒 (2026-09-16 G2): 本脚本是 **T+1 生效** 口径, 与
+tools/etf_rotation_freq_backtest.py 的 **T 收盘成交** 口径**不可直接比较**;
+两个脚本都声称"与生产口径对齐", 对照阅读时务必注意成交时点不同
+(T 日口径对高频规则系统性乐观, 2026-08-24 已裁决)。
+
 数据: TDX 前复权日线 (主) → 新浪 ETF (备)。
 产物: research/YYYY-MM-DD_创业板纳指轮动_均线过滤vs移动止损对比_研究报告.md
 """
@@ -272,6 +278,28 @@ def main() -> None:
                 f"{m['calmar']:.2f} | {m['sharpe']:.2f} | {m['switches']} | "
                 f"{m['in_risk_days']} | {m['cash_days']} | {m['gold_days']} |")
 
+    # G3 (2026-09-16): 结论段数字一律由本次运行的 metrics 动态生成,
+    # 不再硬编码成文本 (旧版数据更新后报告内部自相矛盾)
+    m_a, m_b, m_c = rows[0], rows[1], rows[2]
+    eq_dates = all_dates[WARMUP:]
+
+    def year_ret(eq, year):
+        """某自然年的收益 (eq 与 eq_dates 等长; 无该年数据 → None)。"""
+        idx = [i for i, d in enumerate(eq_dates) if d.startswith(str(year))]
+        if not idx:
+            return None
+        base = eq[idx[0] - 1] if idx[0] > 0 else eq[idx[0]]
+        return eq[idx[-1]] / base - 1.0
+
+    ya_c, ya_a = year_ret(eq_c, 2020), year_ret(eq_a, 2020)
+    all_years = sorted({d[:4] for d in eq_dates})
+    neg_b = [f"{y} 年亏 {r * 100:.0f}%" for y in all_years
+             for r in [year_ret(eq_b, int(y))] if r is not None and r < 0]
+    neg_txt = ("只有 " + "、".join(neg_b)) if neg_b else "无自然年亏损"
+    ya_txt = (f"2020 年创业板单边牛, C 全程骑住 {ya_c * 100:+.0f}%, "
+              f"A 被均线反复甩下车只有 {ya_a * 100:+.0f}%"
+              if ya_c is not None and ya_a is not None else "")
+
     lines = [
         f"# 创业板/纳指双资产轮动: 均线过滤 vs 移动止损 对比 (2026-08-28)",
         "",
@@ -311,15 +339,19 @@ def main() -> None:
         "",
         "## 结论 (大白话)",
         "",
-        "1. **15% 移动止损 > 20 日均线过滤** (A vs C, 同腿同落点唯一差异): "
-        "C +1698% vs A +862%, 年化 27.3% vs 20.8%, 回撤 -34.9% vs -38.6%。"
-        "均线过滤的代价是「重新站上均线才回场」造成的踏空 —— 2020 年创业板单边牛, "
-        "C 全程骑住 +77%, A 被均线反复甩下车只有 +34%。移动止损让利润奔跑、只在真破位时离场。",
-        "2. **我们的生产版本完胜他法** (B vs A): +3720% vs +862%, 回撤 -26.4% vs -38.6%, "
-        "Calmar 1.35 vs 0.54, 12 年里只有 2016 熔断年亏 -10%。加成来自三处: "
-        "① 创业板50 (159949) 高贝塔 —— 动量轮动在高波动标的上赚更多; "
-        "② 双弱买黄金 —— 黄金 2019-2025 大牛, 681 天避险仓贡献可观; "
-        "③ 15% 移动止损而非均线过滤。",
+        f"1. **15% 移动止损 > 20 日均线过滤** (A vs C, 同腿同落点唯一差异): "
+        f"C {m_c['total'] * 100:+.0f}% vs A {m_a['total'] * 100:+.0f}%, "
+        f"年化 {m_c['ann'] * 100:.1f}% vs {m_a['ann'] * 100:.1f}%, "
+        f"回撤 {m_c['mdd'] * 100:.1f}% vs {m_a['mdd'] * 100:.1f}%。"
+        f"均线过滤的代价是「重新站上均线才回场」造成的踏空 —— {ya_txt}。"
+        f"移动止损让利润奔跑、只在真破位时离场。",
+        f"2. **我们的生产版本完胜他法** (B vs A): {m_b['total'] * 100:+.0f}% vs "
+        f"{m_a['total'] * 100:+.0f}%, 回撤 {m_b['mdd'] * 100:.1f}% vs "
+        f"{m_a['mdd'] * 100:.1f}%, Calmar {m_b['calmar']:.2f} vs {m_a['calmar']:.2f}, "
+        f"{len(all_years)} 个自然年里{neg_txt}。加成来自三处: "
+        f"① 创业板50 (159949) 高贝塔 —— 动量轮动在高波动标的上赚更多; "
+        f"② 双弱买黄金 —— 黄金 2019-2025 大牛, {m_b['gold_days']} 天避险仓贡献可观; "
+        f"③ 15% 移动止损而非均线过滤。",
         "3. **提醒**: B 的收益含「创业板50 + 黄金 2019-2025 罕见双牛」的时代成分, "
         "黄金若转熊 B 对 C/A 的优势会收窄 (同 2026-08-23 对决报告结论)。"
         "回测按收盘价成交、0.1% 换腿费, 未计 QDII 溢价/额度、滑点、风控拒单等实盘摩擦; "

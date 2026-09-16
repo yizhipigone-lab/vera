@@ -331,6 +331,6 @@ def run_formula_batch(source: str, param_values: list, codes: list,
         sig_parts.append(sig)
         used_all.extend(used)
     if not sig_parts:
-        return np.zeros((0, 0), dtype=bool), pd.DatetimeIndex([])
+        return np.zeros((0, 0), dtype=bool), pd.DatetimeIndex([]), []
     signal = np.concatenate(sig_parts, axis=1)
     return signal, index, used_all

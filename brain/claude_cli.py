@@ -176,6 +176,54 @@ def _err_detail(stderr: bytes | None, stdout: bytes | None) -> str:
         "utf-8", "replace").strip()[:400]
 
 
+# 2026-09-16 审计 N1+N2 收口: eval_judge/sentiment_judge 的 _run_judge 原为
+# 本模块的复制粘贴且已漂移 (不传 env → AI 设置页标准档配置不生效; 超时只
+# proc.kill() 不杀进程树 → Windows 孙进程持管道挂死)。共享实现只此一份。
+async def _run_cli_oneshot(cli: str, prompt: str, timeout: int,
+                           timeout_msg: str | None = None) -> str:
+    """一次性 claude CLI 调用 (judge 类干净上下文场景): stdin 传 prompt,
+    --max-turns 1, 返 stdout 文本 (strip)。
+
+    - env 走 _cli_env() (AI 设置页标准档 ANTHROPIC_* 三件套对 judge 生效);
+    - 超时走 _kill_tree 杀整棵进程树 + 有界 wait (Windows 双坑见 _kill_tree),
+      抛 TimeoutError (文案由调用方定制, 保持各 judge 既有对外异常语义);
+    - 非零退出只记 warning 不抛 (judge 输出解析失败由调用方判, 松耦合)。
+    """
+    proc = await asyncio.create_subprocess_exec(
+        cli, "-p", "--output-format", "text", "--max-turns", "1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(VERA_ROOT),
+        env=_cli_env(),
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(prompt.encode("utf-8")), timeout=timeout)
+    except TimeoutError:
+        await _kill_tree(proc)
+        raise TimeoutError(timeout_msg or f"CLI 超时 (>{timeout}s)")
+    finally:
+        close_subprocess_pipes(proc)  # 消 Windows Proactor "closed pipe" 噪音
+    if proc.returncode != 0:
+        err = (stderr or b"").decode("utf-8", "replace")[:200]
+        logger.warning(f"claude CLI 一次性调用非零退出 rc={proc.returncode}: {err}")
+    return (stdout or b"").decode("utf-8", "replace").strip()
+
+
+def _run_coro_sync(coro):
+    """在同步上下文运行协程。若本线程已有运行中的 event loop（如 research_api
+    的 async 上下文），放到新线程跑独立 loop——asyncio.run() 在已有 loop 的
+    线程里会直接 RuntimeError。(2026-09-16 N2: 原 eval/sentiment 两份副本收口)"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 async def ask_brain(question: str, session_id: str | None = None,
                     timeout: int = DEFAULT_TIMEOUT,
                     max_turns: int = DEFAULT_MAX_TURNS,
@@ -293,9 +341,18 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
             # 前端只见"大脑启动失败: "冒号后空白, 完全无法定位
             await on_line(f"[系统] 大脑启动失败: {type(e).__name__}: {e}")
             return None, b"", ""
-        sproc.stdin.write(prompt)
-        await sproc.stdin.drain()
-        sproc.stdin.close()
+        # 2026-09-16 审计 N3 修复: stdin write/drain/close 移入受保护块 —
+        # 原在 try 外, CLI 秒死时 drain 抛 BrokenPipeError 穿透调用方,
+        # 且子进程未杀树未关管道 (进程+句柄双泄漏)。
+        try:
+            sproc.stdin.write(prompt)
+            await sproc.stdin.drain()
+            sproc.stdin.close()
+        except Exception as e:
+            await _kill_tree(sproc)
+            close_subprocess_pipes(sproc)
+            await on_line(f"[系统] 大脑调用失败: {type(e).__name__}: {e}")
+            return None, b"", ""
         deadline = asyncio.get_running_loop().time() + timeout
         stderr_buf = []
 
@@ -340,8 +397,9 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
             await on_line(f"[系统] 大脑超时（>{timeout}s），已终止")
             return None, b"".join(stderr_buf), "\n".join(tail)
         except asyncio.CancelledError:
-            try: sproc.kill()
-            except Exception: pass
+            # 2026-09-16 审计 N4 修复: 原只 sproc.kill() 不杀树不 wait —
+            # SSE 断连是常态路径, 会反复踩 Windows 孙进程持管道坑
+            await _kill_tree(sproc)
             raise
         finally:
             close_subprocess_pipes(sproc)  # 消 Windows Proactor "closed pipe" 噪音

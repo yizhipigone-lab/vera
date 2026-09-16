@@ -46,6 +46,10 @@ class DataFetcher(ConnectorSeam):
     """
 
     _KLINE_CACHE_DIR = None  # 测试可覆盖; None → 项目根 data/kline_cache
+    # 2026-09-16 C2: KlineCache 单例池 {cache_dir: 实例} — 原每次取数新建实例,
+    # 持久 sqlite 连接永不关闭, 常驻 server 下句柄持续泄漏。key 含 cache_dir:
+    # _KLINE_CACHE_DIR 被测试改写 → 目录变了自动重建新实例。
+    _KLINE_CACHE_POOL: dict = {}
 
     # 基准指数代码（P1-6: 补沪深300/中证500）
     INDEX_CODES = {
@@ -164,8 +168,11 @@ class DataFetcher(ConnectorSeam):
         def _calendar_fetcher():
             return cls.get_calendar_days("SH", "20100101", "20991231")
 
-        cache = KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
-                           calendar_fetcher=_calendar_fetcher)
+        cache = cls._KLINE_CACHE_POOL.get(cache_dir)
+        if cache is None:
+            cache = KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
+                               calendar_fetcher=_calendar_fetcher)
+            cls._KLINE_CACHE_POOL[cache_dir] = cache
         if force_refresh:
             for code in normalize_list(stock_list):
                 # 2026-07-18: force_invalidate = intact=False + 清 F5 冷却标记,

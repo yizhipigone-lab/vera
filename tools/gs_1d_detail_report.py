@@ -46,7 +46,7 @@ def main():
     L = []
     L.append("# 1d 全A 3年 详细评测报告（移动止盈优先）\n")
     L.append("> 区间 2023-08-01~2026-07-17 | 全A | 1d | T收盘买入 | 排除涨停 | 300万/单票2万\n")
-    L.append("> 达标硬口径: 年化>30% 且 回撤≤15% 且 交易≥1000笔\n")
+    L.append(f"> 达标硬口径: {farm_rules.describe()}\n")
     L.append("> **含 1d 日内乐观**（high/low 先后不可知）+ 全A小盘3年行情 + 高频交易手续费侵蚀; "
              "绝对值不可全信, 相对排序有效\n")
     L.append("> 分年份表现需重跑(本报告用现有组合级数据)\n")
@@ -57,17 +57,22 @@ def main():
         if df.empty:
             continue
         L.append(f"\n---\n\n## {formula}\n")
-        top = df.loc[df["annret"].idxmax()]
+        # G1: 最优组合走 farm_rules.pick_best (只在笔数≥MIN_TRADES 里选,
+        # 全不足样本退回最高年化并标注「样本不足」, 不拿噪声当结论)
+        top = farm_rules.pick_best(df.to_dict("records"))
+        thin = farm_rules.verdict(top.get("annret"), top.get("maxdd"),
+                                  top.get("trades"))["code"] == farm_rules.THIN
         hit = df[df.apply(farm_rules.is_pass, axis=1)]
         summary.append((formula, top, hit, len(df)))
 
-        L.append(f"**最优组合**（按年化）: {combo_cn(top)}\n")
+        L.append(f"**最优组合**（按年化{'，样本不足（笔数<20），数字不作数' if thin else ''}）: {combo_cn(top)}\n")
         L.append(f"- 累计收益 {top.get('cumret',0)*100:.1f}% | 年化 {top['annret']*100:.1f}% | "
                  f"回撤 {top['maxdd']*100:.1f}% | Calmar {top['calmar']:.2f} | "
                  f"Sharpe {top['sharpe']:.2f} | 胜率 {top['winrate']*100:.1f}% | "
                  f"交易 {int(top['trades'])} | 平均持仓 {top.get('avg_hold',0):.1f}天\n")
 
-        L.append(f"\n**达标组合 {len(hit)} 个**（年化>30%+回撤<15%+交易≥1000）:\n")
+        L.append(f"\n**达标组合 {len(hit)} 个**（年化≥{TARGET_ANN:.0%} 且 "
+                 f"回撤≤{TARGET_MAXDD:.0%} 且 交易≥{MIN_TRADES}）:\n")
         if not hit.empty:
             L.append("| 参数 | 年化 | 回撤 | Calmar | 交易 |")
             L.append("|---|---|---|---|---|")

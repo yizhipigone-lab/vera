@@ -228,9 +228,9 @@ def main():
                 for eq in all_equity:
                     col = "equity" if "equity" in eq.columns else \
                       "total_value" if "total_value" in eq.columns else eq.columns[-1]
-                v0 = float(eq[col].iloc[0])
-                cum *= float(eq[col].iloc[-1]) / v0 if v0 > 0 else 1.0
-                n_days += len(eq)
+                    v0 = float(eq[col].iloc[0])
+                    cum *= float(eq[col].iloc[-1]) / v0 if v0 > 0 else 1.0
+                    n_days += len(eq)
                 total_ret = cum - 1.0
                 n_years = max(n_days / 244.0, 0.25)
                 ar = (1.0 + total_ret) ** (1.0 / n_years) - 1.0 \

@@ -41,6 +41,9 @@ _LOCK_TTL = dt.timedelta(hours=4)       # 锁超时：崩溃遗留锁自动失�
 _REFRESH_LOG = _CACHE_DIR / "refresh.log"
 
 _thread: threading.Thread | None = None  # 进程内防重入（快路径，锁文件是慢路径兜底）
+# 2026-09-16 C2: KlineCache 单例池 {cache_dir: 实例} — 原 _cache_handle 每次调用
+# 新建实例, 持久 sqlite 连接永不关闭 (常驻 server 下句柄泄漏); 按目录复用。
+_handles: dict = {}
 
 
 # ── 新鲜度检查 ─────────────────────────────────────────────
@@ -63,14 +66,20 @@ def _cache_handle(cache_dir: Path | None):
 
     db 不存在返 None (调用方按"无缓存/全缺"处理)。db 存在时构造只会走
     _init_db (表已存在 → no-op), 不产生副作用; 持久连接由实例持有。
+    2026-09-16 C2: 实例按 cache_dir 单例复用 (_handles 池), 不再每次新建。
     """
     from core.kline_cache import KlineCache
-    db = (cache_dir or _CACHE_DIR) / "manifest.db"
-    if not db.exists():
+    d = cache_dir or _CACHE_DIR
+    if not (d / "manifest.db").exists():
         return None
-    return KlineCache(cache_dir or _CACHE_DIR,
-                      tdx_fetcher=lambda *a, **k: {},
-                      calendar_fetcher=lambda: [])
+    key = str(d)
+    kc = _handles.get(key)
+    if kc is None:
+        kc = KlineCache(d,
+                        tdx_fetcher=lambda *a, **k: {},
+                        calendar_fetcher=lambda: [])
+        _handles[key] = kc
+    return kc
 
 
 def cached_last_date(period: str, cache_dir: Path | None = None) -> str | None:

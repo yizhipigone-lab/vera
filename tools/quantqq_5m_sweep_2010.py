@@ -37,6 +37,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.logger import get_logger
+from core.farm_rules import TARGET_ANN, TARGET_MAXDD
 
 logger = get_logger(__name__)
 
@@ -53,7 +54,8 @@ WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓�
 CAPITAL = 1_000_000.0     # 与 1m 版一致: 100 万
 MAX_BUY = 50_000.0        # 单票上限 5 万 = 本金 100 万的 5% (用户本次口径; 原 2 万=2%)
 UNIVERSE = {"type": "50", "exclude_st": True, "exclude_new_listings_days": 60}
-TARGET_ANNRET = 0.15      # 用户拍板: 年化不低于 15%
+TARGET_ANNRET = TARGET_ANN  # 达标口径单一真相源 core/farm_rules.py: 年化≥15% 且 回撤≤15%
+TARGET_MAXDD_LIM = TARGET_MAXDD  # |最大回撤| 上限 (P0-7 补回撤腿)
 MIN_TRADES = int(os.environ.get("SWEEP_MIN_TRADES", "3000"))  # 整段 11.5 年用 3000; 分段(2年)用 300
 
 
@@ -461,9 +463,11 @@ def do_report(args):
     df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["key"], keep="last")
     n_err = int(df["error"].fillna("").ne("").sum())
     df = df[df["annret"].notna()]
-    tgt = df[(df["annret"] >= TARGET_ANNRET) & (df["trades"] >= MIN_TRADES)]
+    tgt = df[(df["annret"] >= TARGET_ANNRET) & (df["trades"] >= MIN_TRADES)
+             & (df["maxdd"].abs() <= TARGET_MAXDD_LIM)]
     print(f"总组合: {len(df)}  失败: {n_err}  "
-          f"达标(年化≥{TARGET_ANNRET:.0%} 且 交易≥{MIN_TRADES}): {len(tgt)}")
+          f"达标(年化≥{TARGET_ANNRET:.0%} 且 回撤≤{TARGET_MAXDD_LIM:.0%} "
+          f"且 交易≥{MIN_TRADES}): {len(tgt)}")
     cols = ["priority", "cost", "act", "dd", "ladder", "time_days", "cond_days", "cond_profit",
             "annret", "maxdd", "calmar", "sharpe", "winrate", "trades"]
     print("\n=== 达标 Top 20 (按 Calmar) ===")

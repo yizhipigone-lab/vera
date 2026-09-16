@@ -12,10 +12,12 @@ OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "docs", "gs_formula_signal_scan.md")
 
 # ── 禁用函数 ────────────────────────────────────
-FUTURE_FNS = [
-    "ZIG", "PEAK", "PEAKBARS", "TROUGH", "TROUGHBARS",
-    "BACKSET", "REFX", "REFXV", "FILTERX",
-]
+# 2026-09-16 F4 收口: 原手写清单改引单一真相源 tools/future_tokens.py,
+# 本地保留 FILTERX 追加 (该函数引用未来数据, 本扫描器历来单列)
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from tools.future_tokens import FUTURE_TOKEN_BLACKLIST as _FUTURE_BASE
+FUTURE_FNS = _FUTURE_BASE + ["FILTERX"]
 
 DRAWING_FNS = [
     "DRAWTEXT", "DRAWICON", "DRAWLINE", "DRAWKLINE",

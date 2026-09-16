@@ -117,7 +117,7 @@ def market_health() -> str:
 
 def market_snapshot(trade_date: str | None = None, fresh: bool = False) -> str:
     """A股/港股/美股指数 + 南向资金 + 涨停池 + 市场体检 → Markdown 数据包（2h 缓存）。"""
-    key = trade_date or "today"
+    key = trade_date or dt.datetime.now().strftime("%Y%m%d")  # 2026-09-16 审计 P2 修复: 原固定 "today" 跨午夜命中前一日缓存
     cache_file = _CACHE_DIR / f"market_snapshot_{key}.txt"
     if not fresh and cache_file.exists():
         age = time.time() - cache_file.stat().st_mtime

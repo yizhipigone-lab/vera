@@ -43,18 +43,9 @@ def load_token() -> str:
 SELECT_DATE = "20240108"
 SD = pd.Timestamp("2024-01-08")
 
-
-def mf_to_score(amt) -> int:
-    """主力净额 → 分档分数"""
-    if amt is None or pd.isna(amt):
-        return 0
-    if amt > 10000:
-        return 2
-    if amt > 0:
-        return 1
-    if amt > -10000:
-        return -1
-    return -2
+# 分档函数与生产版 tools/factor_score.py 同一份 (2026-09-16 收口, 原逐字重复)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.factor_score import mf_to_score  # noqa: E402
 
 
 def add_mf_score(selections: pd.DataFrame, mf: pd.DataFrame) -> pd.DataFrame:

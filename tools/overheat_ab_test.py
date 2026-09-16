@@ -81,24 +81,16 @@ def parse_arms(s: str) -> list:
 
 def apply_filter(sel: pd.DataFrame, factor: str | None, rule: str | None) -> pd.DataFrame:
     """按日截面 rank 过滤。缺失因子值的行保留(不构成过热/小市值证据)。
-    factor=None 且 rule 含 '+' 时为组合臂: 走生产同款 selection/factor_filter.apply_rules。"""
+    factor=None 且 rule 含 '+' 时为组合臂。
+    2026-09-16 审计 S4 修复: 单臂/组合臂统一走生产同款
+    selection/factor_filter.apply_rules (原单臂手写四档语义与生产逐行重复,
+    注释自认"需两侧同步" — 同一条规则不写第二份)。"""
+    from selection.factor_filter import apply_rules
     if rule and "+" in rule:
-        from selection.factor_filter import apply_rules
         return apply_rules(sel, [p.strip() for p in rule.split("+")])[KEEP_COLS].copy()
     if factor is None:
         return sel[KEEP_COLS].copy()
-    rank = sel.groupby("select_date")[factor].rank(pct=True)
-    if rule == "top10":
-        keep = rank.isna() | (rank <= 0.90)   # 剔 rank>0.9 = 最热 10%
-    elif rule == "top20":
-        keep = rank.isna() | (rank <= 0.80)   # 剔 rank>0.8 = 最热 20%
-    elif rule == "bottom10":
-        keep = rank.isna() | (rank > 0.10)    # 剔 rank≤0.1 = 最低 10%
-    elif rule == "bottom20":
-        keep = rank.isna() | (rank > 0.20)    # 剔 rank≤0.2 = 最低 20%
-    else:
-        raise ValueError(rule)
-    return sel[keep][KEEP_COLS].copy()
+    return apply_rules(sel, [f"{factor}:{rule}"])[KEEP_COLS].copy()
 
 
 def verdict(r: dict, base: dict) -> str:

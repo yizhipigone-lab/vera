@@ -87,7 +87,10 @@ def to_formula_int(adj: str | int) -> int:
         if adj in ADJ_TO_FORMULA_INT:
             return ADJ_TO_FORMULA_INT[adj]
         if adj.isdigit():
-            return int(adj)
+            # 2026-09-16 P2: 数字字符串与 int 分支同一钳制 — 原 "3"→3 绕过
+            # (0,1,2) 钳制 (int 3→1), 非法值回落 1 (前复权), 两分支一致
+            v = int(adj)
+            return v if v in (0, 1, 2) else 1
     return 1  # 默认前复权
 
 

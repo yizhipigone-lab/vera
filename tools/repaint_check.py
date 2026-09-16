@@ -30,6 +30,8 @@ from core.data_fetcher import DataFetcher  # noqa: E402
 from selection.selector import StockSelector  # noqa: E402
 
 PAD_DAYS = 70
+#: 重画判定阈值: 不一致率 > 2% = 重画实锤 (farm_verify 复核判定引用本常量, F5)
+REPAINT_MAX_RATE = 0.02
 
 
 def select(formula, stocks, start, end):
@@ -87,7 +89,7 @@ def main() -> None:
             print(f"    消失: {s[0]} {s[1]}")
         for s in sorted(appeared)[:5]:
             print(f"    新增: {s[0]} {s[1]}")
-        verdict = ("重画实锤 (不一致率>2%)" if rate > 0.02
+        verdict = ("重画实锤 (不一致率>2%)" if rate > REPAINT_MAX_RATE
                    else "边缘微差" if rate > 0 else "完全一致, 因果公式")
         print(f"  → {verdict}")
 

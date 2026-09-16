@@ -611,13 +611,16 @@ class TradeStore:
         """加载全部非终态委托 (2026-07-30: 重启恢复在途订单簿 —
         book.restore 用它重建 _orders, 撤单流水线重启后仍能找到要撤的单;
         不带终态 (部撤53/已撤54/已成56/废单57)。"""
-        cur = self._conn.execute(
-            "SELECT order_id, remark, code, direction, price, qty, filled_qty, "
-            "status, created_ts FROM orders WHERE status NOT IN (53, 54, 56, 57)")
-        return {r[0]: {"order_id": r[0], "remark": r[1], "code": r[2],
-                       "direction": r[3], "price": r[4], "qty": r[5],
-                       "filled_qty": r[6], "status": r[7], "created_ts": r[8]}
-                for r in cur.fetchall()}
+        # 2026-09-16 P2-3: 共享连接读取补 _lock (对齐同类方法写法,
+        # 原裸读与写线程并发时游标可读到中间态)
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT order_id, remark, code, direction, price, qty, filled_qty, "
+                "status, created_ts FROM orders WHERE status NOT IN (53, 54, 56, 57)")
+            return {r[0]: {"order_id": r[0], "remark": r[1], "code": r[2],
+                           "direction": r[3], "price": r[4], "qty": r[5],
+                           "filled_qty": r[6], "status": r[7], "created_ts": r[8]}
+                    for r in cur.fetchall()}
 
     def save_trade(self, record: dict) -> None:
         """落成交记录。traded_id 重复 → sqlite3.IntegrityError 上抛,

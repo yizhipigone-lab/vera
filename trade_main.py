@@ -447,7 +447,7 @@ class TradeApp:
         # 构造顺序约束: Monitor 构造需要 executor(monitor.py 形参),
         # 故 Executor 的 on_pending_died 构造器形参在此用不上, 延迟接线;
         # 测试同款用法见 test_executor.py _make。)
-        self.executor._on_pending_died = self.monitor.clear_trigger
+        self.executor.set_on_pending_died(self.monitor.clear_trigger)
         # 2026-08-01 批次4 瘦身: 尾盘自动买入特性 (实现全在 trade/auto_buy.py)。
         # cfg 传 getter 不传值 —— _apply_config 换 self._cfg 引用即热更穿透
         # (评审 ⚠ 点); build_risk_ctx/get_prev_close 读组合根状态, callable 注入。
@@ -949,8 +949,11 @@ class TradeApp:
             available = float(asset.get("cash", 0.0) or 0.0)
             market_value = float(asset.get("market_value", 0.0) or 0.0)
             if total_asset > 0:
-                from datetime import datetime
-                date_str = datetime.now().strftime("%Y-%m-%d")
+                # 2026-09-16 P2-5: 用注入时钟 _clock() 替代 datetime.now()
+                # 真实时钟, 对齐同文件盈亏基准口径 (顶部已有 import datetime
+                # as _dt, 函数内重复 import 一并删除)。
+                date_str = _dt.datetime.fromtimestamp(
+                    self._clock()).strftime("%Y-%m-%d")
                 self.store.daily_asset.save(date_str, total_asset, available, market_value)
         except Exception:
             _logger.debug("EOD 资产快照写入失败 (分析 Tab 不受影响)")

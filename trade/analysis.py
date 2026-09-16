@@ -26,8 +26,9 @@ from trade.book import DIRECTION_BUY, DIRECTION_SELL
 _SECONDS_PER_DAY = 86400
 
 
-def _today_range() -> tuple[float, float]:
-    """当日 [00:00, 次日 00:00) epoch 秒。"""
+def today_range() -> tuple[float, float]:
+    """当日 [00:00, 次日 00:00) epoch 秒。单一实现 (2026-09-16 P2-2:
+    api.py 的逐字副本删除, 改公开名供两处共用)。"""
     start = datetime.now().replace(
         hour=0, minute=0, second=0, microsecond=0).timestamp()
     return start, start + _SECONDS_PER_DAY
@@ -56,7 +57,7 @@ def _last_trading_day_range(now: float | None = None) -> tuple[float, float]:
             start = datetime(d.year, d.month, d.day).timestamp()
             return start, start + _SECONDS_PER_DAY
         d -= timedelta(days=1)
-    return _today_range()
+    return today_range()
 
 
 def rows_to_dicts(cursor) -> list[dict]:

@@ -24,6 +24,10 @@ import numpy as np
 import pandas as pd
 
 from backtest.metrics import MetricsCalculator
+from backtest.stop_config import (
+    DEFAULT_TRAILING_ACTIVATION,
+    DEFAULT_TRAILING_DRAWDOWN,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -54,8 +58,10 @@ def compute_impact_report(
     cost_enabled: bool = False,
     cost_threshold: float = -0.12,
     trailing_enabled: bool = False,
-    trailing_activation: float = 0.05,
-    trailing_drawdown: float = 0.10,
+    # 2026-09-16 P2: 缺省 None → 取 stop_config 权威默认 (0.035/0.01)。
+    # 原硬编码 0.05/0.10 与权威默认不一致 — "同规则 N 份必漂移"坑类。
+    trailing_activation: Optional[float] = None,
+    trailing_drawdown: Optional[float] = None,
     ladder_enabled: bool = False,
     ladder_profits: Tuple[float, ...] = (),
     initial_capital: float = 1_000_000.0,
@@ -67,6 +73,10 @@ def compute_impact_report(
     raw_trades 列: (ci, entry_idx, exit_idx, ep, xp, shares, pnl, ret, reason)。
     金额口径: 相对实际回测结果的调整区间 (actual 恒 0, 悲观 <= 0 <= 乐观)。
     """
+    if trailing_activation is None:
+        trailing_activation = DEFAULT_TRAILING_ACTIVATION
+    if trailing_drawdown is None:
+        trailing_drawdown = DEFAULT_TRAILING_DRAWDOWN
     rep = _zero_report()
     if raw_trades is None or len(raw_trades) == 0:
         return rep

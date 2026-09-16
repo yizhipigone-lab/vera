@@ -155,6 +155,17 @@ class TestKeyInvalidation:
                 "etf_only": False, "sectors": [], "exclude_new_listings_days": 0}
         assert _key(universe_cfg=full) == _key(universe_cfg=sparse)
 
+    def test_exclude_quit_false_not_collapsed(self):
+        """2026-09-16 审计 P0-1 回归: exclude_quit 缺省 True (selector.py),
+        显式 False (保留退市股) 必须进 key — 否则与缺键 (剔除退市股) 撞 key。"""
+        uni = {**_KEY_KW["universe_cfg"], "exclude_quit": False}
+        assert _key(universe_cfg=uni) != _key()
+
+    def test_exclude_quit_true_equals_omitted(self):
+        """exclude_quit: True 恰是缺省值 → 与缺键同 key (跨入口命中不破)。"""
+        uni = {**_KEY_KW["universe_cfg"], "exclude_quit": True}
+        assert _key(universe_cfg=uni) == _key()
+
     def test_formula_arg_none_normalized(self):
         assert _key(formula_arg=None) == _key(formula_arg="")
 

@@ -22,6 +22,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from backtest._constants import detect_limit_up  # 2026-09-16 B3: 涨停判定单一真相源
+
 
 @dataclass(frozen=True)
 class T1ShiftResult:
@@ -76,7 +78,7 @@ def shift_entries_to_next_open(
     ratio_s = pd.Series(np.asarray(limit_ratio_vec, dtype=np.float64), index=cols)
     one_line = ((day_open == day_high) & (day_high == day_low)
                 & (day_low == day_close))
-    at_limit_up = day_close >= prev_close * (1.0 + ratio_s) * 0.997
+    at_limit_up = detect_limit_up(day_close, prev_close, ratio_s)  # B3: 公式同 _filter_limit_up
     yiziban = (one_line & at_limit_up).fillna(False)
 
     # ── 每 bar → 所属交易日序号; 每日的 bar 位置列表 ──
