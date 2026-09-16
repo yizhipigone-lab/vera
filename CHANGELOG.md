@@ -15,13 +15,14 @@
 |---|---|
 | 根因 | 3080 只绑回环 `127.0.0.1`(官方明确不支持 `dsh web --host 0.0.0.0`); 另有 `/api` Host/Origin 信任栅栏 + 启动时打印的一次性 `?token=` cookie 两道门 |
 | 实测证据 | `/api/status`: `127.0.0.1:3080`→401(可信未认证)、`desktop-9r6m55v.tail2f41cc.ts.net:3080`→403(栅栏拒)、`100.94.120.22:3080`→404(tailscale serve 按主机名路由, 纯 IP 不认); 对照: VERA 8080 绑 0.0.0.0, `http://100.94.120.22:8080/m` 手机版实测 200 |
-| 通道 | `tailscale serve --bg --http=3080 http://127.0.0.1:3080` → tailnet 内 `http://desktop-9r6m55v.tail2f41cc.ts.net:3080/` |
-| 配置 | `~/.dsh/profiles/web/cordis.patch.yml` 覆盖 `connection` 行: `trustedHosts: ['desktop-9r6m55v.tail2f41cc.ts.net','desktop-9r6m55v']` + `cookieMaxAgeDays: 3650`(登录 cookie 30 天 → 10 年, 手机贴一次 token 长期免贴) |
+| 通道 | 先试 `tailscale serve --bg --http=3080 http://127.0.0.1:3080`(HTTP 反代, **按主机名路由, 纯 IP 实测 404**), 用户追问"IP 不行吗"后改用 `tailscale serve --bg --tcp=3080 tcp://127.0.0.1:3080`(**原始 TCP 转发, 不认主机名, 域名与纯 IP 都放行**) |
+| 配置 | `~/.dsh/profiles/web/cordis.patch.yml` 覆盖 `connection` 行: `trustedHosts: ['desktop-9r6m55v.tail2f41cc.ts.net','desktop-9r6m55v','100.94.120.22']` + `cookieMaxAgeDays: 3650`(登录 cookie 30 天 → 10 年, 手机贴一次 token 长期免贴) |
 | 校验 | `node apps/cli/lib/bin.js --profile web --dump-config` **不启动**验 compose: EXIT=0, 输出标明该行 "patched by ...cordis.patch.yml" |
+| IP 可达性实测 | 换 TCP 转发后(重启前)纯 IP `http://100.94.120.22:3080/` 由 404 变 **401**(已打到 DSH), `http://100.94.120.22:3080/api/status` 仍 **403**(白名单待重启生效); 改用 TCP 后域名同样通 |
 
 **踩坑 (已写入 CLAUDE.md)**: 用户 patch 层**不支持 `!!js`** — 首版照 bundle 写法用 `!!js [...ctx.webRuntime.trustedHosts, 'x']`, dump 直接报 `unknown tag !<tag:yaml.org,2002:js>`(文件头注释却写"`!!js` expressions allowed", 文档与实现不符), 若直接重启会**启动失败**; 改字面量列表后通过。另 patch 是整块替换 config 不深合并。
 
-**未做/边界**: token 无法取消(该 plugin 无关闭认证开关, token 只是首次种 cookie 的引导); 生效需重启 `dsh web`(会中断当前会话, 由用户自己挑时机); 撤销 = `tailscale serve --http=3080 off` + 还原 `cordis.patch.yml.bak-20260916`。
+**未做/边界**: token 无法取消(该 plugin 无关闭认证开关, token 只是首次种 cookie 的引导); 生效需重启 `dsh web`(会中断当前会话, 由用户自己挑时机); 撤销 = `tailscale serve --tcp=3080 off` + 还原 `cordis.patch.yml.bak-20260916`。手机端用域名或纯 IP 均可(已把两种写法都列进白名单), 但**必须带 token 访问一次**。
 
 ---
 
