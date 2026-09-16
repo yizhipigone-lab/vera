@@ -25,6 +25,12 @@
 |回撤|<0.01% 时被死区归零 —— 这几个指标别单独拿来下结论。
 
 `research/` 下各研究脚本自己的门槛 (18.88% / 23% / 25%) 是各自课题口径, 不归本模块管。
+
+**2026-09-16 扩容**: 本模块还持有 `SWEEP_CALIBER` —— 粗扫**执行口径** (池/周期/
+复权/本金/买入价/移动止盈确认语义/优先级), 供粗扫报告抬头与达标榜回填回测页
+共引 (原 farm_backtest.CALIBER 手写一份, 回填接口需要同一份 → 收口防漂)。
+判定口径 (上面的达标线) 与执行口径同居一文件是"农场口径"的自然聚合, 不为
+一只 dict 另立模块。
 """
 from __future__ import annotations
 
@@ -48,6 +54,10 @@ SWEEP_CALIBER = {
     "capital": 3_000_000.0, "max_buy": 20_000.0,
     "entry": "信号日 T 最后一根 5m bar (15:00) 收盘买入",
     "entry_price_mode": "close_t",
+    # 审计 HIGH-1: 粗扫 combo_stop_config 不写 trailing_stop.confirm → 引擎默认
+    # intraday (盘中触线, 回测页自己标注「旧行为, 偏乐观」)。回填必须同口径,
+    # 否则用户用页面默认的 real(条件单语义)复跑, 数字系统性偏差且无人察觉。
+    "trailing_confirm": "intraday",
     "priority": "移动止盈优先",          # 显示值 (报告抬头在用)
     "priority_value": "trailing_first",  # 机器值 (回填回测页单选框用)
     "combos": 36,

@@ -247,11 +247,24 @@ def _pct_txt(v):
     return s + "%"
 
 
+def _caliber_text(c) -> str:
+    """回填横幅的口径文案 — 后端唯一生成 (审计 LOW-8: 前端不得再手写第二份)。"""
+    period = {"5m": "5分线", "1m": "1分线", "1d": "日线"}.get(c["period"], c["period"])
+    entry = {"close_t": "T日收盘买入", "open_t1": "次日开盘买入"}.get(
+        c["entry_price_mode"], c["entry_price_mode"])
+    confirm = {"intraday": "移动止盈盘中触线(回测页标注为偏乐观的旧语义)",
+               "real": "移动止盈条件单语义"}.get(c["trailing_confirm"],
+                                                c["trailing_confirm"])
+    return ("%s · %s · %s万本金 · 单票上限%s万 · %s · %s · %s"
+            % (c["universe"].split(" ")[0], period, "%g" % (c["capital"] / 10000),
+               "%g" % (c["max_buy"] / 10000), entry, confirm, c["priority"]))
+
+
 def backtest_prefill(data_root: str, gs: str) -> dict:
     """按 GS 编号从档案构建回测页回填包 (公开接口 3/3)。
 
     口径一律取 farm_rules.SWEEP_CALIBER (单一真相源, 与报告抬头同对象)。
-    gs 不在档案 → KeyError; best 为空或缺 params (旧档案) → ValueError。
+    gs 不在档案 → KeyError; best 为空或六项数值参数有缺 → ValueError。
     """
     arch = _read_json(os.path.join(data_root, "archive.json")) or {}
     if gs not in arch:
@@ -259,10 +272,14 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
     e = arch[gs]
     best = e.get("best") or {}
     p = best.get("params") or {}
-    if not best or p.get("cost") is None:
-        raise ValueError("该公式没有带参数的最优组合, 请先跑④重建档案 "
+    # 审计 LOW-6: 六个数值键全验 (原只验 cost, act/dd 缺 → _pct_txt 抛
+    # TypeError 变 500; time_days 缺 → 前端写 "null" 变 0 天启用)
+    need = [k for k in ("cost", "act", "dd", "time_days") if p.get(k) is None]
+    if not best or need:
+        raise ValueError("该公式没有带参数的最优组合%s, 请先跑④重建档案 "
                          "(python tools/formula_farm/farm_backtest.py "
-                         "--max-formulas 0 --rebuild-archive --no-push)")
+                         "--max-formulas 0 --rebuild-archive --no-push)"
+                         % ("(缺 %s)" % "/".join(need) if need else ""))
     parts = ["硬止损%s" % _pct_txt(abs(p["cost"])),
              "移动止盈激活%s/回撤%s" % (_pct_txt(p["act"]), _pct_txt(p["dd"])),
              "时间止损%d天" % (p.get("time_days") or 0)]
@@ -279,10 +296,12 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
             "caliber": {"universe_type": c["universe_type"],
                         "universe": c["universe"], "period": c["period"],
                         "entry_price_mode": c["entry_price_mode"],
+                        "trailing_confirm": c["trailing_confirm"],
                         "capital": c["capital"], "max_buy": c["max_buy"],
                         "priority_value": c["priority_value"],
                         "priority": c["priority"]},
-            "combo_text": " + ".join(parts), "ladder_note": ladder_note}
+            "combo_text": " + ".join(parts), "ladder_note": ladder_note,
+            "caliber_text": _caliber_text(c)}
 
 
 # ── 总览看板 ─────────────────────────────────────────────

@@ -284,17 +284,20 @@ def _slim_best(best):
     # 2026-09-16 回填回测页: 组合参数一并入档 (CSV 列齐全, 无需解析 key)
     params = {}
     for col, cast in (("cost", float), ("act", float), ("dd", float),
-                      ("ladder", str), ("time_days", int),
-                      ("cond_days", int), ("cond_profit", float)):
+                      ("time_days", int), ("cond_days", int),
+                      ("cond_profit", float)):
         try:
             params[col] = cast(best.get(col))
         except (TypeError, ValueError):
             params[col] = None
+    # 审计 LOW-7: ladder 是字符串, 不能用 str(None) 强转 (会变成 "None" 触发
+    # 假的「含阶梯止盈」告警); 空/缺一律记 None = 关闭
+    lad = best.get("ladder")
+    params["ladder"] = str(lad) if lad not in (None, "") else None
     return {"key": best.get("key", ""), "annret": _f(best.get("annret")),
             "maxdd": _f(best.get("maxdd")), "calmar": _f(best.get("calmar")),
             "winrate": _f(best.get("winrate")), "trades": int(_f(best.get("trades"))),
             "params": params}
-
 
 def archive_entry(gs, info, rows, window):
     """单公式归档条目 (纯函数)。判定/最优组合走 _verdict_of_rows (装配唯一实现)。"""

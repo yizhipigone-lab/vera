@@ -307,3 +307,31 @@ def test_backtest_prefill_missing_params_raises_valueerror(root):
     for gs in ("GS0001", "GS0002"):
         with _pt.raises(ValueError):
             fs.backtest_prefill(str(root), gs)
+
+
+def test_backtest_prefill_validates_all_numeric_keys(root):
+    """审计 LOW-6: act/dd/time_days 缺失同样要 409 (原只验 cost, 缺项会 500)。"""
+    base = {"cost": -0.2, "act": 0.08, "dd": 0.005, "ladder": "off",
+            "time_days": 20, "cond_days": 0, "cond_profit": 0.0}
+    import pytest as _pt
+    for miss in ("act", "dd", "time_days"):
+        p = dict(base, **{miss: None})
+        _wj(root / "archive.json", {"GS0001": {
+            "file": "a.md", "best": {"key": "k", "params": p},
+            "verdict": {"code": "pass"}}})
+        fs._CACHE.clear()
+        with _pt.raises(ValueError) as ei:
+            fs.backtest_prefill(str(root), "GS0001")
+        assert miss in str(ei.value)
+
+
+def test_backtest_prefill_caliber_text_and_confirm(root):
+    """审计 HIGH-1/LOW-8: 口径文案由后端生成, 且披露移动止盈确认语义。"""
+    _archive_with_params(root)
+    d = fs.backtest_prefill(str(root), "GS0607")
+    assert d["caliber"]["trailing_confirm"] == "intraday"
+    assert "盘中触线" in d["caliber_text"]
+    assert "沪深300" in d["caliber_text"] and "5分线" in d["caliber_text"]
+    assert "T日收盘买入" in d["caliber_text"]
+    from core import farm_rules
+    assert farm_rules.SWEEP_CALIBER["trailing_confirm"] == "intraday"

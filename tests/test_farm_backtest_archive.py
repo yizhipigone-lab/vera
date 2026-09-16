@@ -83,6 +83,15 @@ def test_caliber_is_farm_rules_sweep_caliber():
     assert fb.CALIBER["universe_type"] == "23"
     assert fb.CALIBER["priority"] == "移动止盈优先"          # 报告抬头显示值
     assert fb.CALIBER["priority_value"] == "trailing_first"  # 回填机器值
+    assert fb.CALIBER["trailing_confirm"] == "intraday"      # 审计 HIGH-1
+
+
+def test_slim_best_ladder_none_not_stringified(sweep):
+    """审计 LOW-7: 空/缺 ladder 记 None, 不许 str(None) 变 "None" 触发假告警。"""
+    _write_sweep(fb.SWEEP_OUT, "GS0001", [_row(ladder="")])
+    idx = {"GS0001": {"file": "a.md", "url": "", "date": "2026-09-16"}}
+    arch = fb.update_archive(str(sweep / "archive.json"), ["GS0001"], idx)
+    assert arch["GS0001"]["best"]["params"]["ladder"] is None
 
 
 def test_update_archive_incremental_preserves_untouched(sweep):

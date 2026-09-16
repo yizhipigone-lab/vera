@@ -592,20 +592,34 @@ function showFarmLog(gate, label) {
 }
 
 // ── 2026-09-16 达标榜 → 回测页回填 (计划书: 方案 A 只回填不代跑) ──
-// 快照与直写同一字段集合 (计划书字段表); 佣金/滑点/整手等个人设置一律不碰
+// 快照与直写同一字段集合; 佣金/滑点/整手等**个人成本设置**一律不碰。
+// 审计 HIGH-2: 会改结果的池子/止损语义开关必须一并回填并快照 ——
+// ① 板块选择非空时股票池下拉框会被 silently 忽略 (sector 并集优先),
+//    ② 引擎默认移动止盈确认=盘中触线而页面默认条件单语义 (HIGH-1)。
+// 板块另有单独清理 (clearSectors, 不在字段表内)。
 const _PREFILL_FIELDS = ['cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
   'cfgEntryPriceMode', 'cfgStart', 'cfgEnd', 'cfgCapital', 'cfgMaxBuy',
+  'cfgExcludeST', 'cfgIncludeEtf', 'cfgEtfOnly',
   'cfgCostStopEn', 'cfgCostStopVal', 'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
-  'cfgLadderEn', 'cfgTimeEn', 'cfgTimeVal', 'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit'];
+  'cfgTrailingConfirm',
+  'cfgLadderEn', 'cfgTimeEn', 'cfgTimeVal', 'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit',
+  'cfgFirstDayEn', 'cfgFormulaSellEn', 'cfgFactorFilterEn'];
 let _farmPrefillSnapshot = null;
+let _farmPrefillSectorsSnap = null;
 
 function _farmToBacktest(gs) {
   fetchFarmPrefill(gs).then(d => {
-    // ① 快照将被覆盖的字段 (横幅「恢复原配置」用)
-    const snap = { radio: (document.querySelector('input[name="cfgPriority"]:checked') || {}).value || '' };
-    _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
-      if (el) snap[id] = el.type === 'checkbox' ? el.checked : el.value; });
-    _farmPrefillSnapshot = snap;
+    const banner = document.getElementById('farmPrefillBanner');
+    const bannerVisible = !!banner && banner.style.display !== 'none';
+    // ① 快照 (横幅「恢复原配置」用) —— 审计 MEDIUM-3: 连续点两条公式时,
+    //    只有第一次快照 (用户原配置); 后续点击不覆盖, 否则恢复的是上一次回填值
+    if (!bannerVisible) {
+      const snap = { radio: (document.querySelector('input[name="cfgPriority"]:checked') || {}).value || '' };
+      _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
+        if (el) snap[id] = el.type === 'checkbox' ? el.checked : el.value; });
+      _farmPrefillSnapshot = snap;
+      _farmPrefillSectorsSnap = (_selectedSectors || []).slice();
+    }
     // ② 逐字段直写 (不走 applyConfigDict —— 它会把缺失字段重置成默认值,
     //    冲掉用户的佣金/滑点设置, 计划书侦察结论 4)
     const p = d.params, cal = d.caliber;
@@ -614,29 +628,37 @@ function _farmToBacktest(gs) {
     set('cfgFormula', d.gs); set('cfgFormulaArg', '');
     set('cfgUniverse', cal.universe_type); set('cfgPeriod', cal.period);
     set('cfgEntryPriceMode', cal.entry_price_mode);
+    // 池子/语义开关按粗扫口径复位 (HIGH-2 / HIGH-1)
+    set('cfgExcludeST', true); set('cfgIncludeEtf', false); set('cfgEtfOnly', false);
+    set('cfgTrailingConfirm', cal.trailing_confirm);
+    set('cfgFirstDayEn', false); set('cfgFormulaSellEn', false);
+    set('cfgFactorFilterEn', false);
+    if (typeof clearSectors === 'function') clearSectors();
     if (d.window && d.window[0]) set('cfgStart', String(d.window[0]).replace(/-/g, ''));
     if (d.window && d.window[1]) set('cfgEnd', String(d.window[1]).replace(/-/g, ''));
     set('cfgCapital', cal.capital); set('cfgMaxBuy', cal.max_buy);
-    set('cfgCostStopEn', true); set('cfgCostStopVal', Math.abs(p.cost) * 100);
-    set('cfgTrailingEn', true); set('cfgTrailingAct', p.act * 100);
-    set('cfgTrailingDD', p.dd * 100);
+    // 自审修复: JS 浮点直乘会出 "20.000000000000004" 填进输入框 —— 先修约再写
+    const pct100 = v => String(Number((v * 100).toFixed(6)));
+    set('cfgCostStopEn', true); set('cfgCostStopVal', pct100(Math.abs(p.cost)));
+    set('cfgTrailingEn', true); set('cfgTrailingAct', pct100(p.act));
+    set('cfgTrailingDD', pct100(p.dd));
     set('cfgLadderEn', false);                       // 当前数据全部不用阶梯止盈
     set('cfgTimeEn', true); set('cfgTimeVal', p.time_days);
     const condOn = (p.cond_days || 0) > 0;
     set('cfgCondTimeEn', condOn);
     if (condOn) { set('cfgCondTimeDays', p.cond_days);
-      set('cfgCondTimeProfit', (p.cond_profit || 0) * 100); }
+      set('cfgCondTimeProfit', pct100(p.cond_profit || 0)); }
     const radio = document.querySelector('input[name="cfgPriority"][value="' + cal.priority_value + '"]');
     if (radio) radio.checked = true;
+    refreshAllSummaries();                       // 审计 MEDIUM-4: 摘要行必须跟着刷新
     // ③ 横幅 + 切页 (人工核对后自己点开始回测 —— 两口径铁律的最后一道闸)
     const name = (d.file || '').replace(/\.md$/, '');
     let txt = '已从公式农场回填: ' + d.gs + (name ? '(' + name + ')' : '')
       + ' · 最优组合 ' + d.combo_text
-      + ' · 口径: ' + cal.universe.split(' ')[0] + ' · 5分线 · '
-      + (cal.capital / 10000) + '万本金 · 单票上限' + (cal.max_buy / 10000) + '万 · T日收盘买入'
+      + ' · 口径: ' + (d.caliber_text || '')          // 文案后端唯一生成 (LOW-8)
+      + ' · 已清空板块选择并复位池子/语义开关'
       + ' · 请核对后手动点「开始回测」';
     if (d.ladder_note) txt += ' ⚠ ' + d.ladder_note;
-    const banner = document.getElementById('farmPrefillBanner');
     if (banner) { document.getElementById('farmPrefillText').textContent = txt;
       banner.style.display = ''; }
     switchTab('backtest');
@@ -650,7 +672,17 @@ function _farmRestorePrefill() {
       if (el && id in snap) { if (el.type === 'checkbox') el.checked = snap[id]; else el.value = snap[id]; } });
     if (snap.radio) { const r = document.querySelector('input[name="cfgPriority"][value="' + snap.radio + '"]');
       if (r) r.checked = true; }
+    // 板块选择恢复 (审计 HIGH-2 配套)。注意: 模块内没有 setSelectedSectors
+    // 函数 (那只是 cfgApply 的形参名), 必须直接改 _selectedSectors + 持久化 + 重绘
+    if (_farmPrefillSectorsSnap) {
+      _selectedSectors = _farmPrefillSectorsSnap.slice();
+      try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch (e) {}
+      renderSectors(); updateSectorSummary();
+    }
+    refreshAllSummaries();
   }
+  _farmPrefillSnapshot = null;                   // MEDIUM-3: 恢复后允许重新快照
+  _farmPrefillSectorsSnap = null;
   document.getElementById('farmPrefillBanner').style.display = 'none';
 }
 
