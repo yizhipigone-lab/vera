@@ -895,22 +895,30 @@ input:focus-visible,select:focus-visible{outline:none}
   <div class="lab-card">
     <h2>① 检查增量 <button class="btn btn-primary" id="btnFarmCheck">▶ 检查增量</button></h2>
     <div id="farmCheckStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <a href="javascript:void(0)" id="farmLogCheck" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div id="farmNewList" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
   </div>
   <div class="lab-card">
     <h2>② 一键入库 <button class="btn btn-primary" id="btnFarmOnboard">▶ 一键入库</button> <button class="btn" id="btnFarmStop" title="终止当前闸门子进程">■ 停止</button></h2>
     <div id="farmOnboardStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <a href="javascript:void(0)" id="farmLogOnboard" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">默认本轮全部入完; 已入库/编译失败的自动跳过, 中途断了再点接着来。每入一条立即记账, 点停止不丢账。</div>
   </div>
   <div class="lab-card">
     <h2>③ 定量复核 <button class="btn btn-primary" id="btnFarmVerify">▶ 定量复核</button></h2>
     <div id="farmVerifyStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <a href="javascript:void(0)" id="farmLogVerify" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">重画检测 + 未来函数甄别(需通达信在运行, 全A选股较慢); 「复核不通过」与「跑失败」分开写, 解析不到一律标「无法判定」不当通过。</div>
   </div>
   <div class="lab-card">
     <h2>④ 开始粗扫 <button class="btn btn-primary" id="btnFarmBacktest">▶ 开始粗扫</button></h2>
     <div id="farmBacktestStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <a href="javascript:void(0)" id="farmLogBacktest" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">36 代表组合 5m 粗扫, 达标线 年化≥15% 且 |回撤|≤15% 且 笔数≥20; 未扫完的公式下轮自动补扫, 不会被新批次饿死。</div>
+  </div>
+  <div class="lab-card" id="farmLogCard" style="display:none">
+    <h2 id="farmLogTitle" style="font-size:var(--fs-md)">运行日志</h2>
+    <pre id="farmLogBody" style="font-size:var(--fs-xs);max-height:420px;overflow:auto;background:var(--bg);padding:var(--sp-2);border-radius:6px;white-space:pre-wrap;margin:0"></pre>
   </div>
   <div class="lab-card">
     <h2>日报与留痕</h2>
@@ -1480,6 +1488,6 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
 <script type="module" src="/web/js/analysis.js?v=20260911a"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260916a"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260916b"></script>
 </body>
 </html>

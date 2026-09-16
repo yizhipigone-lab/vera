@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -46,6 +47,46 @@ class GateRun:
     started_at: str = ""
     finished_at: str = ""
     error: str = ""
+    log_file: str = ""               # 完整日志路径 (runs/日期/闸门.log, 2026-09-16)
+
+
+# ── 失败病因提取 (纯函数, 有测试) ────────────────────────────
+
+def _extract_error(lines):
+    """从闸门输出尾部提取真病因。
+
+    优先级: ① 最后一个 Traceback 块的最后一个非空行
+               (ModuleNotFoundError: No module named 'psutil' 这类, 藏在
+               "子进程退出码 1" 背后的真凶);
+            ② 最后的 XxxError/XxxException/SystemExit 行;
+            ③ 最后一条非空行 (脚本 raise SystemExit 前自己打印的人话原因,
+               如「没有待入库清单 — 先点『检查增量』」)。
+    """
+    tb = None
+    for i, l in enumerate(lines):
+        if "Traceback (most recent call last)" in l:
+            tb = i
+    if tb is not None:
+        for l in reversed(lines[tb + 1:]):
+            if l.strip():
+                return l.strip()[:300]
+    for l in reversed(lines):
+        s = l.strip()
+        if re.match(r"^[\w.]*(Error|Exception|SystemExit|KeyboardInterrupt)\b", s):
+            return s[:300]
+    for l in reversed(lines):
+        if l.strip():
+            return l.strip()[:300]
+    return ""
+
+
+def _read_log_tail(path, n=200):
+    """读日志文件最后 n 行 (失败时文件可能很大, 不全读)。"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.readlines()[-n:]
+    except Exception:
+        return []
 
 
 class FarmRunner:
@@ -110,7 +151,12 @@ class FarmRunner:
             rc = self._runner(run)
             run.status = "done" if rc == 0 else "failed"
             if rc != 0:
-                run.error = "子进程退出码 %s" % rc
+                # 2026-09-16: 失败病因结构化 —— 从完整日志尾部抓真错误行,
+                # 不再只给一句「子进程退出码 1」让人翻文件
+                reason = _extract_error(
+                    _read_log_tail(run.log_file) or run.log_tail) \
+                    if (run.log_file or run.log_tail) else ""
+                run.error = "子进程退出码 %s" % rc + (" — %s" % reason if reason else "")
         except Exception as e:
             run.status = "failed"
             run.error = repr(e)
@@ -123,7 +169,8 @@ class FarmRunner:
             with self._lock:
                 self._last[run.gate] = {
                     "status": run.status, "finished_at": run.finished_at,
-                    "error": run.error, "log_tail": run.log_tail[-30:]}
+                    "error": run.error, "log_tail": run.log_tail[-30:],
+                    "log_file": run.log_file}
                 self._proc = None
                 self._current = run  # 留最后一次供页面读
             self._save_last()
@@ -131,6 +178,18 @@ class FarmRunner:
     def _run_gate(self, run: GateRun):
         label, script = GATES[run.gate]
         run.stage = label
+        # 2026-09-16: 完整输出边跑边落盘 runs/日期/闸门.log —— 此前只留内存
+        # 最后 30 行, 失败的真病因 (Traceback) 经常被截掉, 只能翻文件猜
+        date_str = (run.started_at or time.strftime("%Y-%m-%d %H:%M:%S"))[:10]
+        fh = None
+        try:
+            log_dir = DATA / "runs" / date_str
+            log_dir.mkdir(parents=True, exist_ok=True)
+            fh = open(DATA / "runs" / date_str / ("%s.log" % run.gate),
+                      "w", encoding="utf-8")
+            run.log_file = str(fh.name)
+        except Exception:
+            _logger.warning("farm_runner: 闸门日志文件创建失败", exc_info=True)
         env = dict(os.environ, PYTHONUTF8="1")
         proc = subprocess.Popen(
             [PY, "-X", "utf8", str(script)], cwd=str(ROOT),
@@ -138,12 +197,22 @@ class FarmRunner:
             text=True, encoding="utf-8", errors="replace", env=env)
         with self._lock:
             self._proc = proc
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if not line.strip():
-                continue
-            run.log_tail.append(line)
-            if len(run.log_tail) > 200:
-                run.log_tail = run.log_tail[-200:]
-            run.stage = line[:60]
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if fh:
+                    try:
+                        fh.write(line + "\n")
+                        fh.flush()
+                    except Exception:
+                        pass
+                if not line.strip():
+                    continue
+                run.log_tail.append(line)
+                if len(run.log_tail) > 200:
+                    run.log_tail = run.log_tail[-200:]
+                run.stage = line[:60]
+        finally:
+            if fh:
+                fh.close()
         return proc.wait()

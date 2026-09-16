@@ -93,6 +93,72 @@ def test_failure_without_stop_still_failed(client):
     assert "退出码" in d["last"]["check"]["error"]
 
 
+# ── 2026-09-16: 失败病因结构化 (完整日志落盘 + 真错误行提取 + /api/farm/log) ──
+
+def test_extract_error_traceback():
+    lines = ["启动", "Traceback (most recent call last):",
+             '  File "farm_onboard.py", line 21, in <module>',
+             "    import psutil",
+             "ModuleNotFoundError: No module named 'psutil'"]
+    assert fr._extract_error(lines) == "ModuleNotFoundError: No module named 'psutil'"
+
+
+def test_extract_error_picks_last_traceback():
+    lines = ["Traceback (most recent call last):", "ValueError: first",
+             "重试中", "Traceback (most recent call last):", "KeyError: 'second'"]
+    assert fr._extract_error(lines) == "KeyError: 'second'"
+
+
+def test_extract_error_human_reason_fallback():
+    """无 Traceback 时取脚本自己打印的人话原因 (SystemExit 前的 log)。"""
+    lines = ["[1/4] 检查通达信进程...", "没有待入库清单 — 先点『检查增量』"]
+    assert fr._extract_error(lines) == "没有待入库清单 — 先点『检查增量』"
+
+
+def test_failed_gate_writes_log_and_extracts_reason(tmp_path, monkeypatch):
+    """端到端: 真子进程报错 → 完整日志落盘 + error 带真病因 + last 记 log_file。"""
+    script = tmp_path / "boom.py"
+    script.write_text(
+        "print('启动中')\nraise ModuleNotFoundError(\"No module named 'psutil'\")\n",
+        encoding="utf-8")
+    monkeypatch.setattr(fr, "LAST", tmp_path / "last_status.json")
+    monkeypatch.setattr(fr, "DATA", tmp_path)
+    monkeypatch.setitem(fr.GATES, "check", ("检查增量", script))
+    farm = fr.FarmRunner()   # 真 runner, 起子进程
+    run, err = farm.start("check")
+    assert run is not None and not err
+    _wait_idle(farm)
+    st = farm.status()
+    cur = st["current"]
+    assert cur["status"] == "failed"
+    assert "退出码 1" in cur["error"]
+    assert "ModuleNotFoundError: No module named 'psutil'" in cur["error"]
+    log_file = cur["log_file"]
+    assert log_file
+    content = open(log_file, encoding="utf-8").read()
+    assert "启动中" in content and "Traceback" in content
+    assert st["last"]["check"]["log_file"] == log_file
+
+
+def test_farm_log_endpoint(client, monkeypatch):
+    import core.farm_api as fa
+    c, farm = client
+    monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
+    # 没跑过 → 404; 未知闸门 → 400
+    assert c.get("/api/farm/log", params={"gate": "check"}).status_code == 404
+    assert c.get("/api/farm/log", params={"gate": "hack"}).status_code == 400
+    # 落一份日志 (glob 兜底路径) → 200 且内容完整
+    d = fa.RUNS / "2026-09-16"
+    d.mkdir(parents=True)
+    (d / "check.log").write_text("第一行\nTraceback (most recent call last):\n"
+                                 "ModuleNotFoundError: boom\n", encoding="utf-8")
+    r = c.get("/api/farm/log", params={"gate": "check"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "ModuleNotFoundError: boom" in body["log"]
+    assert body["truncated"] is False
+
+
 def test_backtest_rejected_when_pipeline_busy(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "LAST", tmp_path / "last_status.json")
     farm = fr.FarmRunner(runner=lambda run: 0)

@@ -13,7 +13,11 @@ from fastapi.responses import JSONResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORTS = ROOT / "data" / "formula_farm" / "reports"
+RUNS = ROOT / "data" / "formula_farm" / "runs"
 SAFE_FILE = re.compile(r"^[\w\-\.\u4e00-\u9fff]+\.md$")
+GATE_NAMES = ("check", "onboard", "verify", "backtest")
+#: 单次返回日志上限 (字符) —— 入库千条全量日志可能上 MB, 超出截尾并标注
+LOG_MAX_CHARS = 500_000
 
 
 def create_farm_router(farm, pipeline_status):
@@ -52,6 +56,34 @@ def create_farm_router(farm, pipeline_status):
     def api_farm_stop():
         farm.stop()
         return {"ok": True}
+
+    @router.get("/api/farm/log")
+    def api_farm_log(gate: str = Query(...)):
+        """闸门完整日志 (2026-09-16 失败病因结构化配套: 页面「查看完整日志」)。
+
+        路径只信两处: last_status.json 里本系统自己记的 log_file,
+        或 runs/ 目录下按文件名 glob 的最新一份 —— 均校验必须落在 RUNS 内,
+        不接受页面传来的任意路径。
+        """
+        if gate not in GATE_NAMES:
+            raise HTTPException(400, "未知闸门")
+        last = (farm.status().get("last") or {}).get(gate) or {}
+        p = Path(last["log_file"]) if last.get("log_file") else None
+        if not p or not p.exists():
+            cands = sorted(RUNS.glob("*/%s.log" % gate),
+                           key=lambda x: -x.stat().st_mtime)
+            p = cands[0] if cands else None
+        if not p or not p.exists():
+            raise HTTPException(404, "暂无日志 (该闸门还没跑过或未落盘)")
+        rp = p.resolve()
+        if RUNS.resolve() not in rp.parents:
+            raise HTTPException(400, "非法日志路径")
+        text = rp.read_text(encoding="utf-8", errors="replace")
+        truncated = len(text) > LOG_MAX_CHARS
+        if truncated:
+            text = "……(日志过长, 只显示最后 %d 字符)……\n\n" % LOG_MAX_CHARS \
+                   + text[-LOG_MAX_CHARS:]
+        return {"gate": gate, "file": str(rp), "truncated": truncated, "log": text}
 
     @router.get("/api/farm/reports")
     def api_farm_reports():

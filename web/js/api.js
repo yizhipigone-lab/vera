@@ -81,6 +81,7 @@ export const farmBacktest = () => post('/api/farm/backtest', {});
 export const farmStop = () => post('/api/farm/stop', {});
 export const fetchFarmReports = () => get('/api/farm/reports');
 export const fetchFarmReport = file => get('/api/farm/report?file=' + encodeURIComponent(file));
+export const fetchFarmLog = gate => get('/api/farm/log?gate=' + encodeURIComponent(gate));
 
 // ── 数据准备 / 分析 (治理III W4-e 补全, 2026-09-05) ──
 

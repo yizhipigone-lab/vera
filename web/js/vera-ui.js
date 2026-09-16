@@ -1,6 +1,6 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
-import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport } from './api.js?v=20260911a';
+import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport, fetchFarmLog } from './api.js?v=20260916a';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
 import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js?v=20260906d';
 import { renderDeepCharts } from './charts_deep.js?v=20260906c';
@@ -481,6 +481,13 @@ function refreshFarmStatus() {
       el.textContent = l ? ('上次: ' + _farmStatusMark(l.status, false) + ' ' + (l.finished_at || '')) : '未运行'; };
     setS('farmCheckStatus', 'check'); setS('farmOnboardStatus', 'onboard');
     setS('farmVerifyStatus', 'verify'); setS('farmBacktestStatus', 'backtest');
+    // 2026-09-16: 「查看完整日志」链接 —— 该闸门有落盘日志才显示
+    const setLog = (id, gate) => { const a = document.getElementById(id); if (!a) return;
+      const has = !!((cur && cur.gate === gate && cur.log_file) || (last[gate] && last[gate].log_file));
+      a.style.display = has ? '' : 'none';
+      a.onclick = has ? () => showFarmLog(gate, (d.gates || {})[gate] || gate) : null; };
+    setLog('farmLogCheck', 'check'); setLog('farmLogOnboard', 'onboard');
+    setLog('farmLogVerify', 'verify'); setLog('farmLogBacktest', 'backtest');
     const box = document.getElementById('farmNewList');
     if (box && cur && cur.status === 'running') {
       box.innerHTML = '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);padding:var(--sp-2);border-radius:6px;margin-top:var(--sp-2)">'
@@ -492,6 +499,18 @@ function refreshFarmStatus() {
 function farmGate(fn, label) {
   fn().then(() => { showToast(label + '已启动'); refreshFarmStatus(); })
     .catch(e => showToast(e.message || '启动失败', 'error'));
+}
+
+// 2026-09-16: 查看闸门完整日志 (失败病因结构化配套)
+function showFarmLog(gate, label) {
+  fetchFarmLog(gate).then(d => {
+    const card = document.getElementById('farmLogCard'); if (!card) return;
+    card.style.display = '';
+    document.getElementById('farmLogTitle').textContent =
+      '运行日志 · ' + label + ' · ' + (d.file || '') + (d.truncated ? ' (过长已截尾)' : '');
+    document.getElementById('farmLogBody').textContent = d.log || '(空)';
+    card.scrollIntoView({ behavior: 'smooth' });
+  }).catch(e => showToast(e.message || '日志读取失败', 'error'));
 }
 
 function loadFarmReports() {
