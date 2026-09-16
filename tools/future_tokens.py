@@ -23,8 +23,8 @@ FUTURE_TOKEN_BLACKLIST = [
     "BACKSET", "REFX", "REFXV", "REFXR", "BARSNEXT",
     # 跨周期日线引用 (盘中取值会变)
     "DCLOSE", "DHIGH", "DLOW", "DOPEN", "DVOL",
-    # 漂移画图/未来平滑
-    "DRAWLINE", "POLYLINE", "XMA", "FFT",
+    # 漂移画图/未来平滑 (PLOYLINE 是 POLYLINE 的别名/俗写, 同样会漂移)
+    "DRAWLINE", "POLYLINE", "PLOYLINE", "XMA", "FFT",
     # 即时行情/财务/股本 (回测里拿到的是当前值, 等于偷看现在; 2026-09-16 用户清单补录,
     # 与 formula_pipeline PROPRIETARY_FUNCS 口径对齐)
     "DYNAINFO", "FINANCE", "CAPITAL",

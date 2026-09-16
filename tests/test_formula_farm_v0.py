@@ -134,3 +134,17 @@ def test_vet_runtime_chip_and_nooutput_blocked():
     ok2, r2 = static_vetting.vet_runtime(
         {"file": "x.md", "code": "VAR1:=MA(C,10);"}, {})
     assert ok2 is False and any("输出" in r for r in r2)
+
+
+@pytest.mark.parametrize("spelling", ["POLYLINE", "PLOYLINE"])
+def test_vet_runtime_drift_polyline_both_spellings_blocked(spelling):
+    """2026-09-17 GS1318 漏网事件: PLOYLINE 是 POLYLINE 的俗写, 两种拼法都必须拦。
+
+    真实事故: GS0607/GS1318/GS0737/GS1333 四条达标公式用 PLOYLINE, 而黑名单
+    只登记了 POLYLINE → 全部混进达标榜, 且 GS0607 被标「可用池」。
+    """
+    ok, reasons = static_vetting.vet_runtime(
+        {"file": "x.md", "code": f"A:={spelling}(CROSS(C,MA(C,5)),C);\nXG:A>1;"}, {})
+    assert ok is False
+    assert any("未来函数" in r for r in reasons)
+
