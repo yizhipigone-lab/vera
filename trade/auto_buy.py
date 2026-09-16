@@ -32,6 +32,7 @@ from trade.book import (
     is_etf,
 )
 from trade.events import EVENT_SIGNALS, Event
+from trade.closing_auction import auction_buy_price
 from trade.executor import PlaceRequest, limit_ratio, round_price
 from trade.regime import index_above_ma
 from utils.logger import get_logger
@@ -45,7 +46,8 @@ class AutoBuyFeature:
 
     def __init__(self, engine, cfg_getter, store, gateway, book, monitor,
                  risk, executor, *, selection_runner, build_risk_ctx,
-                 get_prev_close, budget_provider=None, clock=time.time):
+                 get_prev_close, budget_provider=None, st_checker=None,
+                 clock=time.time):
         self._engine = engine
         self._cfg_getter = cfg_getter      # callable → TradeConfig (热更穿透)
         self._store = store
@@ -61,6 +63,9 @@ class AutoBuyFeature:
         # 2026-08-14 双池预算帽: callable → 股票池还能花的钱 (None=不设帽,
         # 即轮动关闭时的原口径)。注入自 composition root。
         self._budget_provider = budget_provider
+        # 2026-09-15 审计修复: ST 判定与 Executor 同一份注入 (TDX IsSTGP),
+        # 此前涨停判定漏传 st —— ST 股(5%板)被按 10%/20% 算, 口径偏松。
+        self._st = st_checker or (lambda code: False)
         self._running = False                   # 选股工作线程在跑 (防重入)
         self._last: dict | None = None          # 最近一次运行 (页面展示)
         self._placed: tuple = ("", set())       # (日期, 当日已下单代码)
@@ -249,7 +254,7 @@ class AutoBuyFeature:
             if not prev_close:
                 _skip(code, "无昨收无法判涨停")
                 continue
-            limit_up = prev_close * (1 + limit_ratio(code))
+            limit_up = prev_close * (1 + limit_ratio(code, self._st(code)))
             if quote["last"] >= limit_up:
                 _skip(code, "涨停拒买")
                 continue
@@ -283,15 +288,10 @@ class AutoBuyFeature:
             force = hhmm >= self._cfg_getter().force_market_after
             if force:
                 order_type = PRICE_TYPE_LIMIT
-                code_num = code.split(".")[0]
-                # 20% 涨跌幅品种 (创业 300/301 + 科创 688): 涨停价超 2% 笼子
-                if code_num.startswith(("300", "301", "688")):
-                    ask1 = quote.get("ask1") or quote["last"]
-                    order_price = round_price(min(limit_up, ask1 * 1.02))
-                    price_kind = "笼子上限限价(收盘竞价)"
-                else:
-                    order_price = round_price(limit_up)
-                    price_kind = "涨停价限价(收盘竞价)"
+                # 收盘竞价限价规则单一实现 (2026-09-15 收口 trade/closing_auction,
+                # 原此处女 20% 品种/主板分支与 executor 卖侧为双胞胎硬编码)
+                order_price, price_kind = auction_buy_price(
+                    code, quote.get("ask1") or quote["last"], limit_up)
             elif not quote.get("ask1"):
                 # 2026-08-12 (用户拍板): 限价兜底替代"对手最优"市价单 ——
                 # 券商柜台禁市价类程序化报单 (63596 废单, 08-12 沪市 7/7 全废),

@@ -64,13 +64,21 @@ def build_bt_cfg() -> dict:
 
 
 def build_regime(idx_df: pd.DataFrame, ma: int, with_slope: bool = False) -> pd.Series:
-    """上证 close > MA(ma) → bull。with_slope=True 再要求 MA 上行(20日斜率>0)。"""
+    """上证 close > MA(ma) → bull。with_slope=True 再要求 MA 上行(20日斜率>0)。
+
+    2026-09-15 审计收口: ma=250+斜率 即「牛熊口径」, 委托 core/index_regime
+    单一真相源 (原手写 diff(20) 绝对差 + min_periods=250, 与核心拍板的
+    相对斜率 + MIN_PERIODS=200 不一致 —— 同一条规则不写第二份)。
+    其余参数组合 (MA120 / MA250 无斜率) 是通用 MA 过滤实验, 非牛熊口径,
+    保留本地实现。
+    """
     close = idx_df["close"]
+    if ma == 250 and with_slope:
+        from core.index_regime import BULL, regime_series
+        bull = regime_series(close) == BULL
+        return pd.Series(bull.values, index=close.index.strftime("%Y%m%d"))
     ma_line = close.rolling(ma).mean()
     bull = close > ma_line
-    if with_slope:
-        slope = ma_line.diff(20)
-        bull = bull & (slope > 0)
     s = pd.Series(bull.values, index=close.index.strftime("%Y%m%d"))
     return s
 

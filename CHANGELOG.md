@@ -5,6 +5,37 @@
 
 ---
 
+## 2026-09-16 — 深模块浅模块审计修复波 (13/14 项落地, 两轮自查通过)
+
+**入口**: [docs/audit/2026-09-15_深模块浅模块复查_审计报告.md](docs/audit/2026-09-15_深模块浅模块复查_审计报告.md) (59 引用机器校验 100%) +
+[docs/audit/2026-09-15_深模块浅模块审计修复_实施报告.md](docs/audit/2026-09-15_深模块浅模块审计修复_实施报告.md) (含第二轮独立交叉审计结论)
+
+### 关键改动
+
+| 类别 | 改动 |
+|---|---|
+| 🔴 农场达标线 | `farm_batch_sweep` 手写门槛删除, 收口 `core/farm_rules` (is_pass/pick_best/describe) —— 白捡笔数≥20 守卫, GS1292 噪声当结论的形态彻底封死 |
+| 🔴 夏普口径 | 分析页 summary 改调 `MetricsCalculator` 单一实现 (扣 1.5% 无风险利率, 与回测页同尺); `metrics.sharpe_ratio` 委托 `_sharpe` 消同文件双实现。**口径纠正: 分析页夏普/索提诺/卡玛/年化数字会略变, 不是业绩变化** |
+| 路由埋计算×6 | 下沉纯函数: `build_daily_pnl_view`/`build_summary_view` (trade/analysis.py), `core/kline_view.py` (新, 同一变形家族两份收口), `scheduler.trading_calendar.month_grid`, `core/lab_runner.history_items` —— server.py/analysis_api.py/lab_api.py 回归薄路由 |
+| 收盘竞价双胞胎 | 新 `trade/closing_auction.py` 单一实现 (买侧笼子上限/挂涨停, 卖侧跌停价); executor 深沪两个逐字节相同分支合并; auto_buy 补 st 参数 (ST 股 5% 板口径纠正) |
+| 规则副本 | claude_cli `_classify_recovery` 消文件内双写; research 牛熊残份委托 `core.index_regime`; `brain/ak_sections.py` (新) 收编分家复制助手 + re-export 删除; kg 补 `get_all_companies`/`get_link_nodes` 门面消三处直写 SQL |
+| 组合根 | gapfill 编排下沉 `asset_gapfill.orchestrate_gapfill`, trade_main 只留装配 |
+| 小项 | shadow 别名删/ai_api 双 load/dsh_channel 注释漂移/_period_stats 降私有/gs_top9 常量/send_report_feishu 用 load_dotenv/builder keyword 白名单守卫 (tests/test_engine_run_path.py) |
+
+**延期**: rotation 执行段拆分 (审计原判"单独立项", 实盘重区不在马拉松尾声动刀)。
+
+### 测试增量与验证
+
+- 新增 `tests/test_kline_view.py`; 3 个环境敏感测试改环境免疫 (test_brain/test_tdx_path/test_fastpath mock 迁移)
+- 全量 `pytest tests/` EXIT=0 (含 TDX 真实链路); 第二轮独立交叉审计 12/12 通过 0 不通过, 结论"可合入"
+
+### 剩余风险
+
+- 分析页指标口径纠正后, 与历史截图/旧报告数字不可直接比 (口径变了, 不是业绩变了)
+- rotation 拆分欠债一笔 (立项时配套 lots 全量测试 + 影子跑一周)
+
+---
+
 ## 2026-09-16 — ETF 轮动资金三份错峰改造 (Phase 0-3 全部落地)
 
 **入口**: [docs/plan/2026-09-16_ETF轮动资金三份错峰改造_计划书.md](docs/plan/2026-09-16_ETF轮动资金三份错峰改造_计划书.md) (两轮计划审阅 16 处修订) +

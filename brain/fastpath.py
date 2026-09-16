@@ -147,8 +147,8 @@ async def try_market_brief(question: str, channel: str = "default",
     if not match_market_brief(question):
         return None
     try:
-        from brain import data_tools
-        snap = await asyncio.to_thread(data_tools.market_snapshot)
+        from brain.market_panel import market_snapshot  # 直引 (data_tools 兼容转发已删)
+        snap = await asyncio.to_thread(market_snapshot)
     except Exception as e:  # 松耦合：取数挂了不挡路，回落 agent loop
         logger.warning(f"大盘快路径取数异常，回落 agent loop: {e}", exc_info=True)
         return None

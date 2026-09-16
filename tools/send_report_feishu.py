@@ -9,11 +9,10 @@ webhook 读 .env 的 FEISHU_WEBHOOK_URL (半密钥, 不打印)。
 import json, os, re, sys, urllib.request
 
 def load_webhook():
+    # 2026-09-15 审计收口: 手写 .env 解析 → load_dotenv (与全项目惯例一致)
+    from dotenv import load_dotenv
+    load_dotenv()
     url = os.environ.get("FEISHU_WEBHOOK_URL")
-    if not url and os.path.exists(".env"):
-        for line in open(".env", encoding="utf-8"):
-            if line.startswith("FEISHU_WEBHOOK_URL="):
-                url = line.split("=", 1)[1].strip().strip('"').strip("'")
     if not url:
         sys.exit("找不到 FEISHU_WEBHOOK_URL (.env 或环境变量)")
     return url

@@ -471,25 +471,10 @@ async def api_calendar(year: int = 0, month: int = 0):
     周五盘中也会被标"休市" (实测 9 月只返回 1/2/3 号、10 月 0 天)。
     现改用与实盘时段感知同源的精确历 (exchange_calendars XSHG 上交所历,
     缺库时内置 2026 假日表), 今天/未来/法定节假日全部正确, 显示与实盘
-    判断同源。注意: 超出精确历覆盖 (2026-12-31 后) 降级为周末规则,
-    法定节假日不再可辨。"""
-    from datetime import date as _date
-    from scheduler.trading_calendar import is_trading_day as _is_trading_day
-    now = _date.today()
-    y = year if year > 0 else now.year
-    m = month if 1 <= month <= 12 else now.month
-    import calendar as _cal
-    days_in_month = _cal.monthrange(y, m)[1]
-    result = {}
-    for d in range(1, days_in_month + 1):
-        date_str = f"{y}-{m:02d}-{d:02d}"
-        dt = _date(y, m, d)
-        result[date_str] = {
-            "is_trading": bool(_is_trading_day(dt)),
-            "weekday": dt.weekday(),  # 0=Mon
-        }
-    return {"year": y, "month": m, "trading_calendar": result,
-            "data_source": "xshg_precise"}
+    判断同源。2026-09-15: 月历网格构建下沉 scheduler.trading_calendar
+    .month_grid 纯函数 (深模块治理), 本路由只转发。"""
+    from scheduler.trading_calendar import month_grid
+    return month_grid(year, month)
 
 
 @app.get("/api/benchmark/history")
@@ -505,6 +490,7 @@ async def api_benchmark_history(
     start = start.replace("-", "")
     end = end.replace("-", "")
     index_names = [n.strip() for n in indices.split(",") if n.strip()]
+    from core.kline_view import close_records  # 变形下沉纯函数 (2026-09-15)
     result: dict = {}
     for name in index_names:
         code = DataFetcher.INDEX_CODES.get(name)
@@ -514,20 +500,7 @@ async def api_benchmark_history(
             kline = DataFetcher.get_kline([code], start_time=start,
                                           end_time=end, period="1d",
                                           dividend_type="none")
-            if kline is None or "Close" not in kline:
-                result[name] = []
-                continue
-            # get_kline returns field-major: {"Close": DataFrame with code columns, DatetimeIndex}
-            close_df = kline["Close"]
-            if close_df is None or close_df.empty or code not in close_df.columns:
-                result[name] = []
-                continue
-            series = close_df[code].dropna()
-            records = []
-            for idx_val, val in series.items():
-                d = str(idx_val)[:10]
-                records.append({"date": d, "close": round(float(val), 2)})
-            result[name] = records
+            result[name] = close_records(kline, code)
         except Exception:
             result[name] = []
     return result
@@ -552,8 +525,8 @@ def api_stock_kline(
     - 任何字段 NaN/inf 的行整行丢弃 (FastAPI allow_nan=False, 漏一个就 500)。
     - 无数据/缺列 → 200 空 rows; 数据层异常 → 502 {"detail": ...}。
     """
-    import math
     from core.data_fetcher import DataFetcher
+    from core.kline_view import ohlcv_rows  # 变形下沉纯函数 (2026-09-15)
     from utils.code_normalizer import normalize as _normalize_code
 
     code_in = code.strip().upper()
@@ -568,31 +541,7 @@ def api_stock_kline(
         logger.error(f"/api/stock/kline 数据层异常 ({tdx_code}): {e}")
         raise HTTPException(status_code=502, detail=f"K线数据获取失败: {e}")
 
-    rows = []
-    close_df = (kline or {}).get("Close")
-    if close_df is not None and not close_df.empty and tdx_code in close_df.columns:
-        series = {}
-        for f in ("Open", "High", "Low", "Close", "Volume"):
-            df = kline.get(f)
-            series[f] = df[tdx_code] if (df is not None and tdx_code in df.columns) else None
-        for idx in sorted(close_df.index):
-            vals = []
-            for f in ("Open", "High", "Low", "Close", "Volume"):
-                s = series[f]
-                v = s.get(idx) if s is not None else None
-                try:
-                    v = float(v)
-                except (TypeError, ValueError):
-                    v = float("nan")
-                vals.append(v)
-            if not all(math.isfinite(v) for v in vals):
-                continue  # 含 NaN/inf/缺失的行整行丢弃
-            rows.append({
-                "date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10],
-                "open": vals[0], "high": vals[1], "low": vals[2],
-                "close": vals[3], "volume": vals[4],
-            })
-    return {"code": code_in, "period": "1d", "rows": rows}
+    return {"code": code_in, "period": "1d", "rows": ohlcv_rows(kline, tdx_code)}
 
 
 # ====== 启动 ======

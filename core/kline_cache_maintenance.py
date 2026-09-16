@@ -96,8 +96,8 @@ def stale_periods(now: dt.datetime | None = None,
             if (cached_last_date(p, cache_dir) or "") < expected]
 
 
-def period_stats(period: str, cache_dir: Path | None = None) -> dict:
-    """单个 period 的缓存概览（数据准备 TAB 用）。
+def _period_stats(period: str, cache_dir: Path | None = None) -> dict:
+    """单个 period 的缓存概览（cache_status 内部接缝; 2026-09-15 审计降私有）。
 
     读操作经 KlineCache.manifest_stats 接口 (schema 单点, 治理III W3-schema)。"""
     stats = {"period": period, "stocks": 0, "first_date": None,
@@ -117,7 +117,7 @@ def cache_status() -> dict:
     expected = expected_last_trading_day().strftime("%Y%m%d")
     periods = []
     for p, _ in _SEGMENTS:
-        s = period_stats(p)
+        s = _period_stats(p)
         s["expected"] = expected
         s["stale"] = (s["last_date"] or "") < expected
         periods.append(s)

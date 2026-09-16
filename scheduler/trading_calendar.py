@@ -88,3 +88,26 @@ def next_trading_day(d: dt.date) -> dt.date:
     # 理论上不可达 (降级历下每周必有工作日); 兜底返回并记 warning
     _logger.warning("next_trading_day 向后 370 天未找到交易日, 返回 %s (异常兜底)", cur)
     return cur
+
+
+def month_grid(year: int, month: int) -> dict:
+    """月历网格 (server /api/calendar 数据源) — 2026-09-15 自路由下沉纯函数。
+
+    超出精确历覆盖 (2026-12-31 后) 降级为周末规则, 法定节假日不再可辨。
+    输出 {"year","month","trading_calendar": {YYYY-MM-DD: {is_trading, weekday}},
+    "data_source"}。
+    """
+    import calendar as _cal
+    now = dt.date.today()
+    y = year if year > 0 else now.year
+    m = month if 1 <= month <= 12 else now.month
+    result = {}
+    for d in range(1, _cal.monthrange(y, m)[1] + 1):
+        date_str = f"{y}-{m:02d}-{d:02d}"
+        day = dt.date(y, m, d)
+        result[date_str] = {
+            "is_trading": bool(is_trading_day(day)),
+            "weekday": day.weekday(),  # 0=Mon
+        }
+    return {"year": y, "month": m, "trading_calendar": result,
+            "data_source": "xshg_precise"}

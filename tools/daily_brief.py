@@ -31,7 +31,8 @@ _TEMPLATE_PATH = project_root() / "brain" / "templates" / "daily_brief.md"
 def build_data_pack(trade_date: str) -> str:
     """市场快照 + 财新要闻 → 成文数据包。"""
     from brain import data_tools  # 延迟 import（akshare 加载慢）
-    return (data_tools.market_snapshot(trade_date)
+    from brain.market_panel import market_snapshot  # 直引 (data_tools 兼容转发已删)
+    return (market_snapshot(trade_date)
             + "\n\n" + data_tools.stock_news(20))
 
 

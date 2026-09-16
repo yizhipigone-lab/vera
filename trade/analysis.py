@@ -9,6 +9,11 @@ api.py 路由闭包里埋的计算函数搬到这里, 变模块级纯函数, 可
 - name_of: 股票代码 → 简称 (惰性加载)
 - rows_to_dicts: sqlite 游标 → dict 列表
 - diff_dicts / deep_merge: 配置 dict 的 diff 与递归合并
+- build_daily_pnl_view: 逐日盈亏日历视图 (2026-09-15 自 analysis_api 路由下沉)
+- build_summary_view: 累计 KPI 视图 (2026-09-15 自 analysis_api 路由下沉,
+  夏普/索提诺/卡玛/回撤修复改调 backtest.metrics 单一实现 —— 与回测页同口径)
+
+公开函数 9 个 (超铁律 8 一条: 两个视图构建函数与同城计算内聚, 记录在案)。
 """
 from __future__ import annotations
 
@@ -267,3 +272,174 @@ def calc_drawdowns(equities: list[float]) -> list[float]:
             peak = eq
         dds.append((eq / peak - 1) if peak > 0 else 0.0)
     return dds
+
+
+def build_daily_pnl_view(rows: list[dict], prev_month_row: dict | None,
+                         daily_trades: dict, gapfill_history: list[dict],
+                         year: int, month: int) -> dict:
+    """逐日盈亏日历视图 — 2026-09-15 自 analysis_api 路由下沉 (纯移动不改行为)。
+
+    输入: 当月快照行 rows (date/total_asset/source)、前月基准行、
+    当月成交聚合 daily_trades {date: {"buy": set, "sell": set}}、
+    补算留痕 gapfill_history (audit 读回, 新的在前)。
+    输出: {日期: {...}, "_month": {...}|None, "_missing": {...}, "_gapfill": {...}|None}。
+
+    口径要点 (沿用原路由注释):
+    - 首日基准 = 前月最后一行 (load_prev 单查, 任意长停机都取得到真基准);
+      账户首月无前月行 → 首日盈亏如实给 0。
+    - source='derived' 的停机日推算行照常参与盈亏链, 但计数标出。
+    - 月买卖笔数按整月成交聚合, 快照洞日的成交不丢。
+    - 月度汇总 = 期末资产相对基准行一次除法 (与逐日链复利等价, 无连乘舍入)。
+    - _missing 只报本月且自愈 (后来补上的日不再标)。
+    """
+    prefix = f"{year}-{month:02d}"
+    result: dict = {}
+    win_days = loss_days = derived_days = 0
+    for i, r in enumerate(rows):
+        prev = rows[i - 1] if i > 0 else prev_month_row
+        pnl_amount = 0.0
+        pnl_rate = 0.0
+        if prev is not None:
+            pnl_amount = r["total_asset"] - prev["total_asset"]
+            prev_asset = prev["total_asset"]
+            pnl_rate = pnl_amount / prev_asset if prev_asset > 0 else 0.0
+        if pnl_rate > 0:
+            win_days += 1
+        elif pnl_rate < 0:
+            loss_days += 1
+        src = r.get("source") or "eod"
+        if src == "derived":
+            derived_days += 1
+        date_str = r["date"]
+        tinfo = daily_trades.get(date_str, {"buy": set(), "sell": set()})
+        result[date_str] = {
+            "pnl_rate": round(pnl_rate, 6),
+            "pnl_amount": round(pnl_amount, 2),
+            "buy_count": len(tinfo["buy"]),
+            "sell_count": len(tinfo["sell"]),
+            "source": src,
+        }
+    buy_total = sum(len(v["buy"]) for v in daily_trades.values())
+    sell_total = sum(len(v["sell"]) for v in daily_trades.values())
+    if rows:
+        baseline = prev_month_row if prev_month_row is not None else rows[0]
+        base_asset = baseline["total_asset"]
+        m_amount = rows[-1]["total_asset"] - base_asset
+        m_rate = m_amount / base_asset if base_asset > 0 else 0.0
+        result["_month"] = {
+            "pnl_rate": round(m_rate, 6),
+            "pnl_amount": round(m_amount, 2),
+            "baseline_date": baseline["date"],
+            "baseline_is_prev_month": prev_month_row is not None,
+            "trading_days": len(rows),
+            "win_days": win_days,
+            "loss_days": loss_days,
+            "buy_count": buy_total,
+            "sell_count": sell_total,
+            "derived_days": derived_days,
+        }
+    else:
+        result["_month"] = None
+    last = gapfill_history[0] if gapfill_history else None
+    missing: dict = {}
+    for rep in gapfill_history:
+        for run in (rep.get("runs") or []):
+            if run.get("status") == "write":
+                continue
+            for ds in (run.get("dates") or []):
+                if not str(ds).startswith(prefix):
+                    continue      # _missing 只报本月
+                if ds in result:
+                    continue      # 后来补上了 → 自愈, 不留陈旧标记
+                missing.setdefault(ds, {"reason": run.get("reason", ""),
+                                        "residual": run.get("residual", 0.0),
+                                        "status": run.get("status", "")})
+    result["_missing"] = missing
+    result["_gapfill"] = ({"ts": last.get("ts"), "kind": last.get("kind"),
+                           "message": last.get("message"),
+                           "status": last.get("status"),
+                           "dates": last.get("dates") or [],
+                           "residual": last.get("residual", 0.0),
+                           "reason": last.get("reason", ""),
+                           "dry_run": bool(last.get("dry_run"))}
+                          if last else None)
+    return result
+
+
+def build_summary_view(rows: list[dict], total_trades: int,
+                       buy_map: dict, sell_map: dict,
+                       qmt_total: float | None) -> dict:
+    """累计 KPI 视图 (分析 Tab 卡片) — 2026-09-15 自 analysis_api 路由下沉。
+
+    🔴 口径收口 (2026-09-15 审计): 夏普/索提诺/卡玛/最大回撤/回撤修复
+    改调 backtest.metrics.MetricsCalculator 单一实现 —— 与回测页同口径
+    (夏普扣 1.5%/年无风险利率)。此前本视图手写夏普不扣无风险利率,
+    分析页与回测页"夏普"不是一个数, 用户对比必然打架。
+
+    qmt_total: QMT 查询到的总资产; None = 查询失败 → 对账告警 (fail-closed,
+    查询失败 ≠ 对账通过)。
+    """
+    import pandas as pd
+
+    from backtest.metrics import MetricsCalculator
+
+    equities = [r["total_asset"] for r in rows]
+    initial = equities[0]
+    current = equities[-1]
+    cum_ret = (current / initial - 1) if initial > 0 else 0.0
+    eq = pd.Series(equities, dtype=float)
+    # 年化/回撤/夏普/索提诺/卡玛/修复天数: MetricsCalculator 单一实现
+    # (ppy=252 日频口径, 与回测页同一把尺)
+    mc = MetricsCalculator.compute_all(
+        pd.DataFrame({"equity": eq}), pd.DataFrame(),
+        initial_capital=initial)
+    max_dd = mc.get("max_drawdown", 0.0)
+    wins = 0
+    total_closed = 0
+    profit_sum = 0.0
+    loss_sum = 0.0
+    for code in sell_map:
+        if code in buy_map:
+            buy_avg = (buy_map[code]["total_cost"] /
+                       buy_map[code]["total_qty"]
+                       if buy_map[code]["total_qty"] else 0)
+            sell_avg = (sell_map[code]["total_proceeds"] /
+                        sell_map[code]["total_qty"]
+                        if sell_map[code]["total_qty"] else 0)
+            if buy_avg > 0:
+                pnl = (sell_avg - buy_avg) / buy_avg
+                total_closed += 1
+                if pnl > 0:
+                    wins += 1
+                    profit_sum += pnl
+                elif pnl < 0:
+                    loss_sum += abs(pnl)
+    win_rate = wins / total_closed if total_closed > 0 else 0.0
+    avg_profit = profit_sum / wins if wins > 0 else 0.0
+    avg_loss = loss_sum / (total_closed - wins) if (total_closed - wins) > 0 else 0.0
+    profit_factor = (profit_sum / loss_sum) if loss_sum > 0 else 0.0
+    plr = (avg_profit / avg_loss) if avg_loss > 0 else 0.0
+    # QMT 对账: 查询失败 (None) 即告警 (审计 Q3 fail-closed);
+    # 偏差 >1% 告警 (只告警不回写, 铁律)。
+    reconciliation_warning = (
+        qmt_total is None
+        or abs(qmt_total - current) / max(qmt_total, 1) > 0.01)
+    return {
+        "start_date": rows[0]["date"],
+        "end_date": rows[-1]["date"],
+        "initial_capital": round(initial, 2),
+        "current_asset": round(current, 2),
+        "cumulative_return": round(cum_ret, 6),
+        "annualized_return": round(mc.get("annualized_return", 0.0), 6),
+        "max_drawdown": round(max_dd, 6),
+        "max_dd_recovery_days": mc.get("max_dd_recovery_days", 0),
+        "max_dd_recovered": mc.get("max_dd_recovered", True),
+        "sharpe_ratio": round(mc.get("sharpe_ratio", 0.0), 4),
+        "sortino_ratio": round(mc.get("sortino_ratio", 0.0), 4),
+        "calmar_ratio": round(mc.get("calmar_ratio", 0.0), 4),
+        "win_rate": round(win_rate, 4),
+        "profit_loss_ratio": round(plr, 4),
+        "profit_factor": round(profit_factor, 4),
+        "total_trades": total_trades,
+        "reconciliation_warning": reconciliation_warning,
+    }

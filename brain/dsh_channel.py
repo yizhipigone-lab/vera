@@ -1,6 +1,7 @@
 """brain/dsh_channel.py — DSH 深度思考通道 (复刻 IRX ADR-011 架构, VERA 化).
 
-外部接口仅 3 个符号: run_dsh / stop_dsh / scan_leak. research_api 是唯一调用方;
+外部接口 5 个符号: run_dsh / stop_dsh / scan_leak / rewrite_agent_default_model /
+apply_deep_settings. research_api 是唯一运行期调用方 (后两个为 AI 设置页接线);
 子进程生命周期 / 会话日志取证 / 留档落库全藏在内部.
 
 "摇醒"机制 (IRX 手册 §3): DSH headless 是一次性程序, 每问摇醒一个新进程,

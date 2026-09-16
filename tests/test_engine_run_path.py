@@ -84,6 +84,33 @@ class TestBuildBacktestLoopSignature:
                 f"{kw} 必须有默认值 (默认 None/1.0/1), 否则调用方被强制要求传."
             )
 
+    def test_keyword_only_params_whitelist(self):
+        """契约: keyword 参数白名单 — 新增 keyword 参数必须显式登记 (2026-09-15 审计)。
+
+        位置参数 ≤20 有守卫, 但 keyword 增长对守卫静默 (40→42 就是这样发生的:
+        buy_price_np 2026-08-20 / max_turnover_pct 2026-08-28, 均有记录但守卫
+        无感)。白名单不是禁止新增 —— 把新参数名加进来即视为"已审查"。
+        """
+        sig = inspect.signature(build_backtest_loop)
+        optional = {name for name, p in sig.parameters.items()
+                    if p.default != inspect.Parameter.empty}
+        expected = {
+            'first_day_enabled', 'first_day_target', 'bpday',
+            'slippage', 'stamp_tax', 'max_position_pct',
+            'ladder_tp_first', 'trailing_first',
+            'formula_exit_np', 'formula_exit_ratio', 'formula_exit_lag_bars',
+            'atr_enabled', 'atr_matrix', 'atr_multiplier',
+            'trailing_gap_protection', 'trailing_confirm',
+            'sell_cooldown_bars', 'max_total_exposure',
+            'loss_streak_halt_n', 'loss_streak_halt_bars',
+            'buy_price_np', 'max_turnover_pct',
+        }
+        assert optional == expected, (
+            f"keyword 参数集漂移: 多出 {sorted(optional - expected)}, "
+            f"缺少 {sorted(expected - optional)}. "
+            f"新增 keyword 参数请显式登记到本白名单 (视为已审查)."
+        )
+
     def test_slippage_and_stamp_tax_have_defaults(self):
         """slippage 和 stamp_tax 必须有默认值 (不能是必需位置参数)"""
         sig = inspect.signature(build_backtest_loop)

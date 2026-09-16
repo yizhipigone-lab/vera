@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 
 import brain.claude_cli as brain_cli
-from brain import data_tools, fastpath, prompts
+from brain import data_tools, fastpath, market_panel, prompts
 
 
 def _run(coro):
@@ -154,7 +154,8 @@ class TestMatchMarketBrief:
 
 class TestTryMarketBrief:
     def _mock(self, monkeypatch, snap="SNAP", capture=None):
-        monkeypatch.setattr(data_tools, "market_snapshot", lambda: snap)
+        # 2026-09-15: fastpath 已改直引 brain.market_panel (data_tools 兼容转发删)
+        monkeypatch.setattr(market_panel, "market_snapshot", lambda: snap)
         async def fake_ask(question, **kw):
             if capture is not None:
                 capture.update({"question": question, **kw})
@@ -180,13 +181,13 @@ class TestTryMarketBrief:
     def test_意图不匹配返None(self, monkeypatch):
         def _boom():
             raise AssertionError("不应取数")
-        monkeypatch.setattr(data_tools, "market_snapshot", _boom)
+        monkeypatch.setattr(market_panel, "market_snapshot", _boom)
         assert _run(fastpath.try_market_brief("宁德时代怎么样")) is None
 
     def test_取数异常回落(self, monkeypatch):
         def _boom():
             raise RuntimeError("取数炸了")
-        monkeypatch.setattr(data_tools, "market_snapshot", _boom)
+        monkeypatch.setattr(market_panel, "market_snapshot", _boom)
         assert _run(fastpath.try_market_brief("今天大盘怎么样")) is None
 
 

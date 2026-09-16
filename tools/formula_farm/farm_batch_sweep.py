@@ -3,7 +3,9 @@
 
 - 遍历 onboard.json 全部 ok 公式(GSxxxx), 逐条 gs_5m_sweep prep/run(36组合)/report;
 - 断点续跑: 已有 sweep csv 的跳过;
-- 严格门槛: 年化≥15% 且 最大回撤≥-15% → 写入 data/formula_farm/winners/<GS>_<标题>.md
+- 达标口径唯一真相源 = core/farm_rules.py (年化≥15% 且 |回撤|≤15% 且 笔数≥20;
+  笔数不足记「样本不足」, 不判达标也不参与最优评选 —— GS1292 事件教训)。
+  达标者写入 data/formula_farm/winners/<GS>_<标题>.md
   (源码+最优组合+四指标+口径) 和 winners/index.md 总榜;
 - 全量跑完(或被中止)后, 已扫部分也能出榜(--report-only 只出榜不扫)。
 """
@@ -22,12 +24,12 @@ sys.path.insert(0, ROOT)
 PY = sys.executable
 
 from tools.formula_farm import intake as _intake  # noqa: E402
+from core import farm_rules  # noqa: E402  达标口径唯一真相源 (2026-09-15 收口, 原手写 ANN_MIN/DD_MAX 缺笔数守卫)
 
 RUNS = os.path.join(ROOT, "data", "formula_farm", "runs")
 WINNERS = os.path.join(ROOT, "data", "formula_farm", "winners")
 SWEEP_PY = os.path.join(ROOT, "tools", "gs_5m_sweep.py")
 COMBOS36 = os.path.join(ROOT, "output", "gs_filter", "coarse_subset36.json")
-ANN_MIN, DD_MAX = 0.15, -0.15  # 严格门槛(2026-09-06 用户拍板)
 
 
 def log(s):
@@ -59,14 +61,15 @@ def best_row(gs):
             if r.get("error"):
                 continue
             try:
-                r["_ann"] = float(r["annret"])
+                float(r["annret"])
             except Exception:
                 continue
             rows.append(r)
     if not rows:
         return None
-    rows.sort(key=lambda r: r["_ann"], reverse=True)
-    return rows[0]
+    # 最优组合只在笔数≥20 的行里选 (farm_rules.pick_best), 全不足样本才退回
+    # 最高年化 —— 由下方 is_pass 判「样本不足」挡住, 不把噪声写进 winners
+    return farm_rules.pick_best(rows)
 
 
 def run_one(gs, start, end, universe_type):
@@ -112,7 +115,7 @@ def emit_winners(items, start, end):
         row = {"gs": gs, "file": it["file"], "url": it.get("url", ""),
                "ann": ann, "dd": dd, "calmar": float(b["calmar"]),
                "winrate": float(b["winrate"]), "trades": int(float(b["trades"])),
-               "key": b["key"], "pass": ann >= ANN_MIN and dd >= DD_MAX}
+               "key": b["key"], "pass": farm_rules.is_pass(b)}
         board.append(row)
     board.sort(key=lambda x: x["ann"], reverse=True)
     for r in board:
@@ -132,7 +135,7 @@ def emit_winners(items, start, end):
             f.write("\n".join(md))
     passed = [r for r in board if r["pass"]]
     idx = ["# 公式农场粗扫总榜 — %s\n" % time.strftime("%Y-%m-%d"),
-           "门槛: 年化≥15%% 且 回撤≥-15%% | 口径: %s~%s 沪深300 5m\n" % (start, end),
+           "%s | 口径: %s~%s 沪深300 5m\n" % (farm_rules.describe(), start, end),
            "| 排名 | 公式 | 年化 | 卡玛 | 回撤 | 胜率 | 笔数 | 最优组合 |", "|---|---|---|---|---|---|---|---|"]
     for i, r in enumerate(passed, 1):
         idx.append("| %d | %s (%s) | %.1f%% | %.2f | %.1f%% | %.1f%% | %d | %s |"
@@ -154,7 +157,7 @@ def main():
     args = ap.parse_args()
 
     items = load_ok_formulas()
-    log("待扫公式: %d (门槛 年化≥%.0f%% 回撤≥%.0f%%)" % (len(items), ANN_MIN * 100, DD_MAX * 100))
+    log("待扫公式: %d (%s)" % (len(items), farm_rules.describe()))
     if not args.report_only:
         done = 0
         zero = 0

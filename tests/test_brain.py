@@ -21,6 +21,9 @@ def _isolate_archive(tmp_path, monkeypatch):
     """ask_brain 默认归档进 vault —— 测试一律隔离到 tmp, 不碰真实归档/映射。"""
     monkeypatch.setattr(brain_archive, "ARCHIVE_DIR", tmp_path / "arch")
     monkeypatch.setattr(brain_archive, "_MAP_PATH", tmp_path / "map.json")
+    # 2026-09-15: 屏蔽本机 config/ai.json —— 有 standard 段时 _provider_warning
+    # 短路 (测试机配置了 AI 设置 → provider 软告警用例恒红, 环境红非真红)
+    monkeypatch.setattr(cli, "_standard_cfg", lambda: None)
 
 
 # ── counter / evidence ───────────────────────────────────────

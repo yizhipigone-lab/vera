@@ -82,9 +82,9 @@ def _fetch_watch_news(cfg: dict) -> list[dict]:
 
 
 def _fetch_snapshot() -> str:
-    """拉市场快照 (data_tools.market_snapshot fresh=True)。akshare 挂了返空串。"""
+    """拉市场快照 (market_panel.market_snapshot fresh=True)。akshare 挂了返空串。"""
     try:
-        from brain.data_tools import market_snapshot
+        from brain.market_panel import market_snapshot
         return market_snapshot(fresh=True) or ""
     except Exception as e:
         logger.warning("market_snapshot 拉取失败 (规则3/4 降级跳过): %s", e)

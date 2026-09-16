@@ -341,16 +341,18 @@ class TradeApp:
             on_adopted_trade=self._on_adopted_trade,
             on_order_terminal=lambda oid: self.executor.fill_ctx.discard(oid),
         )
+        # 2026-08-01 A6 收尾: ST 判定接 TDX IsSTGP (与回测同口径,
+        # get_cached_info 进程级缓存; TDX 不可用返回 {} → 非 ST,
+        # 与此前默认行为一致, fail-safe)。2026-09-15: 单点提取,
+        # Executor 与 AutoBuyFeature 共用同一份 (审计修复: 尾盘买入侧漏传 st)。
+        _st_checker = lambda code: str(  # noqa: E731
+            get_cached_info(code).get("IsSTGP", "0")) == "1"
         self.executor = Executor(
             self.gateway, self.book, self.store, self.risk, config,
             build_risk_ctx=self._build_risk_ctx,
             get_quote=lambda code: self.monitor.quote_of(code),
             get_prev_close=self._prev_close,
-            # 2026-08-01 A6 收尾: ST 判定接 TDX IsSTGP (与回测同口径,
-            # get_cached_info 进程级缓存; TDX 不可用返回 {} → 非 ST,
-            # 与此前默认行为一致, fail-safe)
-            st_checker=lambda code: str(
-                get_cached_info(code).get("IsSTGP", "0")) == "1",
+            st_checker=_st_checker,
             clock=clock,
         )
         # 2026-08-01 P0-1: hold_days 接线 —— 从 trades 表取首笔买入时间,
@@ -459,6 +461,7 @@ class TradeApp:
             # 股票池预算 (S_target − 股票市值) 封顶, 不花 ETF 池的钱;
             # 计算委托 trade/pool_money (治理III W2-1 口径单点)
             budget_provider=self._stock_budget_cap,
+            st_checker=_st_checker,
             clock=clock)
         # 2026-08-14: ETF 轮动特性 (双池资金分配)。cfg 传 getter 热更穿透;
         # 信号在工作线程算, 调仓在消费者线程执行 (与 auto_buy 同纪律)。
@@ -579,51 +582,15 @@ class TradeApp:
     def _run_gapfill(self, dry_run: bool = False, source: str = "startup") -> dict:
         """停机日资产补算 (2026-09-10, 计划书 docs/plan/2026-09-10_停机日资产补算_计划书.md)。
 
-        VERA 没开机/没归档的交易日, daily_asset 缺行 → 日历那格显示"无成交",
-        下一格把缺失日的涨跌一起吞进去当单日。这里用「最后一个实测锚点 +
-        缺口内成交回放 + 每日不复权收盘价」把缺的日子推算出来, 标 source='derived',
-        两端夹逼对不上账就拒写报差 (trade/asset_gapfill)。
-
-        持仓取 book 快照 (QMT 实时对账过的), 空了回落最近一次 EOD 持仓快照;
-        取价走 QMT 日线 (TDX 兜底)。**全链路 fail-soft** —— 补算只为分析页补齐,
-        绝不牵动交易链; 人工触发限非连续竞价时段 (自动路径在启动/收盘后)。
+        编排已下沉 trade/asset_gapfill.orchestrate_gapfill (2026-09-15 深模块
+        治理: 组合根只许接线), 此处只做依赖装配。算法/口径见该模块 docstring。
         """
         from trade import asset_gapfill as _gf
-        if source != "startup" and trading_session(self._clock()) == "continuous":
-            self.store.write_audit(
-                "gapfill_skip", "连续竞价时段不补算 (收盘后 15:05 再点)", {})
-            return {"ok": False, "error": "连续竞价时段不补算"}
-        positions: dict[str, int] = {}
-        try:
-            positions = {c: int(p.volume)
-                         for c, p in self.book.snapshot()["positions"].items()
-                         if p.volume > 0}
-        except Exception as e:                      # noqa: BLE001
-            _logger.warning("补算取持仓失败: %s", e)
-        if not positions:
-            try:
-                positions = {c: int(v.get("volume", 0))
-                             for c, v in self.store.load_position_snapshot().items()
-                             if int(v.get("volume", 0)) > 0}
-            except Exception as e:                  # noqa: BLE001
-                _logger.warning("补算取快照持仓失败: %s", e)
-        report = _gf.fill_gaps(
-            self.store, positions=positions,
-            close_at=_gf.make_close_source(self.gateway),
-            today=_dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d"),
-            dry_run=dry_run)
-        if report.get("written"):
-            _logger.info("停机日补算 (%s): 写入 %s", source, report["written"])
-        if report.get("error"):
-            _logger.warning("停机日补算异常: %s", report["error"])
-        if source != "startup" and not report.get("runs"):
-            try:
-                self.store.write_audit(
-                    "gapfill_none", "停机日补算: 没有需要补的交易日",
-                    {"dry_run": bool(dry_run), "source": source})
-            except Exception:                       # noqa: BLE001
-                pass
-        return report
+        return _gf.orchestrate_gapfill(
+            self.store, self.book, self.gateway,
+            clock=self._clock,
+            is_continuous=lambda: trading_session(self._clock()) == "continuous",
+            dry_run=dry_run, source=source)
 
     def stop(self) -> None:
         """优雅退出: 先停事件源 (定时器), 再停消费者, 最后断网关/关库。"""

@@ -4,22 +4,24 @@
 照 dsh_channel 范式: 小接口 (3 个模块函数) + 内部 fail-soft, 让新会话找"市场体检"
 不必在 789 行里翻。
 
-【迁移纪律】纯移动不改行为: 三个函数体与 data_tools 迁移前逐字节一致; 依赖的
-极少量私有助手 (_section/_no_ak/_ak/缓存路径/指数代码集) 在此**原样复制**并标注
-来源 —— data_tools 仍保有同一批助手供其余 7 个域用 (避免 import 环)。长期若再
-新增公共小工具, 应收 core/brain 级公共模块, 勿在此或 data_tools 继续堆。
+【迁移纪律】纯移动不改行为: 三个函数体与 data_tools 迁移前逐字节一致。
+2026-09-15 审计收口: 迁移时**原样复制**的私有助手 (_section/_no_ak/_ak)
+已收编 brain/ak_sections.py 公共模块 (本文件 docstring 早就写了"应收公共
+模块", 本次清偿); 缓存路径/指数代码集为本域私有, 保留。
 牛熊口径走 core/index_regime.py 单一真相源 (治理III W1-b), 见 market_health。
 """
 from __future__ import annotations
 
 import datetime as dt
-import importlib.util
 import time
 
 from utils.sysutil import project_root
 
-# ── 私有助手副本 (来源: brain/data_tools.py 同名, 2026-09-05 迁移时原样复制) ──
-_HAS_AK = importlib.util.find_spec("akshare") is not None
+from brain.ak_sections import HAS_AK as _HAS_AK  # noqa: E402
+from brain.ak_sections import ak as _ak  # noqa: E402
+from brain.ak_sections import no_ak as _no_ak  # noqa: E402
+from brain.ak_sections import section as _section  # noqa: E402
+
 _A_INDEX_CODES = {"sh000001", "sz399001", "sz399006",
                   "sh000688", "sh000300", "sh000016"}
 _CACHE_DIR = project_root() / "data" / "brain_model_cache"
@@ -27,19 +29,6 @@ _SNAPSHOT_CACHE_TTL = 2 * 3600  # 2 小时
 _HEALTH_INDEXES = (("shanghai", "上证指数"), ("hs300", "沪深300"),
                    ("zz500", "中证500"), ("chuangyeban", "创业板指"))
 _HEALTH_WINDOWS = (("近1月", 21), ("近3月", 63), ("近半年", 126), ("近1年", 252))
-
-
-def _ak():
-    import akshare as ak
-    return ak
-
-
-def _section(title: str, body: str) -> str:
-    return f"## {title}\n\n{body}"
-
-
-def _no_ak() -> str:
-    return "【缺】未安装 akshare（pip install akshare）"
 
 
 # ── 市场面公开接口 (3) ────────────────────────────────────────

@@ -184,17 +184,12 @@ class MetricsCalculator:
 
     @staticmethod
     def sharpe_ratio(equity: pd.Series, risk_free: float = 0.015, periods_per_year: int = 252) -> float:
-        """夏普比率。"""
-        if len(equity) < 2:
-            return 0.0
-        returns = equity.pct_change().dropna()
-        if len(returns) < 2:
-            return 0.0
-        daily_rf = risk_free / periods_per_year
-        excess = returns - daily_rf
-        if excess.std() == 0:
-            return 0.0
-        return float(excess.mean() / excess.std() * np.sqrt(periods_per_year))
+        """夏普比率。
+
+        2026-09-15 审计收口: 委托 _sharpe 单一实现 (原同公式双写,
+        零波动守卫语义已分叉; excess=returns-常数, std 恒等)。
+        """
+        return MetricsCalculator._sharpe(equity, risk_free, periods_per_year)
 
     @staticmethod
     def win_rate(trades: pd.DataFrame) -> float:

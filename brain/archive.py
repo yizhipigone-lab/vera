@@ -53,23 +53,15 @@ def _link_candidates(db_path: Path | None = None) -> list:
     global _CANDIDATES_CACHE
     if _CANDIDATES_CACHE is not None:
         return _CANDIDATES_CACHE
-    import sqlite3
-    db = db_path or _KG_DB
+    from kg.query import get_link_nodes  # SQL 已下沉门面 (2026-09-15 审计收口)
     out: list = []
-    try:
-        conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
-        try:
-            rows = conn.execute(
-                "SELECT node_id, node_type, code, name FROM kg_nodes "
-                "WHERE node_type IN ('industry_tdx','industry','company')").fetchall()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning(f"链接候选读取失败 (松耦合, 跳过打链): {e}")
+    rows = get_link_nodes(db_path)
+    if not rows:
         return out
     type_label = {"industry_tdx": "行业(通达信)", "industry": "行业(产业链)",
                   "company": "公司"}
-    for node_id, ntype, code, name in rows:
+    for r in rows:
+        node_id, ntype, code, name = r["node_id"], r["node_type"], r["code"], r["name"]
         stem = _sanitize_stem(node_id)
         label = type_label[ntype]
         disp = name or code or node_id

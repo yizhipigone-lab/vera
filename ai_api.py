@@ -87,7 +87,8 @@ async def ai_save_config(body: dict):
                  "error": f"档 {bad} 需为对象 (fast/standard 含 base_url/api_key/model, deep 含 provider/model)"},
                 status_code=400)
 
-        old = ai_config.load() if isinstance(ai_config.load(), dict) else {}
+        _loaded = ai_config.load()
+        old = _loaded if isinstance(_loaded, dict) else {}
         new = ai_config.merge_patch(old, body)   # 深模块: 合并语义单一实现
         ai_config.save(new)
         return {"success": True, "config": _view_of(new)}

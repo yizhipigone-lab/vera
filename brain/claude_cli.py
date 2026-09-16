@@ -93,6 +93,29 @@ def _is_transient_net(err_text: str) -> bool:
     return any(p in err_text for p in _TRANSIENT_PATTERNS)
 
 
+# session 类错误模式 (坏 session 常见死因: 服务器中途被杀 → 会话留下悬挂
+# tool_use → 续聊必炸 "API Error: 400 due to tool use concurrency issues",
+# 且错误打在 stdout 不在 stderr —— 实测)。新 session 不可能坏, 重试必愈。
+_SESSION_PATTERNS = ("session", "conversation", "tool use", "concurrency")
+
+
+def _classify_recovery(err_text: str) -> str | None:
+    """非零退出错误 → 恢复策略分类 (流式/同步两分支**唯一实现**, 2026-09-15 收口)。
+
+    返 "max_turns"(同 session 续跑) / "session"(重建 session 重试) /
+    "transient_net"(同 session 续跑) / None(不可恢复, 如实报错)。
+    此前两个分支各手写一份三规则, 且 session 模式集已漂移
+    (同步侧有 "tool use"/"concurrency", 流式侧漏) —— 同款语义不写第二份。
+    """
+    if "max turns" in err_text:
+        return "max_turns"
+    if any(p in err_text for p in _SESSION_PATTERNS):
+        return "session"
+    if _is_transient_net(err_text):
+        return "transient_net"
+    return None
+
+
 def _provider_warning() -> str | None:
     """标准档 provider 软告警: AI 设置页配了 standard 档 → 不发告警
     (端点/Key 由页面显式指定, 是用户主动选的接入); 否则按 ~/.claude
@@ -331,7 +354,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
             # 错误分类看 stdout 尾部 + stderr (API 错误常打在 stdout, 实测)
             err_text = (tail_s + "\n"
                         + serr_s.decode("utf-8", "replace")).lower()
-            if "max turns" in err_text:
+            kind = _classify_recovery(err_text)  # 恢复分类唯一实现
+            if kind == "max_turns":
                 await on_line(f"[系统] 已达 {max_turns} 轮上限，自动续跑…")
                 retry_cmd = base_cmd + ["--resume", sid]
                 rc_s2, _, _ = await _run_once_stream(retry_cmd, "继续".encode())
@@ -342,7 +366,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 else:
                     result["warnings"].append(
                         f"已达 {max_turns} 轮上限, 续跑仍失败 (rc={rc_s2})")
-            elif "session" in err_text or "conversation" in err_text:
+            elif kind == "session":
                 await on_line("[系统] session 失效，自动重建…")
                 memory.reset_session(channel)
                 sid, _ = memory.prepare_session(channel)
@@ -354,7 +378,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 else:
                     result["warnings"].append(
                         f"session 重建后仍失败 (rc={rc_s2})")
-            elif _is_transient_net(err_text):
+            elif kind == "transient_net":
                 # 2026-07-30: provider 连接中断 (如 z.ai mid-response 断流)
                 # 同 session 续跑恢复, 只续一次 —— 与 max-turns 恢复同款语义
                 await on_line("[系统] provider 连接中断（网络抖动），自动续跑…")
@@ -399,7 +423,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
     if rc != 0:
         err = _err_detail(stderr, stdout)
         low = err.lower()
-        if "max turns" in low:
+        kind = _classify_recovery(low)  # 恢复分类唯一实现 (与流式分支同源)
+        if kind == "max_turns":
             # 轮数打满 ≠ session 坏 (实测: 重置会话是冤枉它)。同 session 续跑
             # 一轮 ("继续"), 用户可见警告; 再打满就如实报 + 提示手动"继续"。
             retry_cmd = base_cmd + ["--resume", sid]
@@ -415,11 +440,8 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 result["answer"] = (f"大脑退出码 {rc}: {err2 or '无输出'}\n"
                                     f"（回复「继续」可让它接着干）")
                 return result
-        elif any(p in low for p in ("session", "conversation", "tool use", "concurrency")):
-            # session 类错误才换新 session 重试。坏 session 常见死因:
-            # 服务器中途被杀 → 会话留下悬挂 tool_use → 续聊必炸
-            # ("API Error: 400 due to tool use concurrency issues", 且错误
-            # 打在 stdout 不在 stderr —— 实测)。新 session 不可能坏, 重试必愈。
+        elif kind == "session":
+            # session 类错误才换新 session 重试 (_SESSION_PATTERNS 单点定义)。
             memory.reset_session(channel)
             sid, _ = memory.prepare_session(channel)
             retry_cmd = base_cmd + ["--session-id", sid]
@@ -433,7 +455,7 @@ async def _ask_brain_impl(question: str, session_id: str | None = None,
                 err2 = _err_detail(stderr, stdout)
                 result["answer"] = f"大脑退出码 {rc}: {err2 or '无输出'}"
                 return result
-        elif _is_transient_net(low):
+        elif kind == "transient_net":
             # 2026-07-30: provider 连接中断 (z.ai mid-response 断流实测)。
             # 同 session 续跑一轮 ("继续"), 只续一次; 再断如实报。
             retry_cmd = base_cmd + ["--resume", sid]

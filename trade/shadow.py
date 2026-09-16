@@ -12,9 +12,11 @@
     shadow→legacy 单向, rotation↔shadow 循环已随之破除), 不写第二份规则。
 
 公开接口 (≤8):
-    - compute_shadow_state(closes) -> dict        纯函数: 收盘序列 → 三态状态 dict
     - append_shadow_log(path, date_str, state)    JSONL 追加 (按日去重, 同日保留首条)
     - run_shadow(closes, date_str, path) -> dict|None   fail-soft 组合入口
+
+    三态状态计算不做别名转发 (2026-09-15 审计删除 compute_shadow_state):
+    调用方直用 trade.legacy_three_state.compute_signal (单一规则源)。
 """
 
 from __future__ import annotations
@@ -28,15 +30,6 @@ from utils.logger import get_logger
 _logger = get_logger("trade.shadow")
 
 SHADOW_LOG_PATH = os.path.join("data", "shadow_rotation.jsonl")
-
-
-def compute_shadow_state(closes: list[float]) -> dict:
-    """收盘序列 → MA20 三态状态 dict (复用 legacy_three_state.compute_signal, 单一规则源)。
-
-    返回 compute_signal 原样 dict: {"state": "full_cyb"|"half"|"full_gold"|None, ...}
-    state=None 表示数据不足 (fail-closed 语义由调用方处理: 不落盘)。
-    """
-    return compute_signal(list(closes or []))
 
 
 def append_shadow_log(path: str, date_str: str, state: dict) -> bool:
@@ -72,7 +65,7 @@ def run_shadow(closes: list[float], date_str: str,
     数据不足 (state=None) → 不落盘返 None (次日数据够了自然补上, 无空洞语义)。
     """
     try:
-        st = compute_shadow_state(closes)
+        st = compute_signal(list(closes or []))  # 单一规则源, 不转发
         if not st or st.get("state") is None:
             _logger.info("影子三态数据不足 (%d 根), 本日不落盘", len(closes or []))
             return None

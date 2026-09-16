@@ -90,6 +90,8 @@ def index_annual(idx_df):
     """上证按年: 收益/MA250牛市占比/年末状态。"""
     df = idx_df.copy()
     df.index = pd.to_datetime(df.index)
+    # 注: 这是「收盘价 > MA250」的简化占比代理 (列名即口径), 不是牛熊判定;
+    # 牛熊口径唯一真相源 = core/index_regime.py (MA250+20日相对斜率+样本门槛)。
     df["ma250"] = df["close"].rolling(250).mean()
     df["bull"] = df["close"] > df["ma250"]
     df["year"] = df.index.year

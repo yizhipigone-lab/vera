@@ -1,8 +1,8 @@
 """brain/data_tools.py — 对话大脑统一取数工具层（2026-08-12，P2）。
 
 > 2026-09-05 治理III W4-c: 市场面 (zt_pool/market_health/market_snapshot)
-> 已迁出到 brain/market_panel.py, 本文件保留兼容 re-export (见文件中部)。
-> 其余数据域 (新闻/技术面/估值/公告/诊断) 仍在本文件。
+> 已迁出到 brain/market_panel.py；2026-09-15 审计: 兼容 re-export 已删,
+> 消费方全部直引 market_panel。其余数据域 (新闻/技术面/估值/公告/诊断) 仍在本文件。
 
 动机：大脑查行情原来要现场发十几条 search_web / 裸 akshare 命令摸索
 （2026-08-12 简报会话实测约 20 分钟），慢、易超时、烧钱。本模块把高频取数
@@ -40,13 +40,14 @@ import os
 
 from utils.sysutil import ensure_utf8_stdout, project_root
 
-_HAS_AK = importlib.util.find_spec("akshare") is not None
+# 2026-09-15 审计收口: _HAS_AK/_ak/_section/_no_ak 与 market_panel 的副本
+# 统一收编 brain/ak_sections.py (同名别名承接, 本文件调用点零改动)
+from brain.ak_sections import HAS_AK as _HAS_AK  # noqa: E402
+from brain.ak_sections import ak as _ak  # noqa: E402
+from brain.ak_sections import no_ak as _no_ak  # noqa: E402
+from brain.ak_sections import section as _section  # noqa: E402
+
 _HAS_TS = importlib.util.find_spec("tushare") is not None
-
-
-def _ak():
-    import akshare as ak
-    return ak
 
 
 def _ts_pro():
@@ -83,18 +84,11 @@ def _kg_company_name(c: str) -> str | None:
     """本地知识图谱查公司官方名称（不联网，永远可用）。
 
     2026-08-12 事故驱动：大脑凭训练记忆把 300687 叫成"赛义"（实为赛意信息）。
-    名称以 kg/graph.db 为准，别信 LLM 记忆。"""
+    名称以 kg/graph.db 为准，别信 LLM 记忆。
+    2026-09-15 审计收口: SQL 下沉 kg.query.get_company 门面。"""
     try:
-        import sqlite3
-        db = project_root() / "kg" / "graph.db"
-        conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
-        try:
-            row = conn.execute(
-                "SELECT name FROM kg_nodes "
-                "WHERE node_type='company' AND code=?", (c,)).fetchone()
-        finally:
-            conn.close()
-        return row[0] if row and row[0] else None
+        from kg.query import get_company
+        return (get_company(c) or {}).get("name") or None
     except Exception:
         return None
 
@@ -117,16 +111,8 @@ def _kg_all_companies() -> list[tuple[str, str]]:
         mtime = db.stat().st_mtime if db.exists() else -1.0
         if _kg_companies_cache is not None and _kg_companies_mtime == mtime:
             return _kg_companies_cache
-        import sqlite3
-        conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
-        try:
-            rows = conn.execute(
-                "SELECT code, name FROM kg_nodes "
-                "WHERE node_type='company' AND name IS NOT NULL AND name != ''"
-            ).fetchall()
-        finally:
-            conn.close()
-        _kg_companies_cache = [(r[0], r[1]) for r in rows]
+        from kg.query import get_all_companies  # SQL 已下沉门面 (2026-09-15)
+        _kg_companies_cache = get_all_companies()
         _kg_companies_mtime = mtime
         return _kg_companies_cache
     except Exception:
@@ -194,14 +180,6 @@ def _fetch_resilient(ak_call, hosts, timeout: float, what: str) -> object:
     raise RuntimeError(err)
 
 
-def _section(title: str, body: str) -> str:
-    return f"## {title}\n\n{body}"
-
-
-def _no_ak() -> str:
-    return "【缺】未安装 akshare（pip install akshare）"
-
-
 def _norm_code(code: str) -> str:
     """'300750' / '300750.SZ' / 'sz300750' → '300750'。"""
     c = (code or "").strip().lower()
@@ -226,9 +204,8 @@ def stock_news(n: int = 15) -> str:
 
 
 # 市场面 (zt_pool / market_health / market_snapshot) 已迁 brain/market_panel
-# (治理III W4-c, 2026-09-05): 本处兼容 re-export, 旧引用方零改动。
-# 新代码请直接 `from brain.market_panel import market_health, market_snapshot, zt_pool`。
-from brain.market_panel import market_health, market_snapshot, zt_pool  # noqa: E402
+# (治理III W4-c, 2026-09-05); 兼容 re-export 已于 2026-09-15 审计删除,
+# 消费方全部直引 brain.market_panel (fastpath/sentiment_pipeline/daily_brief)。
 
 
 def _sina_code(c: str) -> str:
@@ -645,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fresh", action="store_true",
                     help="market_snapshot 绕过 2 小时缓存强制重取")
     args = ap.parse_args(argv)
+    # 市场面三兄弟已迁 market_panel (兼容 re-export 2026-09-15 删): CLI 直引
+    from brain.market_panel import market_health, market_snapshot, zt_pool
     if args.cmd == "market_snapshot":
         print(market_snapshot(args.arg, fresh=args.fresh))
     elif args.cmd == "market_health":

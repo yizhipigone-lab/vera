@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from trade.shadow import append_shadow_log, compute_shadow_state, run_shadow
+from trade.legacy_three_state import compute_signal  # 单一规则源 (原 compute_shadow_state 别名已删)
+from trade.shadow import append_shadow_log, run_shadow
 
 
 def _series(pattern):
@@ -26,22 +27,22 @@ def _series(pattern):
 
 
 def test_shadow_state_full_cyb():
-    st = compute_shadow_state(_series("rising"))
+    st = compute_signal(_series("rising"))
     assert st["state"] == "full_cyb"
 
 
 def test_shadow_state_full_gold():
-    st = compute_shadow_state(_series("falling"))
+    st = compute_signal(_series("falling"))
     assert st["state"] == "full_gold"
 
 
 def test_shadow_state_half():
-    st = compute_shadow_state(_series("half"))
+    st = compute_signal(_series("half"))
     assert st["state"] == "half"
 
 
 def test_shadow_state_insufficient():
-    st = compute_shadow_state([1.0, 2.0, 3.0])
+    st = compute_signal([1.0, 2.0, 3.0])
     assert st["state"] is None
 
 

@@ -28,6 +28,7 @@ from trade.book import (
     round_price,  # 治理III W1-c: 唯一真相源迁 book.py (本模块内部+auto_buy 经此引用)
 )
 from trade.quote_stale import is_quote_stale
+from trade.closing_auction import auction_sell_price  # 收盘竞价限价单一实现 (2026-09-15)
 from trade.risk import OrderIntent
 from utils.logger import get_logger
 
@@ -545,32 +546,19 @@ class Executor:
             #         深市已实测盘中挂跌停撞笼子 88009 废单, 沪市同理不能挂
             #         跌停)。无盘口 quote → fallback 对手最优。
             #   fallback 对手最优仅为无价格数据时的最后手段。
-            if force and _is_sz(code):
+            if force:
+                # 沪深尾盘收盘集合竞价只收限价单: 限价@跌停 (单一实现
+                # trade/closing_auction.py, 2026-09-15 收口 —— 原深市/沪市
+                # 两分支除审计文案外逐字节相同, 且与 auto_buy 买侧为双胞胎)。
                 prev_close = self._prev_close(code)
                 if prev_close:
-                    limit_down = round_price(
-                        prev_close * (1 - limit_ratio(code, self._st(code))))
+                    limit_down = auction_sell_price(code, prev_close,
+                                                    self._st(code))
                     ok = self._sell(code, can_use, limit_down, PRICE_TYPE_LIMIT,
                                     p["reason"], "exit_sell_market")
                 else:
                     self._store.write_audit(
-                        "exit_escalate", f"{code} 深市无昨收, 跌停价算不出,"
-                        " 仍发对手最优", {"code": code})
-                    ok = self._sell(code, can_use, 0.0,
-                                    PRICE_TYPE_MARKET_PEER_FIRST,
-                                    p["reason"], "exit_sell_market")
-            elif force:
-                # 沪市尾盘: 与深市同口径限价@跌停 (沪市 2018 起尾盘也是
-                # 收盘集合竞价, 市价类报单被柜台禁用 63596)
-                prev_close = self._prev_close(code)
-                if prev_close:
-                    limit_down = round_price(
-                        prev_close * (1 - limit_ratio(code, self._st(code))))
-                    ok = self._sell(code, can_use, limit_down, PRICE_TYPE_LIMIT,
-                                    p["reason"], "exit_sell_market")
-                else:
-                    self._store.write_audit(
-                        "exit_escalate", f"{code} 沪市无昨收, 跌停价算不出,"
+                        "exit_escalate", f"{code} 无昨收, 跌停价算不出,"
                         " 仍发对手最优", {"code": code})
                     ok = self._sell(code, can_use, 0.0,
                                     PRICE_TYPE_MARKET_PEER_FIRST,

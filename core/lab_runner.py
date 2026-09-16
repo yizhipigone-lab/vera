@@ -37,6 +37,32 @@ def formula_name_ok(name: str) -> bool:
     return bool(FORMULA_RE.match(name))
 
 
+def history_items() -> list[dict]:
+    """历史体检聚合 (/api/lab/history 数据源) — 2026-09-15 自 lab_api 路由下沉。
+
+    按公式聚合 output/reports/*_filter_rules.json (规则数/采纳数/tags) +
+    docs/audit/*因子体检报告.md (按公式名匹配报告文件), 按 generated_at 倒序。
+    """
+    import json as _json
+    out: dict = {}
+    for p in (ROOT / "output" / "reports").glob("*_filter_rules.json"):
+        try:
+            d = _json.loads(p.read_text(encoding="utf-8"))
+            formula = d.get("formula") or p.name.replace("_filter_rules.json", "")
+            adopted = sum(1 for r in d.get("rules", []) if r.get("adopted"))
+            out.setdefault(formula, {"formula": formula, "generated_at": d.get("generated_at", ""),
+                                     "rules": len(d.get("rules", [])), "adopted": adopted,
+                                     "tags": d.get("tags", [])})
+        except Exception:
+            continue
+    for p in sorted((ROOT / "docs" / "audit").glob("*因子体检报告.md")):
+        for formula in out:
+            if f"_{formula}_" in p.name:
+                out[formula]["report"] = p.name
+                out[formula]["report_date"] = p.name[:10]
+    return sorted(out.values(), key=lambda x: x.get("generated_at", ""), reverse=True)
+
+
 @dataclass
 class LabTask:
     formulas: list[str]

@@ -25,8 +25,10 @@
 **写入**: 推算行带 `source='derived'`; 实测行 (`source='eod'`) 永不覆盖
 (存储层还有一道保险, 见 `DailyAssetStore.save`)。
 
-接口只有三个: `plan_gaps` (纯函数, 全部数学, 可用 dict 单测) /
-`fill_gaps` (编排: 读库+写行+留痕) / `make_close_source` (取价降级链)。
+接口: `plan_gaps` (纯函数, 全部数学, 可用 dict 单测) /
+`fill_gaps` (编排: 读库+写行+留痕) / `make_close_source` (取价降级链) /
+`orchestrate_gapfill` (生产编排: 持仓快照组装+时段闸+调用 fill_gaps,
+2026-09-15 自 trade_main 组合根下沉)。
 """
 from __future__ import annotations
 
@@ -449,3 +451,49 @@ def _tdx_closes(code: str, start: str) -> dict[str, float]:
         if px == px and px > 0:
             out[idx.strftime("%Y-%m-%d")] = px
     return out
+
+
+def orchestrate_gapfill(store, book, gateway, *, clock, is_continuous,
+                        dry_run: bool = False, source: str = "startup") -> dict:
+    """停机日补算生产编排 (2026-09-15 自 trade_main 组合根下沉, 纯移动不改行为)。
+
+    组合根只留一行调用。持仓取 book 快照 (QMT 实时对账过的), 空了回落最近
+    一次 EOD 持仓快照; 取价走 QMT 日线 (TDX 兜底)。**全链路 fail-soft** ——
+    补算只为分析页补齐, 绝不牵动交易链; 人工触发 (非 startup) 限非连续竞价
+    时段, is_continuous: callable → bool (由组合根注入时段判定)。
+    """
+    if source != "startup" and is_continuous():
+        store.write_audit(
+            "gapfill_skip", "连续竞价时段不补算 (收盘后 15:05 再点)", {})
+        return {"ok": False, "error": "连续竞价时段不补算"}
+    positions: dict[str, int] = {}
+    try:
+        positions = {c: int(p.volume)
+                     for c, p in book.snapshot()["positions"].items()
+                     if p.volume > 0}
+    except Exception as e:                      # noqa: BLE001
+        logger.warning("补算取持仓失败: %s", e)
+    if not positions:
+        try:
+            positions = {c: int(v.get("volume", 0))
+                         for c, v in store.load_position_snapshot().items()
+                         if int(v.get("volume", 0)) > 0}
+        except Exception as e:                  # noqa: BLE001
+            logger.warning("补算取快照持仓失败: %s", e)
+    report = fill_gaps(
+        store, positions=positions,
+        close_at=make_close_source(gateway),
+        today=datetime.fromtimestamp(clock()).strftime("%Y-%m-%d"),
+        dry_run=dry_run)
+    if report.get("written"):
+        logger.info("停机日补算 (%s): 写入 %s", source, report["written"])
+    if report.get("error"):
+        logger.warning("停机日补算异常: %s", report["error"])
+    if source != "startup" and not report.get("runs"):
+        try:
+            store.write_audit(
+                "gapfill_none", "停机日补算: 没有需要补的交易日",
+                {"dry_run": bool(dry_run), "source": source})
+        except Exception:                       # noqa: BLE001
+            pass
+    return report
