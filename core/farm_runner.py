@@ -53,6 +53,7 @@ class FarmRunner:
         self._lock = threading.Lock()
         self._current: GateRun | None = None
         self._proc = None
+        self._stop_requested = False   # 人工停止标记 (停止与真失败分开记)
         self._runner = runner or self._run_gate
         self._last = self._load_last()
 
@@ -92,12 +93,14 @@ class FarmRunner:
             if gate not in GATES:
                 return None, "未知闸门"
             run = GateRun(gate=gate, started_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+            self._stop_requested = False
             self._current = run
         threading.Thread(target=self._work, args=(run,), daemon=True).start()
         return run, ""
 
     def stop(self):
         with self._lock:
+            self._stop_requested = True
             p = self._proc
         if p and p.poll() is None:
             p.terminate()
@@ -112,6 +115,10 @@ class FarmRunner:
             run.status = "failed"
             run.error = repr(e)
         finally:
+            if self._stop_requested and run.status != "done":
+                # 人工停止 ≠ 子进程真失败 (此前页面都显示 ❌ 失败+退出码, 分不清)
+                run.status = "stopped"
+                run.error = ""
             run.finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
             with self._lock:
                 self._last[run.gate] = {

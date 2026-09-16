@@ -133,9 +133,33 @@ def _latest_check(date_str=None):
     return json.load(open(fp, encoding="utf-8")), fp
 
 
+def _save_onboard(ob_path, date_str, items):
+    """合并写 onboard.json (读旧 → 按文件合并 → 原子替换落盘)。
+
+    2026-09-06 血泪教训: 覆盖写会把历史 ok 记录冲掉 → 断点失效重复入库,
+    所以一律合并写 (同文件取最新一轮的结果)。
+    2026-09-16: 抽成独立函数, 供「每入一条立即记账」复用 (中途停止不丢账)。
+    """
+    merged = {}
+    if os.path.exists(ob_path):
+        try:
+            for it in json.load(open(ob_path, encoding="utf-8")).get("items", []):
+                merged[it.get("file")] = it
+        except Exception:
+            pass
+    for it in items:
+        merged[it["file"]] = it
+    tmp = ob_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"date": date_str, "finished_at": time.strftime("%H:%M:%S"),
+                   "items": list(merged.values())}, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, ob_path)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--max-add", type=int, default=20)
+    ap.add_argument("--max-add", type=int, default=0,
+                    help="本轮最多入库几条 (0=全部; 已入库/编译失败的自动跳过, 断了再点接着来)")
     ap.add_argument("--run-date", default=None)
     ap.add_argument("--fail-streak", type=int, default=2,
                     help="连续失败几次熔断(大批量续跑可调大, 失败条目本身会每轮重试并留痕)")
@@ -172,9 +196,15 @@ def main():
 
     from tools.formula_farm.daily_run import _next_gs_name
     n = _next_gs_name()
-    log("[4/4] 逐条入库 (编号起点 GS%04d, 本轮上限 %d)..." % (n, args.max_add))
+    todo = vetted[: args.max_add] if args.max_add > 0 else vetted
+    log("[4/4] 逐条入库 (编号起点 GS%04d, 本轮 %s)..." % (
+        n, "上限 %d 条" % args.max_add if args.max_add > 0
+        else "全部 %d 条" % len(todo)))
+    date_str = chk.get("date", time.strftime("%Y-%m-%d"))
+    os.makedirs(os.path.join(RUNS, date_str), exist_ok=True)
+    ob_path = os.path.join(RUNS, date_str, "onboard.json")
     results, fail_streak = [], 0
-    for rec in vetted[: args.max_add]:
+    for rec in todo:
         name = "GS%04d" % n
         n += 1
         t0 = time.time()
@@ -190,28 +220,19 @@ def main():
                                             rec["file"][:36], msg, time.time() - t0))
         results.append({"gs": name, "file": rec["file"], "url": rec.get("url", ""),
                         "ok": ok, "msg": msg})
+        # 2026-09-16: 每入一条立即记账 —— 中途点「停止」也不丢账, 下轮断点续跑
+        # 不会把已入的重复录入 (此前整轮跑完才落盘, 停止 = 本轮已入的变重复条目)
+        try:
+            _save_onboard(ob_path, date_str, [results[-1]])
+        except Exception as e:                                   # noqa: BLE001
+            log("   ! 记账失败(继续入库, 收尾再补): %r" % e)
         fail_streak = 0 if ok else fail_streak + 1
         if fail_streak >= args.fail_streak:
             log("   ✗ 连续 %d 次失败, 终止本批(防带病批量)" % args.fail_streak)
             break
 
-    date_str = chk.get("date", time.strftime("%Y-%m-%d"))
     ok_n = sum(1 for x in results if x["ok"])
-    os.makedirs(os.path.join(RUNS, date_str), exist_ok=True)
-    ob_path = os.path.join(RUNS, date_str, "onboard.json")
-    # 合并写(2026-09-06 血泪教训): 覆盖写会把历史 ok 记录冲掉 → 断点失效重复入库
-    merged = {}
-    if os.path.exists(ob_path):
-        try:
-            for it in json.load(open(ob_path, encoding="utf-8")).get("items", []):
-                merged[it.get("file")] = it
-        except Exception:
-            pass
-    for it in results:
-        merged[it["file"]] = it   # 同文件取最新一轮的结果
-    with open(ob_path, "w", encoding="utf-8") as f:
-        json.dump({"date": date_str, "finished_at": time.strftime("%H:%M:%S"),
-                   "items": list(merged.values())}, f, ensure_ascii=False, indent=1)
+    _save_onboard(ob_path, date_str, results)   # 收尾补记 (循环内已逐条记, 幂等)
     os.makedirs(REPORTS, exist_ok=True)
     md = ["# 公式农场入库结果 — %s\n" % date_str,
           "入库 **成功 %d / 失败 %d**(本批 %d 条, 待入库 %d 条)\n" % (

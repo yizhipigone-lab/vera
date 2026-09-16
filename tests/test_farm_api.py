@@ -70,6 +70,29 @@ def test_busy_conflict_409(client):
     _wait_idle(farm)
 
 
+def test_stop_marks_run_stopped(client):
+    """2026-09-16: 人工停止 → status=stopped 且不带退出码报错, 与真失败分开。"""
+    c, farm = client
+    farm._runner = lambda run: time.sleep(0.2) or 1   # 假 runner 慢吞吞返回非 0
+    assert c.post("/api/farm/check").status_code == 200
+    farm.stop()   # 无真进程, 只立「人工停止」标记
+    _wait_idle(farm)
+    d = c.get("/api/farm/status").json()
+    assert d["last"]["check"]["status"] == "stopped"
+    assert d["last"]["check"]["error"] == ""
+
+
+def test_failure_without_stop_still_failed(client):
+    """对照组: 没点停止的真失败, 仍记 failed + 退出码。"""
+    c, farm = client
+    farm._runner = lambda run: 1
+    assert c.post("/api/farm/check").status_code == 200
+    _wait_idle(farm)
+    d = c.get("/api/farm/status").json()
+    assert d["last"]["check"]["status"] == "failed"
+    assert "退出码" in d["last"]["check"]["error"]
+
+
 def test_backtest_rejected_when_pipeline_busy(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "LAST", tmp_path / "last_status.json")
     farm = fr.FarmRunner(runner=lambda run: 0)

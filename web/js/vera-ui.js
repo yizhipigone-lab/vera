@@ -464,14 +464,21 @@ let _farmPollTimer = null;
 function startFarmPoll() { stopFarmPoll(); _farmPollTimer = setInterval(refreshFarmStatus, 2000); }
 function stopFarmPoll() { if (_farmPollTimer) { clearInterval(_farmPollTimer); _farmPollTimer = null; } }
 
+// 2026-09-16: 状态三态 (done/stopped/failed) —— 人工停止与真失败分开显示
+function _farmStatusMark(status, withWord) {
+  if (status === 'done') return withWord ? '✅ 完成 ' : '✅';
+  if (status === 'stopped') return withWord ? '⏹ 已人工停止 ' : '⏹';
+  return withWord ? '❌ 失败 ' : '❌';
+}
+
 function refreshFarmStatus() {
   fetchFarmStatus().then(d => {
     const cur = d.current, last = d.last || {};
     const setS = (id, gate) => { const el = document.getElementById(id); if (!el) return;
       if (cur && cur.gate === gate && cur.status === 'running') { el.textContent = '⏳ 运行中: ' + (cur.stage || ''); return; }
-      if (cur && cur.gate === gate && cur.status !== 'running') { el.textContent = (cur.status === 'done' ? '✅ 完成 ' : '❌ 失败 ') + (cur.finished_at || '') + (cur.error ? ' — ' + cur.error : ''); return; }
+      if (cur && cur.gate === gate && cur.status !== 'running') { el.textContent = _farmStatusMark(cur.status, true) + (cur.finished_at || '') + (cur.error ? ' — ' + cur.error : ''); return; }
       const l = last[gate];
-      el.textContent = l ? ('上次: ' + (l.status === 'done' ? '✅' : '❌') + ' ' + (l.finished_at || '')) : '未运行'; };
+      el.textContent = l ? ('上次: ' + _farmStatusMark(l.status, false) + ' ' + (l.finished_at || '')) : '未运行'; };
     setS('farmCheckStatus', 'check'); setS('farmOnboardStatus', 'onboard');
     setS('farmVerifyStatus', 'verify'); setS('farmBacktestStatus', 'backtest');
     const box = document.getElementById('farmNewList');
