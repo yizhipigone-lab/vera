@@ -4,6 +4,7 @@
 v0 纪律: 只增不改、只读 gongshi/TDX gs_txt、绝不写 TDX。
 token 清单复刻 gongshi 实战(_batch_import.py + _clean_formulas.json 基线)。
 """
+import glob
 import hashlib
 import json
 import os
@@ -75,6 +76,50 @@ def push_feishu(md_path, title, logger=None):
                                   (r.stderr or r.stdout or "")[-120:])))
     except Exception as e:                                       # noqa: BLE001
         _log("飞书推送: 异常 %r" % e)
+
+
+# ---- 入库索引/断点集 (2026-09-16 计划书防漂移收口: done_files 原内联在
+# farm_onboard.main, _onboard_index 原在 farm_backtest, 看板还需要第三份 ——
+# 同一条规则手写 N 份必然漂移, 合一; 两脚本改为引用) ----
+
+def load_done_files(runs_dir):
+    """断点跳过集: 所有 onboard.json 里 ok 或「编译失败」的 file 集合。
+
+    编译失败同样终态跳过 (TDX 确定性拒绝, 重试永远失败, 2026-09-06 熔断空转教训)。
+    """
+    done = set()
+    for p in glob.glob(os.path.join(runs_dir, "*", "onboard.json")):
+        try:
+            with open(p, encoding="utf-8") as f:
+                for it in json.load(f).get("items", []):
+                    if it.get("ok") or "编译失败" in (it.get("msg") or ""):
+                        done.add(it.get("file"))
+        except Exception:
+            pass
+    return done
+
+
+def load_onboard_index(runs_dir, logger=None):
+    """所有 onboard.json 的 ok 条目 → {gs: {file, url, date}} (取最早入库批次)。"""
+    _log = logger or (lambda s: None)
+    idx = {}
+    for fp in glob.glob(os.path.join(runs_dir, "*", "onboard.json")):
+        try:
+            with open(fp, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception as e:                                   # noqa: BLE001
+            _log("   ! 读 %s 失败: %r" % (os.path.basename(fp), e))
+            continue
+        date = d.get("date") or os.path.basename(os.path.dirname(fp))
+        for it in d.get("items", []):
+            gs = it.get("gs")
+            if not gs or not it.get("ok"):
+                continue
+            cur = idx.get(gs)
+            if cur is None or date < cur["date"]:
+                idx[gs] = {"file": it.get("file", ""), "url": it.get("url", ""),
+                           "date": date}
+    return idx
 
 
 # ---- 入库账本 (2026-09-16 自 farm_onboard 迁入: 账本落盘是纯数据逻辑,

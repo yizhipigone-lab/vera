@@ -31,9 +31,9 @@ sys.path.insert(0, ROOT)
 PY = sys.executable
 
 # 判定阈值以被测工具为唯一真相源 (2026-09-16 F5 收口, 原此处硬编码 0.02/0.6)
-from tools.repaint_check import REPAINT_MAX_RATE  # noqa: E402 重画不一致率上限 (>2% = 重画实锤)
-from tools.future_func_check import FUTURE_MIN_KEEP  # noqa: E402 T+1 保留率下限 (<0.6 = 显著衰减)
 from tools.formula_farm.common import push_feishu  # noqa: E402  # F6 收口
+from tools.future_func_check import FUTURE_MIN_KEEP  # noqa: E402 T+1 保留率下限 (<0.6 = 显著衰减)
+from tools.repaint_check import REPAINT_MAX_RATE  # noqa: E402 重画不一致率上限 (>2% = 重画实锤)
 
 RUNS = os.path.join(ROOT, "data", "formula_farm", "runs")
 REPORTS = os.path.join(ROOT, "data", "formula_farm", "reports")
@@ -145,6 +145,28 @@ def summarize(merged: dict) -> dict:
     return stat
 
 
+def concl_of(v: dict) -> str:
+    """单公式复核总结论 (md 报告与 verify.json 共用, 防同规则第三份手写)。"""
+    oks = [v["repaint"].get("ok"), v["future"].get("ok")]
+    return ("未通过" if False in oks
+            else ("通过" if all(o is True for o in oks) else "无法判定"))
+
+
+def write_verify_json(path, merged: dict, ctx: dict) -> dict:
+    """结构化复核结论落盘 (2026-09-16 看板数据源: md 给人看, json 给程序读)。"""
+    out = {"date": ctx.get("date", ""), "cutoff": ctx.get("cutoff", ""),
+           "stats": summarize(merged),
+           "formulas": {gs: {"repaint_ok": v["repaint"].get("ok"),
+                             "future_ok": v["future"].get("ok"),
+                             "concl": concl_of(v),
+                             "repaint_verdict": v["repaint"].get("verdict", ""),
+                             "future_verdict": v["future"].get("verdict", "")}
+                        for gs, v in merged.items()}}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    return out
+
+
 def build_verify_report(merged: dict, ctx: dict) -> str:
     """渲染复核报告 md (纯函数)。"""
     stat = summarize(merged)
@@ -159,11 +181,8 @@ def build_verify_report(merged: dict, ctx: dict) -> str:
              "| 公式 | 重画检测 | 未来函数甄别 | 结论 |", "|---|---|---|---|"]
     for gs, v in merged.items():
         r, f = v["repaint"], v["future"]
-        oks = [r.get("ok"), f.get("ok")]
-        concl = "未通过" if False in oks else ("通过" if all(o is True for o in oks)
-                                              else "无法判定")
         lines.append("| %s | %s | %s | %s |" % (
-            gs, _cell(r), _cell(f), concl))
+            gs, _cell(r), _cell(f), concl_of(v)))
     lines.append("\n> 说明: 「未通过」= 复核判定公式有问题 (重画/未来函数), 应由人工决定是否"
                  "从候选里剔除; 「无法判定」= 工具跑失败或输出没匹配上, **不等于通过**, "
                  "重跑一次或人工看一眼。重画/未来函数的公式不进精调。")
@@ -269,6 +288,11 @@ def main():
                             repaint_err=err_r, future_err=err_f)
     stat = summarize(merged)
     date_str = time.strftime("%Y-%m-%d")
+    # 2026-09-16 看板数据源: 结构化结论落 runs/<日期>/verify.json
+    os.makedirs(os.path.join(RUNS, date_str), exist_ok=True)
+    vjson = os.path.join(RUNS, date_str, "verify.json")
+    write_verify_json(vjson, merged, {"date": date_str, "cutoff": cutoff})
+    log("复核成绩: %s" % vjson)
     with open(os.path.join(RUNS, "verify_%s.log" % date_str), "w", encoding="utf-8") as f:
         f.write("=== repaint_check ===\n%s\n\n=== future_func_check ===\n%s\n" % (out_r, out_f))
     os.makedirs(REPORTS, exist_ok=True)

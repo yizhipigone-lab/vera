@@ -23,7 +23,7 @@ import pyautogui  # noqa: E402
 from pywinauto import Desktop  # noqa: E402
 
 from tools.formula_farm import gui_onboard  # noqa: E402
-from tools.formula_farm.common import push_feishu, save_onboard  # noqa: E402  # F6/M4 收口
+from tools.formula_farm.common import load_done_files, push_feishu, save_onboard  # noqa: E402  # F6/M4/收口
 
 TDX_EXE = r"E:\NEW_TDX\TdxW.exe"
 MAIN_TITLE_KEY = "通达信金融终端"
@@ -150,16 +150,8 @@ def main():
         raise SystemExit(1)
     vetted = chk.get("vetted", [])
     # 断点续跑: onboard.json 里有记录的文件不再入库——成功的跳过,
-    # 编译失败的同样终态跳过(TDX 确定性拒绝, 重试永远失败, 2026-09-06 熔断空转教训)
-    import glob as _g
-    done_files = set()
-    for p in _g.glob(os.path.join(RUNS, "*", "onboard.json")):
-        try:
-            for it in json.load(open(p, encoding="utf-8")).get("items", []):
-                if it.get("ok") or "编译失败" in (it.get("msg") or ""):
-                    done_files.add(it.get("file"))
-        except Exception:
-            pass
+    # 编译失败的同样终态跳过 (2026-09-16 收口: 规则实现=common.load_done_files)
+    done_files = load_done_files(RUNS)
     before = len(vetted)
     vetted = [v for v in vetted if v["file"] not in done_files]
     if before != len(vetted):

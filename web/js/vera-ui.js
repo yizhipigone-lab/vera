@@ -488,6 +488,7 @@ function refreshFarmStatus() {
       a.onclick = has ? () => showFarmLog(gate, (d.gates || {})[gate] || gate) : null; };
     setLog('farmLogCheck', 'check'); setLog('farmLogOnboard', 'onboard');
     setLog('farmLogVerify', 'verify'); setLog('farmLogBacktest', 'backtest');
+    renderFarmSummary(d); renderFarmOverview(d);
     const box = document.getElementById('farmNewList');
     if (box && cur && cur.status === 'running') {
       box.innerHTML = '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);padding:var(--sp-2);border-radius:6px;margin-top:var(--sp-2)">'
@@ -499,6 +500,77 @@ function refreshFarmStatus() {
 function farmGate(fn, label) {
   fn().then(() => { showToast(label + '已启动'); refreshFarmStatus(); })
     .catch(e => showToast(e.message || '启动失败', 'error'));
+}
+
+// ── 2026-09-16 看板计划书阶段 3: 流水线卡片(状态灯/成绩单/置灰) + 总览看板 ──
+const _FARM_GATES = [['Check', 'check', 'btnFarmCheck'], ['Onboard', 'onboard', 'btnFarmOnboard'],
+                     ['Verify', 'verify', 'btnFarmVerify'], ['Backtest', 'backtest', 'btnFarmBacktest']];
+
+function _farmDotState(cur, last, gate) {
+  if (cur && cur.gate === gate) {
+    if (cur.status === 'running') return 'run';
+    return cur.status === 'done' ? 'ok' : (cur.status === 'stopped' ? 'stop' : 'bad');
+  }
+  const l = (last || {})[gate];
+  if (!l) return '';
+  return l.status === 'done' ? 'ok' : (l.status === 'stopped' ? 'stop' : 'bad');
+}
+
+function renderFarmSummary(d) {
+  const sum = d.summary || {};
+  _FARM_GATES.forEach(function (g) {
+    const suffix = g[0], gate = g[1], btnId = g[2];
+    const info = sum[gate] || {};
+    const sumEl = document.getElementById('farmSum' + suffix);
+    if (sumEl) sumEl.textContent = info.text || '';
+    const btn = document.getElementById(btnId);
+    if (btn) { btn.disabled = info.ready === false; btn.title = info.ready === false ? (info.hint || '') : ''; }
+    const noteEl = document.getElementById('farmNote' + suffix);
+    if (noteEl) noteEl.textContent = info.note || '';
+    const dot = document.getElementById('farmDot' + suffix);
+    if (dot) dot.className = 'farm-dot ' + _farmDotState(d.current, d.last, gate);
+  });
+}
+
+let _farmOvSig = '';
+function _pct(v, digits) { return v == null ? '—' : (v * 100).toFixed(digits == null ? 1 : digits) + '%'; }
+function renderFarmOverview(d) {
+  const ov = d.overview; if (!ov) return;
+  const sig = JSON.stringify(ov);
+  if (sig === _farmOvSig) return;   // 签名没变不重绘, 防 2 秒轮询闪屏
+  _farmOvSig = sig;
+  const empty = document.getElementById('farmOvEmpty');
+  if (empty) empty.style.display = ov.empty ? '' : 'none';
+  const funnelBox = document.getElementById('farmFunnel');
+  if (funnelBox) {
+    const max = Math.max(1, ...(ov.funnel || []).map(f => f.count || 0));
+    funnelBox.innerHTML = (ov.funnel || []).map(f =>
+      '<div class="farm-funnel-row"><span class="farm-funnel-label">' + esc(f.label) + '</span>'
+      + '<span class="farm-funnel-bar" style="width:' + Math.max(2, Math.round((f.count || 0) / max * 100)) + '%"></span>'
+      + '<span class="farm-funnel-num">' + (f.count || 0) + (f.pass != null ? ' · 过 ' + f.pass : '') + '</span></div>').join('');
+  }
+  const tr = document.getElementById('farmTopReasons');
+  if (tr) tr.textContent = (ov.top_reasons && ov.top_reasons.length)
+    ? '这批货主要死在: ' + ov.top_reasons.map(r => r[0] + ' ' + r[1] + ' 条').join(' · ') : '';
+  const board = document.getElementById('farmBoard');
+  if (board) {
+    const rowHtml = r => '<tr><td>' + esc(r.gs) + '</td><td>' + esc((r.file || '').replace(/\.md$/, '').slice(0, 20)) + '</td>'
+      + '<td>' + esc(r.key || '—') + '</td><td class="num">' + _pct(r.annret) + '</td>'
+      + '<td class="num">' + (r.calmar == null ? '—' : Number(r.calmar).toFixed(2)) + '</td>'
+      + '<td class="num">' + _pct(r.maxdd) + '</td><td class="num">' + _pct(r.winrate, 0) + '</td>'
+      + '<td class="num">' + (r.trades == null ? '—' : r.trades) + '</td>'
+      + '<td>' + esc(r.onboard_date || '') + '</td>'
+      + '<td>' + (r.url ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td></tr>';
+    const table = rows => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th></tr></thead><tbody>'
+      + rows.map(rowHtml).join('') + '</tbody></table>';
+    const b = ov.board || { pass: [], insufficient: [], fail: [] };
+    let html = '';
+    if (!ov.board_total) html = '<div style="color:var(--text2);font-size:var(--fs-sm)">粗扫还没跑出结果——点下方「④ 开始粗扫」试第一批。</div>';
+    if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + b.pass.length + ' 条</div>' + table(b.pass);
+    if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + b.insufficient.length + ' 条 (数字好看但笔数不足 20, 不作数)</div>' + table(b.insufficient);
+    if (b.fail.length) html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">未达标 / 无有效组合 ' + b.fail.length + ' 条 (点击展开)</summary>' + table(b.fail) + '</details>';
+    board.innerHTML = html;
+  }
 }
 
 // 2026-09-16: 查看闸门完整日志 (失败病因结构化配套)

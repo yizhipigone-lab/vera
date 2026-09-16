@@ -35,6 +35,10 @@ def test_status_lists_gates(client):
     assert d["running"] is False
     # 2026-09-11: 第四闸门 verify (定量复核: 重画 + 未来函数) 补上计划书 §4 步骤 6
     assert set(d["gates"]) == {"check", "onboard", "verify", "backtest"}
+    # 2026-09-16 看板计划书阶段 2: status 响应带成绩单 + 总览 (fail-soft 不拖垮接口)
+    assert "summary" in d and "overview" in d
+    assert set(d["summary"]) == {"check", "onboard", "verify", "backtest"}
+    assert "funnel" in d["overview"] and "board" in d["overview"]
 
 
 def test_verify_gate_is_startable(client):

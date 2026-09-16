@@ -87,6 +87,26 @@ def test_overall_status_counts():
     assert stat["fail"] == 1
 
 
+# ── 2026-09-16 看板数据源: verify.json 结构化落盘 ──
+
+def test_write_verify_json(tmp_path):
+    merged = fv.merge_verdicts(["GS1285", "GS1292", "GS9999"],
+                               fv.parse_repaint(REPAINT_OUT),
+                               fv.parse_future(FUTURE_OUT))
+    out = fv.write_verify_json(str(tmp_path / "verify.json"), merged,
+                               {"date": "2026-09-16", "cutoff": "20260801"})
+    assert out["stats"] == {"total": 3, "pass": 1, "fail": 1, "unknown": 1}
+    assert out["formulas"]["GS1285"]["concl"] == "通过"
+    assert out["formulas"]["GS1292"]["concl"] == "未通过"
+    assert out["formulas"]["GS9999"]["concl"] == "无法判定"
+    assert out["formulas"]["GS1292"]["repaint_ok"] is False
+    assert out["cutoff"] == "20260801"
+    # 落盘内容可回读且一致
+    import json
+    back = json.loads((tmp_path / "verify.json").read_text(encoding="utf-8"))
+    assert back["stats"]["pass"] == 1
+
+
 # ── 2026-09-11 实测: 两个工具连跑时, 第二个可能撞上 TDX 连接刚被关掉的窗口 ──
 
 def test_run_retry_recovers_after_transient_failure(monkeypatch):

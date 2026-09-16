@@ -61,3 +61,30 @@
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
+
+/* ── 公式农场看板 (2026-09-16 计划书阶段 3: 流水线卡片 + 总览) ── */
+.farm-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle; background: var(--text2); opacity: .35; }
+.farm-dot.ok { background: #22c55e; opacity: 1; }
+.farm-dot.bad { background: #ef4444; opacity: 1; }
+.farm-dot.stop { background: #f59e0b; opacity: 1; }
+.farm-dot.run { background: #3b82f6; opacity: 1; animation: farmPulse 1.2s ease-in-out infinite; }
+@keyframes farmPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.35); opacity: .55; } }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.farm-arrow { text-align: center; color: var(--text2); font-size: 14px; line-height: 1; margin: 2px 0; opacity: .6; }
+.farm-sum { font-size: var(--fs-xs); color: var(--text); margin-top: 4px; }
+.farm-note { font-size: var(--fs-xs); color: #f59e0b; margin-top: 2px; }
+.farm-funnel-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: var(--fs-sm); }
+.farm-funnel-label { width: 110px; flex: none; color: var(--text2); }
+.farm-funnel-bar { height: 14px; border-radius: 3px; min-width: 2px;
+  background: color-mix(in srgb, var(--link) 70%, transparent); }
+.farm-funnel-num { font-family: var(--mono); color: var(--text); }
+.farm-board table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); margin-top: 6px; }
+.farm-board th, .farm-board td { text-align: left; padding: 3px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text2) 15%, transparent); }
+.farm-board th { color: var(--text2); font-weight: 600; }
+.farm-board td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.farm-group-title { font-size: var(--fs-sm); margin-top: 10px; font-weight: 600; }
+.farm-group-pass { color: #22c55e; }
+.farm-group-thin { color: #f59e0b; }
+.farm-group-fail { color: var(--text2); }

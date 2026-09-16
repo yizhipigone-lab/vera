@@ -385,7 +385,7 @@ input:focus-visible,select:focus-visible{outline:none}
 .brain-inputrow #brainStopBtn{padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs)}
 .brain-inputrow #brainResetBtn{padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs)}
 </style>
-<link rel="stylesheet" href="/web/css/polish.css?v=20260906c">
+<link rel="stylesheet" href="/web/css/polish.css?v=20260916a">
 <link rel="stylesheet" href="/web/css/brain-md.css?v=20260906c">
 </head>
 <body>
@@ -886,33 +886,53 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
-<!-- ===== 公式农场页 (2026-09-06 三段闸门; 2026-09-11 补第四闸门「定量复核」) ===== -->
+<!-- ===== 公式农场页 (2026-09-06 三段闸门; 2026-09-11 补第四闸门「定量复核」; 2026-09-16 流水线卡片+总览看板) ===== -->
 <div id="pageFarm">
   <div class="lab-card">
     <h2>公式农场 · 四段闸门</h2>
     <div style="font-size:var(--fs-sm);color:var(--text2)">股旁网新公式 → 去重 → 体检(未来函数硬闸) → 入库通达信 → 定量复核 → 粗扫回测。闸门①不碰通达信随时可跑; ②③④会真实操作通达信(自动启动/关弹窗/开公式管理器), 亮屏点一下就行。</div>
   </div>
+  <div class="lab-card" id="farmOverviewCard">
+    <h2>农场总览</h2>
+    <div id="farmOvEmpty" style="display:none;font-size:var(--fs-sm);color:var(--text2)">农场还没开张——点下方「① 检查增量」进第一批货。</div>
+    <div id="farmFunnel"></div>
+    <div id="farmTopReasons" style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)"></div>
+  </div>
+  <div class="lab-card farm-board" id="farmBoardCard">
+    <h2>达标榜</h2>
+    <div id="farmBoard"></div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">口径提醒: 粗扫是 300 万本金 + 单票上限 2 万的轻仓口径, 账户年化 ≈ 仓位暴露 × 单笔边际 × 笔数 (主要在排「出票多不多」); 轻仓+少样本时夏普结构性为负、卡玛在 |回撤|&lt;0.01% 时死区归零, 别拿单个指标下结论。</div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">达标只是海选晋级 —— 精调/样本外/终审结果见人工收割总榜 data/formula_farm/winners/index.md。</div>
+  </div>
   <div class="lab-card">
-    <h2>① 检查增量 <button class="btn btn-primary" id="btnFarmCheck">▶ 检查增量</button></h2>
+    <h2><span class="farm-dot" id="farmDotCheck"></span>① 检查增量 <button class="btn btn-primary" id="btnFarmCheck">▶ 检查增量</button></h2>
     <div id="farmCheckStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <div class="farm-sum" id="farmSumCheck"></div>
     <a href="javascript:void(0)" id="farmLogCheck" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div id="farmNewList" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
   </div>
+  <div class="farm-arrow">↓</div>
   <div class="lab-card">
-    <h2>② 一键入库 <button class="btn btn-primary" id="btnFarmOnboard">▶ 一键入库</button> <button class="btn" id="btnFarmStop" title="终止当前闸门子进程">■ 停止</button></h2>
+    <h2><span class="farm-dot" id="farmDotOnboard"></span>② 一键入库 <button class="btn btn-primary" id="btnFarmOnboard">▶ 一键入库</button> <button class="btn" id="btnFarmStop" title="终止当前闸门子进程">■ 停止</button></h2>
     <div id="farmOnboardStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <div class="farm-sum" id="farmSumOnboard"></div>
     <a href="javascript:void(0)" id="farmLogOnboard" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">默认本轮全部入完; 已入库/编译失败的自动跳过, 中途断了再点接着来。每入一条立即记账, 点停止不丢账。</div>
   </div>
+  <div class="farm-arrow">↓</div>
   <div class="lab-card">
-    <h2>③ 定量复核 <button class="btn btn-primary" id="btnFarmVerify">▶ 定量复核</button></h2>
+    <h2><span class="farm-dot" id="farmDotVerify"></span>③ 定量复核 <button class="btn btn-primary" id="btnFarmVerify">▶ 定量复核</button></h2>
     <div id="farmVerifyStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <div class="farm-sum" id="farmSumVerify"></div>
     <a href="javascript:void(0)" id="farmLogVerify" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">重画检测 + 未来函数甄别(需通达信在运行, 全A选股较慢); 「复核不通过」与「跑失败」分开写, 解析不到一律标「无法判定」不当通过。</div>
   </div>
+  <div class="farm-arrow">↓</div>
   <div class="lab-card">
-    <h2>④ 开始粗扫 <button class="btn btn-primary" id="btnFarmBacktest">▶ 开始粗扫</button></h2>
+    <h2><span class="farm-dot" id="farmDotBacktest"></span>④ 开始粗扫 <button class="btn btn-primary" id="btnFarmBacktest">▶ 开始粗扫</button></h2>
     <div id="farmBacktestStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
+    <div class="farm-sum" id="farmSumBacktest"></div>
+    <div class="farm-note" id="farmNoteBacktest"></div>
     <a href="javascript:void(0)" id="farmLogBacktest" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">36 代表组合 5m 粗扫, 达标线 年化≥15% 且 |回撤|≤15% 且 笔数≥20; 未扫完的公式下轮自动补扫, 不会被新批次饿死。</div>
   </div>
@@ -1488,6 +1508,6 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
 <script type="module" src="/web/js/analysis.js?v=20260911a"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260916b"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260916c"></script>
 </body>
 </html>

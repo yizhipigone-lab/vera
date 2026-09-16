@@ -36,13 +36,15 @@ sys.path.insert(0, ROOT)
 PY = sys.executable
 
 from core import farm_rules  # noqa: E402
-from tools.formula_farm.common import push_feishu  # noqa: E402  # F6 收口
+from tools.formula_farm.common import load_onboard_index, push_feishu  # noqa: E402  # F6/收口
 
 RUNS = os.path.join(ROOT, "data", "formula_farm", "runs")
 REPORTS = os.path.join(ROOT, "data", "formula_farm", "reports")
 SWEEP = os.path.join(ROOT, "tools", "gs_5m_sweep.py")
 COMBOS36 = os.path.join(ROOT, "output", "gs_filter", "coarse_subset36.json")
 SWEEP_OUT = os.path.join(ROOT, "output", "gs_5m_sweep")
+#: 累计档案 (达标榜数据源, 2026-09-16 看板计划书): 每轮粗扫后增量更新
+ARCHIVE = os.path.join(ROOT, "data", "formula_farm", "archive.json")
 
 #: 报告抬头里的口径 (与 gs_5m_sweep 的默认值一致; 改口径要同时改这两处口径常量)
 CALIBER = {"universe": "沪深300 (TDX type 23)", "period": "5m", "dividend": "前复权",
@@ -81,24 +83,11 @@ def _latest_onboard_items() -> tuple:
 
 
 def _onboard_index() -> dict:
-    """所有 onboard.json 的 ok 条目 → {gs: {file, url, date}} (取最早入库批次)。"""
-    idx: dict[str, dict] = {}
-    for fp in glob.glob(os.path.join(RUNS, "*", "onboard.json")):
-        try:
-            d = json.load(open(fp, encoding="utf-8"))
-        except Exception as e:                                   # noqa: BLE001
-            log("   ! 读 %s 失败: %r" % (os.path.basename(fp), e))
-            continue
-        date = d.get("date") or os.path.basename(os.path.dirname(fp))
-        for it in d.get("items", []):
-            gs = it.get("gs")
-            if not gs or not it.get("ok"):
-                continue
-            cur = idx.get(gs)
-            if cur is None or date < cur["date"]:
-                idx[gs] = {"file": it.get("file", ""), "url": it.get("url", ""),
-                           "date": date}
-    return idx
+    """所有 onboard.json 的 ok 条目 → {gs: {file, url, date}} (取最早入库批次)。
+
+    2026-09-16 防漂移收口: 实现迁至 common.load_onboard_index (看板也要用同一份)。
+    """
+    return load_onboard_index(RUNS, logger=log)
 
 
 def _rows_of(gs: str) -> list:
@@ -281,6 +270,76 @@ def _f(v):
         return 0.0
 
 
+# ────────────────────────── 看板数据源 (2026-09-16 计划书阶段 1) ──────────────────────────
+
+def _slim_best(best):
+    if best is None:
+        return None
+    return {"key": best.get("key", ""), "annret": _f(best.get("annret")),
+            "maxdd": _f(best.get("maxdd")), "calmar": _f(best.get("calmar")),
+            "winrate": _f(best.get("winrate")), "trades": int(_f(best.get("trades")))}
+
+
+def archive_entry(gs, info, rows, window):
+    """单公式归档条目 (纯函数)。判定/最优组合走 farm_rules (单一真相源)。"""
+    best = farm_rules.pick_best(rows)
+    if best is None:
+        v = {"code": farm_rules.INVALID, "label": "无有效组合",
+             "reason": "36 组全部失败 或 区间内零信号"}
+    else:
+        v = farm_rules.verdict(best.get("annret"), best.get("maxdd"),
+                               best.get("trades"))
+    return {"file": info.get("file", ""), "url": info.get("url", ""),
+            "onboard_date": info.get("date", ""),
+            "best": _slim_best(best), "verdict": v,
+            "window": list(window) if window else None,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def update_archive(path, gs_list, idx, rebuild=False):
+    """累计档案增量更新 (原子写)。rebuild=True 丢弃旧档全量重建。"""
+    arch = {}
+    if not rebuild and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                arch = json.load(f)
+        except Exception as e:                                   # noqa: BLE001
+            log("   ! 旧档案读取失败, 本轮按全量重写处理: %r" % e)
+            arch = {}
+    for gs in gs_list:
+        arch[gs] = archive_entry(gs, idx.get(gs) or {},
+                                 _rows_of(gs), _window_of(gs))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(arch, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+    return arch
+
+
+def _stats_of(results):
+    """本轮判定计数 (报告与 backtest_summary.json 共用同一判定源 farm_rules)。"""
+    stats = {"pass": 0, "fail": 0, "insufficient": 0, "invalid": 0}
+    for item in results:
+        best = farm_rules.pick_best(item.get("rows") or [])
+        code = (farm_rules.INVALID if best is None else
+                farm_rules.verdict(best.get("annret"), best.get("maxdd"),
+                                   best.get("trades"))["code"])
+        stats[code if code in stats else "invalid"] += 1
+    return stats
+
+
+def write_backtest_summary(path, ctx, stats):
+    """卡片④成绩单数据源落盘 (md 给人看, json 给程序读)。"""
+    out = {"date": ctx.get("date", ""), "batch_date": ctx.get("batch_date", ""),
+           "stats": stats, "remaining": len(ctx.get("remaining") or []),
+           "total": ctx.get("total"), "done": ctx.get("done")}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    return out
+
+
 # ────────────────────────── 主流程 ──────────────────────────
 
 def main():
@@ -292,6 +351,8 @@ def main():
     ap.add_argument("--only", default="", help="只扫这些 GS (逗号分隔), 调试用")
     ap.add_argument("--include-done", action="store_true", help="已有结果的也重扫")
     ap.add_argument("--no-push", action="store_true", help="不推飞书 (本地对照用)")
+    ap.add_argument("--rebuild-archive", action="store_true",
+                    help="全量重建累计档案 archive.json (首次/怀疑档案漂移时, 耗时数十秒)")
     args = ap.parse_args()
 
     idx = _onboard_index()
@@ -367,6 +428,16 @@ def main():
     log("粗扫报告: %s" % rpt)
     log("本批 %d 条 / 有结果 %d 条 / 零信号停牌 %d 条 / 待扫 %d 条" % (
         len(batch_items), len(done), len(parked), len(remaining)))
+    # 2026-09-16 看板数据源: 本轮成绩 json + 累计档案增量更新
+    ctx["batch_date"] = batch_date
+    sjson = os.path.join(RUNS, ctx["date"], "backtest_summary.json")
+    write_backtest_summary(sjson, ctx, _stats_of(results))
+    log("粗扫成绩: %s" % sjson)
+    gs_for_archive = sorted(idx) if args.rebuild_archive else list(targets)
+    arch = update_archive(ARCHIVE, gs_for_archive, idx,
+                          rebuild=args.rebuild_archive)
+    log("累计档案: %s (%d 条%s)" % (
+        ARCHIVE, len(arch), ", 全量重建" if args.rebuild_archive else ""))
     if not args.no_push:
         push_feishu(rpt, "公式农场粗扫 %s" % ctx["date"])
 

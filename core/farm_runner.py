@@ -128,9 +128,18 @@ class FarmRunner:
     def status(self):
         with self._lock:
             cur = asdict(self._current) if self._current else None
-        return {"running": self.running, "current": cur,
+        base = {"running": self.running, "current": cur,
                 "gates": {k: v[0] for k, v in GATES.items()},
                 "last": self._last}
+        # 2026-09-16 看板计划书阶段 2: 成绩单 + 总览随状态一起给 (fail-soft —
+        # 汇总异常不拖垮状态接口, 页面只是少两行字)
+        try:
+            from core import farm_summary
+            base["summary"] = farm_summary.gate_summaries(str(DATA))
+            base["overview"] = farm_summary.overview(str(DATA))
+        except Exception:
+            _logger.warning("farm_summary 汇总失败", exc_info=True)
+        return base
 
     # ── 执行 ────────────────────────────────────────────────
     def start(self, gate):
