@@ -373,6 +373,110 @@ class TestShadowReplayCaliber:
         assert (gross_total - net_total) == pytest.approx(expect, abs=1.0)
 
 
+def _write_erp(n=900, start="2020-01-01"):
+    """造一个最小 ERP (股债性价比) 缓存 —— 纯本地, 不联网。"""
+    mpr.ERP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    idx = pd.date_range(start, periods=n, freq="B")
+    rows = [json.dumps({"date": d.date().isoformat(),
+                        "erp": round(0.05 + 0.001 * (i % 10), 6)})
+            for i, d in enumerate(idx)]
+    mpr.ERP_PATH.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return idx
+
+
+def _amount_pct(rec):
+    return (rec.get("turnover") or {}).get("amount_pct_1y")
+
+
+class TestWarmup:
+    """预热窗口 —— 2026-09-17 实测抓到的真 bug 的回归锁。
+
+    原实现: 日常采集 `collect(bars=300)` 把日线截断成 300 根, 而
+    `amount_pct_1y` 的 `rolling(250, min_periods=120)` 在窗口头部 120 天算不出
+    → 那些记录被 upsert **覆盖成缺值** (实测 118 条历史记录的 `amount_pct_1y`
+    变 null, 只坏不好)。修法 = 多读 `WARMUP_BARS` 做预热, 只输出窗口内最后 bars 天。
+    """
+
+    def test_daily_collect_does_not_degrade_history(self):
+        _write_cache(n_days=800)
+        mpr.collect(bars=0, write=True)
+        before = {r["date"]: r for r in mpr.history(limit=0)}
+        assert len(before) > mpr.DEFAULT_BARS + mpr.WARMUP_BARS
+        mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
+        after = {r["date"]: r for r in mpr.history(limit=0)}
+        assert set(after) == set(before), "日常采集不许新增或丢掉录像行"
+        bad = [d for d in before
+               if _amount_pct(before[d]) is not None
+               and _amount_pct(after[d]) is None]
+        assert not bad, \
+            f"日常采集把 {len(bad)} 条历史的成交额百分位改成了空: {bad[:5]} …"
+
+    def test_daily_collect_emits_only_the_window(self):
+        """预热段不算正式记录 —— 输出的记录数不许超过 bars。"""
+        _write_cache(n_days=800)
+        res = mpr.collect(bars=200, write=True)
+        assert res["ok"] and res["records"] <= 200
+
+    def test_warmup_covers_the_longest_lookback(self):
+        """预热必须覆盖最长的回看窗口 (成交额一年百分位 250 根)。"""
+        assert mpr.WARMUP_BARS >= 250
+
+
+class TestErpValuation:
+    """估值维度 (计划书 §14.4): ERP 股债性价比。全程用本地造的缓存, 不联网。"""
+
+    def test_snapshot_percentile_and_range(self):
+        idx = _write_erp(n=900)
+        tbl = mpr._erp_table()
+        snap = mpr._erp_snapshot(tbl, idx[-1])
+        assert snap, "历史够 750 条就必须给数"
+        assert snap["n_obs"] >= mpr.ERP_MIN_OBS
+        assert 0 <= snap["erp_pct_10y"] <= 100
+        assert snap["erp_min_10y_pct"] <= snap["erp_pct"] <= snap["erp_max_10y_pct"]
+        assert "沪深300" in snap["caliber"], "口径必须写清是沪深300, 不是全市场"
+        assert snap["source"] and snap["asof"]
+
+    def test_history_too_short_gives_no_number(self):
+        idx = _write_erp(n=300)
+        tbl = mpr._erp_table()
+        assert mpr._erp_snapshot(tbl, idx[-1]) is None, "不足 3 年不给数 (不编)"
+
+    def test_missing_erp_file_is_not_faked(self):
+        assert len(mpr._read_erp()) == 0
+        assert mpr._erp_snapshot(mpr._erp_table(), "2026-09-15") is None
+
+    def test_fetch_can_be_disabled_by_env(self, monkeypatch):
+        monkeypatch.setenv(mpr.ERP_FETCH_ENV, "1")
+        assert mpr._erp_fetch_enabled() is False
+        r = mpr._refresh_erp()
+        assert r["ok"] is False and mpr.ERP_FETCH_ENV in r["reason"]
+
+    def test_bad_lines_skipped_not_fatal(self):
+        mpr.ERP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mpr.ERP_PATH.write_text(
+            "not json\n{\"date\":\"2020-01-02\",\"erp\":0.05}\n{\"date\":\"2020-01-03\"}\n",
+            encoding="utf-8")
+        s = mpr._read_erp()
+        assert len(s) == 1 and float(s.iloc[0]) == pytest.approx(0.05)
+
+    def test_collect_attaches_valuation_and_markdown_shows_it(self):
+        _write_cache(n_days=400)
+        _write_erp(n=900, start="2015-01-01")
+        res = mpr.collect(bars=300, write=True)
+        rec = res["snapshot"]
+        assert rec.get("valuation"), "有 ERP 缓存时记录必须带上估值"
+        md = mpr.thermometer_md()
+        assert "估值（贵不贵" in md
+        assert "股债性价比" in md and "十年" in md
+        assert "沪深300 口径" in md
+
+    def test_markdown_says_missing_when_no_erp(self):
+        _write_cache(n_days=400)
+        mpr.collect(bars=300, write=True)
+        md = mpr.thermometer_md()
+        assert "【缺】没有本地 ERP" in md
+
+
 class TestCacheLayoutContract:
     def test_parquet_path_matches_kline_cache_layout(self, tmp_path):
         """直读 parquet 是性能取舍 —— 靠这条契约测试防缓存布局改了静默读空。

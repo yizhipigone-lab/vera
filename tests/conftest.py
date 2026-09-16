@@ -145,8 +145,14 @@ def _isolate_caches(tmp_path):
     import core.market_position_runner as _mpr
     orig_mp_path = _mpr.DAILY_PATH
     orig_mp_kline = _mpr.KLINE_1D_DIR
+    orig_mp_erp = _mpr.ERP_PATH
     _mpr.DAILY_PATH = tmp_path / "market_position" / "daily.jsonl"
     _mpr.KLINE_1D_DIR = tmp_path / "kline_cache" / "1d"
+    _mpr.ERP_PATH = tmp_path / "market_position" / "erp.jsonl"
+    # ERP 是**联网**取数 —— 测试里必须关掉 (否则跑一次测试就真去拉网络,
+    # 既不隔离也不可重复)。要测取数逻辑的用例自己 monkeypatch 打开并打桩。
+    orig_erp_fetch = os.environ.get(_mpr.ERP_FETCH_ENV)
+    os.environ[_mpr.ERP_FETCH_ENV] = "1"
     # 2026-09-17 事故修复 (深度审查 HIGH-1): 大脑向量索引漏隔离 ——
     # test_brain_archive / test_brain 只 monkeypatch 了 arch.ARCHIVE_DIR, 没隔离
     # brain.search_engine.INDEX_DIR; 于是 archive 落盘后的 update_file(f) 拿到一个
@@ -168,6 +174,11 @@ def _isolate_caches(tmp_path):
             _rot.SHADOW_LOG_PATH = orig_rot_shadow
         _mpr.DAILY_PATH = orig_mp_path
         _mpr.KLINE_1D_DIR = orig_mp_kline
+        _mpr.ERP_PATH = orig_mp_erp
+        if orig_erp_fetch is None:
+            os.environ.pop(_mpr.ERP_FETCH_ENV, None)
+        else:
+            os.environ[_mpr.ERP_FETCH_ENV] = orig_erp_fetch
         _se.INDEX_DIR = orig_index_dir
         if orig_no_sync is None:
             os.environ.pop("BRAIN_NO_INDEX_SYNC", None)

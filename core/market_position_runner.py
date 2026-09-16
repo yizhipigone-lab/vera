@@ -35,11 +35,12 @@ import numpy as np
 import pandas as pd
 
 from core.limit_ratio import limit_ratio
-from core.market_position import (POSITION_COLUMNS, RECENT_EXCLUDE_BARS,
-                                  RET_1Y_BARS, SIMILAR_FEATURES,
-                                  breadth_frame, forward_return,
-                                  index_position_series, last_valid_date,
-                                  limit_counts_series, similar_days)
+from core.market_position import (PCT_WINDOW_BARS, POSITION_COLUMNS,
+                                  RECENT_EXCLUDE_BARS, RET_1Y_BARS,
+                                  SIMILAR_FEATURES, breadth_frame,
+                                  forward_return, index_position_series,
+                                  last_valid_date, limit_counts_series,
+                                  similar_days)
 
 try:  # pragma: no cover - 循环导入兜底 (logger 永远可用, 这里只是防御)
     from utils.logger import get_logger
@@ -57,6 +58,25 @@ _ROOT = Path(__file__).resolve().parent.parent
 KLINE_1D_DIR = _ROOT / "data" / "kline_cache" / "1d"
 #: 连续录像落盘路径 (JSONL, 一天一行)
 DAILY_PATH = _ROOT / "data" / "market_position" / "daily.jsonl"
+#: 外部估值序列 (ERP 股债性价比) 的本地缓存, 一天一行。
+#: **为什么单独一个文件**: 它来自网络 (乐咕乐股), 与日线缓存这个数据源无关;
+#: 混进 daily.jsonl 会让"回填"这条纯本地路径变成联网路径。
+ERP_PATH = _ROOT / "data" / "market_position" / "erp.jsonl"
+#: 估值维度的数据源 (2026-09-17 实测核实, 不是猜的):
+#:   akshare `stock_ebs_lg()` → 乐咕乐股「股债性价比(股债利差)」,
+#:   日频 2005-04-08 ~ 2026-09-16 共 5207 条, 无缺失。
+#: **口径已用算术核对 (相对误差 0.0006%)**:
+#:   股债利差 = 1 / 沪深300 滚动市盈率(PE-TTM) − 10 年期中国国债收益率
+#:   实测 2026-09-16: 1/12.67 − 1.6858% = 6.2069% = 源里的 6.2069%。
+#: **口径如实标注**: 这是 **沪深300** 口径, 不是邮件里用的「万得全A」口径;
+#: 两者不是同一个数, 报告里必须写清楚, 不许含糊成"全市场估值"。
+ERP_SOURCE = "akshare stock_ebs_lg (乐咕乐股 股债性价比)"
+ERP_CALIBER = ("沪深300 口径: 1/PE-TTM − 10年期国债收益率（越高越划算，负数=股票还不如国债）")
+#: ERP 算百分位至少要多少条历史 (一年 ≈243 条, 这里要满 3 年才给数,
+#: 与 core/market_position.PCT_WINDOW_BARS 的 min_periods 精神一致: 不足就不给)
+ERP_MIN_OBS = 750
+#: 关掉 ERP 联网取数的环境变量 (测试/离线用; tests/conftest.py 默认设上)
+ERP_FETCH_ENV = "VERA_MP_NO_ERP_FETCH"
 
 #: 三大指数: (内部键, 中文名, TDX 代码)
 INDEX_SPECS = (("shanghai", "上证指数", "000001.SH"),
@@ -66,6 +86,14 @@ INDEX_SPECS = (("shanghai", "上证指数", "000001.SH"),
 _STOCK_RE = re.compile(r"^(6\d{5}\.SH|(000|001|002|003|300|301)\d{3}\.SZ)$")
 #: 日常采集窗口: 覆盖"成交额一年百分位"(250 根) + 60 日新高低 + 缓冲
 DEFAULT_BARS = 300
+#: **预热窗口 (2026-09-17 实测抓到的真 bug 的修法)**: 日常采集算 DEFAULT_BARS 天,
+#: 但窗口头部那些天**算不出**需要长回看的指标 —— `amt_rank` 是
+#: `rolling(250, min_periods=120)`, 头 120 天必然是 NaN; 新高新低是 60 日窗。
+#: 而日常采集会把这些记录 **upsert 覆盖**回录像, 于是**历史上本来是好的记录
+#: 被改成了缺值**: 实测 `collect(bars=300)` 一次让 118 条记录 (2025-04-17 ~
+#: 2025-10-13) 的 `amount_pct_1y` 变成 null, 照镜子的可选池凭空少 118 天。
+#: 修法 = 多读 WARMUP_BARS 根做预热, **只输出窗口内最后 bars 天**。
+WARMUP_BARS = 300
 #: 回填窗口: 0 = 全量历史
 BACKFILL_BARS = 0
 #: 有效交易日判据: 当日有成交的股票占比。空壳 bar 的比例会掉到 1% 以下。
@@ -266,6 +294,139 @@ def _build_record(d, bf_row, idx_hist: dict, hs_raw, hs_ma20, total_amt,
     return rec
 
 
+# ───────────────── 内部: 估值维度 (ERP 股债性价比) ─────────────────
+#
+# 计划书 §14.4「估值维度」+ §14.7「维度体检」。**先说清楚它为什么必须存在**:
+# 现在的位置指标全是**价格衍生量**(百分位/宽度/新高低/成交额/波动), 没有一维回答
+# 「贵不贵」。而外部的独立研究 (邮件《单因子独立回测》) 实测 ERP 是唯一强有效的
+# 长周期因子: rho=+0.481 (p<0.001)、五等分价差 +26.7pp。
+# **价格分位 ≠ 估值分位** —— 指数可以在价格高位而估值不高 (盈利涨得比价格快)。
+
+
+def _erp_fetch_enabled() -> bool:
+    """是否允许联网取 ERP。测试与离线环境用 env 关掉 (默认允许)。"""
+    return os.environ.get(ERP_FETCH_ENV, "").strip().lower() not in ("1", "true", "yes")
+
+
+def _read_erp() -> pd.Series:
+    """读本地 ERP 缓存 → 按日期升序的 float Series (索引 DatetimeIndex)。
+
+    文件不存在/全是坏行 → 返空 Series (上层标【缺】, 绝不返回编造值)。
+    """
+    if not ERP_PATH.exists():
+        return pd.Series(dtype=float)
+    rows = []
+    for line in ERP_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+            v = float(o["erp"])
+            d = pd.Timestamp(str(o["date"]))
+        except Exception:
+            continue           # 坏行跳过 (fail-soft, 不因一行坏掉整段历史)
+        if v == v:
+            rows.append((d, v))
+    if not rows:
+        return pd.Series(dtype=float)
+    s = pd.Series([v for _, v in rows], index=[d for d, _ in rows], dtype=float)
+    return s[~s.index.duplicated(keep="last")].sort_index()
+
+
+def _refresh_erp() -> dict:
+    """联网拉 ERP 历史并 upsert 到 `data/market_position/erp.jsonl`。
+
+    **fail-soft, 绝不抛**: 网络不通 / akshare 没装 / 端点改版, 都只是保持旧缓存
+    并把结果标成不可用 —— 估值这一维缺了, 体温表其余部分照常出。
+    已覆盖到"应有交易日"时不重复拉 (一天最多一次联网)。
+    """
+    if not _erp_fetch_enabled():
+        return {"ok": False, "reason": f"已用 {ERP_FETCH_ENV} 关闭联网取数"}
+    have = _read_erp()
+    try:
+        want = pd.Timestamp(_expected_trading_day())
+    except Exception:
+        want = pd.Timestamp(dt.date.today())
+    if len(have) and have.index[-1] >= want:
+        return {"ok": True, "skipped": True, "rows": len(have),
+                "last": have.index[-1].date().isoformat()}
+    try:
+        import akshare as ak
+        df = ak.stock_ebs_lg()
+    except Exception as e:
+        _logger.warning("大盘位置: 拉 ERP 失败 (保持旧缓存): %s", e)
+        return {"ok": False, "reason": f"拉取失败: {e}", "rows": len(have)}
+    try:
+        rows = []
+        for _, r in df.iterrows():
+            d = pd.Timestamp(str(r["日期"]))
+            v = float(r["股债利差"])
+            if v == v:
+                rows.append({"date": d.date().isoformat(), "erp": round(v, 6)})
+        if not rows:
+            return {"ok": False, "reason": "端点返回空表", "rows": len(have)}
+        n = _upsert(rows, path=ERP_PATH)
+        return {"ok": True, "rows": n, "added": len(rows),
+                "last": rows[-1]["date"]}
+    except Exception as e:
+        _logger.warning("大盘位置: ERP 落盘失败: %s", e)
+        return {"ok": False, "reason": f"落盘失败: {e}", "rows": len(have)}
+
+
+def _erp_table(s: pd.Series | None = None) -> pd.DataFrame:
+    """ERP 的**十年滚动统计表**, **一次向量化算完** → 按日期查表即可。
+
+    列: `erp`(当日值%) / `pct_10y`(十年百分位) / `median_10y` / `min_10y` /
+    `max_10y` / `n_obs`(十年窗口里的样本数)。
+
+    **为什么必须向量化**: 回填要算 5000+ 天, 若每天现算一遍
+    「截到该日 → 取最近 2430 条 → 比较大小」, 就是 4000 万次比较,
+    实测会从"秒级"掉到"分钟级"(与小节开头的性能提醒同一类坑)。
+    用 `rolling(...).rank(pct=True)` 一次算完, 之后只是查表。
+    """
+    if s is None:
+        s = _read_erp()
+    if s is None or len(s) == 0:
+        return pd.DataFrame()
+    r = s.rolling(PCT_WINDOW_BARS, min_periods=ERP_MIN_OBS)
+    out = pd.DataFrame({
+        "erp": s * 100,
+        "pct_10y": r.rank(pct=True) * 100,
+        "median_10y": r.median() * 100,
+        "min_10y": r.min() * 100,
+        "max_10y": r.max() * 100,
+        "n_obs": r.count(),
+    })
+    return out
+
+
+def _erp_snapshot(table: pd.DataFrame, asof) -> dict | None:
+    """按日期查 ERP 快照 (当日值 + 十年百分位 + 十年区间)。
+
+    返回 None = 没缓存 / 该日之前没有值 / 该日的历史不足 `ERP_MIN_OBS` 条
+    (十年窗口没满 3 年就不给数, 与位置百分位同一条纪律)。
+    **百分位读法**: 越高 = 越划算 (过去十年里只有这么少的时间比现在更划算)。
+    """
+    if table is None or len(table) == 0:
+        return None
+    ts = pd.Timestamp(asof)
+    i = int(table.index.searchsorted(ts, side="right")) - 1
+    if i < 0:
+        return None
+    row = table.iloc[i]
+    if row["pct_10y"] != row["pct_10y"]:        # NaN → 历史不足
+        return None
+    return {"erp_pct": _f(row["erp"], 2),
+            "erp_pct_10y": _f(row["pct_10y"], 1),
+            "erp_median_10y_pct": _f(row["median_10y"], 2),
+            "erp_min_10y_pct": _f(row["min_10y"], 2),
+            "erp_max_10y_pct": _f(row["max_10y"], 2),
+            "n_obs": int(row["n_obs"]),
+            "asof": table.index[i].date().isoformat(),
+            "source": ERP_SOURCE, "caliber": ERP_CALIBER}
+
+
 # ───────────────────── 内部: JSONL 读写 ─────────────────────
 
 
@@ -324,7 +485,8 @@ def collect(*, bars: int = DEFAULT_BARS, write: bool = True,
 def _collect_locked(*, bars: int, write: bool,
                     expected: dt.date | None) -> dict:
     """collect 的实际实现 (调用方已持 _COLLECT_LOCK)。"""
-    close_df, vol_df, amt_df = _load_matrices(bars)
+    # 多读 WARMUP_BARS 做预热 (否则窗口头部的长回看指标是 NaN, 会把历史记录改缺)
+    close_df, vol_df, amt_df = _load_matrices(bars + WARMUP_BARS if bars else 0)
     if close_df.empty:
         return {"ok": False, "reason": f"本地日线缓存为空 ({KLINE_1D_DIR})"}
     asof = last_valid_date(vol_df, min_ratio=MIN_TRADED_RATIO)
@@ -362,12 +524,24 @@ def _collect_locked(*, bars: int, write: bool,
              and bf.at[d, "traded_ratio"] >= MIN_TRADED_RATIO]
     # 首行没有"昨收"可比, 涨跌停会算成 0 → 跳过, 不写假 0
     valid = [d for d in valid if d > bf.index[0]]
+    # 预热段只用来把指标"喂热", 不算正式记录 (否则会把历史 upsert 成缺值)
+    if bars:
+        valid = valid[-bars:]
 
     # 涨停/跌停: 掩码与昨收在 limit_counts_series 内部只算一次, 逐日只做轻量比较
     limit_map = limit_counts_series(close_df, vol_df, ratios, valid)
+
+    # 估值维度 (§14.4): 先保证本地 ERP 缓存覆盖到 asof (一天最多联网一次),
+    # 再把当日的 ERP 与百分位附到**每条**记录上 —— 与日线无关, 缺了就是缺了。
+    if write:
+        _refresh_erp()
+    erp_table = _erp_table()
+
     records = [_build_record(d, bf.loc[d], idx_hist, hs_raw, hs_ma20, total_amt,
                              amt_rank, limit_map, exp_ts)
                for d in valid]
+    for rec in records:
+        rec["valuation"] = _erp_snapshot(erp_table, rec["date"])
     lines = _upsert(records) if write else 0
     return {"ok": True, "asof": pd.Timestamp(asof).date().isoformat(),
             "expected": exp_ts.date().isoformat(), "stale": bool(stale),
@@ -880,6 +1054,33 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             g={"bull": "牛", "bear": "熊", "range": "震荡"}.get(
                 item.get("regime"), "【缺】")))
     out.append("## 位置（三大指数，各自独立，不合成总分）\n" + "\n".join(rows))
+
+    # 估值维度 (§14.4): 价格分位 ≠ 估值分位 —— 指数可以在价格高位而估值不高。
+    v = rec.get("valuation")
+    if v:
+        out.append(
+            "## 估值（贵不贵，跟位置是两回事）\n"
+            f"**股债性价比 {_num(v.get('erp_pct'), 2)}%**"
+            f"（= 沪深300 的盈利收益率 1/PE 减掉 10 年期国债收益率），"
+            f"处在**过去十年 {_rat(v.get('erp_pct_10y'))} 分位**。\n\n"
+            f"怎么读：这个数**越高越划算**（拿着股票的预期回报比拿着国债强多少）。"
+            f"现在的 {_num(v.get('erp_pct'), 2)}% 意味着过去十年里只有 "
+            f"{_rat(100 - (v.get('erp_pct_10y') or 0))} 的时间比现在更划算；"
+            f"十年中位数是 {_num(v.get('erp_median_10y_pct'), 2)}%，"
+            f"十年区间 {_num(v.get('erp_min_10y_pct'), 2)}% ~ "
+            f"{_num(v.get('erp_max_10y_pct'), 2)}%。\n\n"
+            f"口径：{v.get('caliber')}（数据日 {v.get('asof')}，"
+            f"十年窗口 {v.get('n_obs')} 个交易日；来源 {v.get('source')}）。"
+            "**注意这是沪深300 口径，不是「全市场」口径**。\n\n"
+            "**为什么单列这一节**：前面那张位置表全是**价格**算出来的——"
+            "价格在高位不等于**贵**（如果公司盈利涨得比股价还快，价格高但估值不高）。"
+            "股债性价比是目前唯一有外部独立证据支持的长周期维度"
+            "（外部研究实测它与未来 12 个月收益的相关性 rho=+0.48、五等分价差 +26.7pp）。")
+    else:
+        out.append("## 估值（贵不贵，跟位置是两回事）\n\n"
+                   "【缺】没有本地 ERP（股债性价比）缓存。补的办法："
+                   "`python tools/market_position_collect.py --collect`（会联网拉一次），"
+                   "或手工把 `data/market_position/erp.jsonl` 造出来。")
 
     md = mirror_data if isinstance(mirror_data, dict) else mirror()
     if not md.get("ok"):
