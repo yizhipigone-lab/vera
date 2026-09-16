@@ -5,10 +5,12 @@ v0 纪律: 只增不改、只读 gongshi/TDX gs_txt、绝不写 TDX。
 token 清单复刻 gongshi 实战(_batch_import.py + _clean_formulas.json 基线)。
 """
 import hashlib
+import json
 import os
 import re
 import subprocess
 import sys
+import time
 
 from tools.future_tokens import FUTURE_TOKEN_BLACKLIST
 
@@ -73,3 +75,31 @@ def push_feishu(md_path, title, logger=None):
                                   (r.stderr or r.stdout or "")[-120:])))
     except Exception as e:                                       # noqa: BLE001
         _log("飞书推送: 异常 %r" % e)
+
+
+# ---- 入库账本 (2026-09-16 自 farm_onboard 迁入: 账本落盘是纯数据逻辑,
+# 不该拖着 psutil/pyautogui/pywinauto 的 GUI 硬依赖 —— 否则测试 import
+# 链在新环境收集即炸, 复审 M4) ----
+
+def save_onboard(ob_path, date_str, items):
+    """合并写 onboard.json (读旧 → 按文件合并 → 原子替换落盘)。
+
+    2026-09-06 血泪教训: 覆盖写会把历史 ok 记录冲掉 → 断点失效重复入库,
+    所以一律合并写 (同文件取最新一轮的结果)。
+    供 farm_onboard「每入一条立即记账」逐条调用 (中途停止不丢账)。
+    """
+    merged = {}
+    if os.path.exists(ob_path):
+        try:
+            with open(ob_path, encoding="utf-8") as f:
+                for it in json.load(f).get("items", []):
+                    merged[it.get("file")] = it
+        except Exception:
+            pass
+    for it in items:
+        merged[it["file"]] = it
+    tmp = ob_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"date": date_str, "finished_at": time.strftime("%H:%M:%S"),
+                   "items": list(merged.values())}, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, ob_path)

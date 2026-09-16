@@ -4,12 +4,12 @@
 - 闸门提交在任一闸门运行中 → 409; 回测闸门另检查 pipeline 回测互斥。
 - reports 只读 data/formula_farm/reports/*.md, 文件名白名单(防路径穿越)。
 """
+import os
 import re
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORTS = ROOT / "data" / "formula_farm" / "reports"
@@ -68,19 +68,35 @@ def create_farm_router(farm, pipeline_status):
         if gate not in GATE_NAMES:
             raise HTTPException(400, "未知闸门")
         last = (farm.status().get("last") or {}).get(gate) or {}
-        p = Path(last["log_file"]) if last.get("log_file") else None
-        if not p or not p.exists():
-            cands = sorted(RUNS.glob("*/%s.log" % gate),
-                           key=lambda x: -x.stat().st_mtime)
-            p = cands[0] if cands else None
-        if not p or not p.exists():
-            raise HTTPException(404, "暂无日志 (该闸门还没跑过或未落盘)")
-        rp = p.resolve()
+        lf = last.get("log_file")
+        # 复审 LOW: last_status.json 可被手工改动, 非字符串/坏路径不能炸成 500
+        p = Path(lf) if isinstance(lf, str) and lf else None
+        try:
+            if not p or not p.exists():
+                cands = sorted(RUNS.glob("*/%s.log" % gate),
+                               key=lambda x: -x.stat().st_mtime)
+                p = cands[0] if cands else None
+            if not p or not p.exists():
+                raise HTTPException(404, "暂无日志 (该闸门还没跑过或未落盘)")
+            rp = p.resolve()
+        except OSError:
+            # glob/stat 与文件删除的竞态 (TOCTOU) —— 按"没有日志"处理不炸 500
+            raise HTTPException(404, "暂无日志 (读取竞态)") from None
         if RUNS.resolve() not in rp.parents:
             raise HTTPException(400, "非法日志路径")
-        text = rp.read_text(encoding="utf-8", errors="replace")
-        truncated = len(text) > LOG_MAX_CHARS
-        if truncated:
+        # 复审 LOW: 大日志不全读 —— 超 2 倍上限只 tail-read 尾部再解码
+        try:
+            size = rp.stat().st_size
+            truncated = size > LOG_MAX_CHARS * 2
+            if truncated:
+                with open(rp, "rb") as f:
+                    f.seek(-LOG_MAX_CHARS * 2, os.SEEK_END)
+                    text = f.read().decode("utf-8", errors="replace")
+            else:
+                text = rp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            raise HTTPException(404, "暂无日志 (读取竞态)") from None
+        if len(text) > LOG_MAX_CHARS:
             text = "……(日志过长, 只显示最后 %d 字符)……\n\n" % LOG_MAX_CHARS \
                    + text[-LOG_MAX_CHARS:]
         return {"gate": gate, "file": str(rp), "truncated": truncated, "log": text}

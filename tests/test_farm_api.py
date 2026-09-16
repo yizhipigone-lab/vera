@@ -109,6 +109,16 @@ def test_extract_error_picks_last_traceback():
     assert fr._extract_error(lines) == "KeyError: 'second'"
 
 
+def test_extract_error_traceback_block_end_ignores_trailing_output():
+    """复审 M3: Traceback 块之后脚本还有输出时, 必须抓块末的异常行,
+    不能抓整个日志的最后一行 (无关行)。"""
+    lines = ["启动", "Traceback (most recent call last):",
+             '  File "x.py", line 5, in <module>', "    boom()",
+             "RuntimeError: 真病因",
+             "   ! 未来函数甄别 第 1 次失败: rc=1", "   · 20 秒后重试"]
+    assert fr._extract_error(lines) == "RuntimeError: 真病因"
+
+
 def test_extract_error_human_reason_fallback():
     """无 Traceback 时取脚本自己打印的人话原因 (SystemExit 前的 log)。"""
     lines = ["[1/4] 检查通达信进程...", "没有待入库清单 — 先点『检查增量』"]
@@ -157,6 +167,37 @@ def test_farm_log_endpoint(client, monkeypatch):
     body = r.json()
     assert "ModuleNotFoundError: boom" in body["log"]
     assert body["truncated"] is False
+
+
+def test_farm_log_rejects_tampered_path(client, monkeypatch):
+    """复审 LOW: last_status.json 被改 → 指向 runs 外必须 400, 非字符串不炸 500。"""
+    import core.farm_api as fa
+    c, farm = client
+    monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
+    fa.RUNS.mkdir(parents=True, exist_ok=True)
+    evil = fa.REPORTS.parent / "evil.log"
+    evil.write_text("secret", encoding="utf-8")
+    farm._last = {"check": {"log_file": str(evil)}}
+    assert c.get("/api/farm/log", params={"gate": "check"}).status_code == 400
+    farm._last = {"check": {"log_file": 123}}   # 篡改非字符串 → 兜底 glob → 404
+    assert c.get("/api/farm/log", params={"gate": "check"}).status_code == 404
+
+
+def test_farm_log_truncates_long_file(client, monkeypatch):
+    """复审 LOW: 超上限只 tail-read 并标注, 不全文读入。"""
+    import core.farm_api as fa
+    c, farm = client
+    monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
+    monkeypatch.setattr(fa, "LOG_MAX_CHARS", 100)
+    d = fa.RUNS / "2026-09-16"
+    d.mkdir(parents=True)
+    (d / "check.log").write_text("x" * 500, encoding="utf-8")
+    r = c.get("/api/farm/log", params={"gate": "check"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["truncated"] is True
+    assert "日志过长" in body["log"]
+    assert body["log"].endswith("x" * 100)
 
 
 def test_backtest_rejected_when_pipeline_busy(tmp_path, monkeypatch):

@@ -55,28 +55,34 @@ class GateRun:
 def _extract_error(lines):
     """从闸门输出尾部提取真病因。
 
-    优先级: ① 最后一个 Traceback 块的最后一个非空行
-               (ModuleNotFoundError: No module named 'psutil' 这类, 藏在
-               "子进程退出码 1" 背后的真凶);
+    优先级: ① 最后一个 Traceback 块的异常行 (块末, 不是日志末 ——
+               复审 M3: Traceback 之后脚本还可能有输出, 抓"日志最后一行"
+               会抓到无关行; 块 = 缩进的帧行 + 第一个非缩进非空行(异常行));
             ② 最后的 XxxError/XxxException/SystemExit 行;
             ③ 最后一条非空行 (脚本 raise SystemExit 前自己打印的人话原因,
                如「没有待入库清单 — 先点『检查增量』」)。
     """
     tb = None
-    for i, l in enumerate(lines):
-        if "Traceback (most recent call last)" in l:
+    for i, ln in enumerate(lines):
+        if "Traceback (most recent call last)" in ln:
             tb = i
     if tb is not None:
-        for l in reversed(lines[tb + 1:]):
-            if l.strip():
-                return l.strip()[:300]
-    for l in reversed(lines):
-        s = l.strip()
+        exc_line = ""
+        for ln in lines[tb + 1:]:
+            if not ln.strip():
+                continue
+            exc_line = ln                    # 帧行(缩进)持续覆盖
+            if not ln.startswith((" ", "\t")):
+                break                        # 第一个非缩进非空行 = 异常行, 块结束
+        if exc_line:
+            return exc_line.strip()[:300]
+    for ln in reversed(lines):
+        s = ln.strip()
         if re.match(r"^[\w.]*(Error|Exception|SystemExit|KeyboardInterrupt)\b", s):
             return s[:300]
-    for l in reversed(lines):
-        if l.strip():
-            return l.strip()[:300]
+    for ln in reversed(lines):
+        if ln.strip():
+            return ln.strip()[:300]
     return ""
 
 
@@ -147,8 +153,12 @@ class FarmRunner:
             p.terminate()
 
     def _work(self, run: GateRun):
+        stopped = False
         try:
             rc = self._runner(run)
+            # 复审 M1: 停止标记在 runner 返回的此刻快照, 之后的病因提取期间
+            # 用户再点停止不改记 —— 子进程已自行 rc=1 是真失败, 不是人工停止
+            stopped = self._stop_requested
             run.status = "done" if rc == 0 else "failed"
             if rc != 0:
                 # 2026-09-16: 失败病因结构化 —— 从完整日志尾部抓真错误行,
@@ -161,7 +171,7 @@ class FarmRunner:
             run.status = "failed"
             run.error = repr(e)
         finally:
-            if self._stop_requested and run.status != "done":
+            if stopped and run.status != "done":
                 # 人工停止 ≠ 子进程真失败 (此前页面都显示 ❌ 失败+退出码, 分不清)
                 run.status = "stopped"
                 run.error = ""
@@ -191,12 +201,22 @@ class FarmRunner:
         except Exception:
             _logger.warning("farm_runner: 闸门日志文件创建失败", exc_info=True)
         env = dict(os.environ, PYTHONUTF8="1")
-        proc = subprocess.Popen(
-            [PY, "-X", "utf8", str(script)], cwd=str(ROOT),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=env)
+        try:
+            proc = subprocess.Popen(
+                [PY, "-X", "utf8", str(script)], cwd=str(ROOT),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=env)
+        except Exception:
+            if fh:
+                fh.close()   # Popen 没起来, 日志句柄别漏 (复审 LOW)
+            raise
         with self._lock:
             self._proc = proc
+            kill_now = self._stop_requested
+        if kill_now:
+            # 复审 M2: 线程启动到 _proc 注册之间(建日志+Popen)用户点了停止,
+            # stop() 时 _proc 还是 None 杀不到 —— 注册后立即补一刀
+            proc.terminate()
         try:
             for line in proc.stdout:
                 line = line.rstrip("\n")

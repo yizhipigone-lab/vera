@@ -20,10 +20,10 @@ PY = sys.executable
 
 import psutil  # noqa: E402
 import pyautogui  # noqa: E402
-from pywinauto import Application, Desktop  # noqa: E402
+from pywinauto import Desktop  # noqa: E402
 
 from tools.formula_farm import gui_onboard  # noqa: E402
-from tools.formula_farm.common import push_feishu  # noqa: E402  # F6 收口
+from tools.formula_farm.common import push_feishu, save_onboard  # noqa: E402  # F6/M4 收口
 
 TDX_EXE = r"E:\NEW_TDX\TdxW.exe"
 MAIN_TITLE_KEY = "通达信金融终端"
@@ -133,29 +133,6 @@ def _latest_check(date_str=None):
     return json.load(open(fp, encoding="utf-8")), fp
 
 
-def _save_onboard(ob_path, date_str, items):
-    """合并写 onboard.json (读旧 → 按文件合并 → 原子替换落盘)。
-
-    2026-09-06 血泪教训: 覆盖写会把历史 ok 记录冲掉 → 断点失效重复入库,
-    所以一律合并写 (同文件取最新一轮的结果)。
-    2026-09-16: 抽成独立函数, 供「每入一条立即记账」复用 (中途停止不丢账)。
-    """
-    merged = {}
-    if os.path.exists(ob_path):
-        try:
-            for it in json.load(open(ob_path, encoding="utf-8")).get("items", []):
-                merged[it.get("file")] = it
-        except Exception:
-            pass
-    for it in items:
-        merged[it["file"]] = it
-    tmp = ob_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"date": date_str, "finished_at": time.strftime("%H:%M:%S"),
-                   "items": list(merged.values())}, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, ob_path)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-add", type=int, default=0,
@@ -164,6 +141,8 @@ def main():
     ap.add_argument("--fail-streak", type=int, default=2,
                     help="连续失败几次熔断(大批量续跑可调大, 失败条目本身会每轮重试并留痕)")
     args = ap.parse_args()
+    if args.max_add < 0:
+        ap.error("--max-add 不能为负 (0=全部)")
 
     chk, fp = _latest_check(args.run_date)
     if not chk:
@@ -223,7 +202,7 @@ def main():
         # 2026-09-16: 每入一条立即记账 —— 中途点「停止」也不丢账, 下轮断点续跑
         # 不会把已入的重复录入 (此前整轮跑完才落盘, 停止 = 本轮已入的变重复条目)
         try:
-            _save_onboard(ob_path, date_str, [results[-1]])
+            save_onboard(ob_path, date_str, [results[-1]])
         except Exception as e:                                   # noqa: BLE001
             log("   ! 记账失败(继续入库, 收尾再补): %r" % e)
         fail_streak = 0 if ok else fail_streak + 1
@@ -232,7 +211,7 @@ def main():
             break
 
     ok_n = sum(1 for x in results if x["ok"])
-    _save_onboard(ob_path, date_str, results)   # 收尾补记 (循环内已逐条记, 幂等)
+    save_onboard(ob_path, date_str, results)   # 收尾补记 (循环内已逐条记, 幂等)
     os.makedirs(REPORTS, exist_ok=True)
     md = ["# 公式农场入库结果 — %s\n" % date_str,
           "入库 **成功 %d / 失败 %d**(本批 %d 条, 待入库 %d 条)\n" % (
