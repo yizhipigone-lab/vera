@@ -321,6 +321,14 @@ class RotationFeature:
         if anchors == self._anchors_key and self._tranches:
             return
         old = self._tranches
+        if old and anchors != self._anchors_key:
+            # 锚定/份数热变更: 份状态按新锚定重建 (计划书 §七: 建议重启;
+            # 审计留痕让人看得见, 别静默换节奏 —— 设计评审补)
+            self._store.write_audit(
+                "rotation_reanchor",
+                f"轮动信号日锚定热变更 {list(self._anchors_key)} → "
+                f"{list(anchors)}, 份状态按新锚定重建 (建议重启)",
+                {"old": list(self._anchors_key), "new": list(anchors)})
         self._anchors_key = anchors
         self._tranches = []
         for i, anchor in enumerate(anchors):
@@ -560,13 +568,9 @@ class RotationFeature:
 
     @staticmethod
     def _rotation_codes(cfg) -> set:
-        """轮动池全部代码 (主风险腿 + 风险腿2 + 避险腿1/2)。"""
-        codes = {cfg.cyb_etf, cfg.gold_etf}
-        if cfg.risk_etf2:
-            codes.add(cfg.risk_etf2)
-        if cfg.hedge_etf2:
-            codes.add(cfg.hedge_etf2)
-        return codes
+        """轮动池全部代码 —— 委托 pool_money.rotation_codes 唯一真相源
+        (2026-09-16 设计评审收口: 本模块曾手写第二份, 沉淀经验#1)。"""
+        return pool_money.rotation_codes(cfg)
 
     def _execute(self, signals: dict, migration_closes: dict) -> None:
         """统一执行 pass (消费者线程, 计划书 D3): 一次运行、算 N 遍、下一遍单。

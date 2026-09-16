@@ -18,7 +18,7 @@ from trade.book import DIRECTION_SELL
 
 __all__ = [
     "pool_split", "position_value", "stock_pool_value",
-    "stock_budget_cap", "in_flight_sell_returns",
+    "stock_budget_cap", "in_flight_sell_returns", "rotation_codes",
 ]
 
 
@@ -44,8 +44,9 @@ def position_value(code: str, volume: int, quote_of,
     return cost * volume if cost > 0 else 0.0
 
 
-def _rotation_codes(rot_cfg) -> set:
-    """轮动池全部代码 (主腿 + 风险腿2 + 避险腿1/2), 从股票池中排除。"""
+def rotation_codes(rot_cfg) -> set:
+    """轮动池全部代码 (主腿 + 风险腿2 + 避险腿1/2), 从股票池中排除。
+    公开唯一真相源 (2026-09-16 收口: rotation.py 曾手写第二份, 设计评审收编)。"""
     codes = {rot_cfg.cyb_etf, rot_cfg.gold_etf}
     if getattr(rot_cfg, "risk_etf2", None):
         codes.add(rot_cfg.risk_etf2)
@@ -56,7 +57,7 @@ def _rotation_codes(rot_cfg) -> set:
 
 def stock_pool_value(rot_cfg, positions: dict, quote_of) -> float:
     """股票池市值 = 非轮动 ETF 的持仓市值 (逐仓 position_value 汇总)。"""
-    rot_codes = _rotation_codes(rot_cfg)
+    rot_codes = rotation_codes(rot_cfg)
     total = 0.0
     for code, pos in positions.items():
         vol = getattr(pos, "volume", 0)
