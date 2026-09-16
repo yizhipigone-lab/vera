@@ -400,6 +400,10 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn" id="tabBtnResearch">研究</button>
   <button class="tab-btn" id="tabBtnData">数据准备</button>
   <button class="tab-btn" id="tabBtnAi" title="对话大脑三档(快速/标准/深度)的 API Key 与模型配置">AI 设置</button>
+  <!-- 2026-09-16: 手机版直达入口 (手机浏览器访问 http://<本机IP 或 tailnet-IP>:8080/m) -->
+  <a class="tab-btn" href="/m" target="_blank" rel="noopener"
+     style="margin-left:auto;text-decoration:none"
+     title="手机浏览器访问 http://<本机IP>:8080/m (同局域网或 tailscale)">手机版 /m</a>
 </div>
 <!-- 2026-07-24: 内置边界口径页首声明 — 改代码口径时必须同步此块
      (selection/selector.py, core/stock_filter.py, backtest/engine.py

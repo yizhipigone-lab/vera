@@ -173,6 +173,8 @@ body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-ri
     </div>
     <div class="sec-title">持仓 <button class="refresh-btn" id="refreshTrade" style="margin-left:auto">刷新</button></div>
     <div class="pos-list" id="posList"><div class="empty">加载中…</div></div>
+    <div class="sec-title">ETF 轮动</div>
+    <div class="pos-list" id="rotList"><div class="empty">加载中…</div></div>
     <div class="sec-title">最近成交</div>
     <div class="deal-list" id="dealList"><div class="empty">加载中…</div></div>
   </section>
@@ -180,7 +182,7 @@ body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-ri
   <!-- 盈亏分析 -->
   <section class="tab" id="tab-analysis">
     <div class="kpi-grid" id="kpiGrid"><div class="empty">加载中…</div></div>
-    <div class="sec-title">每日盈亏（近30个交易日）</div>
+    <div class="sec-title">每日盈亏（近30个交易日） <button class="refresh-btn" id="refreshAnalysis" style="margin-left:auto">刷新</button></div>
     <div class="daily-list" id="dailyPnlList"><div class="empty">加载中…</div></div>
   </section>
 
@@ -207,7 +209,24 @@ body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-ri
 <script>
 (function(){
 'use strict';
-var TRADE_BASE = 'http://' + location.hostname + ':8081';
+// 2026-09-16: 交易服务地址可配 — 默认 http://<当前主机>:8081 (局域网/ tailscale 直连);
+// 走单端口反代或 https 时用 ?trade=<base> 覆盖 (如 ?trade=https://vera.example.com/trade),
+// 覆盖值记入 localStorage, 下次免带参数; ?trade=reset 清除记忆回落默认。
+var TRADE_BASE = (function(){
+  var def = 'http://' + location.hostname + ':8081';
+  var m = location.search.match(/[?&]trade=([^&]+)/);
+  if(m){
+    var v = decodeURIComponent(m[1]).replace(/\/+$/,'');
+    if(v === 'reset'){ try{ localStorage.removeItem('vera_trade_base'); }catch(e){} return def; }
+    try{ localStorage.setItem('vera_trade_base', v); }catch(e){}
+    return v;
+  }
+  try {
+    var saved = localStorage.getItem('vera_trade_base');
+    if(saved) return saved;
+  } catch(e){}
+  return def;
+})();
 var CONV = 'mobile';   // 研究大脑固定会话号
 
 // ── 工具 ────────────────────────────────────────────
@@ -262,26 +281,38 @@ function setStatus(ok, text){
 }
 
 function refreshTrade(){
-  // 状态 + 资产 + 持仓 + 成交 并行拉
+  // 状态 + 资产 + 持仓 + 成交 + 轮动 并行拉 (轮动失败不影响其余, 单列空态)
   Promise.allSettled([
     tradeGet('/api/trade/status'),
     tradeGet('/api/trade/asset'),
     tradeGet('/api/trade/positions'),
     tradeGet('/api/trade/deals?limit=15'),
+    tradeGet('/api/trade/rotation/last'),
   ]).then(function(rs){
     var st = rs[0].status==='fulfilled' ? rs[0].value : null;
     var as = rs[1].status==='fulfilled' ? rs[1].value : null;
     var ps = rs[2].status==='fulfilled' ? rs[2].value : null;
     var ds = rs[3].status==='fulfilled' ? rs[3].value : null;
+    var rot = rs[4].status==='fulfilled' ? rs[4].value : null;
 
+    // ETF 轮动放在早退判断之前: 主状态挂了它也照样出「获取失败」空态, 不停在「加载中…」
+    renderRotation(rot);
     if(!st || !as || !ps){
       setStatus(false, '交易服务未连接');
       return;
     }
-    // 状态: 连接 + 对账 + 急停
-    var ok = st.connected && st.reconciled;
+    // 状态: 连接 + 对账 + 急停 + 通道 (2026-09-16: 补 09-07 新增的 channel/armed 字段,
+    // 通道挂了原来手机上完全看不出来)
+    var chDown = !!st.channel_down;
+    var ok = st.connected && st.reconciled && !chDown;
     var label = st.kill_active ? '已急停' : (ok ? '运行中' : '异常');
-    setStatus(ok, label + (st.monitor_reason ? ' · '+st.monitor_reason : ''));
+    var extras = [];
+    if(st.channel) extras.push(String(st.channel).toUpperCase());
+    if(chDown) extras.push('通道异常');
+    // ths 通道未武装 = 武装意图与实际不一致, 挂单不会真出去
+    if(st.channel === 'ths' && st.armed_effective === false) extras.push('未武装');
+    var tail = extras.concat(st.monitor_reason ? [st.monitor_reason] : []).join(' · ');
+    setStatus(ok, label + (tail ? ' · '+tail : ''));
     $('killBtn').classList.toggle('armed', !!st.kill_active);
     $('killBtn').textContent = st.kill_active ? '解除急停' : '急停';
 
@@ -305,6 +336,39 @@ function refreshTrade(){
     // 成交
     renderDeals(ds && ds.deals || []);
   });
+}
+
+// ── ETF 轮动状态 (2026-09-16 新增) ─────────────────────────────
+// 后端结构: {last:{ts,source,tranches:[{tranche,anchor,signal}]}, config:{enabled,...}}
+// signal = {target, insufficient, reason, momentum:{代码:涨幅|null}, decision, note}
+var ROT_WD = {monday:'周一',tuesday:'周二',wednesday:'周三',thursday:'周四',friday:'周五'};
+function renderRotation(r){
+  var el = $('rotList');
+  if(!r){ el.innerHTML = '<div class="empty">轮动状态获取失败</div>'; return; }
+  if(!r.config || !r.config.enabled){ el.innerHTML = '<div class="empty">ETF 轮动未启用</div>'; return; }
+  var last = r.last;
+  if(!last || !last.tranches || !last.tranches.length){
+    el.innerHTML = '<div class="empty">暂无轮动信号 (尚未执行过)</div>'; return;
+  }
+  el.innerHTML = last.tranches.map(function(t){
+    var sig = t.signal || {};
+    var badge = sig.insufficient ? '数据不足' : (sig.target ? '持仓腿' : '避险');
+    var tgt = sig.target ? thsLink(sig.target) : '避险篮子 (黄金)';
+    var mom = '';
+    if(sig.momentum){
+      mom = Object.keys(sig.momentum).map(function(c){
+        var m = sig.momentum[c];
+        return thsLink(c) + ' ' + (m==null ? '—' : ((m>=0?'+':'')+(m*100).toFixed(1)+'%'));
+      }).join(' / ');
+    }
+    return '<div class="pos-card">'
+      + '<div class="pos-top"><span class="pos-name">份'+(t.tranche+1)+' · '+(ROT_WD[t.anchor]||t.anchor)+'锚</span>'
+      + '<span class="pos-badge'+(sig.target?' etf':'')+'">'+badge+'</span></div>'
+      + '<div class="pos-row"><span class="l">目标</span><span class="v">'+tgt+'</span></div>'
+      + (mom ? '<div class="pos-row"><span class="l">动量</span><span class="v" style="font-size:var(--fs-sm)">'+mom+'</span></div>' : '')
+      + (sig.decision ? '<div class="pos-row"><span class="l">决策</span><span class="v" style="font-size:var(--fs-sm);text-align:right;max-width:72%">'+esc(sig.decision)+'</span></div>' : '')
+      + '</div>';
+  }).join('');
 }
 
 function renderPositions(list){
@@ -346,17 +410,29 @@ $('killBtn').addEventListener('click', function(){
   tradePost(armed ? '/api/trade/unkill' : '/api/trade/kill').then(function(){ refreshTrade(); });
 });
 $('refreshTrade').addEventListener('click', refreshTrade);
+$('refreshAnalysis').addEventListener('click', loadAnalysis);
 
-// 交易页 5 秒轮询
+// 交易页 5 秒轮询 (2026-09-16: 页面切后台暂停, 回前台立即补一次 — 省电量/流量)
 pollTimer = setInterval(function(){
+  if(document.hidden) return;
   if(document.getElementById('tab-trade').classList.contains('active')) refreshTrade();
 }, 5000);
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden) return;
+  if(document.getElementById('tab-trade').classList.contains('active')) refreshTrade();
+  if(document.getElementById('tab-analysis').classList.contains('active')) loadAnalysis();
+});
 
 // ── 盈亏分析 ─────────────────────────────────────────
+// 2026-09-16: 首次切进页签自动加载一次, 之后靠「刷新」按钮或切回前台时主动拉
+// (原 analysisLoaded 挡死只拉一次, 盘中看到的是早上的旧数)
 var analysisLoaded = false;
 function refreshAnalysis(){
   if(analysisLoaded) return;
   analysisLoaded = true;
+  loadAnalysis();
+}
+function loadAnalysis(){
   Promise.allSettled([
     fetch(TRADE_BASE + '/api/trade/analysis/summary').then(function(r){return r.json();}),
     fetch(TRADE_BASE + '/api/trade/analysis/daily_pnl').then(function(r){return r.json();}),
