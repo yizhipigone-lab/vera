@@ -243,3 +243,67 @@ def test_backtest_md_generator_matches_fallback_regex(root):
     assert m and m.groups() == ("1", "0", "0", "0")
     r = fs._RE_BT_REMAIN.search(md)
     assert r and r.group(1) == "1"
+
+
+# ── 2026-09-16 达标榜回填回测页: backtest_prefill ──
+
+def _archive_with_params(root, cond_days=0, ladder="off"):
+    _wj(root / "archive.json", {
+        "GS0607": {"file": "70667_捕捉起涨点.md", "url": "http://gupang/x",
+                   "onboard_date": "2026-09-06",
+                   "best": {"key": "c-0.2_a0.08", "annret": 0.244, "maxdd": -0.034,
+                            "calmar": 7.16, "winrate": 0.61, "trades": 58,
+                            "params": {"cost": -0.2, "act": 0.08, "dd": 0.005,
+                                       "ladder": ladder, "time_days": 20,
+                                       "cond_days": cond_days,
+                                       "cond_profit": 0.03 if cond_days else 0.0}},
+                   "verdict": {"code": "pass", "label": "达标", "reason": "ok"},
+                   "window": ["2024-09-11", "2026-09-16"]}})
+
+
+def test_backtest_prefill_builds_package(root):
+    _archive_with_params(root)
+    d = fs.backtest_prefill(str(root), "GS0607")
+    assert d["gs"] == "GS0607" and d["window"] == ["2024-09-11", "2026-09-16"]
+    assert d["params"]["cost"] == -0.2 and d["params"]["time_days"] == 20
+    assert d["combo_text"] == "硬止损20% + 移动止盈激活8%/回撤0.5% + 时间止损20天"
+    assert d["ladder_note"] == ""
+    cal = d["caliber"]
+    assert cal["universe_type"] == "23" and cal["period"] == "5m"
+    assert cal["entry_price_mode"] == "close_t"
+    assert cal["capital"] == 3_000_000 and cal["max_buy"] == 20_000
+    assert cal["priority_value"] == "trailing_first"
+    # 口径与 farm_rules 单一真相源同源
+    from core import farm_rules
+    assert cal["universe"] == farm_rules.SWEEP_CALIBER["universe"]
+
+
+def test_backtest_prefill_cond_days_appends_text(root):
+    _archive_with_params(root, cond_days=7)
+    d = fs.backtest_prefill(str(root), "GS0607")
+    assert "条件时间止盈7天/盈利3%" in d["combo_text"]
+
+
+def test_backtest_prefill_ladder_note_when_not_off(root):
+    _archive_with_params(root, ladder="l2")
+    d = fs.backtest_prefill(str(root), "GS0607")
+    assert "阶梯止盈" in d["ladder_note"] and "人工核对" in d["ladder_note"]
+
+
+def test_backtest_prefill_missing_gs_raises_keyerror(root):
+    _archive_with_params(root)
+    import pytest as _pt
+    with _pt.raises(KeyError):
+        fs.backtest_prefill(str(root), "GS9999")
+
+
+def test_backtest_prefill_missing_params_raises_valueerror(root):
+    _wj(root / "archive.json", {
+        "GS0001": {"file": "a.md", "best": None,
+                   "verdict": {"code": "invalid"}},
+        "GS0002": {"file": "b.md", "best": {"key": "k", "annret": 0.2},
+                   "verdict": {"code": "pass"}}})   # 旧档案: 有 best 无 params
+    import pytest as _pt
+    for gs in ("GS0001", "GS0002"):
+        with _pt.raises(ValueError):
+            fs.backtest_prefill(str(root), gs)

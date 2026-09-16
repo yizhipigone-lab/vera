@@ -1,6 +1,6 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
-import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport, fetchFarmLog } from './api.js?v=20260916a';
+import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport, fetchFarmLog, fetchFarmPrefill } from './api.js?v=20260916b';
 import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
 import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js?v=20260906d';
 import { renderDeepCharts } from './charts_deep.js?v=20260906c';
@@ -554,7 +554,7 @@ function renderFarmOverview(d) {
     ? '这批货主要死在: ' + ov.top_reasons.map(r => r[0] + ' ' + r[1] + ' 条').join(' · ') : '';
   const board = document.getElementById('farmBoard');
   if (board) {
-    const rowHtml = r => '<tr><td>' + esc(r.gs) + '</td><td>' + esc((r.file || '').replace(/\.md$/, '').slice(0, 20)) + '</td>'
+    const rowHtml = (r, withBtn) => '<tr><td>' + esc(r.gs) + '</td><td>' + esc((r.file || '').replace(/\.md$/, '').slice(0, 20)) + '</td>'
       + '<td>' + esc(r.key || '—') + '</td><td class="num">' + _pct(r.annret) + '</td>'
       + '<td class="num">' + (r.calmar == null ? '—' : Number(r.calmar).toFixed(2)) + '</td>'
       + '<td class="num">' + _pct(r.maxdd) + '</td><td class="num">' + _pct(r.winrate, 0) + '</td>'
@@ -562,15 +562,17 @@ function renderFarmOverview(d) {
       + '<td>' + esc(r.onboard_date || '') + '</td>'
       // 2026-09-16 审计 L5: url 源自股旁网抓取 HTML, 只放行 http(s) —— escAttr
       // 不拦 javascript: 协议, 源站被挂马时可落成存储型 XSS (需点击, LOW 但便宜)
-      + '<td>' + (/^https?:\/\//i.test(r.url || '') ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td></tr>';
-    const table = rows => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th></tr></thead><tbody>'
-      + rows.map(rowHtml).join('') + '</tbody></table>';
+      + '<td>' + (/^https?:\/\//i.test(r.url || '') ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td>'
+      // 2026-09-16 回填回测页计划书: 按钮只放达标组 (样本不足/未达标不放, 防误导)
+      + (withBtn ? '<td><button class="btn farm-to-bt" data-gs="' + escAttr(r.gs) + '" style="font-size:var(--fs-xs);padding:1px 8px">→ 回测页</button></td>' : '') + '</tr>';
+    const table = (rows, withBtn) => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th>' + (withBtn ? '<th>操作</th>' : '') + '</tr></thead><tbody>'
+      + rows.map(r => rowHtml(r, withBtn)).join('') + '</tbody></table>';
     const b = ov.board || { pass: [], insufficient: [], fail: [] };
     const totals = ov.board_totals || { pass: b.pass.length, insufficient: b.insufficient.length, fail: b.fail.length };
     const capNote = (rows, total) => rows.length < total ? ' (仅列前 ' + rows.length + ' 条)' : '';
     let html = '';
     if (!ov.board_total) html = '<div style="color:var(--text2);font-size:var(--fs-sm)">粗扫还没跑出结果——点下方「④ 开始粗扫」试第一批。</div>';
-    if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + totals.pass + ' 条' + capNote(b.pass, totals.pass) + '</div>' + table(b.pass);
+    if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + totals.pass + ' 条' + capNote(b.pass, totals.pass) + '</div>' + table(b.pass, true);
     if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + totals.insufficient + ' 条 (数字好看但笔数不足 20, 不作数)' + capNote(b.insufficient, totals.insufficient) + '</div>' + table(b.insufficient);
     if (b.fail.length) html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">未达标 / 无有效组合 ' + totals.fail + ' 条 (点击展开' + capNote(b.fail, totals.fail) + ')</summary>' + table(b.fail) + '</details>';
     board.innerHTML = html;
@@ -588,6 +590,78 @@ function showFarmLog(gate, label) {
     card.scrollIntoView({ behavior: 'smooth' });
   }).catch(e => showToast(e.message || '日志读取失败', 'error'));
 }
+
+// ── 2026-09-16 达标榜 → 回测页回填 (计划书: 方案 A 只回填不代跑) ──
+// 快照与直写同一字段集合 (计划书字段表); 佣金/滑点/整手等个人设置一律不碰
+const _PREFILL_FIELDS = ['cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
+  'cfgEntryPriceMode', 'cfgStart', 'cfgEnd', 'cfgCapital', 'cfgMaxBuy',
+  'cfgCostStopEn', 'cfgCostStopVal', 'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
+  'cfgLadderEn', 'cfgTimeEn', 'cfgTimeVal', 'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit'];
+let _farmPrefillSnapshot = null;
+
+function _farmToBacktest(gs) {
+  fetchFarmPrefill(gs).then(d => {
+    // ① 快照将被覆盖的字段 (横幅「恢复原配置」用)
+    const snap = { radio: (document.querySelector('input[name="cfgPriority"]:checked') || {}).value || '' };
+    _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
+      if (el) snap[id] = el.type === 'checkbox' ? el.checked : el.value; });
+    _farmPrefillSnapshot = snap;
+    // ② 逐字段直写 (不走 applyConfigDict —— 它会把缺失字段重置成默认值,
+    //    冲掉用户的佣金/滑点设置, 计划书侦察结论 4)
+    const p = d.params, cal = d.caliber;
+    const set = (id, v) => { const el = document.getElementById(id);
+      if (el) { if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v); } };
+    set('cfgFormula', d.gs); set('cfgFormulaArg', '');
+    set('cfgUniverse', cal.universe_type); set('cfgPeriod', cal.period);
+    set('cfgEntryPriceMode', cal.entry_price_mode);
+    if (d.window && d.window[0]) set('cfgStart', String(d.window[0]).replace(/-/g, ''));
+    if (d.window && d.window[1]) set('cfgEnd', String(d.window[1]).replace(/-/g, ''));
+    set('cfgCapital', cal.capital); set('cfgMaxBuy', cal.max_buy);
+    set('cfgCostStopEn', true); set('cfgCostStopVal', Math.abs(p.cost) * 100);
+    set('cfgTrailingEn', true); set('cfgTrailingAct', p.act * 100);
+    set('cfgTrailingDD', p.dd * 100);
+    set('cfgLadderEn', false);                       // 当前数据全部不用阶梯止盈
+    set('cfgTimeEn', true); set('cfgTimeVal', p.time_days);
+    const condOn = (p.cond_days || 0) > 0;
+    set('cfgCondTimeEn', condOn);
+    if (condOn) { set('cfgCondTimeDays', p.cond_days);
+      set('cfgCondTimeProfit', (p.cond_profit || 0) * 100); }
+    const radio = document.querySelector('input[name="cfgPriority"][value="' + cal.priority_value + '"]');
+    if (radio) radio.checked = true;
+    // ③ 横幅 + 切页 (人工核对后自己点开始回测 —— 两口径铁律的最后一道闸)
+    const name = (d.file || '').replace(/\.md$/, '');
+    let txt = '已从公式农场回填: ' + d.gs + (name ? '(' + name + ')' : '')
+      + ' · 最优组合 ' + d.combo_text
+      + ' · 口径: ' + cal.universe.split(' ')[0] + ' · 5分线 · '
+      + (cal.capital / 10000) + '万本金 · 单票上限' + (cal.max_buy / 10000) + '万 · T日收盘买入'
+      + ' · 请核对后手动点「开始回测」';
+    if (d.ladder_note) txt += ' ⚠ ' + d.ladder_note;
+    const banner = document.getElementById('farmPrefillBanner');
+    if (banner) { document.getElementById('farmPrefillText').textContent = txt;
+      banner.style.display = ''; }
+    switchTab('backtest');
+  }).catch(e => showToast(e.message || '回填失败', 'error'));
+}
+
+function _farmRestorePrefill() {
+  const snap = _farmPrefillSnapshot;
+  if (snap) {
+    _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
+      if (el && id in snap) { if (el.type === 'checkbox') el.checked = snap[id]; else el.value = snap[id]; } });
+    if (snap.radio) { const r = document.querySelector('input[name="cfgPriority"][value="' + snap.radio + '"]');
+      if (r) r.checked = true; }
+  }
+  document.getElementById('farmPrefillBanner').style.display = 'none';
+}
+
+document.getElementById('farmBoard')?.addEventListener('click', function (ev) {
+  const btn = ev.target.closest('.farm-to-bt');
+  if (btn) _farmToBacktest(btn.dataset.gs);
+});
+document.getElementById('farmPrefillRestore')?.addEventListener('click', _farmRestorePrefill);
+document.getElementById('farmPrefillDismiss')?.addEventListener('click', () => {
+  document.getElementById('farmPrefillBanner').style.display = 'none';
+});
 
 function loadFarmReports() {
   fetchFarmReports().then(d => {

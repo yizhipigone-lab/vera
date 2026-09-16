@@ -219,6 +219,49 @@ def test_farm_log_does_not_pay_summary_cost(client, monkeypatch):
     assert not calls
 
 
+# ── 2026-09-16 达标榜回填回测页: /api/farm/prefill ──
+
+def _write_archive(fa, gs="GS0607", params=True):
+    best = {"key": "k", "annret": 0.244,
+            "params": {"cost": -0.2, "act": 0.08, "dd": 0.005, "ladder": "off",
+                       "time_days": 20, "cond_days": 0, "cond_profit": 0.0}} \
+        if params else None
+    fa.FARM_DATA.mkdir(parents=True, exist_ok=True)
+    (fa.FARM_DATA / "archive.json").write_text(__import__("json").dumps(
+        {gs: {"file": "a.md", "url": "http://x", "best": best,
+              "verdict": {"code": "pass"}, "window": ["2024-09-11", "2026-09-16"]}}),
+        encoding="utf-8")
+
+
+def test_prefill_endpoint_200(client, monkeypatch):
+    import core.farm_api as fa
+    from core import farm_summary as fsm
+    c, farm = client
+    monkeypatch.setattr(fa, "FARM_DATA", fa.REPORTS.parent)
+    fsm._CACHE.clear()
+    _write_archive(fa)
+    r = c.get("/api/farm/prefill", params={"gs": "GS0607"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["gs"] == "GS0607"
+    assert body["caliber"]["universe_type"] == "23"
+    assert "硬止损20%" in body["combo_text"]
+
+
+def test_prefill_endpoint_errors(client, monkeypatch):
+    import core.farm_api as fa
+    from core import farm_summary as fsm
+    c, farm = client
+    monkeypatch.setattr(fa, "FARM_DATA", fa.REPORTS.parent)
+    fsm._CACHE.clear()
+    _write_archive(fa)
+    assert c.get("/api/farm/prefill", params={"gs": "evil"}).status_code == 400
+    assert c.get("/api/farm/prefill", params={"gs": "GS9999"}).status_code == 404
+    fsm._CACHE.clear()
+    _write_archive(fa, gs="GS0002", params=False)
+    assert c.get("/api/farm/prefill", params={"gs": "GS0002"}).status_code == 409
+
+
 def test_backtest_rejected_when_pipeline_busy(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "LAST", tmp_path / "last_status.json")
     farm = fr.FarmRunner(runner=lambda run: 0)

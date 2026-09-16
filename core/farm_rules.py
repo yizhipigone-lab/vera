@@ -37,6 +37,22 @@ TARGET_MAXDD = 0.15
 #: 最小样本门槛 (笔数), 不足则记「样本不足」
 MIN_TRADES = 20
 
+#: 粗扫执行口径 — 单一真相源 (2026-09-16 达标榜回填回测页计划书收口)。
+#: 原 farm_backtest.CALIBER 手写一份 (报告抬头用), 回填接口需要同一份 →
+#: 两处手写必然漂 (池子改一处不改另一处 = 报告写沪深300实际跑全A)。
+#: farm_backtest.CALIBER 是本常量的别名; 实际取数链 = gs_5m_sweep 读
+#: config/default.yaml (universe type 23), 与本常量一致 (2026-09-16 验证链)。
+SWEEP_CALIBER = {
+    "universe_type": "23", "universe": "沪深300 (TDX type 23)",
+    "period": "5m", "dividend": "前复权",
+    "capital": 3_000_000.0, "max_buy": 20_000.0,
+    "entry": "信号日 T 最后一根 5m bar (15:00) 收盘买入",
+    "entry_price_mode": "close_t",
+    "priority": "移动止盈优先",          # 显示值 (报告抬头在用)
+    "priority_value": "trailing_first",  # 机器值 (回填回测页单选框用)
+    "combos": 36,
+}
+
 PASS = "pass"
 FAIL = "fail"
 THIN = "insufficient"

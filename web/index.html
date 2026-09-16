@@ -886,6 +886,15 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
+<!-- 2026-09-16 达标榜回填回测页: 全局悬浮横幅 (方案 A 只回填不代跑, 人工核对后手动跑) -->
+<div id="farmPrefillBanner" style="display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;max-width:880px;background:color-mix(in srgb, #f59e0b 14%, var(--bg));border:1px solid #f59e0b;border-radius:8px;padding:10px 14px;font-size:var(--fs-sm);box-shadow:0 4px 18px rgba(0,0,0,.25)">
+  <span id="farmPrefillText"></span>
+  <span style="margin-left:12px;white-space:nowrap">
+    <button class="btn" id="farmPrefillRestore" style="font-size:var(--fs-xs)">恢复原配置</button>
+    <button class="btn" id="farmPrefillDismiss" style="font-size:var(--fs-xs)">知道了</button>
+  </span>
+</div>
+
 <!-- ===== 公式农场页 (2026-09-06 三段闸门; 2026-09-11 补第四闸门「定量复核」; 2026-09-16 流水线卡片+总览看板) ===== -->
 <div id="pageFarm">
   <div class="lab-card">
@@ -1508,6 +1517,6 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
 <script type="module" src="/web/js/analysis.js?v=20260911a"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260916d"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260916e"></script>
 </body>
 </html>

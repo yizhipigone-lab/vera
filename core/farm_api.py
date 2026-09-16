@@ -14,8 +14,10 @@ from fastapi import APIRouter, HTTPException, Query
 ROOT = Path(__file__).resolve().parent.parent
 REPORTS = ROOT / "data" / "formula_farm" / "reports"
 RUNS = ROOT / "data" / "formula_farm" / "runs"
+FARM_DATA = ROOT / "data" / "formula_farm"
 SAFE_FILE = re.compile(r"^[\w\-\.\u4e00-\u9fff]+\.md$")
 GATE_NAMES = ("check", "onboard", "verify", "backtest")
+SAFE_GS = re.compile(r"^GS\d{4}$")   # 回填接口的 gs 白名单 (防任意键探测)
 #: 单次返回日志上限 (字符) —— 入库千条全量日志可能上 MB, 超出截尾并标注
 LOG_MAX_CHARS = 500_000
 
@@ -56,6 +58,22 @@ def create_farm_router(farm, pipeline_status):
     def api_farm_stop():
         farm.stop()
         return {"ok": True}
+
+    @router.get("/api/farm/prefill")
+    def api_farm_prefill(gs: str = Query(...)):
+        """达标榜「→ 回测页」回填包 (2026-09-16 计划书)。
+
+        逻辑全在 core.farm_summary.backtest_prefill, 本路由只做白名单+错误映射。
+        """
+        if not SAFE_GS.match(gs):
+            raise HTTPException(400, "非法 GS 编号")
+        from core import farm_summary
+        try:
+            return farm_summary.backtest_prefill(str(FARM_DATA), gs)
+        except KeyError:
+            raise HTTPException(404, "该 GS 不在档案 (未入库或无粗扫结果)") from None
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
 
     @router.get("/api/farm/log")
     def api_farm_log(gate: str = Query(...)):

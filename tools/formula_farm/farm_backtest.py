@@ -46,11 +46,9 @@ SWEEP_OUT = os.path.join(ROOT, "output", "gs_5m_sweep")
 #: 累计档案 (达标榜数据源, 2026-09-16 看板计划书): 每轮粗扫后增量更新
 ARCHIVE = os.path.join(ROOT, "data", "formula_farm", "archive.json")
 
-#: 报告抬头里的口径 (与 gs_5m_sweep 的默认值一致; 改口径要同时改这两处口径常量)
-CALIBER = {"universe": "沪深300 (TDX type 23)", "period": "5m", "dividend": "前复权",
-           "capital": 3_000_000.0, "max_buy": 20_000.0,
-           "entry": "信号日 T 最后一根 5m bar (15:00) 收盘买入",
-           "priority": "移动止盈优先", "combos": 36}
+#: 报告抬头里的口径 — 2026-09-16 收口: 唯一真相源 = core.farm_rules.SWEEP_CALIBER
+#: (原此处手写一份, 与回填接口/实际取数三处必然漂; 别名为兼容旧读取处)
+CALIBER = farm_rules.SWEEP_CALIBER
 
 _ROWS_CACHE: dict[str, list] = {}
 
@@ -283,9 +281,19 @@ def _f(v):
 def _slim_best(best):
     if best is None:
         return None
+    # 2026-09-16 回填回测页: 组合参数一并入档 (CSV 列齐全, 无需解析 key)
+    params = {}
+    for col, cast in (("cost", float), ("act", float), ("dd", float),
+                      ("ladder", str), ("time_days", int),
+                      ("cond_days", int), ("cond_profit", float)):
+        try:
+            params[col] = cast(best.get(col))
+        except (TypeError, ValueError):
+            params[col] = None
     return {"key": best.get("key", ""), "annret": _f(best.get("annret")),
             "maxdd": _f(best.get("maxdd")), "calmar": _f(best.get("calmar")),
-            "winrate": _f(best.get("winrate")), "trades": int(_f(best.get("trades")))}
+            "winrate": _f(best.get("winrate")), "trades": int(_f(best.get("trades"))),
+            "params": params}
 
 
 def archive_entry(gs, info, rows, window):

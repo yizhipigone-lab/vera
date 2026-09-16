@@ -22,6 +22,7 @@ import json
 import os
 import re
 
+from core import farm_rules
 from core.farm_ledger import load_done_files, load_onboard_index
 
 _CACHE: dict = {}
@@ -236,6 +237,52 @@ def gate_summaries(data_root: str) -> dict:
         or glob.glob(os.path.join(_reports(data_root), "*_定量复核_公式农场.md")))
     cards["backtest"]["note"] = "" if has_verify else "本轮还没过定量复核"
     return cards
+
+
+# ── 达标榜 → 回测页回填 (2026-09-16 计划书) ─────────────────────────────
+
+def _pct_txt(v):
+    """0.08 → 8% / 0.005 → 0.5% (文案用; 去尾零)。"""
+    s = ("%g" % (v * 100))
+    return s + "%"
+
+
+def backtest_prefill(data_root: str, gs: str) -> dict:
+    """按 GS 编号从档案构建回测页回填包 (公开接口 3/3)。
+
+    口径一律取 farm_rules.SWEEP_CALIBER (单一真相源, 与报告抬头同对象)。
+    gs 不在档案 → KeyError; best 为空或缺 params (旧档案) → ValueError。
+    """
+    arch = _read_json(os.path.join(data_root, "archive.json")) or {}
+    if gs not in arch:
+        raise KeyError(gs)
+    e = arch[gs]
+    best = e.get("best") or {}
+    p = best.get("params") or {}
+    if not best or p.get("cost") is None:
+        raise ValueError("该公式没有带参数的最优组合, 请先跑④重建档案 "
+                         "(python tools/formula_farm/farm_backtest.py "
+                         "--max-formulas 0 --rebuild-archive --no-push)")
+    parts = ["硬止损%s" % _pct_txt(abs(p["cost"])),
+             "移动止盈激活%s/回撤%s" % (_pct_txt(p["act"]), _pct_txt(p["dd"])),
+             "时间止损%d天" % (p.get("time_days") or 0)]
+    if (p.get("cond_days") or 0) > 0:
+        parts.append("条件时间止盈%d天/盈利%s"
+                     % (p["cond_days"], _pct_txt(p.get("cond_profit") or 0)))
+    ladder_note = ""
+    if (p.get("ladder") or "off") != "off":
+        ladder_note = ("原组合含阶梯止盈(%s, 档位未存入粗扫明细), "
+                       "已按关闭回填, 请人工核对" % p["ladder"])
+    c = farm_rules.SWEEP_CALIBER
+    return {"gs": gs, "file": e.get("file", ""), "url": e.get("url", ""),
+            "window": e.get("window"), "params": p,
+            "caliber": {"universe_type": c["universe_type"],
+                        "universe": c["universe"], "period": c["period"],
+                        "entry_price_mode": c["entry_price_mode"],
+                        "capital": c["capital"], "max_buy": c["max_buy"],
+                        "priority_value": c["priority_value"],
+                        "priority": c["priority"]},
+            "combo_text": " + ".join(parts), "ladder_note": ladder_note}
 
 
 # ── 总览看板 ─────────────────────────────────────────────

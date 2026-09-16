@@ -12,7 +12,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.formula_farm import farm_backtest as fb  # noqa: E402
 
-CSV_HEADER = ["key", "annret", "maxdd", "calmar", "winrate", "trades", "error"]
+CSV_HEADER = ["key", "cost", "act", "dd", "ladder", "time_days", "cond_days",
+              "cond_profit", "annret", "maxdd", "calmar", "winrate", "trades",
+              "error"]
+
+
+def _row(key="A", cost="-0.20", act="0.08", dd="0.005", ladder="off",
+         time_days="20", cond_days="0", cond_profit="0.0", annret="0.20",
+         maxdd="-0.10", calmar="2.0", winrate="0.60", trades="30", error=""):
+    return {"key": key, "cost": cost, "act": act, "dd": dd, "ladder": ladder,
+            "time_days": time_days, "cond_days": cond_days,
+            "cond_profit": cond_profit, "annret": annret, "maxdd": maxdd,
+            "calmar": calmar, "winrate": winrate, "trades": trades, "error": error}
 
 
 def _write_sweep(sweep_out, gs, rows):
@@ -34,15 +45,9 @@ def sweep(tmp_path, monkeypatch):
 
 
 def test_archive_entry_verdicts(sweep):
-    _write_sweep(fb.SWEEP_OUT, "GS0001", [
-        {"key": "A", "annret": "0.20", "maxdd": "-0.10", "calmar": "2.0",
-         "winrate": "0.60", "trades": "30", "error": ""}])
-    _write_sweep(fb.SWEEP_OUT, "GS0002", [
-        {"key": "A", "annret": "0.05", "maxdd": "-0.10", "calmar": "0.5",
-         "winrate": "0.50", "trades": "30", "error": ""}])
-    _write_sweep(fb.SWEEP_OUT, "GS0003", [
-        {"key": "A", "annret": "0.50", "maxdd": "-0.01", "calmar": "8.0",
-         "winrate": "1.0", "trades": "3", "error": ""}])
+    _write_sweep(fb.SWEEP_OUT, "GS0001", [_row()])
+    _write_sweep(fb.SWEEP_OUT, "GS0002", [_row(annret="0.05")])
+    _write_sweep(fb.SWEEP_OUT, "GS0003", [_row(annret="0.50", trades="3")])
     # GS0004 无 CSV → 无有效组合 (停牌/全失败)
     idx = {g: {"file": g + ".md", "url": "http://x", "date": "2026-09-16"}
            for g in ("GS0001", "GS0002", "GS0003", "GS0004")}
@@ -60,10 +65,28 @@ def test_archive_entry_verdicts(sweep):
     assert set(back) == set(idx)
 
 
+def test_slim_best_carries_params(sweep):
+    """2026-09-16 回填回测页: 最优组合必须带完整 params (回填数据源)。"""
+    _write_sweep(fb.SWEEP_OUT, "GS0001", [_row()])
+    idx = {"GS0001": {"file": "a.md", "url": "", "date": "2026-09-16"}}
+    arch = fb.update_archive(str(sweep / "archive.json"), ["GS0001"], idx)
+    p = arch["GS0001"]["best"]["params"]
+    assert p == {"cost": -0.20, "act": 0.08, "dd": 0.005, "ladder": "off",
+                 "time_days": 20, "cond_days": 0, "cond_profit": 0.0}
+    assert isinstance(p["time_days"], int) and isinstance(p["cost"], float)
+
+
+def test_caliber_is_farm_rules_sweep_caliber():
+    """防漂移锁: 报告抬头口径与回填口径同一对象 (改一处不许漂另一处)。"""
+    from core import farm_rules
+    assert fb.CALIBER is farm_rules.SWEEP_CALIBER
+    assert fb.CALIBER["universe_type"] == "23"
+    assert fb.CALIBER["priority"] == "移动止盈优先"          # 报告抬头显示值
+    assert fb.CALIBER["priority_value"] == "trailing_first"  # 回填机器值
+
+
 def test_update_archive_incremental_preserves_untouched(sweep):
-    _write_sweep(fb.SWEEP_OUT, "GS0001", [
-        {"key": "A", "annret": "0.20", "maxdd": "-0.10", "calmar": "2.0",
-         "winrate": "0.60", "trades": "30", "error": ""}])
+    _write_sweep(fb.SWEEP_OUT, "GS0001", [_row()])
     path = str(sweep / "archive.json")
     idx = {"GS0001": {"file": "a.md", "url": "", "date": "2026-09-16"},
            "GS0002": {"file": "b.md", "url": "", "date": "2026-09-16"}}
