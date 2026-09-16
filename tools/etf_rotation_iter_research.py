@@ -118,10 +118,25 @@ def yearly_returns(eq: pd.Series) -> dict:
 def simulate_one(cl: pd.DataFrame, op: pd.DataFrame, cfg: dict,
                  anchor: int, fee: float) -> dict:
     """单个子资金 (一份) 全程模拟。"""
+    # 第二轮扩展参数 (默认零行为变化) —— 必须先于信号日计算读取:
+    freq = cfg.get("freq", "w")           # w=周频 d=每日 bw=双周 m=月频
+    pick_rank = cfg.get("pick_rank", 1)   # 择第 N 强的腿 (默认第 1)
+    stop_check = cfg.get("stop_check", "daily")   # daily=每日检查 / signal=仅信号日
     dates = cl.index
     start_i = dates.searchsorted(pd.Timestamp(START))
     end_i = dates.searchsorted(pd.Timestamp(END))
-    sig_days = iso_signal_days(dates, anchor)
+    if freq == "d":
+        sig_days = set(dates)
+    elif freq == "m":
+        # 每月最后一个交易日 (与 anchor 无关)
+        s = pd.Series(dates, index=dates)
+        sig_days = set(s.groupby([s.index.year, s.index.month]).max())
+    elif freq == "bw":
+        # 双周频: 只在偶数 ISO 周信号 (相位敏感, 报告里声明)
+        sig_days = {d for d in iso_signal_days(dates, anchor)
+                    if d.isocalendar()[1] % 2 == 0}
+    else:
+        sig_days = iso_signal_days(dates, anchor)
     legs = cfg["risk_legs"]
     hedges = cfg["hedge_legs"]
     win = cfg["mom_window"]
@@ -155,20 +170,23 @@ def simulate_one(cl: pd.DataFrame, op: pd.DataFrame, cfg: dict,
         return C[gcode][i] > ma
 
     def pick_leg(i: int):
-        """→ (腿代码|None=避险, 仓位系数) 或 'keep' (动量全不可算, 不动)。"""
+        """→ (腿代码|None=避险, 仓位系数) 或 'keep' (动量全不可算, 不动)。
+
+        pick_rank: 取动量第 N 名且过阈值/闸门的腿; 不足 N 名 → 避险。"""
         valid = {c: m for c in legs if (m := mom(i, c)) is not None}
         if not valid:
             return "keep"
         ordered = sorted(valid, key=valid.get, reverse=True)
-        for c in ordered:
-            if valid[c] > thr and gate_ok(i, c):
-                m = valid[c]
-                if tiers:
-                    for lo, frac in tiers:
-                        if m >= lo:
-                            return c, frac
-                    return None, 0.0
-                return c, 1.0
+        passed = [c for c in ordered if valid[c] > thr and gate_ok(i, c)]
+        if len(passed) >= pick_rank:
+            c = passed[pick_rank - 1]
+            m = valid[c]
+            if tiers:
+                for lo, frac in tiers:
+                    if m >= lo:
+                        return c, frac
+                return None, 0.0
+            return c, 1.0
         return None, 0.0
 
     def pick_hedge(i: int) -> str:
@@ -277,11 +295,13 @@ def simulate_one(cl: pd.DataFrame, op: pd.DataFrame, cfg: dict,
                 + (1 - hold_frac) * hedge_ret(i, "close")
             equity *= (1 + r)
 
-        # 日频移动止损 (收盘判定, 止损优先)
+        # 日频移动止损 (收盘判定, 止损优先; stop_check=signal 时仅信号日检查,
+        # 但持仓期最高价仍然每日抬 —— 与生产语义一致)
         stopped = False
         if hold_leg is not None:
             entry_high = max(entry_high, C[hold_leg][i])
-            if C[hold_leg][i] < entry_high * (1 - stop):
+            if (stop_check == "daily" or d in sig_days) \
+                    and C[hold_leg][i] < entry_high * (1 - stop):
                 stopped = True
 
         if i + 1 <= end_i and pending is None:
