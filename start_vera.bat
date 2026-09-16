@@ -20,6 +20,11 @@ if not exist "%PYDIR%\python.exe" (
   exit /b 1
 )
 set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
+rem claude CLI 定位(2026-09-16 修): 研究大脑标准档 spawn claude CLI,
+rem 它装在 D:\Program Files\nodejs 但不在系统 PATH —— 不加会报
+rem "claude CLI 未安装, 大脑不可用"并降级快速档。同步已写入用户 PATH。
+set "NODEDIR=D:\Program Files\nodejs"
+if exist "%NODEDIR%\claude.cmd" set "PATH=%NODEDIR%;%PATH%"
 rem 通达信安装路径(2026-09-16 修): 代码默认 E:\NEW_TDX 与本机实际不符,
 rem 不设会导致轮动取数的第二级兜底(TDX)与简称表 TDX 源静默失效。
 set "TDX_HOME=D:\new_tdx"

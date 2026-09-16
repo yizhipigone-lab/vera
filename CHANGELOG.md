@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-16 — 研究大脑标准档修复: claude CLI 不在 PATH 导致「大脑不可用」降级
+
+**现象**: 重启系统后研究大脑报「claude CLI 未安装（npm i -g @anthropic-ai/claude-code），大脑不可用」并降级「大盘/盘面快路径」。
+**根因**: claude CLI 装在 `D:\Program Files\nodejs`（npm 全局），但该目录不在用户/机器 PATH；`brain/claude_cli.py` 用 `shutil.which("claude")` 找命令 → 找不到。重启前能用是因为旧 server 进程启动时的环境恰好带着它。
+**修复**: ①`D:\Program Files\nodejs` 写入用户 PATH（HKCU\Environment，与 Python313 同位置）; ②`start_vera.bat` 内置 `NODEDIR` 指路（同 PYDIR 模式，存在 `claude.cmd` 才前置）; ③用带新 PATH 的环境重启 server (PID 8664) + scheduler (PID 19212) — 交易进程不依赖 claude 未动。
+**验证**: `claude --version` → 2.1.271; `shutil.which('claude')` → `D:\Program Files\nodejs\claude.CMD`; 端到端 `POST /api/research/chat/stream` (mode=standard) 返回 `success: true`，无「claude CLI 未安装」字样（测试请求中文乱码是 PowerShell 不发 UTF-8 的测试侧问题，浏览器路径无此问题，测试会话已清理）。
+**连带坑登记 (CLAUDE.md)**: PowerShell 直接敲 `claude` 命中 `claude.ps1` 被执行策略拦，cmd/Python 无此问题。
+
+---
+
 ## 2026-09-16 — 手机版 /m 六条优化落地 (纯前端, 后端零改动)
 
 **背景**: 用户问「/m 有没有存在必要/会不会随 PC 自动变化/优化空间」→ 排查结论: PC 页写死 `min-width:1280px` 完全不适配手机, /m 是手机端唯一可用入口必须保留; 数据与样式与 PC 同源 (同一批接口 + tokens.css), 功能独立维护不自动跟随。**用户拍板: 六条优化全做。**
