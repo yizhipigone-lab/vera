@@ -116,10 +116,16 @@ def test_morning_job_does_not_push():
 
 
 def test_push_job_recollects_before_pushing():
-    """15:55 的 job 必须**先采集再推送**。
+    """15:55 的 job 必须**先采集再推送**，且推的是**复盘报告**（内含体温表）。
 
-    理由: "只推不采"有真实缺口 —— 若 15:50 那次失败, 15:55 会推一张旧卡
-    (2026-09-17 手动验证时实测复现: 缓存已到 9/16, 推出去的却是 9/15 那条)。
+    两个理由（都有实测依据）：
+
+    1. "只推不采"有真实缺口 —— 若 15:50 那次失败，15:55 会推一张旧卡
+       （2026-09-17 手动验证时实测复现：缓存已到 9月16日，推出去的却是 9月15日那条）。
+    2. **体温表与复盘报告合并成一条**（大盘位置计划书 §17.4）：两个 job 各推一次
+       会让用户在同一时刻收到两条内容重叠的卡。复盘报告把体温表当盘面段复用，
+       所以 15:55 推 `run_daily_review` 就等价于「体温表 + 账户 + 留意清单」，
+       **代码里不该再出现 `push_thermometer`**（否则就是重复推送）。
     """
     import ast
     import inspect
@@ -131,7 +137,11 @@ def test_push_job_recollects_before_pushing():
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
             called.append(node.attr)
+        elif isinstance(node, ast.Name):
+            called.append(node.id)
     assert "collect" in called, "15:55 的 job 没有先采集, 可能推出旧卡"
-    assert "push_thermometer" in called, "15:55 的 job 没有推送"
-    assert called.index("collect") < called.index("push_thermometer"), \
+    assert "run_daily_review" in called, "15:55 的 job 没有推送复盘报告"
+    assert called.index("collect") < called.index("run_daily_review"), \
         "必须先 collect 再 push"
+    assert "push_thermometer" not in called, \
+        "复盘报告已含体温表, 再单独 push_thermometer 就是同一条内容推两遍"

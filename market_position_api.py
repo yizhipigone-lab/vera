@@ -84,6 +84,25 @@ async def mp_report():
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/market_position/review")
+async def mp_review(asof: str | None = Query(None, description="按哪一天做，默认今天")):
+    """当日「盘后复盘」Markdown（2026-09-17 M6，页面「今日复盘」用）。
+
+    **薄层只转发**：组装全在 `notes_gen/daily.py`（深模块）。
+    本文件的 `import notes_gen` 是**允许的** —— 铁律 1 的守护是
+    「大盘位置 ↔ 交易」之间不许互相 import；复盘编排器在**更外层**，
+    它单向 import 两边，且**反向有 AST 断言**（`trade/` 不许 import `notes_gen`）。
+    本端点**只读**，不写盘、不推送。
+    """
+    try:
+        from notes_gen import daily as drev
+        r = drev.build_review(asof=asof)
+        return {"success": True, "asof": r["asof"], "markdown": drev.review_md(r)}
+    except Exception as e:
+        logger.warning("盘后复盘生成异常: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.post("/api/market_position/collect")
 def mp_collect(backfill: bool = Query(False)):
     """手动采集一次 (同步端点 → FastAPI 自动丢线程池, 不堵事件循环)。

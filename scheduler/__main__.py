@@ -147,27 +147,41 @@ def _job_market_position_collect() -> None:
 
 
 def _job_market_position_push() -> None:
-    """每交易日 15:55: **先补采再推**「大盘体温表」到飞书。
+    """每交易日 15:55: **先补采 → 再推「盘后复盘」（内含大盘体温表）**。
 
-    为什么这里要再采集一次 (15:50 已经采过): 采集幂等且只要十几秒,
-    而"只推送不采集"有个真实缺口 —— 若 15:50 那次因 TDX 断/机器卡而失败,
-    15:55 就会把**昨天那条旧记录**推出去 (2026-09-17 手动验证时实测复现过)。
-    先采后推把这条缺口堵死。
+    两个设计点，都有实测依据：
+
+    1. **为什么这里要再采集一次**（15:50 已经采过）：采集幂等且只要十几秒，
+       而"只推送不采集"有个真实缺口 —— 若 15:50 那次因 TDX 断/机器卡而失败，
+       15:55 就会把**昨天那条旧记录**推出去（2026-09-17 手动验证时实测复现过）。
+       先采后推把这条缺口堵死。
+    2. **为什么推的是「复盘」而不是单独的体温表**（2026-09-17 M6 合并）：
+       大盘位置计划书 §17.4 定的是「体温表与复盘报告合成一条消息」——
+       两个 job 各推一次会让用户在同一天同一刻收到两条内容重叠的卡。
+       复盘报告本身就把体温表当**盘面段**复用（`notes_gen/daily.py` 单向 import），
+       所以这里推一次复盘 = 体温表 + 账户 + 留意清单，一条看完。
     """
     from core import market_position_runner as mpr
     res = mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
     if not res.get("ok"):
-        _logger.warning("大盘位置 15:55 补采失败 (仍尝试推已有录像): %s",
+        _logger.warning("大盘位置 15:55 补采失败 (仍尝试出复盘): %s",
                         res.get("reason"))
     elif res.get("stale"):
-        _logger.warning("大盘位置数据滞后 (数据日期 %s, 应有 %s) —— 体温表会带滞后标记; "
+        _logger.warning("大盘位置数据滞后 (数据日期 %s, 应有 %s) —— 报告会带滞后标记; "
                         "排查: 跑 python tools/market_position_collect.py 看 reason",
                         res.get("asof"), res.get("expected"))
-    push = mpr.push_thermometer()
+    try:
+        from notes_gen import daily as daily_review
+        r = daily_review.run_daily_review(write=True, push=True)
+    except Exception as e:       # 报告线失败绝不影响别的 job
+        _logger.warning("盘后复盘生成/推送失败: %s", e)
+        return
+    push = r.get("push") or {}
     if push.get("ok"):
-        _logger.info("大盘体温表已推飞书: %s 张卡", push.get("cards"))
+        _logger.info("盘后复盘已推飞书: %s 张卡 (落盘 %s)",
+                     (push.get("feishu") or {}).get("cards"), r.get("path"))
     else:
-        _logger.info("大盘体温表未推送: %s", push.get("reason"))
+        _logger.info("盘后复盘未推送: %s", push.get("feishu"))
 
 
 def _job_market_position_morning() -> None:

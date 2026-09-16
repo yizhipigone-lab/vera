@@ -465,6 +465,19 @@ function showReport() {
     }).catch(function (e) { box.textContent = '生成失败: ' + e; box.style.display = 'block'; });
 }
 
+function showReview() {
+  var box = $('mpReview');
+  if (!box) return;
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  box.textContent = '生成中…';
+  box.style.display = 'block';
+  fetch('/api/market_position/review').then(function (r) { return r.json(); })
+    .then(function (d) {
+      box.textContent = d.success ? d.markdown
+        : ('生成失败: ' + (d.error || d.detail || ''));
+    }).catch(function (e) { box.textContent = '生成失败: ' + e; });
+}
+
 function doCollect(backfill) {
   var btn = $(backfill ? 'mpBackfillBtn' : 'mpCollectBtn');
   if (btn) { btn.disabled = true; btn.dataset.old = btn.textContent; btn.textContent = '采集中…'; }
@@ -490,11 +503,12 @@ function doCollect(backfill) {
 function enter() {
   refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow();
   var c = $('mpCollectBtn'), b = $('mpBackfillBtn'), r = $('mpRefreshBtn'),
-      rep = $('mpReportBtn');
+      rep = $('mpReportBtn'), rev = $('mpReviewBtn');
   if (c && !c.dataset.bound) { c.dataset.bound = '1'; c.addEventListener('click', function () { doCollect(false); }); }
   if (b && !b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', function () { doCollect(true); }); }
   if (r && !r.dataset.bound) { r.dataset.bound = '1'; r.addEventListener('click', function () { enter(); }); }
   if (rep && !rep.dataset.bound) { rep.dataset.bound = '1'; rep.addEventListener('click', showReport); }
+  if (rev && !rev.dataset.bound) { rev.dataset.bound = '1'; rev.addEventListener('click', showReview); }
 }
 
 window.marketPageEnter = enter;

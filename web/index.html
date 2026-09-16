@@ -1555,6 +1555,17 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 
   <div class="lab-card">
+    <h2>今日复盘（账户 + 今天做对的 + 需要留意的清单）</h2>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
+      与每天 15:55 推送到飞书的那条消息**同一份内容**（体温表 + 我的账户 + 留意清单）。
+      全程只读，<b>不联入任何仓位调度</b>。报告落盘在 <code>data/daily_review/</code>。
+    </div>
+    <button class="btn" id="mpReviewBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs)"
+            title="生成当日盘后复盘（只读 trade.db）">生成今日复盘</button>
+    <div class="lab-pre" id="mpReview" style="display:none;max-height:520px;overflow-y:auto;margin-top:var(--sp-2)"></div>
+  </div>
+
+  <div class="lab-card">
     <h2>完整体温表</h2>
     <div class="lab-pre" id="mpReport" style="display:none;max-height:520px;overflow-y:auto"></div>
     <div id="mpReportHint" style="font-size:var(--fs-xs);color:var(--text2)">点上方「完整报告」展开（与飞书推送内容一致）。</div>
