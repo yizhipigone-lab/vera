@@ -20,6 +20,9 @@ if not exist "%PYDIR%\python.exe" (
   exit /b 1
 )
 set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
+rem 通达信安装路径(2026-09-16 修): 代码默认 E:\NEW_TDX 与本机实际不符,
+rem 不设会导致轮动取数的第二级兜底(TDX)与简称表 TDX 源静默失效。
+set "TDX_HOME=D:\new_tdx"
 echo [0/3] Python 解释器: %PYDIR%\python.exe
 
 echo [1/3] 启动回测 Web (8080) ...
