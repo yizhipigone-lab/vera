@@ -215,21 +215,53 @@ async function loadHistory(id) {
 const SECTORS_KEY = 'vera_selected_sectors';
 let _allSectors = [], _selectedSectors = [];
 
+// sectorEmpty 原本是 #sectorGrid 的子节点, 而 renderSectors 会 `grid.innerHTML=` 把它
+// 一并抹掉 → 之后任何 getElementById('sectorEmpty') 都返回 null。统一走这个"按需重建"
+// 入口 (2026-09-17 修复: 同一根因在 renderSectors 与 loadSectors 两处都踩过, 不写第二份)。
+function _sectorEmptyBox(grid) {
+  let e = document.getElementById('sectorEmpty');
+  if (!e) { e = document.createElement('div');
+    e.className = 'sector-empty'; e.id = 'sectorEmpty'; grid.appendChild(e); }
+  return e;
+}
+
 async function loadSectors() {
-  const grid = document.getElementById('sectorGrid'), empty = document.getElementById('sectorEmpty');
+  const grid = document.getElementById('sectorGrid'); if (!grid) return;
+  // 失败提示收口一份 (原两处近乎逐行重复, 含重试按钮挂载)
+  const fail = (msg) => {
+    grid.innerHTML = '';                      // 清掉上一轮残留, 让错误提示看得见
+    const e = _sectorEmptyBox(grid);
+    e.innerHTML = msg + '<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>';
+    e.style.color = 'var(--up)';
+    setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0);
+  };
   try { const result = await apiFetchSectors();
-    if (!result.success || !result.sectors || result.sectors.length === 0) { empty.innerHTML = '板块列表加载失败：'+(result.error||'未知错误')+'（请检查通达信客户端）<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>'; empty.style.color = 'var(--up)';
-      setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0); return; }
-    _allSectors = result.sectors; } catch (e) { empty.innerHTML = '板块列表加载失败：'+e.message+'<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>'; empty.style.color = 'var(--up)';
-    setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0); return; }
-  empty.style.display = 'none';
+    if (!result.success || !result.sectors || result.sectors.length === 0) {
+      fail('板块列表加载失败：' + (result.error || '未知错误') + '（请检查通达信客户端）');
+      return; }
+    _allSectors = result.sectors;
+  } catch (e) { fail('板块列表加载失败：' + e.message); return; }
+  _sectorEmptyBox(grid).style.display = 'none';
   try { _selectedSectors = JSON.parse(localStorage.getItem(SECTORS_KEY) || '[]'); } catch(e) { _selectedSectors = []; }
   renderSectors(); updateSectorSummary(); toggleUniverseDropdown();
 }
 
 function renderSectors() {
-  const grid = document.getElementById('sectorGrid'), empty = document.getElementById('sectorEmpty');
-  if (_allSectors.length === 0) { empty.textContent = '无板块数据'; return; } empty.style.display = 'none';
+  const grid = document.getElementById('sectorGrid'); if (!grid) return;
+  if (_allSectors.length === 0) {
+    // 2026-09-17 修复(真事故): sectorEmpty 是 #sectorGrid 的子节点, 下面的
+    // grid.innerHTML= 会把它一并抹掉 → 从第二次调用起 getElementById 返回 null,
+    // 旧代码 `empty.style.display` 抛 "Cannot read properties of null (reading 'style')"。
+    // 农场「→ 回测页」会先清板块, 异常点恰在参数回填之前 → 区间/本金/止损全没填上,
+    // 页面却看着"填好了"(静默换口径)。这里改成按需重建占位元素 (自愈)。
+    let empty = document.getElementById('sectorEmpty');
+    if (!empty) { empty = document.createElement('div');
+      empty.className = 'sector-empty'; empty.id = 'sectorEmpty'; }
+    empty.textContent = '无板块数据';
+    grid.innerHTML = '';           // 清掉上一轮残留, 再显示占位
+    grid.appendChild(empty);
+    return;
+  }
   grid.innerHTML = _allSectors.map(s => { const checked = _selectedSectors.includes(s.code);
     const codeShort = String(s.code).replace(/\.\w+$/, '');
     return '<div class="sector-item'+(checked?' checked':'')+'" data-name="'+esc(s.name)+'" data-code="'+esc(s.code)+'">'+
@@ -651,11 +683,16 @@ function _farmToBacktest(gs) {
     // 审计第二轮 MEDIUM-B: 板块 UI 未加载成功 (_allSectors 空) 时**只清内存不落盘**
     // —— 否则 clearSectors() 会把用户磁盘上的真实选择立刻抹成 [] 且恢复不回来;
     // 结果口径不受影响 (提交走内存 _selectedSectors, 已是空)
-    if (_allSectors && _allSectors.length > 0) {
-      if (typeof clearSectors === 'function') clearSectors();
-    } else {
-      _selectedSectors = [];
-    }
+    // 2026-09-17: 整段加 try/catch —— 清板块是**附带动作**, 绝不能让它的异常打断
+    // 下面的参数回填。半截配置比报错危险得多: 页面看着"填好了", 实际跑另一套口径
+    // (真事故: renderSectors 抛 null.style, 本金停在 100万默认值而非粗扫的 300万)。
+    try {
+      if (_allSectors && _allSectors.length > 0) {
+        if (typeof clearSectors === 'function') clearSectors();
+      } else {
+        _selectedSectors = [];
+      }
+    } catch (e) { console.warn('清板块失败(继续回填参数)', e); }
     if (d.window && d.window[0]) set('cfgStart', String(d.window[0]).replace(/-/g, ''));
     if (d.window && d.window[1]) set('cfgEnd', String(d.window[1]).replace(/-/g, ''));
     set('cfgCapital', cal.capital); set('cfgMaxBuy', cal.max_buy);
