@@ -29,6 +29,95 @@ _SNAPSHOT_CACHE_TTL = 2 * 3600  # 2 小时
 _HEALTH_INDEXES = (("shanghai", "上证指数"), ("hs300", "沪深300"),
                    ("zz500", "中证500"), ("chuangyeban", "创业板指"))
 _HEALTH_WINDOWS = (("近1月", 21), ("近3月", 63), ("近半年", 126), ("近1年", 252))
+#: 美股三大指数的腾讯/新浪符号 → 中文名（`market_snapshot` 与 `overnight_facts` 共用一份）
+_US_SYMBOLS = ((".DJI", "道指"), (".IXIC", "纳指"), (".INX", "标普500"))
+
+
+# ── 结构化的隔夜取数（给"要发给人看"的模块用） ────────────────
+#
+# **为什么单列这三个私有助手**（2026-09-17 M7）：`market_snapshot()` 产出的是
+# **给大脑看的原始数据包**（`df.to_string()` 直接倒出来，含 NaN 与原始列名）——
+# 直接塞进用户卡片就违反了「所有给用户的内容都要大白话」那条规则（实测确实发生了：
+# 隔夜简报把数据包原样转给飞书）。所以把**取数**收进这三个助手，
+# 让「机器数据包」与「人话简报」共用同一份端点/列名知识，**不写第二份**。
+
+
+def _us_index_rows() -> list[dict]:
+    """美股三大指数最近一根日线（= 隔夜收盘）+ 涨跌幅。
+
+    取不到的项 `err` 非空、`close`/`pct` 为 None —— **不编 0**，由调用方决定怎么显示。
+    """
+    out = []
+    for sym, name in _US_SYMBOLS:
+        try:
+            t = _ak().index_us_stock_sina(symbol=sym).tail(2)
+            prev, cur = float(t.iloc[0]["close"]), float(t.iloc[1]["close"])
+            out.append({"name": name, "close": cur, "pct": (cur / prev - 1) * 100,
+                        "date": str(t.iloc[1]["date"]), "err": None})
+        except Exception as e:
+            out.append({"name": name, "close": None, "pct": None,
+                        "date": None, "err": str(e)})
+    return out
+
+
+def _hk_spot_df():
+    """恒生系港股指数现货 → DataFrame（列: 名称/最新价/涨跌幅，缺哪列就少哪列）。"""
+    h = _ak().stock_hk_index_spot_sina()
+    name_col = "名称" if "名称" in h.columns else h.columns[0]
+    sub = h[h[name_col].astype(str).str.contains("恒生")]
+    cols = [c for c in [name_col, "最新价", "涨跌幅"] if c in sub.columns]
+    return sub[cols], name_col
+
+
+def _southbound_df():
+    """南向资金（港股通）最近 3 日。"""
+    return _ak().stock_hsgt_hist_em(symbol="南向资金").tail(3)
+
+
+def overnight_facts() -> dict:
+    """**隔夜盘面的结构化事实**（美股 / 港股 / 南向）—— 给"要发给人看"的模块用。
+
+    与 `market_snapshot()` 的分工：那个返回**给大脑看的 Markdown 数据包**（原始表格、
+    含 NaN），这个返回**给报告层**的结构化数字，由报告层自己组织成人话。
+    两者共用上面三个私有助手，端点和列名知识只有一份。
+
+    Returns:
+        dict::
+
+            {"us": [{"name","close","pct","date","err"} ...],   # 三大指数，可能带 err
+             "hk": [{"name","close","pct"} ...],                # 恒生系，取不到就是 []
+             "southbound": {"date","net_buy_yi"} | None}        # 净买额（**亿港元**）
+
+        **取不到一律留空/None，绝不编 0**（报告层据此决定"没内容就不发"）。
+    """
+    facts: dict = {"us": [], "hk": [], "southbound": None}
+    try:
+        facts["us"] = _us_index_rows()
+    except Exception:
+        facts["us"] = []
+    try:
+        sub, name_col = _hk_spot_df()
+        for _, r in sub.iterrows():
+            close, pct = r.get("最新价"), r.get("涨跌幅")
+            facts["hk"].append({
+                "name": str(r.get(name_col, "")).strip(),
+                "close": float(close) if close is not None and close == close else None,
+                "pct": float(pct) if pct is not None and pct == pct else None})
+    except Exception:
+        facts["hk"] = []
+    try:
+        s = _southbound_df()
+        if len(s):
+            last = s.iloc[-1]
+            net = last.get("当日成交净买额")
+            facts["southbound"] = {
+                "date": str(last.get("日期", "")),
+                # 东财这一列的单位是**亿元**（实测 20.99 对应约 21 亿港元），如实标注
+                "net_buy_yi": float(net) if net is not None and net == net else None}
+    except Exception:
+        facts["southbound"] = None
+    return facts
+
 
 
 # ── 市场面公开接口 (3) ────────────────────────────────────────
@@ -153,27 +242,21 @@ def market_snapshot(trade_date: str | None = None, fresh: bool = False) -> str:
     out.append(market_health())
     # 港股指数（只看恒生系）
     try:
-        h = ak.stock_hk_index_spot_sina()
-        name_col = "名称" if "名称" in h.columns else h.columns[0]
-        sub = h[h[name_col].astype(str).str.contains("恒生")]
-        cols = [c for c in [name_col, "最新价", "涨跌幅"] if c in sub.columns]
-        out.append(_section("港股指数", sub[cols].to_string(index=False)))
+        sub, name_col = _hk_spot_df()
+        out.append(_section("港股指数", sub.to_string(index=False)))
     except Exception as e:
         out.append(_section("港股指数", f"【缺】{e}"))
     # 美股三大指数（最近一根日线 = 隔夜收盘，涨跌幅用最近两日 close 算）
+    # 取数走 `_us_index_rows()`（与 `overnight_facts()` 共用一份符号表与算法）
     rows = []
-    for sym, name in [(".DJI", "道指"), (".IXIC", "纳指"), (".INX", "标普500")]:
-        try:
-            t = ak.index_us_stock_sina(symbol=sym).tail(2)
-            prev, cur = float(t.iloc[0]["close"]), float(t.iloc[1]["close"])
-            rows.append(f"{name}: 收 {cur:.1f}  涨跌幅 {(cur / prev - 1) * 100:+.2f}%"
-                        f"（日期 {t.iloc[1]['date']}）")
-        except Exception as e:
-            rows.append(f"{name}: 【缺】{e}")
+    for r in _us_index_rows():
+        s = (f"{r['name']}: 【缺】{r['err']}" if r["err"] else
+             f"{r['name']}: 收 {r['close']:.1f}  涨跌幅 {r['pct']:+.2f}%（日期 {r['date']}）")
+        rows.append(s)
     out.append(_section("美股三大指数（隔夜收盘）", "\n".join(rows)))
     # 南向资金（港股通，最近 3 日）
     try:
-        s = ak.stock_hsgt_hist_em(symbol="南向资金").tail(3)
+        s = _southbound_df()
         out.append(_section("南向资金（最近 3 日）", s.to_string(index=False)))
     except Exception as e:
         out.append(_section("南向资金（最近 3 日）", f"【缺】{e}"))

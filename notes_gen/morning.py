@@ -27,7 +27,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.logger import get_logger
 from utils.sysutil import project_root
 
+#: 数字/百分比怎么印（None 印「—」等规则）**复用**复盘报告那一份，不写第二份
+#: （两个都是报告层模块，同一包、无环：daily 不 import morning）
+from notes_gen.daily import _pct
+
 _logger = get_logger("notes_gen.morning")
+
+
+def _num(v, nd: int = 2) -> str:
+    """数字 → 字符串（None/非数返「—」）。**不编 0**：缺失就印破折号。"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if x != x:
+        return "—"
+    return f"{x:,.{nd}f}"
 
 _ROOT = project_root()
 STATE_PATH = _ROOT / "data" / "scheduler_state.json"
@@ -38,22 +53,87 @@ EVENING_JOB = "market_position_push"
 # ───────────────────── 取数（全部 fail-soft） ─────────────────────
 
 
-def _market_snapshot() -> str:
-    """调既有 `brain.market_panel.market_snapshot()` 拿"隔夜/隔日"盘面文本。
+def _overnight_facts() -> dict:
+    """取**结构化**的隔夜盘面事实（美股/港股/南向）。
 
-    复用而不是重写：那份快照已经含「美股三大指数（隔夜收盘）/ 港股指数 / 南向资金」三块
-    （CLAUDE.md 已登记）。取不到就返空串 —— 由调用方决定"没内容就不发"。
+    **2026-09-17 M7 实测改口**：原来这里直接转 `brain.market_panel.market_snapshot()`
+    的返回文本，而那份文本是**给大脑看的原始数据包**（`df.to_string()` 直接倒出来）——
+    实测转出来的卡片里有：错位的列、`NaN`、`133558676` 这种没单位的原始数字、
+    甚至一行被截断的「福莱蒽特 10.011」。**直接把机器数据包塞给用户 = 违反
+    「所有给用户的内容都要大白话」那条规则**。改成取结构化数字，人话由本模块自己组织
+    （与 `notes_gen/daily.py` 的 `_*_plain` 模板同一分工：报告层负责说人话）。
     """
     try:
-        from brain.market_panel import market_snapshot
-        return str(market_snapshot() or "").strip()
+        from brain.market_panel import overnight_facts
+        return overnight_facts() or {}
     except Exception as e:
-        _logger.warning("取盘面快照失败: %s", e)
-        return ""
+        _logger.warning("取隔夜盘面事实失败: %s", e)
+        return {}
+
+
+def _pct_word(pct) -> str:
+    """涨跌幅 → 人话幅度词（不写"显著"这种没标准的字眼）。"""
+    a = abs(float(pct))
+    if a < 0.5:
+        return "几乎没动"
+    if a < 1.5:
+        return "小幅"
+    if a < 3.0:
+        return "明显"
+    return "大幅"
+
+
+def _overnight_plain(f: dict) -> list[str]:
+    """结构化事实 → **人话**（每条先说意思、再给数字，数字带单位）。
+
+    全部由数字生成，不写死句子 —— 写死的话明天涨了就成了假话。
+    """
+    out: list[str] = []
+    us = [r for r in (f.get("us") or []) if r.get("pct") is not None]
+    if us:
+        move = [float(r["pct"]) for r in us]
+        if all(m > 0 for m in move):
+            head = "**三大指数一起涨**"
+        elif all(m < 0 for m in move):
+            head = "**三大指数一起跌**"
+        else:
+            head = "**三大指数涨跌不一**"
+        parts = [f"{r['name']} {_num(r['close'], 1)} 点（{_pct(r['pct'])}）" for r in us]
+        worst = min(move)
+        out.append(f"昨天夜里美股收盘：{head} —— " + "、".join(parts) + "。")
+        out.append(f"说人话：{_pct_word(worst)}的波动"
+                   + ("（跌得最多的那个也没跌多少）" if abs(worst) < 0.5 else "")
+                   + "。美股跟 A 股不是同一批人炒，**它跌不代表 A 股今天会跌**，"
+                     "只能说明外围情绪偏冷或偏热。")
+    hk = [r for r in (f.get("hk") or []) if r.get("close") is not None]
+    if hk:
+        # 恒生指数排第一（它是"港股"这张脸），其余按原名次跟在后面
+        hk.sort(key=lambda r: (0 if r["name"] in ("恒生指数", "恒生指數") else 1))
+        parts = [f"{r['name']} {_num(r['close'], 2)} 点（{_pct(r['pct'])}）"
+                 for r in hk[:3]]
+        out.append(f"港股上一个交易日收盘：" + "、".join(parts) + "。")
+        out.append("说人话：港股里内地公司占大头，所以它跟 A 股是「同一条街上的邻居」，"
+                   "方向经常一起走 —— 可以当个参考，但它不是 A 股今天的答案。")
+    sb = f.get("southbound") or None
+    if sb and sb.get("net_buy_yi") is not None:
+        v = float(sb["net_buy_yi"])
+        who = "**净买入**" if v > 0 else "**净卖出**"
+        out.append(f"南向资金（内地资金通过港股通买卖港股的钱）{sb.get('date')} "
+                   f"{who} {_num(abs(v), 2)} 亿港元。")
+        out.append("说人话：这个数是「内地这边的钱在往港股那边流，还是往外撤」。"
+                   + ("往那边流，说明有内地资金在找港股的机会。" if v > 0 else
+                      "往回撤，说明内地资金在收缩港股仓位。"))
+    return out
 
 
 def _yesterday_line() -> str:
-    """昨日位置**只作一句背景**（不重复整张体温表）。"""
+    """昨日位置**只作一句背景**（不重复整张体温表）。
+
+    2026-09-17 M7：称呼**由数据生成**（与体温表 `day_word` 同一纪律）——
+    录像最新一条落在哪天就写哪天，不许一律叫「昨天」。实测踩到：今天 9月17日，
+    而日线缓存最新有效日是 **9月15日**（9月16日的还没补上），
+    写「昨天（9月15日）收盘」是错的（那是前天）。
+    """
     try:
         from core import market_position_runner as mpr
         rec = mpr.latest()
@@ -70,7 +150,15 @@ def _yesterday_line() -> str:
             bits.append(f"{w:.1f}% 的股票站在 20 日均线上方")
         if not bits:
             return ""
-        return f"昨天（{rec['date']}）收盘：{'、'.join(bits)}。"
+        d = str(rec.get("date") or "")
+        try:
+            mo, dy = int(d[5:7]), int(d[8:10])
+            day = f"{mo}月{dy}日"
+        except Exception:
+            day = d or "最新一天"
+        when = (f"最新一天的盘面（{day}，**个股日线还没更新到今天**）"
+                if rec.get("stale") else f"上一交易日（{day}）")
+        return f"{when}收盘：{'、'.join(bits)}。位置和趋势怎么读，看 15:55 那份复盘。"
     except Exception as e:
         _logger.warning("取昨日位置失败: %s", e)
         return ""
@@ -106,18 +194,20 @@ def _missed_evening_push() -> dict | None:
 def build_brief() -> dict:
     """组装隔夜简报 payload（只读，fail-soft）。
 
-    返回键：`ok` / `snapshot` / `yesterday` / `missed` / `reason`（ok=False 时）。
+    返回键：`ok` / `plain`（人话段落）/ `yesterday` / `missed` / `reason`（ok=False 时）。
     """
-    snap = _market_snapshot()
+    facts = _overnight_facts()
+    plain = _overnight_plain(facts)
     yday = _yesterday_line()
     missed = _missed_evening_push()
-    # **硬规则 1**: 没有隔夜新信息就不发。判据 = 盘面快照取不到任何内容。
+    # **硬规则 1**: 没有隔夜新信息就不发。判据 = 人话段落一条都没生成
+    # （= 美股/港股/南向三项全都没取到）。
     # （昨日位置那句**不算**"新信息" —— 它是背景，单靠它不足以构成一封简报。）
-    if not snap:
+    if not plain:
         return {"ok": False, "reason": "没有取到隔夜盘面信息（美股/港股/南向都没有）—— "
                                        "按设计不发空卡，免得训练你忽略推送。",
-                "snapshot": "", "yesterday": yday, "missed": missed}
-    return {"ok": True, "snapshot": snap, "yesterday": yday, "missed": missed}
+                "plain": [], "yesterday": yday, "missed": missed}
+    return {"ok": True, "plain": plain, "yesterday": yday, "missed": missed}
 
 
 def brief_md(brief: dict) -> str:
@@ -131,8 +221,8 @@ def brief_md(brief: dict) -> str:
         out += [f"> **补发**：昨天 15:55 那条盘后复盘没发出去"
                 f"（{m.get('date')}，原因：{m.get('reason')}）。"
                 "那份报告已经重新生成过了，需要的话在「大盘位置」页签点「生成今日复盘」看。", ""]
-    if b.get("snapshot"):
-        out += ["## 隔夜盘面", "", b["snapshot"], ""]
+    if b.get("plain"):
+        out += ["## 隔夜盘面", ""] + [f"- {x}" for x in b["plain"]] + [""]
     if b.get("yesterday"):
         out += ["## 一句话背景", "", b["yesterday"], ""]
     out += ["---",

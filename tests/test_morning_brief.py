@@ -17,6 +17,19 @@ sys.path.insert(0, str(ROOT))
 
 from notes_gen import morning as mb  # noqa: E402
 
+#: 一份"有隔夜信息"的结构化事实（打桩用）——**不是**原始数据包文本
+FACTS = {"us": [{"name": "道指", "close": 52093.1, "pct": -0.63,
+                 "date": "2026-09-15", "err": None},
+                {"name": "纳指", "close": 25981.6, "pct": -0.78,
+                 "date": "2026-09-15", "err": None},
+                {"name": "标普500", "close": 7585.7, "pct": -0.45,
+                 "date": "2026-09-15", "err": None}],
+        "hk": [{"name": "恒生指数", "close": 26488.2, "pct": -0.31},
+               {"name": "恒生科技指数", "close": 4325.45, "pct": 0.795}],
+        "southbound": {"date": "2026-09-16", "net_buy_yi": 20.9943}}
+#: "没有隔夜信息" = 三项全空
+NO_FACTS = {"us": [], "hk": [], "southbound": None}
+
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch, tmp_path):
@@ -27,7 +40,7 @@ def _isolate(monkeypatch, tmp_path):
 class TestRules:
     def test_no_overnight_info_does_not_send(self, monkeypatch):
         """§17.5-3 硬规则 1：没有隔夜新信息 → **不发空卡**。"""
-        monkeypatch.setattr(mb, "_market_snapshot", lambda: "")
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: NO_FACTS)
         monkeypatch.setattr(mb, "_yesterday_line", lambda: "昨天收盘：上证在十年 90% 位置。")
         b = mb.build_brief()
         assert b["ok"] is False
@@ -35,23 +48,53 @@ class TestRules:
 
     def test_yesterday_line_alone_is_not_enough(self, monkeypatch):
         """昨日位置是**背景**，单靠它不足以构成一封简报（否则每天都能发）。"""
-        monkeypatch.setattr(mb, "_market_snapshot", lambda: "")
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: NO_FACTS)
         monkeypatch.setattr(mb, "_yesterday_line", lambda: "昨天收盘：上证在十年 90% 位置。")
         assert mb.build_brief()["ok"] is False
 
     def test_with_overnight_info_it_sends(self, monkeypatch):
-        monkeypatch.setattr(mb, "_market_snapshot", lambda: "美股三大指数隔夜收盘：…")
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: FACTS)
         monkeypatch.setattr(mb, "_yesterday_line", lambda: "昨天收盘：上证在十年 90% 位置。")
         b = mb.build_brief()
         assert b["ok"] is True
         md = mb.brief_md(b)
-        assert "隔夜简报" in md and "美股三大指数隔夜收盘" in md
+        assert "隔夜简报" in md and "美股" in md
         assert "一句话背景" in md and "上证在十年 90% 位置" in md
         # 不许是体温表的复制
         assert "十年百分位" not in md and "照镜子" not in md
 
+    def test_overnight_section_is_plain_language_not_a_data_dump(self, monkeypatch):
+        """**M7 回归锁**：隔夜段必须是**人话**，不许把机器数据包原样倒出来。
+
+        实测踩坑：原来直接转 `brain.market_panel.market_snapshot()` 的返回文本，
+        而那份文本是给大脑看的原始数据包 —— 卡片里出现过错位的列、`NaN`、
+        `133558676`（没单位的封板资金）、甚至一行被截断的「福莱蒽特 10.011」。
+        """
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: FACTS)
+        monkeypatch.setattr(mb, "_yesterday_line", lambda: "")
+        md = mb.brief_md(mb.build_brief())
+        for bad in ("NaN", "nan", "数据包", "dtype", "最新价", "涨跌幅  成交额"):
+            assert bad not in md, f"用户卡片里出现了机器数据包的痕迹: {bad}"
+        # 数字必须带单位；每个数字后面要有一句人话
+        assert "点（" in md, "指数点位要带「点」"
+        assert "亿港元" in md, "南向资金要带「亿港元」"
+        assert "说人话" in md, "每个数字后面要有一句解释"
+        # 跌了要说跌、涨了要说涨 —— 由数字生成，不是写死的句子
+        assert "三大指数一起跌" in md
+        assert "净买入" in md
+
+    def test_rise_and_fall_wording_follows_the_numbers(self, monkeypatch):
+        """同一段代码，喂涨就写涨、喂跌就写跌（防"写死的句子"）。"""
+        up = {"us": [{"name": "道指", "close": 1.0, "pct": 1.2,
+                      "date": "x", "err": None}],
+              "hk": [], "southbound": None}
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: up)
+        monkeypatch.setattr(mb, "_yesterday_line", lambda: "")
+        md = mb.brief_md(mb.build_brief())
+        assert "三大指数一起涨" in md and "净卖出" not in md
+
     def test_no_webhook_fails_soft(self, monkeypatch):
-        monkeypatch.setattr(mb, "_market_snapshot", lambda: "隔夜有内容")
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: FACTS)
         monkeypatch.setattr(mb, "_yesterday_line", lambda: "")
         import tools.send_report_feishu as srf
         monkeypatch.setattr(srf, "load_webhook",
@@ -60,7 +103,7 @@ class TestRules:
         assert out["ok"] is False and "FEISHU_WEBHOOK_URL" in out["reason"]
 
     def test_empty_brief_never_pushes(self, monkeypatch):
-        monkeypatch.setattr(mb, "_market_snapshot", lambda: "")
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: NO_FACTS)
         monkeypatch.setattr(mb, "_yesterday_line", lambda: "")
         out = mb.push_brief(mb.build_brief())
         assert out["ok"] is False and out["sent"] is False
@@ -93,7 +136,7 @@ class TestMissedPush:
         assert mb._missed_evening_push() is None
 
     def test_makeup_section_appears_in_markdown(self, monkeypatch):
-        monkeypatch.setattr(mb, "_market_snapshot", lambda: "隔夜有内容")
+        monkeypatch.setattr(mb, "_overnight_facts", lambda: FACTS)
         monkeypatch.setattr(mb, "_yesterday_line", lambda: "")
         monkeypatch.setattr(mb, "_missed_evening_push",
                             lambda: {"date": "2026-09-17", "reason": "推送失败"})
