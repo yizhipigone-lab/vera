@@ -5,6 +5,36 @@
 
 ---
 
+## 2026-09-17 — 「大盘位置」页签点了没反应：漏的是第 4 处接线
+
+**一句话（大白话）**：页签要能用，得做四件事 —— ①页面上有个按钮 ②**点它的代码**
+③刷新后能回到这一页 ④按钮对应的内容区。**前三件都做了，第二件（点它的代码）漏了**，
+所以点上去毫无反应。从代码上看"像是做完了"，因此前面几轮验收都没发现：
+我当时只验了"接口挂在服务上"，**没验"点一下会怎么样"**。
+
+### 关键落地
+
+| 类 | 内容 |
+|---|---|
+| 缺的那一行 | `web/js/vera-ui.js` 补 `tabBtnMarket` 的 click 监听（与其余 9 个页签同一写法） |
+| 缓存串 | `index.html` 里 `vera-ui.js`/`market_position.js` 的 `?v=` 提到 `20260917b` —— JS 是静态文件，**不改版本号浏览器可能继续用旧副本**，改了也白改 |
+| 回归锁（新） | `tests/js/test_tab_wiring.js`：A 每个 `tabBtnXxx` 必须有点击监听 / B 每个页签要有内容容器（`backtest` 是主界面、例外）/ C 每个页签名必须在 hash 白名单里 / D `switchTab` 必须真的处理它。**43/43 通过**，并验了**反锁**（把那行删掉测试必须红 → 实测"抓到了"） |
+
+### 验证（走 HTTP 验，不看磁盘）
+
+- `GET /` 里有 `id="tabBtnMarket"`、版本号已是 `20260917b`
+- `GET /web/js/vera-ui.js` 里有那一行 click 监听
+- `GET /api/market_position/latest` → **HTTP 200 / 12,115 字节**（后端路由本来就通，问题纯在前端接线）
+- 全量 `pytest tests/` **EXIT=0**；`node tests/js/test_tab_wiring.js` 43/43；
+  `node tests/js/test_market_position.js` 73/73；`node tests/js/test_recover_integration.js` 13/13
+
+### 教训
+
+**纯函数全绿 ≠ 页签能用**。前端当时的 Node 单测测的全是 `market_position.js` 的纯函数，
+**DOM 接线一处都没测**；而"接口返回 200"也只证明后端通，证明不了按钮接上了。
+
+---
+
 ## 2026-09-17 — 公式农场「→ 回测页」两个连发故障：后端 404 + 前端半截回填
 
 **依据**: 用户两次截图（先 `Not Found`，后 `Cannot read properties of null (reading 'style')`）→ 审计报告 [公式农场回填回测页前端抛错](docs/audit/2026-09-17_公式农场回填回测页前端抛错_审计报告.md)（引用对象为 .js/.html，不在 `_verify_references.py` 覆盖范围，行号已逐条核对 + 附真浏览器实测）

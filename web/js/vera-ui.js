@@ -484,6 +484,13 @@ document.getElementById('tabBtnRecords')?.addEventListener('click', () => switch
 document.getElementById('tabBtnData')?.addEventListener('click', () => switchTab('data'));
 document.getElementById('tabBtnFarm')?.addEventListener('click', () => switchTab('farm'));
 document.getElementById('tabBtnAi')?.addEventListener('click', () => switchTab('ai'));
+// 2026-09-17: 大盘位置 TAB 的点击监听 **原来漏了** ——
+// `switchTab` 支持 'market'、hash 白名单也有 'market'、按钮也在 index.html 里，
+// 就是没人调它 → **点上去毫无反应**（用户 2026-09-17 实测报的）。
+// 这行"看起来像是本来就有"，所以整整一轮都没人发现：
+// 前端 Node 单测测的是纯函数，**DOM 接线没人测** ——
+// 现在有 `tests/js/test_tab_wiring.js` 逐一对账（每个 tabBtn 必须有点击监听）。
+document.getElementById('tabBtnMarket')?.addEventListener('click', () => switchTab('market'));
 document.getElementById('btnFarmCheck')?.addEventListener('click', () => farmGate(farmCheck, '检查增量'));
 document.getElementById('btnFarmOnboard')?.addEventListener('click', () => farmGate(farmOnboard, '一键入库'));
 document.getElementById('btnFarmVerify')?.addEventListener('click', () => farmGate(farmVerify, '定量复核'));
