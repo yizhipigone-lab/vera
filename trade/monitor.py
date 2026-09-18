@@ -15,7 +15,7 @@ import time
 from typing import Callable
 
 from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
-from trade.book import is_etf, ladder_tier_qty
+from trade.book import is_etf, label_of, ladder_tier_qty
 from trade.quote_stale import REASON_STALE, is_quote_stale
 from utils.logger import get_logger
 
@@ -355,6 +355,133 @@ class Monitor:
         if trading_session(self._clock()) != "continuous":
             return
         self._executor.pending_check(now_hhmm=now_hhmm)
+
+    # ── 收盘决策汇总 (2026-09-18 决策台账) ──────────────────────
+
+    def daily_digest(self, positions: dict) -> list[dict]:
+        """收盘汇总: 每个持仓「今天为什么没卖」一行 (**只读, 不产生任何交易**)。
+
+        返回 ``[{code, action, reason_code, reason_text, evidence}]``, 由
+        ``trade_main._capture_decision_digest`` 落进决策台账。卖出动作仍然是盘中
+        ``scan_once`` 的事 —— 本方法**永远不会**下一笔单, 它只负责把"现在离各条
+        卖出线还差多少"算出来、说成人话。
+
+        **防漂移硬约束** (本方案最容易被写歪的地方): 命中与否一律调盘中的那三个
+        ``_hit_cost_stop`` / ``_hit_trailing`` / ``_hit_ladder`` 以及同族的
+        ``_hit_time_stop`` / ``_hit_cond_time`` / ``_hit_first_day``, 本方法只额外
+        算"给人看的距离百分比"。这样改了阈值, 台账里的话术自动跟着变, 不会出现
+        "台账说没触发、规则其实已经触发了"这种最伤信任的分叉。
+
+        三种结果 (E5/E6/E12):
+        - 拿不到行情 → FAIL + ``EXIT_NO_QUOTE``, **不拿零价硬算距离**;
+        - 规则已命中但当天没有卖出成交 (调用方会再核对一遍) → FAIL + ``EXIT_ARM_FAIL``,
+          白话说"按规则今天该卖, 但没卖掉";
+        - 都没命中 → HOLD + ``EXIT_NO_TRIGGER``, 白话给出离每条线的距离。
+        """
+        stop = self._cfg.stop
+        today = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        out: list[dict] = []
+        for code, pos in sorted(positions.items()):
+            if int(getattr(pos, "volume", 0) or 0) <= 0:
+                continue
+            # ETF 不纳入自动管理 (与 _evaluate 的早退同口径): 不给它编"没触发"
+            if self._cfg.exclude_etf and is_etf(code):
+                continue
+            label = label_of(code)
+            quote = self._quotes.get(code)
+            last = float((quote or {}).get("last") or 0.0)
+            avg_cost = float(getattr(pos, "avg_cost", 0.0) or 0.0)
+            if last <= 0:
+                if not self._quotes:
+                    text = (f"行情缓存是空的（程序刚重启过），拿不到 {label} 的价格，"
+                            f"判不了今天要不要卖")
+                else:
+                    text = (f"行情缓存里没有 {label} 的最后价格，判不了要不要卖"
+                            f"（不拿零价硬算）")
+                out.append({"code": code, "action": "FAIL",
+                            "reason_code": "EXIT_NO_QUOTE", "reason_text": text,
+                            "evidence": {"code": code,
+                                         "has_any_quote": bool(self._quotes)}})
+                continue
+            high = float((quote or {}).get("high") or 0.0)
+            try:
+                hist_peak = self._peak_px(code) or 0.0
+            except Exception:
+                hist_peak = 0.0
+            peak = max(avg_cost, high, float(hist_peak))
+            days = self._hold_days(code)
+
+            # ── 命中判定: 全部复用盘中的 _hit_* (唯一真相源) ──
+            hit = ""
+            if self._hit_cost_stop(stop.cost_stop, avg_cost, last):
+                hit = "硬止损"
+            elif self._hit_trailing(stop.trailing_stop, avg_cost, peak, last):
+                hit = "移动止盈"
+            elif self._hit_time_stop(stop.time_stop, days):
+                hit = "时间止损"
+            elif self._hit_cond_time(stop.cond_time_stop, avg_cost, high, days):
+                hit = "条件时间止损"
+            elif self._hit_first_day(stop.first_day, avg_cost, high, days):
+                hit = "首日未达标"
+            else:
+                tier = self._hit_ladder(stop.ladder_tp, avg_cost, high, today, code)
+                if tier is not None:
+                    hit = f"阶梯止盈第 {tier + 1} 档"
+            if hit:
+                out.append({
+                    "code": code, "action": "FAIL",
+                    "reason_code": "EXIT_ARM_FAIL",
+                    "reason_text": (f"按规则今天该卖出 {label}（触发的是{hit}），"
+                                    f"但当天没有查到它的卖出成交记录"),
+                    "evidence": {"code": code, "last": round(last, 3),
+                                 "hit_rule": hit}})
+                continue
+
+            # ── 没命中: 逐条给出"还差多少" ──
+            ev = {"code": code, "last": round(last, 3),
+                  "avg_cost": round(avg_cost, 3), "peak": round(peak, 3),
+                  "hold_days": days}
+            says = [f"没到任何一条卖出线：现价 {last:.2f} 元"]
+            c = stop.cost_stop
+            if c.enabled and avg_cost > 0:
+                line = avg_cost * (1.0 + c.threshold)
+                gap = (last - line) / last * 100.0
+                ev["cost_stop_price"] = round(line, 3)
+                ev["gap_to_cost_stop_pct"] = round(gap, 2)
+                says.append(f"跌到 {line:.2f} 元（成本 {avg_cost:.2f} 元 "
+                            f"×(1{c.threshold:+.0%})）才会硬止损，还差 {gap:.1f}%")
+            t = stop.trailing_stop
+            if t.enabled and avg_cost > 0:
+                act_line = avg_cost * (1.0 + t.activation)
+                if peak >= act_line:
+                    line = peak * (1.0 - t.drawdown)
+                    gap = (last - line) / last * 100.0
+                    ev["trailing_stop_price"] = round(line, 3)
+                    ev["gap_to_trailing_pct"] = round(gap, 2)
+                    says.append(f"移动止盈线在 {line:.2f} 元（最高 {peak:.2f} 元 "
+                                f"回撤 {t.drawdown:.0%} 才触发），还差 {gap:.1f}%")
+                else:
+                    says.append(f"移动止盈还没激活（要涨到 {act_line:.2f} 元才启动）")
+            lv = stop.ladder_tp
+            if lv.enabled and avg_cost > 0:
+                done = self._book.tier_done(code, today)
+                nxt = next(((i, p) for i, (p, _r) in enumerate(lv.levels)
+                            if i not in done), None)
+                if nxt is not None:
+                    ti, profit = nxt
+                    line = avg_cost * (1.0 + profit)
+                    gap = (line - last) / last * 100.0
+                    ev["ladder_next_tier"] = ti + 1
+                    ev["ladder_next_price"] = round(line, 3)
+                    says.append(f"离下一个阶梯止盈档（第 {ti + 1} 档 "
+                                f"{line:.2f} 元）还差 {gap:.1f}%")
+            ts = stop.time_stop
+            if ts.enabled:
+                says.append(f"已持有 {days} 天（到 {ts.max_hold_days} 天就该卖）")
+            out.append({"code": code, "action": "HOLD",
+                        "reason_code": "EXIT_NO_TRIGGER",
+                        "reason_text": "；".join(says), "evidence": ev})
+        return out
 
     def _evaluate(self, code: str, avg_cost: float, quote: dict,
                   volume: int = 0) -> tuple[str, int | None, int | None] | None:

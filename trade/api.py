@@ -483,4 +483,7 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
     # 路由由 include_router 注入, api.py 只留交易操作/持仓/配置
     from trade.analysis_api import analysis_router
     app.include_router(analysis_router(trade_app))
+    # 决策台账 2 端点 (2026-09-18): 「今天为什么动 / 为什么没动」, 纯只读
+    from trade.decision_api import decision_router
+    app.include_router(decision_router(trade_app))
     return app

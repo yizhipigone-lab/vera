@@ -31,10 +31,13 @@ from trade.book import (
     PRICE_TYPE_LIMIT,
     TERMINAL_STATUSES,
     is_etf,
+    label_of,
 )
 from trade.events import EVENT_SIGNALS, Event
 from trade.closing_auction import auction_buy_price
+from trade.decision_codes import action_of as _decision_action  # 决策台账动作码 (2026-09-18)
 from trade.executor import PlaceRequest, limit_ratio, round_price
+from trade.monitor import is_trading_day_cached
 from trade.regime import index_above_ma
 from utils.logger import get_logger
 
@@ -89,10 +92,16 @@ class AutoBuyFeature:
 
     def start(self, source: str) -> None:
         """发起一次尾盘选股 (消费者线程内只开线程, 绝不自己跑 TDX)。
-        scheduled 要求 enabled; manual (api 立即执行) 任何时段放行 —
-        2026-07-27 裁决①同款语义: 人工命令不受时段/开关约束。"""
+        scheduled 要求 enabled + 当天是交易日; manual (api 立即执行) 任何时段
+        放行 — 2026-07-27 裁决①同款语义: 人工命令不受时段/开关约束。"""
         if source == "scheduled" and not self._cfg_getter().auto_buy.enabled:
             return  # 未启用: 定时事件静默丢弃 (面板里有关闭语义)
+        # 2026-09-18 修: 补交易日守卫 (与 rotation.start 同口径)。此前 scheduled
+        # 只判开关, 周末/节假日 14:54 定时器理论上也会跑一遍选股并走到汇总。
+        # 静默丢弃、不写审计: 休市日本就不该有"决策", 页面由日历标「休市」。
+        if source == "scheduled" and not is_trading_day_cached(
+                _dt.datetime.fromtimestamp(self._clock()).date()):
+            return
         if self._running:
             self._store.write_audit(
                 "auto_buy_skip", "上一次选股仍在运行, 本次忽略",
@@ -116,8 +125,67 @@ class AutoBuyFeature:
             self._store.write_audit(
                 "auto_buy_error", f"尾盘选股失败: {data.get('error')}",
                 {"source": data.get("source")})
+            self._log_decision(
+                "PICK_ERROR",
+                f"尾盘选股这一轮没跑成：{data.get('error')}",
+                {"source": data.get("source")})
             return
         self._execute(data["signals"], data.get("source", "?"))
+
+    # ── 决策台账 (2026-09-18) ──────────────────────────────────
+
+    def _log_decision(self, code: str, text: str,
+                      evidence: dict | None = None, trade_ids=None) -> None:
+        """落一行决策台账。尾盘选股是「整池」决策, 对象固定记 ``pool``。
+
+        fail-soft 由 store 层兜底 (``DailyDecisionStore.log`` 内部吞异常 +
+        补写审计) —— 台账写不进去绝不影响交易, 最坏是页面上少一行。
+        """
+        day = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+        self._store.decision.log([{
+            "trade_date": day, "strategy": "auto_buy", "subject": "pool",
+            "action": _decision_action(code), "reason_code": code,
+            "reason_text": text, "evidence": evidence or {},
+            "trade_ids": trade_ids or "", "source": "live",
+        }])
+
+    def _log_pick_result(self, signals: list[dict],
+                         dispositions: list[dict], bought: int,
+                         source: str) -> None:
+        """汇总型落一行台账: 买到了 / 公式没选出票 / 选出来但一张单没下成。
+
+        「凭什么」里两样都要有 (2026-09-18 计划书 B4): ①**每只票的最终状态**
+        (已成@价 / 废单(状态码) / 在途, 由 _await_and_fill_dispositions 回填);
+        ②**过滤原因统计** (如"涨停拒买 2 只、已持仓 1 只") —— 否则"没买到"
+        这件事在页面上只剩一句空话。
+        """
+        filters: dict[str, int] = {}
+        picks: list[dict] = []
+        for d in dispositions:
+            if d.get("action") == "buy":
+                picks.append({"code": d["code"], "qty": d.get("qty"),
+                              "price": d.get("price"),
+                              "result": d.get("status") or "已下单(状态未回)"})
+            else:
+                reason = d.get("reason") or "原因不明"
+                filters[reason] = filters.get(reason, 0) + 1
+                picks.append({"code": d["code"], "result": f"过滤：{reason}"})
+        if bought > 0:
+            code = "PICK_BUY"
+            text = (f"尾盘选股买入了 {bought} 只新股票"
+                    f"（公式共选出 {len(signals)} 只）")
+        elif not signals:
+            code = "PICK_NO_SIGNAL"
+            text = "尾盘选股的公式今天一只票都没选出来，所以没有买入"
+        else:
+            code = "PICK_ALL_FILTERED"
+            detail = "、".join(f"{k} {v} 只" for k, v in filters.items()) or "原因不明"
+            text = f"尾盘选股选出 {len(signals)} 只，但一张单都没下成（{detail}）"
+        tids = [d["order_id"] for d in dispositions
+                if d.get("action") == "buy" and d.get("order_id")]
+        self._log_decision(code, text, {
+            "selected": len(signals), "bought": bought,
+            "filters": filters, "picks": picks, "source": source}, tids)
 
     # ── 内部 ────────────────────────────────────────────────────
 
@@ -182,6 +250,11 @@ class AutoBuyFeature:
             self._store.write_audit(
                 "auto_buy_skip_regime",
                 f"{rf.index_code} 未站上 MA{rf.ma_window}, 尾盘不买", {})
+            self._log_decision(
+                "PICK_REGIME_BLOCK",
+                f"大盘没站上年线：{label_of(rf.index_code)} 的最新价还在 "
+                f"{rf.ma_window} 日均线下方，今天不买新股票",
+                {"index_code": rf.index_code, "ma_window": rf.ma_window})
             return
         today = time.strftime("%Y%m%d", time.localtime(self._clock()))
         hhmm = time.strftime("%H:%M", time.localtime(self._clock()))
@@ -196,6 +269,8 @@ class AutoBuyFeature:
         except Exception:
             self._store.write_audit(
                 "auto_buy_error", "查询资金失败, 本轮自动买入中止", {})
+            self._log_decision("PICK_ERROR",
+                               "查不到账户可用资金，本轮尾盘买入中止（宁可不动手）")
             return
         # 2026-08-14 双池预算帽: 轮动启用时股票买入被股票池预算封顶,
         # 不花 ETF 池的钱 (卖出回笼的现金让给低配的 ETF 池)。
@@ -228,6 +303,9 @@ class AutoBuyFeature:
         except Exception:
             self._store.write_audit(
                 "auto_buy_error", f"批量查询行情失败({len(codes)}只), 本轮自动买入中止", {})
+            self._log_decision(
+                "PICK_ERROR",
+                f"这 {len(codes)} 只候选票的行情一只都没拿到，本轮尾盘买入中止")
             return
         # 首轮缺 ask1 的票定向补查一次 (瞬时空盘口/快照残缺给第二次机会)
         missing_ask = [c for c in codes if not (quotes.get(c) or {}).get("ask1")]
@@ -359,6 +437,8 @@ class AutoBuyFeature:
             f"尾盘自动买入: 选中 {len(signals)} / 买入 {bought} ({source})",
             {"selected": len(signals), "bought": bought,
              "dispositions": dispositions})
+        # 决策台账 (2026-09-18): 整池一条 —— "今天为什么买 / 为什么没买"
+        self._log_pick_result(signals, dispositions, bought, source)
 
     def _await_and_fill_dispositions(self, dispositions: list[dict]) -> None:
         """下单后轮询一次, 把每张单的最终状态补进 disposition

@@ -403,6 +403,52 @@ def test_auto_buy_reentry_guard(cfg):
     app.stop()
 
 
+def _ts_on_saturday(hhmm):
+    """取最近一个周六的指定时刻 —— 验证"非交易日"守卫用 (2026-09-18 新增)。
+
+    与 _ts 的区别: _ts 会主动避开周末 (它服务的是"盘中定时"语义, 天然在
+    工作日), 本函数反过来**专门挑周六**, 因为要验的正是"周末定时不该跑"。
+    """
+    from datetime import datetime, timedelta
+    d = datetime.now().replace(
+        hour=int(hhmm[:2]), minute=int(hhmm[3:]), second=0, microsecond=0)
+    while d.weekday() != 5:          # 5 = 周六
+        d -= timedelta(days=1)
+    return d.timestamp()
+
+
+def test_auto_buy_scheduled_skipped_on_non_trading_day(cfg):
+    """2026-09-18 修复: scheduled 在非交易日必须静默丢弃。
+
+    此前 start() 对 scheduled 只判"开关开着吗", **没判"今天是交易日吗"** ——
+    周末/节假日 14:54 定时器理论上也会跑一遍选股并走到汇总。现补上守卫
+    (与 rotation.start 同口径 `[trade/rotation.py:280-282]`)。
+    两条不变式: ①manual 不受影响 (人工命令任何时段放行, 2026-07-27 裁决①);
+    ②静默丢弃不写审计 —— 休市日本就不该有"决策", 页面由日历标「休市」。
+    """
+    clock = [_ts_on_saturday("14:54")]
+    ran = []
+
+    def runner(f, a, u):
+        ran.append(1)
+        return []
+
+    app = _start(_make_app(cfg, clock, runner=runner))
+    try:
+        app._auto_buy.start("scheduled")
+        time.sleep(0.15)
+        assert not app._auto_buy.running, "周六定时不该开选股线程"
+        assert ran == [], "周六定时不该调起选股"
+        rows = app.store._conn.execute(
+            "SELECT kind FROM audit WHERE kind='auto_buy_start'").fetchall()
+        assert rows == [], "静默丢弃: 不写 auto_buy_start 审计"
+        # manual 仍放行 (不受时段/交易日约束)
+        app._auto_buy.start("manual")
+        assert _wait(lambda: bool(ran)), "manual 必须照旧放行"
+    finally:
+        app.stop()
+
+
 # ═══════════════════════════════════════════════════════════════
 # api 端点
 # ═══════════════════════════════════════════════════════════════

@@ -35,6 +35,7 @@ from trade.book import (  # noqa: E402
     OS_JUNK,
     TERMINAL_STATUSES,
     Book,
+    label_of,
 )
 from trade.config import TradeConfig, load_trade_config  # noqa: E402
 from trade.daily_report import (  # noqa: E402 (2026-08-19 深模块治理: 日报计算下沉)
@@ -776,6 +777,11 @@ class TradeApp:
                 self.store.save_trade(rec)
             except Exception:
                 _logger.error("成交落库异常 (重试仍失败, 待 sync_reports 补记): %s", e)
+        # 决策台账 (2026-09-18): 卖出成交当场落一行 —— 原因就用上面刚组装好的
+        # 那份全文 (不是事后推测的)。买入不在这里记: 买入的"为什么"由
+        # ETF 轮动 / 尾盘选股各自在自己那一步说清楚。
+        if rec["direction"] != DIRECTION_BUY:
+            self._log_exit_fill(rec)
         # 2026-07-30 (600808 事件): 成交进度回写订单表 — 原实现只靠
         # QMT 订单状态回调, 回调缺失时页面永远"已报/成交0"。
         try:
@@ -957,6 +963,12 @@ class TradeApp:
                 self.store.daily_asset.save(date_str, total_asset, available, market_value)
         except Exception:
             _logger.debug("EOD 资产快照写入失败 (分析 Tab 不受影响)")
+        # 决策台账 (2026-09-18): 逐票的「今天为什么没卖」+ 预埋单当日汇总。
+        # 放在归档之后、日报之前; fail-soft —— 台账出错绝不阻断归档与推送。
+        try:
+            self._capture_decision_digest()
+        except Exception:
+            _logger.debug("决策台账收盘汇总异常 (不影响归档与日报)")
         # 飞书盘后日报 (2026-07-31): 搭 15:05 EOD 的车; 查不到资产 fail-soft 不推。
         # notify_daily=False: 启动补偿路径 (15:05 后重启) 不发日报 —— baseline
         # 刚用当前 total_asset 设, 差值≈0, 是启动噪声非当日真实表现 (M-功1)。
@@ -966,6 +978,177 @@ class TradeApp:
             self._notify_daily(prev_snapshot=prev_snapshot)
         except Exception:
             _logger.debug("盘后日报组装异常 (不影响交易)")
+
+    # ═══════════════════════════════════════════════════════════
+    # 决策台账 (2026-09-18): 「今天为什么动 / 为什么没动」的写入
+    # ═══════════════════════════════════════════════════════════
+
+    # 当天「想卖没卖成」的审计类型 (计划书 §3.5C 第 2 条 + executor 的五处出口)
+    _EXIT_FAIL_KINDS = ("exit_arm_fail", "exit_skip", "exit_risk_reject",
+                        "exit_fail_closed", "exit_lock_fail")
+
+    def _log_exit_fill(self, rec: dict) -> None:
+        """卖出成交 → 台账落一行 SELL (只记卖出, 买入由各自策略说清)。
+
+        原因直接用 ``rec["reason"]`` —— 那是下单时写进 fill context 的原文,
+        不是事后推测的。
+        """
+        try:
+            day = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+            code = str(rec["code"])
+            reason = str(rec.get("reason") or "卖出")
+            self.store.decision.log([{
+                "trade_date": day, "strategy": "exit", "subject": code,
+                "action": "SELL", "reason_code": "EXIT_TRIGGERED",
+                "reason_text": f"卖出 {label_of(code)}：{reason}",
+                "evidence": {"code": code, "price": rec.get("price"),
+                             "qty": rec.get("qty"),
+                             "pnl_amount": rec.get("pnl_amount"),
+                             "pnl_pct": rec.get("pnl_pct"), "reason": reason},
+                "trade_ids": rec.get("traded_id", ""), "source": "live"}])
+        except Exception:
+            _logger.debug("卖出决策台账落库异常 (不影响交易)")
+
+    def _capture_decision_digest(self) -> None:
+        """收盘汇总: 每个持仓一行「今天为什么没卖」+ 预埋单当日汇总。
+
+        只在交易日 EOD 调用一次 (调用方 ``_on_eod`` 已在最前面判掉非交易日)。
+
+        **「没卖」有三种性质完全不同的情况, 必须分开** (2026-09-18 用户需求):
+
+        1. 当天真有卖出成交 → 台账里已经有 live 的 SELL 行, 这里**不覆盖**;
+        2. 当天有"想卖没卖成"的失败事件 → FAIL + 那条审计原文 (当场记的, 最可信);
+        3. 以上都没有 → 用 ``monitor.daily_digest`` 算出的"离各条线还差多少"。
+
+        第 3 种是绝大多数日子的情况 —— 也就是用户最想知道的「为什么今天没卖」。
+        """
+        day = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+        sold = self._sold_codes_today(day)
+        failed = self._exit_failed_today(day)
+        rows: list[dict] = []
+        for d in self.monitor.daily_digest(self.book.snapshot()["positions"]):
+            code = d["code"]
+            if code in sold:
+                continue                    # ① 已经有 live 的 SELL 行
+            if code in failed:              # ② 当时就记下了"想卖没卖成"
+                rows.append({
+                    "trade_date": day, "strategy": "exit", "subject": code,
+                    "action": "FAIL", "reason_code": "EXIT_ARM_FAIL",
+                    "reason_text": f"想卖 {label_of(code)} 但没卖成：{failed[code]}",
+                    "evidence": {"code": code, "audit_message": failed[code]},
+                    "trade_ids": "", "source": "live"})
+                continue
+            rows.append({                   # ③ 没到任何一条卖出线 (带距离)
+                "trade_date": day, "strategy": "exit", "subject": code,
+                "action": d["action"], "reason_code": d["reason_code"],
+                "reason_text": d["reason_text"], "evidence": d["evidence"],
+                "trade_ids": "", "source": "live"})
+        rows += self._ladder_rows_today(day)
+        if rows:
+            self.store.decision.log(rows)
+
+    def _sold_codes_today(self, day: str) -> set[str]:
+        """当天真有卖出成交的代码集合。查不到 → 空集合 (宁可多算"没卖")。"""
+        try:
+            rows = self.store.load_today_trades_detail(day)
+        except Exception:
+            return set()
+        return {str(r["code"]) for r in rows if r["direction"] != DIRECTION_BUY}
+
+    def _exit_failed_today(self, day: str) -> dict[str, str]:
+        """当天"想卖没卖成"的事件 → ``{代码: 审计原文}``。
+
+        审计明细里没带代码的行直接跳过 (不硬猜是哪个票 —— 猜错比缺一行更糟)。
+        """
+        import json as _json
+        start = _dt.datetime.strptime(day, "%Y-%m-%d").timestamp()
+        marks = ",".join("?" * len(self._EXIT_FAIL_KINDS))
+        try:
+            ro = self.store.open_readonly()
+            try:
+                rows = ro.execute(
+                    f"SELECT message, detail_json FROM audit WHERE ts >= ? "
+                    f"AND ts < ? AND kind IN ({marks})",
+                    (start, start + 86400, *self._EXIT_FAIL_KINDS)).fetchall()
+            finally:
+                ro.close()
+        except Exception:
+            _logger.debug("读当天卖出失败事件异常 (按没有处理)")
+            return {}
+        out: dict[str, str] = {}
+        for message, detail_json in rows:
+            try:
+                code = str(_json.loads(detail_json or "{}").get("code") or "")
+            except Exception:
+                code = ""
+            if code:
+                out.setdefault(code, str(message))
+        return out
+
+    def _ladder_rows_today(self, day: str) -> list[dict]:
+        """预埋单当日汇总 (计划书 §3.5D): 挂成的按票一行, 没挂成的说明原因。
+
+        「阶梯止盈开关关着」这一条几乎每天都会出现 —— 它正是用户最常看到的那个
+        "为什么没动作", 所以必须写清楚是**关着**, 而不是"跑了但没挂成"。
+        """
+        import json as _json
+        start = _dt.datetime.strptime(day, "%Y-%m-%d").timestamp()
+        try:
+            ro = self.store.open_readonly()
+            try:
+                raw = ro.execute(
+                    "SELECT kind, message, detail_json FROM audit WHERE ts >= ? "
+                    "AND ts < ? AND kind LIKE 'ladder%'",
+                    (start, start + 86400)).fetchall()
+            finally:
+                ro.close()
+        except Exception:
+            _logger.debug("读当天预埋单审计异常 (按没有处理)")
+            return []
+        placed: dict[str, list] = {}      # code → [tier, ...]
+        order_ids: dict[str, list] = {}   # code → [order_id, ...]
+        skipped: dict[str, str] = {}
+        disabled = False
+        for kind, message, detail_json in raw:
+            try:
+                detail = _json.loads(detail_json or "{}")
+            except Exception:
+                detail = {}
+            code = str(detail.get("code") or "")
+            if kind == "ladder_place" and code:
+                placed.setdefault(code, []).append(detail.get("tier"))
+                oid = detail.get("order_id")
+                if oid:
+                    order_ids.setdefault(code, []).append(oid)
+            elif kind == "ladder_skip_disabled":
+                disabled = True
+            elif kind in ("ladder_skip", "ladder_skip_etf") and code:
+                skipped.setdefault(code, str(message))
+        out: list[dict] = []
+        for code, tiers in sorted(placed.items()):
+            ttxt = "、".join(f"第 {int(t) + 1} 档" for t in tiers
+                             if isinstance(t, int))
+            out.append({
+                "trade_date": day, "strategy": "ladder", "subject": code,
+                "action": "INFO", "reason_code": "LADDER_PLACED",
+                "reason_text": (f"{label_of(code)} 的阶梯止盈预埋单已挂出"
+                                f"（{ttxt or '档位未记录'}）"),
+                "evidence": {"code": code, "tiers": tiers},
+                "trade_ids": order_ids.get(code, []), "source": "live"})
+        for code, message in sorted(skipped.items()):
+            out.append({
+                "trade_date": day, "strategy": "ladder", "subject": code,
+                "action": "HOLD", "reason_code": "LADDER_SKIP",
+                "reason_text": f"{label_of(code)} 今天没挂成预埋单：{message}",
+                "evidence": {"code": code}, "trade_ids": "", "source": "live"})
+        if not placed and disabled:
+            out.append({
+                "trade_date": day, "strategy": "ladder", "subject": "pool",
+                "action": "HOLD", "reason_code": "LADDER_DISABLED",
+                "reason_text": ("阶梯止盈开关关着，今天没挂预埋单"
+                                "（不是没跑，是这个开关关着）"),
+                "evidence": {}, "trade_ids": "", "source": "live"})
+        return out
 
     def _notify_daily(self, prev_snapshot: dict | None = None) -> None:
         """盘后日报 (2026-08-07 全明细增强): 资产 + 盘前基准盈亏 + 当日交易摘要

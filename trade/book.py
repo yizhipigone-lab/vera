@@ -92,6 +92,25 @@ def is_etf(code: str) -> bool:
     return num.startswith(("51", "56", "58", "15", "16", "18"))
 
 
+def label_of(code: str) -> str:
+    """代码 → ``简称(代码)`` 给人看; 查不到简称时退回原代码。
+
+    2026-09-07 用户反馈: 审计/决策文案满屏 513100.SH 谁看得明白。
+    名称表复用 ``trade/analysis.name_of`` (进程级缓存, 拿不到不落缓存、下次重试);
+    惰性 import 防模块环 (analysis 反向 import 本模块)。
+
+    2026-09-18 收口: 此前 ``trade/rotation.py`` 有自己的 ``_etf_label``、决策台账
+    又要在轮动/选股/监控三处各来一份 —— 同一个格式化语句抄三遍就是三处会分叉的
+    地方, 因此提到这里做唯一实现 (只影响人类可读文案, 机器字段仍存原代码)。
+    """
+    try:
+        from trade.analysis import name_of
+        name = name_of(code)
+    except Exception:
+        name = ""
+    return f"{name}({code})" if name else code
+
+
 def transition(old: int, new: int) -> bool:
     """订单状态机校验 (纯函数)。
 

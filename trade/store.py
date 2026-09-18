@@ -11,13 +11,16 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
+from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.book import DIRECTION_BUY
+from trade.decision_codes import ACTION_RANK, action_of as _action_of
 from utils.logger import get_logger
 
 _logger = get_logger("trade.store")
@@ -40,7 +43,29 @@ CREATE TABLE IF NOT EXISTS tier_state (
 );
 """
 
-_SCHEMA = _TIER_STATE_DDL + """
+# 当日决策台账 (2026-09-18): 一天 × 一条策略 × 一个对象 = 一行, 固定回答六件事
+# —— 谁、哪天、做了什么、为什么 (原因码 + 大白话)、凭什么 (当时的数字)、关联哪几笔单。
+# 主键 (日期, 策略, 对象) 天然幂等: 同一天定时 + 人工各跑一次只覆盖成最新, 不堆重复行。
+# DDL 独立成常量是刻意的 —— 离线回填工具 (tools/backfill_daily_decision.py) 直接
+# 引用同一份常量, 实时与回填不可能建出两张不一样的表 (单一真相源)。
+DAILY_DECISION_DDL = """
+CREATE TABLE IF NOT EXISTS daily_decision (
+    trade_date    TEXT NOT NULL,   -- YYYY-MM-DD (与 daily_asset / daily_report 同口径)
+    strategy      TEXT NOT NULL,   -- rotation | auto_buy | exit | ladder | system
+    subject       TEXT NOT NULL,   -- '份1' | 标的代码 | 'pool' | 'all'
+    action        TEXT NOT NULL,   -- BUY | SELL | HOLD | FAIL | INFO (5 种)
+    reason_code   TEXT NOT NULL,   -- 枚举, 见 trade/decision_codes.py
+    reason_text   TEXT NOT NULL,   -- 一句大白话 (策略当场写下, 绝不许事后编)
+    evidence_json TEXT NOT NULL DEFAULT '{}',  -- 当时的数字 (事后复核用)
+    trade_ids     TEXT NOT NULL DEFAULT '',    -- 逗号分隔的成交号/委托号
+    source        TEXT NOT NULL,   -- live | backfill_exact | backfill_text | inferred
+    updated_ts    REAL NOT NULL,
+    PRIMARY KEY (trade_date, strategy, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_decision_date ON daily_decision(trade_date);
+"""
+
+_SCHEMA = _TIER_STATE_DDL + DAILY_DECISION_DDL + """
 CREATE TABLE IF NOT EXISTS daily_asset (
     date        TEXT PRIMARY KEY,   -- YYYY-MM-DD
     total_asset REAL NOT NULL,      -- 总资产
@@ -468,6 +493,389 @@ class TierStateStore:
         return {code: json.loads(tj) for code, tj in rows}
 
 
+def _normalize_date(raw) -> str | None:
+    """把写入方给的日期收敛成台账唯一的 ``YYYY-MM-DD`` 口径。
+
+    为什么必须收敛 (2026-09-18 补测试时发现): 台账的键是
+    ``(trade_date, strategy, subject)`` 里的**日期的字符串本身**。写入方要是递进来
+    ``"20260916"`` (项目的 trades 表就是这个口径), ``date.fromisoformat`` 会"好心"
+    收下它, 然后那行就以 ``"20260916"`` 为键落库 —— 后果是同一天在表里存在两个键
+    (``20260916`` 与 ``2026-09-16``), ``load_day("2026-09-16")`` 和决策日历都
+    找不到它。页面表现是"这天明明跑过却没记录", 而且不报错, 极难排查。
+
+    所以在这里**显式**只认两种写法 (不依赖 ``fromisoformat`` 的宽松语法, 免得
+    ``2026-W37-3`` 之类被意外接受), 结果统一成带横线的规范串:
+      - ``YYYY-MM-DD`` —— 台账/``daily_asset`` 的既有口径;
+      - ``YYYYMMDD``   —— ``trades``/``orders`` 的口径, 宽容收下并转换。
+    其余一律返回 ``None`` (调用方据此拒写)。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            return _dt.date(int(s[0:4]), int(s[5:7]), int(s[8:10])).isoformat()
+        if len(s) == 8 and s.isdigit():
+            return _dt.date(int(s[0:4]), int(s[4:6]), int(s[6:8])).isoformat()
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+# 台账行的来源可信度 (数字越大越可信)。规则: **低可信度的来源不许覆盖更高的** ——
+# 当场记录的行 (live) 永远不会被历史回填 (backfill_*) 改写; 反过来, 回填过的日子
+# 后来真跑起来了, 实时写入可以正常覆盖回填行 (那是"更好的证据来了")。
+# 注意不能简化成"是 live 就不许覆盖": 那会把**实时路径自己重跑**也拦掉
+# (同一天定时一次 + 人工触发一次是常见情形, 必须允许覆盖成最新)。2026-09-18 冒烟实测抓到。
+_SOURCE_RANK = {
+    "live": 3,            # 当场记录 (策略当时写下的)
+    "backfill_exact": 2,  # 历史复原 (从审计的结构化明细翻出来, 数字齐全)
+    "backfill_text": 1,   # 历史原文 (只能照抄审计文字, 分不出枚举)
+    "inferred": 0,        # 推断 (例如"当天没开机")
+}
+
+
+def _dumps(evidence) -> str:
+    """把"凭什么"那包数字序列化成 JSON 文本。已经是字符串就原样用。"""
+    if evidence is None:
+        return "{}"
+    if isinstance(evidence, str):
+        return evidence or "{}"
+    try:
+        return json.dumps(evidence, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+#: 一行台账的明细里最多留几条"当天还发生过"。到顶就不再涨 —— 实时监控是每 10 秒
+#: 重试一次, 一天最多能试上千次; 不封顶的话这一格的 JSON 会越写越长, 而每次重试
+#: 都要把整个 JSON 重写一遍, 写入量按平方级膨胀。
+_EVENTS_MAX = 50
+
+
+def _ev_dict(raw) -> dict:
+    """evidence (JSON 字符串或 dict) → dict。坏了给空字典, 不让页面因此打不开。"""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        ev = json.loads(raw or "{}")
+    except (ValueError, TypeError):
+        ev = {}
+    return ev if isinstance(ev, dict) else {}
+
+
+def _ev_list(ev: dict) -> list:
+    items = ev.get("events")
+    return items if isinstance(items, list) else []
+
+
+def _same_event(a, b) -> bool:
+    """两条事件是不是"同一件事" (动作 + 原因码 + 原话三者全同)。"""
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    return (str(a.get("action") or "") == str(b.get("action") or "")
+            and str(a.get("reason_code") or "") == str(b.get("reason_code") or "")
+            and str(a.get("reason_text") or "") == str(b.get("reason_text") or ""))
+
+
+def _append_event(evidence_json: str, event: dict) -> str:
+    """把一条"动作更弱"的事件追加进 evidence 的 events 列表里。
+
+    大白话: 主结论只显示最强的那条动作, 但弱的那条不能被抹掉 —— 它被塞进
+    明细的 events 里, 页面展开就能看到"当天其实还发生过这件事"。
+
+    两条护栏:
+      - **一样的已经有了就不再加** (监控重试时同一句话会重复写上几百遍);
+      - 到 ``_EVENTS_MAX`` 就不再涨 (保住最早那批 —— 故事的开头最有用)。
+    """
+    ev = _ev_dict(evidence_json)
+    events = list(_ev_list(ev))
+    if any(_same_event(event, e) for e in events):
+        return evidence_json
+    if len(events) >= _EVENTS_MAX:
+        return evidence_json
+    events.append(event)
+    ev["events"] = events
+    return _dumps(ev)
+
+
+def _merge_events(old_evidence_json: str, new_evidence_json: str) -> str:
+    """把旧行的 events **接到新行前面**, 再带上新行自己的 (同一条只留一次)。
+
+    为什么非做不可 (2026-09-18 实测钓出来的缺陷): 写入口碰到"同一强度、同一个
+    对象、又来一条"时是**整份覆盖** evidence 的 —— 那一刻新行手里没有 events,
+    于是之前攒的轨迹被清空一次。结果就是"留下几条"完全取决于写入顺序:
+    先成交后失败, 14 条失败全留下; 先失败后成交, 只剩最后 1 条。
+
+    真实影响不是理论上的: 2026 年 8 月 4 日 002039.SZ 那天监控试了
+    12 种不同的失败情形才成交, 台账里只留了 1 条; 而 7 月 30 日 600808.SH
+    那 14 条之所以留住了, 纯粹因为那天的成交恰好写在前面。
+
+    顺序: 旧事件 → 新事件。旧的一定更早, 读起来就是一条时间线。
+    """
+    old, new = _ev_dict(old_evidence_json), _ev_dict(new_evidence_json)
+    out = dict(new)
+    merged: list = []
+    for e in _ev_list(old) + _ev_list(new):
+        if not any(_same_event(e, x) for x in merged):
+            merged.append(e)
+    if merged:
+        out["events"] = merged[:_EVENTS_MAX]
+    return _dumps(out)
+
+
+class DailyDecisionStore:
+    """当日决策台账 (2026-09-18): 「今天为什么动 / 为什么没动」的结构化答案。
+
+    一天 × 一条策略 × 一个对象 = 一行。主键 ``(日期, 策略, 对象)`` 天然幂等 ——
+    同一天同一条策略同一个对象重跑 (定时一次 + 人工触发一次) 只覆盖成最新,
+    不会堆重复行。
+
+    **唯一写入口 ``log()`` 一个人管三件事**, 四个写入点 (ETF 轮动 / 尾盘选股 /
+    止盈止损 / 预埋单) 不必各自记牢:
+
+    1. **非交易日拒写** —— 休市日本就不该有"决策", 写了反而是在台账里塞一行假数据;
+    2. **动作强弱合并** —— 有成交的那条永远压得住没成交的那条 (SELL > BUY > FAIL
+       > INFO > HOLD); 更弱的那次不会丢, 它被追加进 ``evidence_json.events``
+       里可查 (**无论先后顺序都是这样**: 先失败后成交、先成交后失败, 两次都留,
+       结果一致); 同一强度重复发生时, 只有"原话不一样"的那几次才留, 且最多
+       ``_EVENTS_MAX`` 条 (监控每 10 秒重试, 一天能试上千次);
+    3. **出错吞掉 + 补写审计** —— 台账写不进去绝不能影响交易, 最多留一条
+       ``decision_log_fail`` 审计等人来看;
+    4. **时间戳口径统一** —— ``updated_ts`` 记的是"主结论那条动作**什么时候**
+       发生的", 历史回填由审计表的原始 ``ts`` 带进来 (见 ``event_ts``), 因此
+       8 月的台账行显示的是 8 月的时间, 而不是"回填跑的那天"。被合并进
+       ``events`` 的弱动作**不改** ``updated_ts`` (时间线不能自相矛盾)。
+
+    ``source`` 是给用户看的可信度 (卡片右上角一个小角标):
+    ``live``=当场记录 / ``backfill_exact``=历史复原 / ``backfill_text``=历史原文
+    / ``inferred``=推断。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self._conn = conn
+        self._lock = lock
+
+    # ── 写 ──────────────────────────────────────────────────────
+
+    def log(self, rows: list[dict] | None, *,
+            overwrite_live: bool = False) -> int:
+        """落一批决策行。返回成功写入的行数 (被拒/被合并不计)。
+
+        每行必需键: ``trade_date`` / ``strategy`` / ``subject`` /
+        ``reason_code`` / ``reason_text``; 可选 ``action`` (缺省按原因码的默认动作)、
+        ``evidence`` (dict)、``trade_ids`` (可迭代 → 自动逗号连接)、``source``
+        (缺省 ``live``)、``event_ts`` (这件事发生的时刻, 秒级时间戳)。
+
+        ``trade_date`` 收两种写法并统一收敛成 ``YYYY-MM-DD`` 落库 (见
+        ``_normalize_date``): 台账口径 ``2026-09-16`` 与 trades 口径 ``20260916``
+        都收, 其余 (含空/坏值) 拒写 —— 不收敛的话同一天会分裂成两个主键,
+        页面上表现为"这天跑过却没记录"。
+
+        ``event_ts`` **不传就等于"写库那一刻"**, 实时写入的四个点都不需要传
+        (写的时候就是刚发生的时候)。只有历史回填要传 —— 它从审计表里带出当年
+        那一刻的真实时间, 否则 7 月 30 日那 587 次卖出重试会全被标成回填日期。
+        这一行的 ``updated_ts`` 与明细 ``events[].ts`` 都用它。
+
+        ``overwrite_live=False`` (缺省) 时按**来源可信度**保护: 低可信度的行不许
+        覆盖更高的 —— 历史回填 (``backfill_*`` / ``inferred``) 永远改不动当场记录
+        的 ``live`` 行; 而"实时写实时""回填过的日子后来真跑了、实时覆盖回填行"都
+        照常允许。``overwrite_live=True`` 只在回填工具"修数据"这种场合才用。
+        """
+        rows = [r for r in (rows or []) if r]
+        if not rows:
+            return 0
+        last_exc: Exception | None = None
+        for attempt in (0, 1):
+            try:
+                return self._log_once(rows, overwrite_live=overwrite_live)
+            except Exception as e:  # noqa: BLE001 —— 台账失败绝不能影响交易
+                last_exc = e
+                if attempt == 0:
+                    time.sleep(0.1)   # WAL 写偶尔被 SQLite busy 挡住, 重试一次
+        _logger.error("决策台账落库失败 (重试仍失败, 不影响交易): %s", last_exc)
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO audit (ts, kind, message, detail_json) "
+                    "VALUES (?,?,?,?)",
+                    (time.time(), "decision_log_fail",
+                     f"决策台账落库失败: {last_exc}", "{}"))
+        except Exception:
+            _logger.debug("决策台账失败审计也没写进去 (不影响交易)")
+        return 0
+
+    def _log_once(self, rows: list[dict], *, overwrite_live: bool) -> int:
+        now = time.time()
+        written = 0
+        with self._lock, self._conn:
+            for r in rows:
+                # 日期先收敛成唯一口径 (YYYY-MM-DD) 再判交易日 —— 顺序不能反:
+                # 用没收敛的原串去判, "20260916" 会被当成合法日期放行, 然后以
+                # 原串为键落库, 变成日历和 load_day 都找不到的孤儿行。
+                day = _normalize_date(r.get("trade_date"))
+                if day is None or not self._is_writable_day(day):
+                    continue
+                # 浅拷贝: 归一化后的日期要进主键, 但不去改调用方自己那份 dict
+                row = dict(r, trade_date=day)
+                if self._upsert_one(row, overwrite_live=overwrite_live, now=now):
+                    written += 1
+        return written
+
+    @staticmethod
+    def _is_writable_day(date_str) -> bool:
+        """非交易日拒写 (守卫收在唯一写入口上)。
+
+        为什么在这里拦而不是指望四个写入点各自判断: 2026-09-18 复核发现尾盘选股的
+        定时入口当时只判了开关、**没判交易日** (同日已修), 说明"每个点都记得判断"
+        这件事靠不住。收到这里一处, 四个写入点自动全受保护。
+
+        传进来的 ``date_str`` 必须已经是 ``_normalize_date`` 收敛过的规范口径
+        (``YYYY-MM-DD``); 用的是**这一行自己的日期**, 所以历史回填同样受保护 ——
+        回填到周末照样被拦, 不会往台账里塞非交易日的行。
+        """
+        try:
+            d = _dt.date.fromisoformat(str(date_str))
+        except (TypeError, ValueError):
+            return False
+        return bool(_cal_is_trading_day(d))
+
+    def _upsert_one(self, r: dict, *, overwrite_live: bool, now: float) -> bool:
+        """写/合并一行。返回 True = 这一行对台账产生了影响 (新增或覆盖)。"""
+        key = (str(r["trade_date"]), str(r["strategy"]), str(r["subject"]))
+        # 没传 action 就按原因码的默认动作, 而不是拍脑袋写 HOLD —— 见 log() 的
+        # 契约。默认成 HOLD 的坑: 将来哪个写入点忘了传 action, 一笔真卖出
+        # (EXIT_TRIGGERED) 会被记成"没动", 页面上直接看错, 而且不报错。
+        action = str(r.get("action") or _action_of(str(r.get("reason_code") or ""))
+                     or "HOLD")
+        trade_ids = r.get("trade_ids") or ""
+        if not isinstance(trade_ids, str):
+            trade_ids = ",".join(str(x) for x in trade_ids)
+        # "这一行的时间"优先取这件事**当时**发生的时刻 (历史回填从审计表带过来的
+        # event_ts), 没带才退回写库那一刻。实时写入两条路径等价 (写的时候就是刚
+        # 发生的时候), 只有回填会不同 —— 见 trade/decision_backfill.py 的设计
+        # 决定 4。
+        try:
+            ts = float(r["event_ts"]) if r.get("event_ts") is not None else now
+        except (TypeError, ValueError):
+            ts = now
+        row = (
+            r["trade_date"], r["strategy"], r["subject"], action,
+            str(r.get("reason_code") or ""), str(r.get("reason_text") or ""),
+            _dumps(r.get("evidence")), trade_ids,
+            str(r.get("source") or "live"), ts,
+        )
+        old = self._conn.execute(
+            "SELECT action, evidence_json, source, reason_code, reason_text, "
+            "updated_ts FROM daily_decision "
+            "WHERE trade_date=? AND strategy=? AND subject=?", key).fetchone()
+        if old is None:
+            self._conn.execute(
+                """INSERT INTO daily_decision
+                   (trade_date, strategy, subject, action, reason_code,
+                    reason_text, evidence_json, trade_ids, source, updated_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""", row)
+            return True
+        (old_action, old_evidence, old_source,
+         old_code, old_text, old_ts) = old
+        if not overwrite_live and (
+                _SOURCE_RANK.get(row[8], 0) < _SOURCE_RANK.get(old_source, 0)):
+            # 可信度更低的来源不许覆盖更高的 —— 当场记录的行永不被历史回填改写 (E9)
+            return False
+        new_rank = ACTION_RANK.get(action, 0)
+        old_rank = ACTION_RANK.get(old_action, 0)
+        if new_rank >= old_rank:
+            # 第一步: 把旧行攒下的轨迹接到新行前面 —— 这一步保证"留下几条"
+            # 不再取决于写入顺序 (先成交后失败 / 先失败后成交 结果一样)。
+            new_evidence = _merge_events(old_evidence, row[6])
+            # 第二步: 旧的主结论本身也要留 —— 它是"更早 / 更弱的那一次"。
+            # 这是台账里信息量最大的一类事件: 上午"想卖没卖成"(可用为 0 /
+            # 跌停), 下午真卖成了 —— 只看主结论会以为一路顺利, 而那次失败
+            # 恰恰是用户最需要知道的 (要不要人工处理)。
+            # 2026-09-18 修正: 原来只有"先强后弱"的顺序才会进 events,
+            # 而真实顺序几乎总是"先失败后成交", 于是失败信息全被丢掉;
+            # 注释早就写着要保留, 实现漏了另一半。
+            # 同强度重复 (两次都是"没卖成") 时, 只有"原话不一样"才留 ——
+            # 完全一样的重试由 _append_event 自己去重, 不留噪音。
+            if old_code and (new_rank > old_rank
+                             or str(old_code) != row[4]
+                             or str(old_text or "") != row[5]):
+                new_evidence = _append_event(new_evidence, {
+                    "ts": old_ts, "action": old_action,
+                    "reason_code": old_code, "reason_text": old_text})
+            self._conn.execute(
+                """UPDATE daily_decision SET
+                     action=?, reason_code=?, reason_text=?, evidence_json=?,
+                     trade_ids=?, source=?, updated_ts=?
+                   WHERE trade_date=? AND strategy=? AND subject=?""",
+                (row[3], row[4], row[5], new_evidence, row[7], row[8], row[9],
+                 key[0], key[1], key[2]))
+        else:
+            # 新动作更弱: 主结论不动, 把这件事追加进 events —— 信息不丢。
+            # **故意不动 updated_ts**: 它记的是"主结论那条动作什么时候发生的",
+            # 被一条更弱的支线事件改写会让时间线自相矛盾 (页面上可能显示
+            # "15:05 卖出成功" 而这一行的时间却是 15:06 的那次重试)。
+            # 每条 events 自带 ts, 完整时间线照样看得到。
+            self._conn.execute(
+                "UPDATE daily_decision SET evidence_json=? "
+                "WHERE trade_date=? AND strategy=? AND subject=?",
+                (_append_event(old_evidence, {
+                    "ts": ts, "action": action,
+                    "reason_code": row[4], "reason_text": row[5]}),
+                 key[0], key[1], key[2]))
+        return True
+
+    # ── 读 ──────────────────────────────────────────────────────
+
+    _COLS = ("trade_date, strategy, subject, action, reason_code, reason_text, "
+             "evidence_json, trade_ids, source, updated_ts")
+
+    def load_day(self, date: str, conn: sqlite3.Connection | None = None) -> list[dict]:
+        """读某一天的台账行 (``date``=YYYY-MM-DD)。
+
+        ``conn`` 传了就用它 (Web 端点用只读连接读, WAL 下与写连接不互堵);
+        不传则用本 store 的共享写连接 (需持锁, 只有消费者线程该这么用)。
+        明细 JSON 坏了给空字典, **不让页面因此打不开** (fail-soft)。
+        """
+        return self._query(conn,
+                           "WHERE trade_date = ? ORDER BY strategy, subject",
+                           (date,))
+
+    def load_range(self, start: str, end: str,
+                   conn: sqlite3.Connection | None = None) -> list[dict]:
+        """读一段日期区间的台账行 (含两端, YYYY-MM-DD), 供决策日历按月取数。"""
+        return self._query(
+            conn,
+            "WHERE trade_date >= ? AND trade_date <= ? "
+            "ORDER BY trade_date, strategy, subject",
+            (start, end))
+
+    def _query(self, conn, where: str, args: tuple) -> list[dict]:
+        if conn is not None:
+            rows = conn.execute(
+                f"SELECT {self._COLS} FROM daily_decision {where}", args).fetchall()
+        else:
+            with self._lock:
+                rows = self._conn.execute(
+                    f"SELECT {self._COLS} FROM daily_decision {where}",
+                    args).fetchall()
+        out = []
+        for r in rows:
+            try:
+                evidence = json.loads(r[6] or "{}")
+            except (ValueError, TypeError):
+                evidence = {}
+            if not isinstance(evidence, dict):
+                evidence = {}
+            out.append({
+                "trade_date": r[0], "strategy": r[1], "subject": r[2],
+                "action": r[3], "reason_code": r[4], "reason_text": r[5],
+                "evidence": evidence, "trade_ids": r[7], "source": r[8],
+                "updated_ts": r[9],
+            })
+        return out
+
+
 class TradeStore:
     """单写连接 + JSONL 落盘。写连接由消费者线程专用, 内部锁兜底。"""
 
@@ -498,6 +906,9 @@ class TradeStore:
         self.rotation_tranche = RotationTrancheStateStore(self._conn, self._lock)
         self.rotation_meta = RotationMetaStore(self._conn, self._lock)
         self.tier_state = TierStateStore(self._conn, self._lock)  # 治理III W4-f
+        # 2026-09-18 当日决策台账: 「今天为什么动/没动」的结构化答案 (唯一写入口
+        # 内含非交易日守卫 + 动作合并 + 出错兜底)
+        self.decision = DailyDecisionStore(self._conn, self._lock)
 
         raw_path = Path(raw_log_path)
         raw_path.parent.mkdir(parents=True, exist_ok=True)

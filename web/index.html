@@ -384,6 +384,50 @@ input:focus-visible,select:focus-visible{outline:none}
 .brain-inputrow #brainSendBtn{padding:var(--sp-2) var(--sp-5)}
 .brain-inputrow #brainStopBtn{padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs)}
 .brain-inputrow #brainResetBtn{padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs)}
+
+/* ===== 交易记录页 决策台账两张卡 (2026-09-18) =====
+   配合 web/js/decision.js + web/js/decision_util.mjs。
+   颜色一律走令牌 (--up 红=买 / --down 绿=卖 / --warn 黄=出问题 / --info 蓝=告知 /
+   --text2 灰=没动作), 不写死 hex —— 亮暗两套主题自动跟随。 */
+.dec-lede{font-size:var(--fs-sm);color:var(--text2);line-height:1.7;margin-bottom:var(--sp-2)}
+.dec-bar{display:flex;gap:var(--sp-2);align-items:center;margin-bottom:var(--sp-2);flex-wrap:wrap}
+.dec-group{margin-bottom:var(--sp-3)}
+.dec-group-h{font-size:var(--fs-xs);color:var(--text2);font-weight:600;letter-spacing:.5px;
+  text-transform:uppercase;padding:0 0 var(--sp-1);border-bottom:1px solid var(--border);margin-bottom:var(--sp-1)}
+.dec-row{display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;
+  padding:var(--sp-2) var(--sp-2);border-radius:var(--radius-sm);cursor:pointer;
+  transition:background .15s;font-size:var(--fs-sm)}
+.dec-row:hover{background:var(--surface)}
+.dec-row:focus-visible{outline:2px solid var(--link);outline-offset:-2px}
+.dec-badge{flex:0 0 auto;padding:1px var(--sp-2);border:1px solid currentColor;border-radius:10px;
+  font-size:var(--fs-xs);font-weight:600;white-space:nowrap}
+.dec-subj{flex:0 0 auto;font-family:var(--mono);font-size:var(--fs-xs);color:var(--text2);white-space:nowrap}
+.dec-txt{flex:1 1 240px;min-width:0;line-height:1.6;color:var(--text)}
+.dec-src{flex:0 0 auto;padding:0 var(--sp-2);border-radius:10px;background:var(--surface);
+  color:var(--text2);font-size:var(--fs-xs);cursor:help;white-space:nowrap}
+.dec-more{flex:0 0 auto;font-size:var(--fs-xs);color:var(--text2);white-space:nowrap;opacity:.8}
+.dec-ev{margin:0 0 var(--sp-2) var(--sp-4);padding:var(--sp-2) var(--sp-3);
+  background:var(--bg);border-radius:var(--radius-sm)}
+.dec-ev .td-table td{border-bottom:1px dashed var(--border);font-size:var(--fs-xs)}
+/* 明细的值可能多行 ("当天还发生过"那一栏是一行一条流水), pre-line 让换行生效,
+   break-word 防长文案把表格撑破 —— 没有这两条, 多行内容会挤成一坨读不了 */
+.dec-evv{white-space:pre-line;word-break:break-word;line-height:1.7}
+.dec-empty{font-size:var(--fs-xs);color:var(--text2);padding:var(--sp-1) var(--sp-2);opacity:.85}
+.dec-cal{width:100%;border-collapse:separate;border-spacing:2px;table-layout:fixed}
+.dec-cal th{font-size:var(--fs-xs);color:var(--text2);font-weight:500;padding:var(--sp-1) 0;text-align:center}
+.dec-day{border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1);
+  text-align:center;vertical-align:middle;background:var(--card);height:44px}
+.dec-day[role=button]{cursor:pointer;transition:border-color .15s}
+.dec-day[role=button]:hover{border-color:var(--link)}
+.dec-day[role=button]:focus-visible{outline:2px solid var(--link);outline-offset:-2px}
+.dec-blank{border:none;background:transparent}
+.dec-day-num{font-size:var(--fs-xs);font-family:var(--mono);color:var(--text)}
+.dec-day-txt{font-size:var(--fs-xs);color:var(--text2);line-height:1.3;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dec-holiday{background:var(--bg);border-style:dashed}
+.dec-holiday .dec-day-num,.dec-holiday .dec-day-txt{opacity:.55}
+.dec-norun{border-color:var(--warn)}
+.dec-norun .dec-day-txt{color:var(--warn)}
 </style>
 <link rel="stylesheet" href="/web/css/polish.css?v=20260916a">
 <link rel="stylesheet" href="/web/css/brain-md.css?v=20260906c">
@@ -1342,6 +1386,38 @@ input:focus-visible,select:focus-visible{outline:none}
 <!-- 2026-07-30: 交易记录 TAB — 台账/查询类卡片从交易驾驶舱拆出。
      查询型页面, 不进 5s 轮询: 切到本页自动加载 + 手动查询/刷新 -->
 <div id="pageRecords">
+  <!-- 2026-09-18: 当日决策台账 — 放最顶上, 因为它是"先看为什么, 再看成交明细"的顺序。
+       后端 trade/decision_api.py, 数据表 daily_decision, JS web/js/decision.js -->
+  <div class="lab-card" id="decTodayCard">
+    <h2>今天为什么动 / 没动</h2>
+    <div class="dec-lede">
+      每天一张"决策台账"：谁、哪天、做了什么、为什么、凭什么、关联哪几笔单。
+      没有动作的日子也会写明原因（比如没站上均线所以没触发、动量变了所以换了 ETF）。
+    </div>
+    <div class="dec-bar">
+      <input class="lab-input" id="decDate" placeholder="YYYYMMDD 缺省当日" aria-label="决策台账查询日期, 8 位数字, 留空为当天" style="width:160px;font-family:var(--mono)">
+      <button class="btn" id="decBtn" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-sm)">查询</button>
+      <span class="trade-hint" id="decHint"></span>
+    </div>
+    <div id="decStatus" style="display:none;margin-bottom:var(--sp-2)"></div>
+    <div id="decBody"><div style="color:var(--text2);font-size:var(--fs-sm)">切换到本页时自动加载</div></div>
+  </div>
+
+  <div class="lab-card">
+    <h2>决策日历</h2>
+    <div class="dec-lede">
+      一眼看这个月哪天动过手：格子底色红=买、绿=卖、黄=出问题、灰=没动作；
+      灰底的"休市"是本来就不该有动作，"没运行"才是当天程序没跑，点某一天可跳到上面看原因。
+    </div>
+    <div class="dec-bar">
+      <button class="btn" id="decPrevBtn" aria-label="上一个月" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-sm)">← 上月</button>
+      <span id="decCalMonth" style="font-family:var(--mono);font-size:var(--fs-sm);min-width:72px;text-align:center"></span>
+      <button class="btn" id="decNextBtn" aria-label="下一个月" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-sm)">下月 →</button>
+      <span class="trade-hint" id="decCalHint"></span>
+    </div>
+    <div id="decCal"><div style="color:var(--text2);font-size:var(--fs-sm)">切换到本页时自动加载</div></div>
+  </div>
+
   <div class="lab-card">
     <h2>成交记录</h2>
     <div style="display:flex;gap:var(--sp-2);align-items:center;margin-bottom:var(--sp-2)">
@@ -1436,6 +1512,77 @@ input:focus-visible,select:focus-visible{outline:none}
      也可点下面按钮手动采集)。口径唯一真相源 core/market_position.py。
      铁律: 本页只做提示与参考, 绝不联动仓位 (业务铁律 1)。 -->
 <div id="pageMarket">
+  <!-- ═══ 大盘环境仪表盘 (2026-09-18 四页签改造) ═══
+       打分 core/market_score.py(纯函数,温度分) + 事件 core/market_events.py +
+       编排 core/market_dashboard_runner.py; 渲染 web/js/market_dashboard.js。
+       总分是"温度分"(描述现状,不预测涨跌), 只读参照, 不联实盘仓位(业务铁律1)。 -->
+
+  <!-- 状态栏: 上次更新/下次更新/倒计时/手动刷新/分维度数据截止 (需求第四条) -->
+  <div class="lab-card" id="mdStatusCard">
+    <div class="md-statusbar">
+      <div class="md-status-item">
+        <div class="md-status-label">上次更新</div>
+        <div class="md-status-value" id="mdLastUpdated">—</div>
+        <div class="md-status-sub" id="mdLastType">—</div>
+      </div>
+      <div class="md-status-item">
+        <div class="md-status-label">下次更新</div>
+        <div class="md-status-value" id="mdNextRefresh">—</div>
+        <div class="md-status-sub" id="mdNextType">—</div>
+      </div>
+      <div class="md-status-item">
+        <div class="md-status-label">距下次更新还有</div>
+        <div class="md-countdown" id="mdCountdown">--:--:--</div>
+        <div class="md-status-sub">到点自动刷新</div>
+      </div>
+      <div class="md-status-item md-status-action">
+        <button class="btn" id="mdRefreshBtn"
+                title="立即重取全部数据并重算总分（约30~60秒）">手动刷新</button>
+      </div>
+    </div>
+    <div class="md-dataasof" id="mdDataAsof"></div>
+  </div>
+
+  <!-- 子页签栏 -->
+  <div id="mdSubtabs">
+    <button class="md-subtab active" data-pane="overview">大盘总览</button>
+    <button class="md-subtab" data-pane="detail">指标明细</button>
+    <button class="md-subtab" data-pane="events">事件跟踪</button>
+    <button class="md-subtab" data-pane="history">历史走势</button>
+  </div>
+
+  <!-- TAB1 大盘总览 -->
+  <div class="md-pane" data-pane="overview" id="mdPaneOverview">
+    <div class="lab-card">
+      <h2>大盘总览 <span class="trade-hint" id="mdHint"></span></h2>
+      <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
+        这是一个<b>温度计</b>：把"现在市场热不热"打成一个 0~10 的分。
+        它<b>只描述现状</b>，<b>不预测明天涨跌</b>，也<b>不联动任何实盘仓位</b>（只读参照）。
+      </div>
+      <div id="mdOverviewCards"></div>
+      <div id="mdOverviewCompare"></div>
+      <div id="mdOverviewDrivers"></div>
+      <div id="mdOverviewCredibility"></div>
+    </div>
+  </div>
+
+  <!-- TAB2 指标明细: 新打分明细 + 下面原有卡片作"原始数据证据" -->
+  <div class="md-pane" data-pane="detail" id="mdPaneDetail" style="display:none">
+    <div class="lab-card">
+      <h2>指标明细（每个分数是怎么来的）</h2>
+      <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
+        按五大维度分组，每个指标给出：原始数值、单项得分、比昨天/比30天前的变化。
+        得分怎么算的，把鼠标放到指标名上看口径说明。
+      </div>
+      <div id="mdDetail"></div>
+    </div>
+    <div class="lab-card" style="border-left:3px solid var(--border)">
+      <h2 style="font-size:var(--fs-md)">原始数据证据（旧视图）</h2>
+      <div style="font-size:var(--fs-xs);color:var(--text2)">
+        下面是这套打分背后的原始数据分析卡片（三大指数位置、估值、历史照镜子、前期涨跌分桶、
+        候选择时规则影子回放），保留作证据，方便你核对分数来源。
+      </div>
+    </div>
   <div class="lab-card">
     <h2>大盘位置
       <button class="btn" id="mpRefreshBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button>
@@ -1590,6 +1737,35 @@ input:focus-visible,select:focus-visible{outline:none}
     <div class="lab-pre" id="mpReport" style="display:none;max-height:520px;overflow-y:auto"></div>
     <div id="mpReportHint" style="font-size:var(--fs-xs);color:var(--text2)">点上方「完整报告」展开（与飞书推送内容一致）。</div>
   </div>
+  </div>
+
+  <!-- TAB3 事件跟踪 -->
+  <div class="md-pane" data-pane="events" id="mdPaneEvents" style="display:none">
+    <div class="lab-card">
+      <h2>事件跟踪（最近有什么大事、影响还剩几天）</h2>
+      <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
+        影响大盘的重大财经事件全记录：每条按影响力度打分、按天衰减（影响随时间减弱）、到期自动移除。
+        合计修正分直接加在基础总分上（最多 ±1 分）。
+      </div>
+      <div id="mdEventsSummary"></div>
+      <div id="mdEventsList"></div>
+      <div id="mdEventsRule"></div>
+    </div>
+  </div>
+
+  <!-- TAB4 历史走势 -->
+  <div class="md-pane" data-pane="history" id="mdPaneHistory" style="display:none">
+    <div class="lab-card">
+      <h2>历史走势（总分曲线）</h2>
+      <div id="mdHistoryControls" style="margin-bottom:var(--sp-2)"></div>
+      <div id="mdHistoryChart" style="width:100%;height:320px"></div>
+      <div id="mdHistorySummary" style="margin-top:var(--sp-2)"></div>
+      <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-3);padding-top:var(--sp-2);border-top:1px solid var(--border)">
+        <b>情景推演</b>：可以输入"假设明天发生某件事"来推演总分走势。推演只是沙盘模拟，
+        <b>不是市场预测</b>，且推演结果不会写进正式历史记录。
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- 2026-09-06: AI 设置 TAB — 对话大脑三档 (快速/标准/深度) 接入配置。
@@ -1672,6 +1848,10 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/recover.js"></script>
 <script src="/web/js/stock_link.js?v=20260826a"></script>
 <script src="/web/js/trade.js?v=20260906c"></script>
+<!-- 2026-09-18: 决策台账两张卡 (当日决策 + 决策日历)。必须是 module 且放在 trade.js 之后:
+     module 解析完才执行, 那时 trade.js 已定义好 window.recordsPageEnter/recordsPageLeave,
+     本模块才能把它们"包"起来 (包装而非被调用 -> 本文件加载失败也不影响原有四张卡)。 -->
+<script type="module" src="/web/js/decision.js?v=20260918a"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_viz.js?v=20260906d"></script>
@@ -1679,6 +1859,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
 <script src="/web/js/market_position.js?v=20260917f"></script>
+<script src="/web/js/market_dashboard.js?v=20260918a"></script>
 <script type="module" src="/web/js/analysis.js?v=20260911a"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260917b"></script>
 </body>

@@ -51,10 +51,12 @@ from trade.book import (
     DIRECTION_BUY,
     DIRECTION_SELL,
     TERMINAL_STATUSES,
+    label_of,
     round_price_etf,  # 价格档位单一真相源 (治理III W3 自本模块迁入 book.py)
 )
 from scheduler.trading_calendar import next_trading_day
 from trade import pool_money  # 市值口径单一真相源 (治理III W2-1)
+from trade.decision_codes import action_of as _decision_action  # 决策台账动作码 (2026-09-18)
 from trade.events import EVENT_ROTATION, Event
 from trade.executor import PlaceRequest  # 唯一下单口请求 (2026-09-05 收口)
 from trade.monitor import is_trading_day_cached, trading_session
@@ -112,15 +114,11 @@ _LOTS_REPAIR_HINT = (
 def _etf_label(code: str) -> str:
     """代码 → '简称(代码)' 给人看; 查不到简称时退回原代码。
 
-    2026-09-07 用户反馈: 审计/决策文案满屏 513100.SH 谁看得明白。
-    复用 trade/analysis.name_of 名称表 (进程级缓存, 拿不到不落缓存会重试);
-    惰性 import 防模块环。只影响人类可读文案, 机器字段仍存原代码。"""
-    try:
-        from trade.analysis import name_of
-        name = name_of(code)
-    except Exception:
-        name = ""
-    return f"{name}({code})" if name else code
+    2026-09-18 收口: 实现搬到 ``trade/book.label_of`` (决策台账要在轮动/选股/
+    监控三处说人话, 同一个格式化语句抄三遍就是三处会分叉的地方)。这里保留
+    函数名, 免得动到本模块 12 处调用点。
+    """
+    return label_of(code)
 
 
 def _fmt_momentum(momentum: dict | None) -> str:
@@ -284,6 +282,9 @@ class RotationFeature:
             self._store.write_audit(
                 "rotation_skip", "上一次信号计算仍在运行, 本次忽略",
                 {"source": source})
+            self._log_decision(
+                "pool", "ROT_BUSY", "上一轮 ETF 轮动还在跑，本次忽略",
+                {"source": source})
             return
         # 审计 T4 (2026-09-16): 份状态对齐 (锚定热变更重建 + audit 留痕)
         # 从信号工作线程挪到此处 —— 交易状态唯一写者=消费者线程,
@@ -328,6 +329,8 @@ class RotationFeature:
                 self._store.write_audit(
                     "rotation_error", f"轮动信号失败: {error}",
                     {"source": source})
+                self._log_decision("pool", "ROT_ERROR",
+                                   f"ETF 轮动这一轮没跑成：{error}")
                 return
             if signal_only:
                 # 非交易日 / 首个周频信号未算: 纯跳过, 不执行不更新目标状态
@@ -336,8 +339,15 @@ class RotationFeature:
                                  if isinstance(s, dict) and s.get("note")),
                                 None)
                         or "跳过 (非交易日或首信号未算)")
+                # 原因码由工作线程 put 事件时带上 (不去猜 note 文本, 2026-09-18)
+                code = data.get("reason_code") or ""
                 self._store.write_audit("rotation_skip", note,
-                                        {"source": source})
+                                        {"source": source, "reason_code": code})
+                # 决策台账: 只有「首个信号未算」值得记一行 —— 那是一次真实的
+                # 跳过决策。非交易日不记: 休市日本就不该有"决策", 写了反而是
+                # 往台账里塞一行假数据, 页面上由日历格标「休市」来回答。
+                if code == "ROT_HOLD_FIRST_SIG":
+                    self._log_decision("pool", code, note, {"source": source})
                 return
             self._execute(signals, data.get("migration_closes") or {})
         finally:
@@ -417,6 +427,30 @@ class RotationFeature:
         except Exception:
             _logger.debug("轮动状态落库异常 (不影响交易)")
 
+    # ── 决策台账 (2026-09-18) ──────────────────────────────────
+
+    def _log_decision(self, subject: str, code: str, text: str,
+                      evidence: dict | None = None, trade_ids=None) -> None:
+        """落一行决策台账 (「今天这份资金为什么动 / 为什么没动」)。"""
+        self._log_decisions([(subject, code, text, evidence, trade_ids)])
+
+    def _log_decisions(self, items) -> None:
+        """批量落决策台账 (收尾那批一次事务; 零散单行也走这里)。
+
+        每一项 = (对象, 原因码, 大白话, 明细, 关联单号)。
+        fail-soft 由 store 层兜底 (``DailyDecisionStore.log`` 内部吞异常 + 补写
+        审计), 这里不再包一层。台账只记「为什么」、不参与任何交易判定 ——
+        写失败最坏的结果是页面上缺一行, 绝不改变交易结果。
+        """
+        day = datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+        rows = [{
+            "trade_date": day, "strategy": "rotation", "subject": subject,
+            "action": _decision_action(code), "reason_code": code,
+            "reason_text": text, "evidence": evidence or {},
+            "trade_ids": trade_ids or "", "source": "live",
+        } for subject, code, text, evidence, trade_ids in items]
+        self._store.decision.log(rows)
+
     # ── 内部: 工作线程 ──────────────────────────────────────────
 
     def _worker(self, source: str) -> None:
@@ -432,6 +466,7 @@ class RotationFeature:
                 self._engine.put(Event(
                     type=EVENT_ROTATION, ts=self._clock(),
                     data={"signals": {}, "signal_only": True,
+                          "reason_code": "ROT_SKIP_SESSION",
                           "note": "非交易日, 不动作", "source": source}))
                 return
             cfg = self._cfg_getter().rotation
@@ -471,6 +506,7 @@ class RotationFeature:
                 self._engine.put(Event(
                     type=EVENT_ROTATION, ts=self._clock(),
                     data={"signals": {}, "signal_only": True,
+                          "reason_code": "ROT_HOLD_FIRST_SIG",
                           "note": "首个周频信号未算, 等信号日",
                           "source": source}))
                 return
@@ -623,15 +659,22 @@ class RotationFeature:
         cfg = self._cfg_getter().rotation
         if trading_session(self._clock()) != "continuous":
             self._store.write_audit("rotation_skip", "非连续竞价时段, 跳过调仓", {})
+            self._log_decision("pool", "ROT_SKIP_SESSION",
+                               "现在不是连续竞价时段（盘中 9:30-11:30 / 13:00-15:00），"
+                               "跳过调仓")
             return
         try:
             asset = self._gateway.query_asset()
             total = float(asset.get("total_asset", 0.0) or 0.0)
         except Exception as e:
             self._store.write_audit("rotation_error", f"查资产失败, 跳过调仓: {e}", {})
+            self._log_decision("pool", "ROT_ERROR",
+                               f"查不到账户资产，本轮跳过调仓：{e}")
             return
         if total <= 0:
             self._store.write_audit("rotation_error", "总资产为 0, 跳过调仓", {})
+            self._log_decision("pool", "ROT_ERROR",
+                               "账户总资产读到 0，本轮跳过调仓（数据不对，不动手）")
             return
         n_tranches = len(self._tranches)
         pool = cfg.etf_ratio * total
@@ -688,6 +731,10 @@ class RotationFeature:
         #    → 维持持仓腿只守止损 (D6); 无持仓 → skip 等信号日)
         targets: dict[int, object] = {}     # i → 腿代码 | None(避险) | "skip"
         decisions: dict[int, str] = {}
+        # 变量名刻意不叫 codes —— 本函数上面已有一个 codes (轮动池代码列表),
+        # 重名会把它覆盖掉、静默算错卖出量 (2026-09-18 实测踩过: 6 个换档用例
+        # 全变成"不下卖单")
+        reason_codes: dict[int, str] = {}   # 决策台账原因码 (2026-09-18)
         for i in range(n_tranches):
             t = self._tranches[i]
             sig = signals.get(i)
@@ -697,18 +744,30 @@ class RotationFeature:
                 decisions[i] = (f"日频移动止损: {stop_off[i]} 从持仓期最高 "
                                 f"{hi:.3f} 回撤超 "
                                 f"{cfg.trailing_stop_pct * 100:.0f}% → 切避险黄金")
+                reason_codes[i] = "ROT_TRAILING_STOP"
             elif sig is not None and not sig.get("insufficient"):
                 targets[i] = sig.get("target")
                 t["has_target"] = True
                 decisions[i] = self._pick_decision(sig, targets[i])
+                # 原因码与上一行的人话**同源同判** (同一个 sig/target 分支内赋值,
+                # 绝不另写一份分类函数 —— 两份判断必然越走越远): 有动量 + 有目标
+                # 腿 = 换腿; 有动量 + 目标为空 = 两条腿都跌、主动买黄金避险;
+                # 拿不到动量 = 只是在执行既有目标, 算维持。
+                if not _fmt_momentum(sig.get("momentum")):
+                    reason_codes[i] = "ROT_HOLD_KEEP"
+                else:
+                    reason_codes[i] = ("ROT_HEDGE_BOTH_NEG" if targets[i] is None
+                                else "ROT_SWITCH")
             elif sig is not None and sig.get("insufficient"):
                 # 数据不足 fail-safe (逐份隔离, 不拖其他份): 维持现状
                 targets[i] = self._maintain_target(i, risk_legs)
                 decisions[i] = (f"数据不足 fail-safe ({sig.get('reason', '')})"
                                 f" → 维持现状")
+                reason_codes[i] = "ROT_DATA_MISSING"
             elif t["has_target"]:
                 targets[i] = t["pending_target"]
                 decisions[i] = self._pick_decision(None, targets[i])
+                reason_codes[i] = "ROT_HOLD_KEEP"
             else:
                 held = [c for (j, c), v in self._lots.items()
                         if j == i and v["qty"] > 0]
@@ -719,9 +778,11 @@ class RotationFeature:
                     held_risk = [c for c in held if c in risk_legs]
                     targets[i] = held_risk[0] if held_risk else None
                     decisions[i] = "首信号未算, 维持持仓待信号日 (止损照常)"
+                    reason_codes[i] = "ROT_HOLD_FIRST_SIG"
                 else:
                     targets[i] = "skip"
                     decisions[i] = "首个周频信号未算, 等信号日"
+                    reason_codes[i] = "ROT_NOT_SIGNAL_DAY"
 
         def _mk_legs(tcode):
             return momentum_target_values(cfg.cyb_etf, cfg.risk_etf2,
@@ -806,6 +867,10 @@ class RotationFeature:
                       for (_i, c), v in self._lots.items())
         cash = min(cash, max(0.0, pool - all_val))
         buy_ids: list[str] = []          # 本轮新下且入台账的买单 (等待用)
+        # 按份收集买单号 (2026-09-18 决策台账用): 一份一轮可能下好几单
+        # (多腿/多次补仓), 台账要能把"这一份的决策"关联到它自己的那几笔单上 ——
+        # 卖侧同理, 用现成的 sell_lots (它本身就带份号)。
+        buy_ids_by_tranche: dict[int, list[str]] = {}
         for i in range(n_tranches):
             if targets[i] == "skip" or cash <= 0:
                 continue
@@ -829,6 +894,7 @@ class RotationFeature:
                 cap_rem -= spent
                 if oid:
                     buy_ids.append(oid)
+                    buy_ids_by_tranche.setdefault(i, []).append(oid)
         # 4.2) 买侧短等待 + 当轮核销 (§3.8): 等一轮让终态回报落地, 能当轮
         #      扣回的幻影当轮就扣 (等不到只推迟到下一轮, 自愈)。审计记耗时。
         #      仅本轮真下了单才等/再核销 —— 没下单时开场那次核销已完成,
@@ -847,12 +913,17 @@ class RotationFeature:
         # 5) 收尾: 逐份 pending_target/entry_high 对齐 + 簿记落库 +
         #    对账告警 + 审计。entry_high 随 lots 行生灭 (切腿清旧自然达成)。
         now = datetime.fromtimestamp(self._clock())
+        # 决策台账 (2026-09-18): 逐份攒行, 循环走完一次落库 (一个事务)。
+        # 存的是 (对象, 原因码, 大白话, 明细, 关联单号) 五元组。
+        dec_rows: list[tuple] = []
         for i in range(n_tranches):
             if targets[i] == "skip":
                 self._store.write_audit(
                     "rotation_skip",
                     f"份{i + 1}/{n_tranches}: {decisions[i]}",
                     {"tranche": i, "anchor": self._tranches[i]["anchor"]})
+                dec_rows.append((f"份{i + 1}", reason_codes[i], decisions[i],
+                                 {"anchor": self._tranches[i]["anchor"]}, ""))
                 continue
             t = self._tranches[i]
             t["pending_target"] = (targets[i]
@@ -881,6 +952,24 @@ class RotationFeature:
                  "momentum": (signals.get(i) or {}).get("momentum"),
                  "stop_off": i in stop_off, "stop_leg": stop_off.get(i),
                  "signal": t["last_signal"]})
+            # 台账明细与上面这条审计**同构** —— 这样历史回填可以用同一个
+            # classify_rotation 从审计原文还原原因码, 实时与回填口径不可能分叉
+            tids = [oid for oid, (j, _c, _q) in sell_lots.items() if j == i]
+            tids += buy_ids_by_tranche.get(i, [])
+            dec_rows.append((f"份{i + 1}", reason_codes[i], decisions[i], {
+                "anchor": t["anchor"],
+                "target": targets[i] if targets[i] in risk_legs else None,
+                "pool": round(pool_per, 2),
+                "stop_off": i in stop_off,
+                "stop_leg": stop_off.get(i),
+                "momentum": (signals.get(i) or {}).get("momentum"),
+                "entry_high": {
+                    c: v["entry_high"]
+                    for (j, c), v in self._lots.items()
+                    if j == i and v.get("entry_high") and v.get("qty", 0) > 0},
+                "signal": t["last_signal"],
+            }, tids))
+        self._log_decisions(dec_rows)
         self._persist_lots()
         # 对账口径修正 (2026-09-17 §3.5 / H4): 必须**重读**持仓 —— 买入前的
         # qmt_pos 快照不含本轮买入, 拿它比必然报警; 期望值再计入在途买单量
@@ -982,6 +1071,13 @@ class RotationFeature:
             "rotation_migrate",
             f"轮动迁移初始化: 现有持仓按手轮转分 {n} 份 "
             f"(明细: {detail or '无持仓, 空仓起步'})",
+            {"tranches": n, "detail": detail})
+        # 决策台账: 第一次接入是一次真实的"决策" (把已有持仓分到各份),
+        # 记一行让历史里这一天不是空白
+        self._log_decision(
+            "pool", "ROT_INIT",
+            f"ETF 轮动第一次接入：把现有持仓按手轮转分给 {n} 份资金"
+            f"（{detail or '当时没有持仓，空仓起步'}）",
             {"tranches": n, "detail": detail})
         if discarded:
             self._store.write_audit(
