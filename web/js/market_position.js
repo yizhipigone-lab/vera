@@ -294,6 +294,43 @@ function valuationHtml(rec) {
     + '体检结果：这是唯一同时通过 3/6/12 个月检验的正向维度。</span></div>';
 }
 
+// ── 分桶图 (前期12个月涨跌 → 未来12个月收益, 2026-09-17) ──
+// 数据全部来自后端 /api/market_position/momentum_buckets, 前端只做组装。
+
+// 接口返回 → 图表/文案用的规整结构 (纯函数, Node 可测)
+function momentumChartData(d) {
+  if (!d || !d.indices) return null;
+  var oks = d.indices.filter(function (x) { return x && x.ok; });
+  if (!oks.length) return null;
+  var labels = oks[0].buckets.map(function (b) { return b.label; });
+  var indices = oks.map(function (x) {
+    return { name: x.name, n_eff: x.n_eff, span: x.span, n_samples: x.n_samples,
+             ns: x.buckets.map(function (b) { return b.n; }),
+             means: x.buckets.map(function (b) { return b.mean_pct; }),
+             wins: x.buckets.map(function (b) { return b.win_pct; }) };
+  });
+  var currents = oks.map(function (x) {
+    return { name: x.name,
+             asof: x.current && x.current.asof,
+             momentum: x.current && x.current.momentum_pct,
+             bucket: x.current && x.current.bucket };
+  });
+  return { labels: labels, indices: indices, currents: currents,
+           warning: d.warning || '' };
+}
+
+// 「当前位置」一行话 (纯函数, Node 可测):
+// 截至 X 日：上证指数 过去12个月 +0.2%（落在「涨0~15%」档）· …
+function momentumNowHtml(cd) {
+  if (!cd || !cd.currents || !cd.currents.length) return '';
+  var asof = cd.currents[0] && cd.currents[0].asof;
+  var parts = cd.currents.map(function (c) {
+    return '<b>' + esc(c.name) + '</b> 过去12个月 ' + fmtPct(c.momentum, true)
+      + (c.bucket ? '（落在「' + esc(c.bucket) + '」档）' : '');
+  });
+  return '截至 ' + esc(asof || '—') + '：' + parts.join(' · ');
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { esc: esc, positionLabel: positionLabel, fmtPct: fmtPct,
                      fmtNum: fmtNum, pctColor: pctColor, RULE_CN: RULE_CN,
@@ -308,6 +345,8 @@ if (typeof module !== 'undefined' && module.exports) {
                      regimeOf: regimeOf, regimeBands: regimeBands,
                      boxStats: boxStats, boxByRegime: boxByRegime,
                      valuationHtml: valuationHtml,
+                     momentumChartData: momentumChartData,
+                     momentumNowHtml: momentumNowHtml,
                      REGIME_BAND_COLOR: REGIME_BAND_COLOR };
   return;
 }
@@ -397,15 +436,22 @@ function drawTrend() {
 function drawBox() {
   var box = $('mpBox');
   if (!box || !window.echarts) return;
+  // **失败要留痕, 不许整张空白**（2026-09-17 实测坑：接口 422 时
+  // d.success 是 undefined → 静默 return → 画布空白、一个提示都没有）。
+  function _fail(msg) {
+    var c = echarts.getInstanceByDom(box) || echarts.init(box);
+    c.clear();
+    c.setOption({ title: { text: msg, left: 'center', top: 'middle',
+                           textStyle: { color: '#888', fontSize: 13 } } });
+  }
   fetch('/api/market_position/history?limit=0').then(function (r) { return r.json(); })
     .then(function (d) {
-      if (!d.success) return;
+      if (!d || !d.success) { _fail('读取历史数据失败（接口没返回成功）；点上面的「立即采集」再试一次'); return; }
       var items = d.items || [];
       var groups = boxByRegime(items, 'shanghai', 'regime');
       var chart = echarts.getInstanceByDom(box) || echarts.init(box);
       if (!groups.length) {
-        chart.clear();
-        chart.setOption({ title: { text: '数据不足，画不了', textStyle: { color: '#888', fontSize: 13 } } });
+        _fail('数据不足，画不了（记录里没有牛/震荡/熊的分组）');
         return;
       }
       chart.setOption({
@@ -420,7 +466,7 @@ function drawBox() {
                    data: groups.map(function (g) { return g.box; }),
                    itemStyle: { color: '#4da3ff', borderColor: '#4da3ff' } }]
       });
-    }).catch(function () { /* 图表失败不影响表格 */ });
+    }).catch(function (e) { _fail('读取历史数据失败（网络或接口错误）；点上面的「立即采集」再试一次'); });
 }
 
 function loadMirror() {
@@ -456,13 +502,83 @@ function loadShadow() {
     }).catch(function () { });
 }
 
+// markdown 渲染 (2026-09-17 修复: 原 textContent 直贴原文, 表格/标题全是
+// 管道符和井号"乱乱的"。姿势与体检报告/大脑回答同款: marked 渲染 +
+// DOMPurify 消毒 + h1 降级; marked 缺载退回等宽纯文本)。容器切 lab-md
+// 富文本排版类, 退回时恢复 lab-pre。
+function _renderMd(box, md) {
+  if (window.marked && window.DOMPurify) {
+    box.className = 'lab-md';
+    box.innerHTML = DOMPurify.sanitize(window.veraDemoteH1
+      ? window.veraDemoteH1(marked.parse(md)) : marked.parse(md));
+  } else {
+    box.className = 'lab-pre';
+    box.textContent = md;
+  }
+}
+
+// 分桶图: 三指数各一根柱(之后一年平均涨跌) + 各一条胜率折线(右轴)。
+// 柱子顶上的数字 = 该档的月份样本数 (只在第一组柱上标, 避免挤)。
+var MOMENTUM_COLORS = ['#e6a23c', '#4da3ff', '#3dbe78'];
+
+function drawMomentum(cd) {
+  var box = $('mpMomChart');
+  if (!box || !window.echarts || !cd) return;
+  var series = [];
+  cd.indices.forEach(function (idx, k) {
+    series.push({
+      name: idx.name + ' 均值', type: 'bar', data: idx.means,
+      color: MOMENTUM_COLORS[k % MOMENTUM_COLORS.length],
+      label: k === 0
+        ? { show: true, position: 'top', fontSize: 10, color: '#888',
+            formatter: function (p) { return 'n=' + cd.indices[0].ns[p.dataIndex]; } }
+        : undefined
+    });
+    series.push({
+      name: idx.name + ' 胜率', type: 'line', yAxisIndex: 1, data: idx.wins,
+      color: MOMENTUM_COLORS[k % MOMENTUM_COLORS.length],
+      lineStyle: { type: 'dashed' }, symbolSize: 5
+    });
+  });
+  var chart = echarts.getInstanceByDom(box) || echarts.init(box);
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { textStyle: { color: '#aaa' }, top: 0 },
+    grid: { left: 48, right: 52, top: 40, bottom: 28 },
+    xAxis: { type: 'category', data: cd.labels, axisLabel: { color: '#888' } },
+    yAxis: [
+      { type: 'value', name: '之后一年均值%', axisLabel: { color: '#888' } },
+      { type: 'value', name: '胜率%', max: 100, min: 0, axisLabel: { color: '#888' } }
+    ],
+    series: series
+  }, true);
+  chart.resize();
+}
+
+function loadMomentum() {
+  var now = $('mpMomNow'), warn = $('mpMomWarn');
+  fetch('/api/market_position/momentum_buckets').then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success || d.ok === false) {
+        if (now) now.textContent = d.reason || d.error || '加载失败';
+        return;
+      }
+      var cd = momentumChartData(d);
+      if (!cd) { if (now) now.textContent = '三个指数都暂不可用'; return; }
+      if (now) now.innerHTML = momentumNowHtml(cd);
+      if (warn) warn.textContent = cd.warning;
+      drawMomentum(cd);
+    }).catch(function () { });
+}
+
 function showReport() {
   var box = $('mpReport');
   if (!box) return;
   if (box.style.display === 'block') { box.style.display = 'none'; return; }
   fetch('/api/market_position/report').then(function (r) { return r.json(); })
     .then(function (d) {
-      box.textContent = d.success ? d.markdown : ('生成失败: ' + (d.error || d.detail || ''));
+      if (d.success) { _renderMd(box, d.markdown); }
+      else { box.textContent = '生成失败: ' + (d.error || d.detail || ''); }
       box.style.display = 'block';
     }).catch(function (e) { box.textContent = '生成失败: ' + e; box.style.display = 'block'; });
 }
@@ -475,8 +591,8 @@ function showReview() {
   box.style.display = 'block';
   fetch('/api/market_position/review').then(function (r) { return r.json(); })
     .then(function (d) {
-      box.textContent = d.success ? d.markdown
-        : ('生成失败: ' + (d.error || d.detail || ''));
+      if (d.success) { _renderMd(box, d.markdown); }
+      else { box.textContent = '生成失败: ' + (d.error || d.detail || ''); }
     }).catch(function (e) { box.textContent = '生成失败: ' + e; });
 }
 
@@ -494,7 +610,7 @@ function doCollect(backfill) {
       } else {
         setHint('mpHint', '采集完成: 数据日期 ' + d.asof + '，本次 ' + d.records
                 + ' 条，录像共 ' + d.lines + ' 条', 'var(--down)');
-        refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow();
+        refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow(); loadMomentum();
       }
     }).catch(function (e) { setHint('mpHint', '采集失败: ' + e, 'var(--up)'); })
     .then(function () {
@@ -503,7 +619,7 @@ function doCollect(backfill) {
 }
 
 function enter() {
-  refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow();
+  refresh(); drawTrend(); drawBox(); loadMirror(); loadShadow(); loadMomentum();
   var c = $('mpCollectBtn'), b = $('mpBackfillBtn'), r = $('mpRefreshBtn'),
       rep = $('mpReportBtn'), rev = $('mpReviewBtn');
   if (c && !c.dataset.bound) { c.dataset.bound = '1'; c.addEventListener('click', function () { doCollect(false); }); }

@@ -42,6 +42,9 @@ from core.market_position import (PCT_WINDOW_BARS, POSITION_COLUMNS,
                                   forward_return, index_position_series,
                                   last_valid_date, limit_counts_series,
                                   similar_days)
+# 私有接缝 (有意为之): 纯数学层公开函数已顶到铁律 8 上限, 分桶统计以私有名
+# 引入, 本模块是它唯一生产消费者 (其余只许是测试)。
+from core.market_position import _momentum_bucket_stats
 
 #: `POSITION_COLUMNS` 里**是文本**的列（牛熊标签）。
 #: 其余都是数值列、走 `_f()` 转 float —— 两类必须分开处理，否则文本列会被
@@ -57,8 +60,9 @@ except Exception:  # pragma: no cover
     _logger = logging.getLogger(__name__)
 
 __all__ = ["collect", "latest", "history", "mirror", "shadow_replay",
-           "thermometer_md", "push_thermometer",
-           "INDEX_SPECS", "SHADOW_RULES", "DAILY_PATH", "MIRROR_WARNING"]
+           "momentum_buckets", "thermometer_md", "push_thermometer",
+           "INDEX_SPECS", "SHADOW_RULES", "DAILY_PATH", "MIRROR_WARNING",
+           "MOMENTUM_BUCKET_WARNING"]
 
 _ROOT = Path(__file__).resolve().parent.parent
 #: 日线缓存目录 (与 core.kline_cache 的 <cache_dir>/<period>/<code>.parquet 约定一致)
@@ -138,6 +142,15 @@ YEAR_DOMINANCE_WARNING = (
 #: 照镜子的结论依据 = 「距离最近的一档」(前 5%), 不再拿 top-5 的中位数当结论 (§14.2)。
 #: 原因: 5 个样本的中位数不是统计量, 报它等于虚报精度。
 MIRROR_BAND_QUANTILE = 0.05
+#: 「前期12个月涨跌 → 未来12个月收益」分桶图的诚实边界 (2026-09-17,
+#: 源自对外部 926 号回测的独立复核)。**页面必须原样展示** (与 MIRROR_WARNING
+#: 同纪律)。大白话硬条款 (AGENTS.md 沟通风格第 7 条): 不许出现统计黑话。
+MOMENTUM_BUCKET_WARNING = (
+    "这张图说的是「历史上前期涨/跌成这样的月份，之后一年实际怎么走」——"
+    "是**历史经验的分布，不是预测**。月份样本看着上百，但相邻月份的「未来一年」"
+    "窗口互相重叠 11 个月，真正独立的信息只有约十几份（一轮牛熊摊不到几份）。"
+    "另外用本机数据复核过：**两头的桶方向稳**（跌透了会弹、涨疯了会落），"
+    "**中间几个桶的排名换个指数口径就会变** —— 别拿中间档的先后当下注依据。")
 #: 分位带内样本数上限 (防"最近的一档"大到几百天)
 MIRROR_BAND_MAX = 300
 #: 单个年份占分位带比例 > 该值 → 必须点名"本结论由该年主导" (§14.3)
@@ -1232,6 +1245,36 @@ def mirror(top_n: int = 5) -> dict:
             "eligible": res["eligible"], "exclude_recent": res["exclude_recent"],
             "min_gap": res["min_gap"], "band_quantile": res["quantile"],
             "warning": " ".join(warnings)}
+
+
+def momentum_buckets() -> dict:
+    """前期12个月涨跌幅 → 未来12个月收益 的分桶统计 (三指数并排, 各算各的)。
+
+    2026-09-17 新增: 源自对外部 926 号回测 (129 个月分桶表) 的独立复核 ——
+    图的形式值得借鉴, 但数字必须用本机数据重算 (复核发现原报告「跌0~10%
+    是最差档」的结论在本机三个指数口径下不成立, 只有两头桶的方向稳定)。
+
+    只读本地指数日线缓存, **不联网**。逐指数独立返回 (指数历史长度不同:
+    沪深300 从 2005 年起、创业板指从 2010 年起), 不合并成一个"全市场"
+    口径 —— 复核实测中间桶排名对指数口径敏感, 合并会假装存在一个唯一答案。
+    诚实边界写在 MOMENTUM_BUCKET_WARNING, 调用方必须原样展示。
+    """
+    out = {"ok": True, "indices": [], "warning": MOMENTUM_BUCKET_WARNING}
+    for key, name, code in INDEX_SPECS:
+        s = _index_series(code)
+        if s is None:
+            out["indices"].append(
+                {"key": key, "name": name, "code": code, "ok": False,
+                 "reason": "本地没有该指数的日线缓存"})
+            continue
+        st = _momentum_bucket_stats(s)
+        st["key"], st["name"], st["code"] = key, name, code
+        out["indices"].append(st)
+    if not any(i.get("ok") for i in out["indices"]):
+        return {"ok": False,
+                "reason": "三个指数都读不到本地日线缓存 (先在数据准备页补指数日线)",
+                "warning": MOMENTUM_BUCKET_WARNING}
+    return out
 
 
 def shadow_replay() -> dict:

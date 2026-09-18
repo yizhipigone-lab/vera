@@ -194,5 +194,42 @@ const ts2 = mp.trendSeries([{ date: 'x' }]);
 eq(ts2.width[0], null, '缺字段补 null（不画 0 线）');
 eq(mp.trendSeries(null).dates.length, 0, 'null 输入不崩');
 
+console.log('\nmomentumChartData / momentumNowHtml 分桶图:');
+const momResp = {
+  ok: true, warning: '历史经验的分布，不是预测',
+  indices: [
+    { key: 'shanghai', name: '上证指数', code: '000001.SH', ok: true,
+      n_samples: 129, n_eff: 10.8, span: { start: '2015-01-31', end: '2025-09-30' },
+      buckets: [
+        { label: '跌超20%', lo: null, hi: -20, n: 7, mean_pct: 12.0, median_pct: 9.0, win_pct: 100.0 },
+        { label: '跌10~20%', lo: -20, hi: -10, n: 18, mean_pct: 8.2, median_pct: 6.0, win_pct: 88.9 },
+        { label: '跌0~10%', lo: -10, hi: 0, n: 32, mean_pct: 3.9, median_pct: 2.0, win_pct: 53.1 },
+        { label: '涨0~15%', lo: 0, hi: 15, n: 44, mean_pct: 0.3, median_pct: 1.0, win_pct: 47.7 },
+        { label: '涨15~40%', lo: 15, hi: 40, n: 20, mean_pct: 2.6, median_pct: 3.0, win_pct: 55.0 },
+        { label: '涨超40%', lo: 40, hi: null, n: 8, mean_pct: -22.2, median_pct: -20.0, win_pct: 0.0 }
+      ],
+      current: { asof: '2026-09-16', momentum_pct: 0.2, bucket: '涨0~15%' } },
+    { key: 'hs300', name: '沪深300', code: '000300.SH', ok: false,
+      reason: '本地没有该指数的日线缓存' }
+  ]
+};
+const cd = mp.momentumChartData(momResp);
+eq(cd.labels.length, 6, '6 个桶标签');
+eq(cd.labels[0], '跌超20%', '首桶标签');
+eq(cd.indices.length, 1, '不可用指数被滤掉');
+eq(cd.indices[0].means[0], 12.0, '均值进序列');
+eq(cd.indices[0].wins[5], 0.0, '胜率进序列');
+eq(cd.indices[0].ns[2], 32, '样本数进序列');
+eq(cd.currents.length, 1, '当前位置只取可用指数');
+eq(cd.warning, '历史经验的分布，不是预测', '警告文案透传');
+eq(mp.momentumChartData(null), null, 'null 输入 → null');
+eq(mp.momentumChartData({ indices: [] }), null, '空 indices → null');
+eq(mp.momentumChartData({ indices: [{ ok: false }] }), null, '全不可用 → null');
+const nh = mp.momentumNowHtml(cd);
+assert(nh.includes('截至 2026-09-16'), '带数据日期');
+assert(nh.includes('上证指数') && nh.includes('+0.2%'), '带指数名与动量');
+assert(nh.includes('「涨0~15%」档'), '带落档标签');
+eq(mp.momentumNowHtml(null), '', 'null 输入 → 空串');
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

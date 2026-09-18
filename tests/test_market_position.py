@@ -369,6 +369,102 @@ class TestForwardReturn:
         assert mp.forward_return(s, s.index[0], 0) is None
 
 
+# ── _momentum_bucket_stats (前期12月涨跌 → 未来12月收益 分桶) ──────────
+
+
+def _monthly_series(month_vals, start="2010-01-31"):
+    """月末值序列 → 日频 Series: 每月内所有工作日都取该月值,
+    于是 resample("ME").last() 恰好等于给定的月末值。"""
+    idx = pd.date_range(start, periods=len(month_vals), freq="ME")
+    parts = []
+    for t, v in zip(idx, month_vals):
+        days = pd.date_range(t.replace(day=1), t, freq="B")
+        parts.append(pd.Series([float(v)] * len(days), index=days))
+    return pd.concat(parts)
+
+
+#: 40 个月的手工序列 (见 TestMomentumBucketStats 的逐桶期望):
+#: 月 0-11 = 100; 月 12=80 / 13=90 / 14=100 / 15=115 / 16=140 / 17=150
+#: (前 12 月涨跌依次 = -20% / -10% / 0% / +15% / +40% / +50%, 专打桶边界);
+#: 月 18-39 = 100 (让未来 12 月收益可以手算: 样本月 i 的未来值 = v[i+12] = 100)。
+#: 样本月 i ∈ [12, 27] 共 16 个, 逐桶归属 (prior = v[i]/v[i-12]-1):
+#:   跌超20%: i=12 (-20%) → fwd +25%
+#:   跌10~20%: i=13 (-10%) → +11.1%; i=27 (100/115=-13.0%) → 0%
+#:   跌0~10%: i=14 (0%) + i=18~23, 26 (0%) → 全 0%
+#:   涨0~15%: i=15 (+15%) → -13.0%; i=25 (100/90=+11.1%) → 0%
+#:   涨15~40%: i=16 (+40%) → -28.6%; i=24 (100/80=+25%) → 0%
+#:   涨超40%: i=17 (+50%) → -33.3%
+_MOM_MONTHS = ([100.0] * 12 + [80.0, 90.0, 100.0, 115.0, 140.0, 150.0]
+               + [100.0] * 22)
+
+
+class TestMomentumBucketStats:
+    def test_bucket_edges_and_handcomputed_means(self):
+        st = mp._momentum_bucket_stats(_monthly_series(_MOM_MONTHS))
+        assert st["ok"] is True
+        b = {x["label"]: x for x in st["buckets"]}
+        # 桶边界 = (左开, 右闭]: 恰好 -20% → 跌超20%; 恰好 -10% → 跌10~20%;
+        # 恰好 0% → 跌0~10%; 恰好 +15% → 涨0~15%; 恰好 +40% → 涨15~40%
+        assert b["跌超20%"]["n"] == 1
+        assert b["跌超20%"]["mean_pct"] == pytest.approx(25.0)   # 100/80-1
+        assert b["跌10~20%"]["n"] == 2
+        assert b["跌10~20%"]["mean_pct"] == pytest.approx(5.6, abs=0.05)
+        assert b["跌10~20%"]["win_pct"] == pytest.approx(50.0)
+        assert b["跌0~10%"]["n"] == 8
+        assert b["跌0~10%"]["mean_pct"] == pytest.approx(0.0)
+        assert b["涨0~15%"]["n"] == 2
+        assert b["涨0~15%"]["mean_pct"] == pytest.approx(-6.5, abs=0.05)
+        assert b["涨15~40%"]["n"] == 2
+        assert b["涨15~40%"]["mean_pct"] == pytest.approx(-14.3, abs=0.05)
+        assert b["涨超40%"]["n"] == 1
+        assert b["涨超40%"]["mean_pct"] == pytest.approx(-33.3, abs=0.05)
+        assert sum(x["n"] for x in st["buckets"]) == st["n_samples"] == 16
+
+    def test_no_lookahead_last_sample_month_locked(self):
+        """无未来函数: 最后一个样本月 = 倒数第 horizon 个月 (月27 = 2012-04),
+        尾部 12 个月只能当别人的「未来」, 自己永不进样本。"""
+        st = mp._momentum_bucket_stats(_monthly_series(_MOM_MONTHS))
+        assert st["span"]["end"] == "2012-04-30"
+
+    def test_appending_future_keeps_old_samples_identical(self):
+        """追加 12 个月 (月40~51=100): 新样本月 i=28..39 的 prior 由旧月决定
+        (i=28,29 → 100/140=-28.6%、100/150=-33.3% 落「跌超20%」; i=30~39 → 0%
+        落「跌0~10%」), fwd 全为 0%。关键断言: **不进新样本的四个桶
+        (跌10~20%/涨0~15%/涨15~40%/涨超40%) 必须逐字节不变** —— 历史不被未来改写。"""
+        a = mp._momentum_bucket_stats(_monthly_series(_MOM_MONTHS))
+        b52 = mp._momentum_bucket_stats(
+            _monthly_series(_MOM_MONTHS + [100.0] * 12))
+        am = {x["label"]: x for x in a["buckets"]}
+        bm = {x["label"]: x for x in b52["buckets"]}
+        for lb in ("跌10~20%", "涨0~15%", "涨15~40%", "涨超40%"):
+            assert bm[lb] == am[lb], f"{lb} 桶被未来数据改写"
+        assert bm["跌超20%"]["n"] == am["跌超20%"]["n"] + 2
+        assert bm["跌0~10%"]["n"] == am["跌0~10%"]["n"] + 10
+
+    def test_current_position_fields(self):
+        st = mp._momentum_bucket_stats(_monthly_series(_MOM_MONTHS))
+        cur = st["current"]
+        assert cur["momentum_pct"] == pytest.approx(0.0)   # 100/100
+        assert cur["bucket"] == "跌0~10%"                  # 0 落在 (左开-10, 右闭0]
+        assert st["n_eff"] == 1.2   # 跨度15个月 ÷ 12 = 1.25, round(...,1) 银行家舍入得 1.2
+
+    def test_short_daily_series_fails_soft(self):
+        st = mp._momentum_bucket_stats(_series([100.0] * 300))
+        assert st["ok"] is False
+        assert "400" in st["reason"]
+
+    def test_short_monthly_series_fails_soft(self):
+        # 22 个月 (>400 根工作日, 但月末序列 < 12+12+1)
+        st = mp._momentum_bucket_stats(_monthly_series([100.0] * 22))
+        assert st["ok"] is False
+
+    def test_bucket_labels_match_published_edges(self):
+        """桶名/边界与外部 926 号回测同口径 (便于对照), 改动必须过人工。"""
+        labels = [b[0] for b in mp.MOMENTUM_BUCKETS]
+        assert labels == ["跌超20%", "跌10~20%", "跌0~10%",
+                          "涨0~15%", "涨15~40%", "涨超40%"]
+
+
 # ── 铁律 AST 守护 ─────────────────────────────────────────────────────
 
 _POSITION_MODULES = ("core/market_position.py",

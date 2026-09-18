@@ -322,6 +322,36 @@ class TestMirrorCaliber:
         assert "252" in md["reason"] and "回填" in md["reason"]
 
 
+class TestMomentumBuckets:
+    """前期12月涨跌 → 未来12月收益 分桶 (2026-09-17, 926 号回测复核产物)。"""
+
+    def test_three_indices_side_by_side(self, tmp_path):
+        _write_cache(n_days=800)   # ~38 个月, 够 12+12 窗口出样本
+        out = mpr.momentum_buckets()
+        assert out["ok"] is True
+        assert out["warning"] == mpr.MOMENTUM_BUCKET_WARNING
+        assert len(out["indices"]) == 3
+        for idx in out["indices"]:
+            assert idx["ok"] is True
+            assert len(idx["buckets"]) == 6
+            assert idx["n_samples"] > 0
+            assert idx["current"]["bucket"] is not None
+            # 逐月线性上涨 → 前期12月恒正 → 样本全在「涨」侧三个桶
+            assert sum(b["n"] for b in idx["buckets"][:3]) == 0
+
+    def test_empty_cache_fails_soft(self, tmp_path):
+        out = mpr.momentum_buckets()
+        assert out["ok"] is False
+        assert "缓存" in out["reason"]
+        assert out["warning"]          # 警告文案即便失败也带上 (页面展示用)
+
+    def test_warning_is_plain_chinese(self):
+        """大白话硬条款: 警告文案不许出现统计黑话。"""
+        w = mpr.MOMENTUM_BUCKET_WARNING
+        for jargon in ("N_eff", "Spearman", "显著", "p 值", "p值"):
+            assert jargon not in w
+
+
 class TestStatsHelpers:
     """§15.1 E1/E2 + §16.7 MED-4: HAC t 值 / 持有段 / 段收益口径。"""
 

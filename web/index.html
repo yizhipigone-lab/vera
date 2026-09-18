@@ -1526,6 +1526,20 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 
   <div class="lab-card">
+    <h2>站在今天的位置，历史上后来一年怎么走（前期12个月涨跌 → 未来12个月收益）</h2>
+    <div id="mpMomNow" style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)"></div>
+    <div id="mpMomChart" style="width:100%;height:300px"></div>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
+      做法：把历史上每个月末按「过去 12 个月涨了多少」分成 6 档；<b>柱子 = 该档月份之后一年的平均涨跌</b>，
+      <b>虚线 = 该档之后一年上涨的月份占比</b>（胜率，右轴）；柱顶的 n = 该档有多少个月。
+      三个指数各算各的、分开画，不合成一个数——中间几档的排名换个指数口径就会变，合并会假装有唯一答案。<br>
+      <b>怎么读</b>：左边深跌的档柱子高、右边暴涨的档柱子塌，呈「两头翘」= 跌透了会弹、涨疯了会落。
+      这张图和「照镜子」是互补的：照镜子只挑最像的几天，这张图把<b>全部历史月份</b>都分档用上。
+    </div>
+    <div id="mpMomWarn" style="font-size:var(--fs-xs);color:var(--up);margin-top:var(--sp-2);line-height:1.6"></div>
+  </div>
+
+  <div class="lab-card">
     <h2>候选择时规则（只记录不交易）</h2>
     <div id="mpShadowNow" style="font-size:var(--fs-sm);margin-bottom:var(--sp-1)"></div>
     <div id="mpShadowCaliber" style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)"></div>
@@ -1658,7 +1672,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/brain_chat.js?v=20260906c"></script>
 <script src="/web/js/data_cache.js?v=20260906c"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
-<script src="/web/js/market_position.js?v=20260917b"></script>
+<script src="/web/js/market_position.js?v=20260917e"></script>
 <script type="module" src="/web/js/analysis.js?v=20260911a"></script>
 <script type="module" src="/web/js/vera-ui.js?v=20260917b"></script>
 </body>

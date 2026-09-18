@@ -37,7 +37,7 @@ __all__ = [
     "SIMILAR_FEATURES", "HISTORY_COLUMNS", "POSITION_COLUMNS",
     "index_position", "index_position_series", "breadth_frame",
     "last_valid_date", "limit_counts", "limit_counts_series",
-    "similar_days", "forward_return",
+    "similar_days", "forward_return", "MOMENTUM_BUCKETS",
 ]
 
 #: 十年 ≈ 2430 个交易日 (实测 2016-01~2026-09 共 2602 个交易日 / 10.7 年)
@@ -80,6 +80,17 @@ POSITION_COLUMNS = ("close", "pct_10y", "from_high_pct", "vol_ann_20",
                     "regime_20")
 #: 20% 法则的阈值: 从低点涨 20% 确认牛, 从高点跌 20% 确认熊
 REGIME_20_THRESHOLD = 0.20
+#: 「前期12个月涨跌幅 → 未来12个月收益」的分桶边界 (2026-09-17, 源自对外部
+#: 926 号回测的独立复核): 与原报告同桶边便于对照。语义 = (左开 lo, 右闭 hi],
+#: 首桶 lo=None 表 -inf、尾桶 hi=None 表 +inf, 单位 %。
+#: 复核结论 (用本机三指数 129 个月复算): **两头的桶方向稳** (跌透了会弹、
+#: 涨疯了会落), **中间桶的排名换个指数口径就变** —— 页面必须带这个警告。
+MOMENTUM_BUCKETS = (("跌超20%", None, -20.0),
+                    ("跌10~20%", -20.0, -10.0),
+                    ("跌0~10%", -10.0, 0.0),
+                    ("涨0~15%", 0.0, 15.0),
+                    ("涨15~40%", 15.0, 40.0),
+                    ("涨超40%", 40.0, None))
 
 
 def _regime_20pct(closes, *, threshold: float = REGIME_20_THRESHOLD) -> pd.Series:
@@ -416,3 +427,92 @@ def forward_return(closes, start, horizon: int) -> float | None:
     if base <= 0:
         return None
     return round((float(s.iloc[j]) / base - 1) * 100, 2)
+
+
+def _momentum_bucket_stats(closes, *, lookback: int = 12, horizon: int = 12,
+                           buckets=MOMENTUM_BUCKETS) -> dict:
+    """前期 lookback 个月涨跌幅 → 未来 horizon 个月收益 的分桶统计。
+
+    纯函数 (零 IO): 入参日频收盘序列, 内部取每月最后一个交易日的收盘。
+    月末 t 的样本: prior = t 收盘 / t-lookback 收盘 - 1, fwd = t+horizon 收盘
+    / t 收盘 - 1; 两头凑不满窗口的月份自动不进样本 (**绝无未来函数** ——
+    prior 只看过去, fwd 只看未来, 中间不动)。
+
+    **私有接缝**: core/market_position 的公开函数已顶到铁律 8 上限,
+    本函数唯一消费者是 core/market_position_runner.momentum_buckets
+    (以及测试); 不许再被第三个模块引用。
+
+    n_eff = 样本月跨度 ÷ horizon: 相邻月的「未来一年」窗口互相重叠,
+    直接拿样本月数当独立样本是虚报精度 (2026-09-17 复核 926 号回测实测:
+    129 个月样本的独立信息 ≈ 11 份)。
+    """
+    s = _clean(closes)
+    if len(s) < 400:
+        return {"ok": False,
+                "reason": f"日线只有 {len(s)} 根, 至少需要约两年 (400 根)"}
+    me = s.resample("ME").last().dropna()
+    need = lookback + horizon + 1
+    if len(me) < need:
+        return {"ok": False,
+                "reason": f"月末序列只有 {len(me)} 个月, 至少需要 {need} 个月"}
+    buckets = buckets or MOMENTUM_BUCKETS
+    stats = [{"label": lb, "lo": lo, "hi": hi, "fwd": []}
+             for lb, lo, hi in buckets]
+
+    def _bucket_of(pct: float):
+        for b in stats:
+            if (b["lo"] is None or pct > b["lo"]) and \
+               (b["hi"] is None or pct <= b["hi"]):
+                return b
+        return None
+
+    vals = me.to_numpy(dtype=float)
+    n_samples = 0
+    first_t = last_t = None
+    for i in range(lookback, len(me) - horizon):
+        base_p, base_f = vals[i - lookback], vals[i]
+        if base_p <= 0 or base_f <= 0:
+            continue
+        # 舍入到 1e-6 再分桶: 二元浮点会把"恰好的边界"顶过线 (实测 80/100-1
+        # = -19.999999999999996%, 不圆整的话"跌超20%"桶永远接不到 -20% 整)。
+        prior = round((vals[i] / base_p - 1.0) * 100.0, 6)
+        fwd = (vals[i + horizon] / base_f - 1.0) * 100.0
+        b = _bucket_of(prior)
+        if b is None:            # pragma: no cover - 首末桶已兜住全集
+            continue
+        b["fwd"].append(fwd)
+        n_samples += 1
+        t = me.index[i]
+        if first_t is None:
+            first_t = t
+        last_t = t
+    if n_samples == 0:
+        return {"ok": False, "reason": "没有一个月末凑得齐前后窗口"}
+
+    out_buckets = []
+    for b in stats:
+        arr = b["fwd"]
+        n = len(arr)
+        out_buckets.append({
+            "label": b["label"], "lo": b["lo"], "hi": b["hi"], "n": n,
+            "mean_pct": round(sum(arr) / n, 1) if n else None,
+            "median_pct": round(float(pd.Series(arr).median()), 1) if n else None,
+            "win_pct": round(sum(1 for x in arr if x > 0) / n * 100, 1) if n else None,
+        })
+    span_months = ((last_t.year - first_t.year) * 12
+                   + (last_t.month - first_t.month))
+    # 当前位置: 最新收盘 vs lookback 个月前的月末收盘 (最新月可以未走完,
+    # 用最新一根日线, asof 如实标注)
+    cur_mom = (float(s.iloc[-1]) / float(vals[-1 - lookback]) - 1.0) * 100.0
+    cur_b = _bucket_of(cur_mom)
+    return {
+        "ok": True,
+        "buckets": out_buckets,
+        "n_samples": n_samples,
+        "span": {"start": first_t.date().isoformat(),
+                 "end": last_t.date().isoformat()},
+        "n_eff": round(span_months / float(horizon), 1),
+        "current": {"asof": s.index[-1].date().isoformat(),
+                    "momentum_pct": round(cur_mom, 1),
+                    "bucket": cur_b["label"] if cur_b else None},
+    }

@@ -36,8 +36,15 @@ async def mp_latest():
 
 
 @router.get("/api/market_position/history")
-async def mp_history(limit: int = Query(250, ge=1, le=5000)):
-    """连续录像 (按日期升序), 供页面画趋势图。"""
+async def mp_history(limit: int = Query(250, ge=0, le=5000)):
+    """连续录像 (按日期升序), 供页面画趋势图。
+
+    `limit=0` = **全部**（与 `market_position_runner.history(limit=0)` 同一口径,
+    箱线图按牛/震荡/熊分组要用全量, 不能只有最近 250 天）。
+    **2026-09-17 实测抓到的坑**: 原来这里写 `ge=1`, 而箱线图 `drawBox()` 就传
+    `limit=0` → FastAPI 返回 **422** (`{"detail": ...}`), 前端按 JSON 解析得到
+    `d.success` 为 undefined → 静默返回 → **箱线图整张空白, 一个错误提示都没有**。
+    """
     try:
         from core import market_position_runner as mpr
         return {"success": True, "items": mpr.history(limit=limit)}
@@ -65,6 +72,17 @@ async def mp_shadow():
         return {"success": True, **mpr.shadow_replay()}
     except Exception as e:
         logger.warning("大盘位置影子回放异常: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/market_position/momentum_buckets")
+async def mp_momentum_buckets():
+    """前期12月涨跌幅 → 未来12月收益 分桶 (三指数并排, 只读本地缓存)。"""
+    try:
+        from core import market_position_runner as mpr
+        return {"success": True, **mpr.momentum_buckets()}
+    except Exception as e:
+        logger.warning("大盘位置分桶统计异常: %s", e, exc_info=True)
         return {"success": False, "error": str(e)}
 
 
