@@ -395,9 +395,16 @@ function refresh() {
     }).catch(function (e) { setHint('mpHint', '加载失败: ' + e, 'var(--up)'); });
 }
 
+// 「只说现状」折叠区 (2026-09-17 用户拍板: 体检未通过预测检验的指标降级保留):
+// 折叠时图表容器尺寸为 0, echarts.init 会画出空白 → 折叠就跳过, 展开时才画。
+function _lowEvidenceOpen() {
+  var d = $('mpLowEvidence');
+  return !!(d && d.open);
+}
+
 function drawTrend() {
   var box = $('mpTrend');
-  if (!box || !window.echarts) return;
+  if (!box || !window.echarts || !_lowEvidenceOpen()) return;
   fetch('/api/market_position/history?limit=250').then(function (r) { return r.json(); })
     .then(function (d) {
       if (!d.success) return;
@@ -435,7 +442,7 @@ function drawTrend() {
 // 真有区分度 → 三个箱子明显错开；没区分度 → 三个箱子叠在一起。
 function drawBox() {
   var box = $('mpBox');
-  if (!box || !window.echarts) return;
+  if (!box || !window.echarts || !_lowEvidenceOpen()) return;
   // **失败要留痕, 不许整张空白**（2026-09-17 实测坑：接口 422 时
   // d.success 是 undefined → 静默 return → 画布空白、一个提示都没有）。
   function _fail(msg) {
@@ -627,6 +634,14 @@ function enter() {
   if (r && !r.dataset.bound) { r.dataset.bound = '1'; r.addEventListener('click', function () { enter(); }); }
   if (rep && !rep.dataset.bound) { rep.dataset.bound = '1'; rep.addEventListener('click', showReport); }
   if (rev && !rev.dataset.bound) { rev.dataset.bound = '1'; rev.addEventListener('click', showReview); }
+  // 「只说现状」折叠区: 展开时才画里面的两张图 (折叠时容器尺寸为 0, 画了也是空白)
+  var le = $('mpLowEvidence');
+  if (le && !le.dataset.bound) {
+    le.dataset.bound = '1';
+    le.addEventListener('toggle', function () {
+      if (le.open) { drawTrend(); drawBox(); }
+    });
+  }
 }
 
 window.marketPageEnter = enter;
