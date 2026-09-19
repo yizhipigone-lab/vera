@@ -5,7 +5,40 @@
 
 ---
 
-## 2026-09-19 — 事件跟踪数据源扩充（P0 四源 + P1 调度挂载，计划书先行）
+## 2026-09-19 — 架构审查修订批次 1：QMT 就绪等待 + 日历工具搬家 + raw 日志轮转 + 仓库清尾
+
+**一句话（大白话）**：按当天架构审查报告（`docs/audit/2026-09-19_代码库架构审查报告.md`）
+的计划书（`docs/plan/2026-09-19_架构审查修订计划书.md`）执行批次 1 —— 全是"纯卫生、
+零行为变化"的项：启动脚本学会等 QMT 就绪、放错位置的日历工具搬回工具层、
+752MB 的原始回报日志开始按月归档、git 积压清成零。
+
+- **1.1 QMT 就绪等待**：新增 `tools/qmt_ready_check.py` 探针（与 trade_main 同一份
+  config，只 connect/disconnect，stdout 全 ASCII 防 GBK 主窗口乱码）；`start_vera.bat`
+  启动交易进程前每 20 秒探一次、最多 10 次，仍不就绪则**跳过交易进程**（回测/调度照起，
+  fail-closed）—— 治本 9 月 2 日冷启动 rc=-1 事故（探针已真机实测 READY/exit=0）。
+  .bat 保持 GBK+CRLF（补丁经 Python 脚本写入，逐字节校验零纯 LF）。
+- **1.2 trading_calendar 搬家**：`scheduler/trading_calendar.py` →
+  `utils/trading_calendar.py`（它零 scheduler 依赖却被 core 3 处 + trade 6 处向上
+  import，层级倒挂）；原位留 re-export shim（一版本后删）；10 个生产文件 + 2 个测试
+  文件共 15 处引用全部改指 utils（带计数断言的替换脚本，零残留 grep 验证）。
+- **1.3 raw 审计日志按月轮转**：`trade/raw_log.py` 新增 `rotate_raw_log_monthly` ——
+  非当月行切到 `raw_reports_YYYYMM.jsonl` 归档（追加不覆盖），**先写归档→行数对账→
+  原子重写 live** 的 fail-closed 顺序，解析不出的行一律留 live 不丢；append-only
+  时序文件用"首行即当月"快路径免每次启动全量扫。启动钩子接在 trade_main 构造
+  TradeStore **之前**（Windows 被占用文件无法 os.replace）。性能实测：21MB/20 万行
+  1.23 秒 → 752MB 历史存量切分约 45 秒，**在 trade_main 下次重启时自动完成**
+  （当前 trade_main 运行中，不重启不切）。离线 CLI：`python -m trade.raw_log <path>`。
+- **1.4 仓库卫生**：删 `web/` 两个 .bak 与 0 字节散文件 `data/trade.db`；.gitignore
+  收口 `data/formula_farm/`、`data/daily_review/`、`data/morning_brief/`、`logs/`、
+  `.agent-teams/`（**坑**：gitignore 不支持行内注释，首版五条规则全没生效，已改
+  独立行）；61 项积压改动按主题分 6 个提交全部入库（git status 清零）。
+- **测试**：新增 `tests/trade/test_raw_log_rotate.py` 8 例；全量 pytest（除快照
+  parity）exit=0；前端 15 个 node 套件 14 绿 —— `test_brain_viz.mjs` 1 红经 git
+  worktree 对 HEAD 复跑确认**是历史遗留红**（与今日改动无关，留档待查）。
+- **遗留**：`scheduler/trading_calendar.py` shim 一版本后删；raw 历史切分随
+  trade_main 下次重启自动发生（需 ≥15:05 窗口）。
+
+---
 
 **一句话（大白话）**：事件扫描原来只盯"三家通讯社的电报"（财联社/同花顺/新浪），
 海外事只能靠它们转述；本次加了两个海外直通信道（美联储公告 RSS、华尔街见闻快讯），
