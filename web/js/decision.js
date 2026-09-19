@@ -16,7 +16,7 @@
 import {
   actionBadge, calCellLabel, describeTradeError, dominantTone, evidenceRows,
   fetchJson, parseIso, SOURCE_LABELS, statusLine, TONE_VAR, tradeApiBase,
-} from './decision_util.mjs?v=20260919a';
+} from './decision_util.mjs?v=20260919b';
 // ↑ import 也带版本号 (2026-09-19 补): 否则浏览器缓存旧 mjs, 新版 decision.js
 //   import 到不存在的导出 → 整个模块加载失败 → 页面永远是占位文案。
 //   注意: 改 decision_util.mjs 时必须同步改这里 + index.html 里的 ?v=。
@@ -25,6 +25,10 @@ const WEEK_HEADS = ['一', '二', '三', '四', '五', '六', '日'];
 
 /** 状态: 日历当前看的月份 ('' = 缺省当月, 由后端决定)。 */
 let _calMonth = '';
+// 2026-09-19 UIUX: 请求序号守卫 (仿 analysis.js 第 21-22 行范式) ——
+// 快速切月/Enter 连发时, 慢的旧响应不许覆盖新响应
+let _decSeq = 0;
+let _calSeq = 0;
 
 function esc(s) {
   return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -59,14 +63,17 @@ function loadDecisions() {
   hint.textContent = '';
   const btn = el('decBtn');
   if (btn) { btn.disabled = true; btn.textContent = '查询…'; }
+  const seq = ++_decSeq;
   apiGet('/api/trade/decisions' + (v ? '?date=' + v : ''))
-    .then(renderDecisions)
+    .then(function (data) { if (seq === _decSeq) renderDecisions(data); })
     .catch(function (err) {
+      if (seq !== _decSeq) return;
       hint.textContent = '查询失败: ' + describeTradeError(err);
       if (el('decStatus')) el('decStatus').style.display = 'none';
       if (el('decBody')) el('decBody').innerHTML = '';
     })
     .finally(function () {
+      if (seq !== _decSeq) return;
       if (btn) { btn.disabled = false; btn.textContent = '查询'; }
     });
 }
@@ -114,10 +121,15 @@ function renderDecisions(data) {
   body.innerHTML = html;
 
   // 点一行展开"凭什么"的数字
+  // 2026-09-19 UIUX: role=button 必须配键盘激活 (Enter/Space) —— 同一个 bug 已在
+  // trade.js/analysis.js 修过两次, 这是第三次, 本次连根修
   body.querySelectorAll('.dec-row').forEach(function (node) {
     node.addEventListener('click', function () {
       const ev = document.getElementById('dec-ev-' + node.dataset.k);
       if (ev) ev.hidden = !ev.hidden;
+    });
+    node.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); node.click(); }
     });
   });
 }
@@ -167,12 +179,15 @@ function loadCalendar() {
   const box = el('decCal');
   const hint = el('decCalHint');
   if (!box) return;
+  const seq = ++_calSeq;
   apiGet('/api/trade/decisions/calendar' + (_calMonth ? '?month=' + _calMonth.replace('-', '') : ''))
     .then(function (data) {
+      if (seq !== _calSeq) return;
       if (hint) hint.textContent = '';
       renderCalendar(data);
     })
     .catch(function (err) {
+      if (seq !== _calSeq) return;
       if (hint) hint.textContent = '查询失败: ' + describeTradeError(err);
     });
 }
@@ -232,6 +247,9 @@ function renderCalendar(data) {
 
   box.querySelectorAll('.dec-day[data-date]').forEach(function (node) {
     node.addEventListener('click', function () { gotoDay(node.dataset.date); });
+    node.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); gotoDay(node.dataset.date); }
+    });
   });
 }
 

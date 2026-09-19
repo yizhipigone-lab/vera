@@ -1,4 +1,8 @@
 // ====== VERA 大盘位置 TAB (2026-09-17) — 位置 / 宽度 / 照镜子 / 择时影子 ======
+// ⚠ 2026-09-19 起本文件**不再被页面引用**(大盘位置页签改由 market_dashboard.js
+//   的四页签仪表盘渲染)。**勿删**: tests/js/test_market_position.js 仍 require
+//   本文件, 且它是体温表跨语言文案反向锁的一半 (tests/test_market_position_runner.py
+//   的 test_band_words_match_frontend 拿 positionLabel 的措辞锁 Python 侧)。
 // 零 import 依赖（data_cache.js 同款 seam 模式）：fetch 由浏览器提供，
 // Node 测试通过 module.exports 拿纯函数。
 // 生命周期钩子由 vera-ui.js switchTab 调用: window.marketPageEnter。

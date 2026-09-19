@@ -15,7 +15,7 @@
 <!-- W4-5: 关键字体 preload (href 与 tokens.css @font-face src 字面一致才命中, FOUT 减小) -->
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/web/fonts/SpaceGrotesk-Variable.woff2">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/web/fonts/JetBrainsMono-Variable.woff2">
-<link rel="stylesheet" href="/web/css/tokens.css?v=20260906c">
+<link rel="stylesheet" href="/web/css/tokens.css?v=20260919b">
 <style>
 /* ====== CSS Variables → 已迁 web/css/tokens.css (W4-1 两页同源, 2026-09-05) ====== */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -40,14 +40,14 @@ a{color:var(--link)} ::-webkit-scrollbar{width:6px;height:6px}
 .sidebar.collapsed{width:0;overflow:hidden;border-right:none}
 .sidebar-toggle{position:sticky;top:50%;z-index:10;width:20px;height:56px;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--accent);border:none;border-radius:0 6px 6px 0;margin-left:-1px;font:inherit;padding:0;transition:background .2s,filter .2s}
 .sidebar-toggle:hover{filter:brightness(1.15)}
-.sidebar-toggle svg{width:14px;height:14px;color:#1a1d24;transition:transform .2s}
+.sidebar-toggle svg{width:14px;height:14px;color:var(--on-accent);transition:transform .2s}
 .collapsed+.sidebar-toggle+.main .sidebar-toggle svg,.sidebar.collapsed~.sidebar-toggle svg{transform:rotate(180deg)}
 .main{flex:1;overflow-y:auto;padding:var(--sp-6) var(--sp-6);display:flex;flex-direction:column;gap:var(--sp-4)}
 
 /* ====== Sidebar ====== */
 .sidebar-header{padding:var(--sp-6) var(--sp-5) var(--sp-5);border-bottom:1px solid var(--border)}
 .logo{display:flex;align-items:center;gap:var(--sp-3)}
-.logo-icon{width:34px;height:34px;background:var(--accent);border-radius:var(--radius-md);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:var(--fs-lg);color:#1a1d24}
+.logo-icon{width:34px;height:34px;background:var(--accent);border-radius:var(--radius-md);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:var(--fs-lg);color:var(--on-accent)}
 .logo-text h1{font-size:var(--fs-xl);font-weight:700;letter-spacing:2px;font-family:var(--mono);color:var(--text)}
 .logo-text span{font-size:var(--fs-xs);color:var(--text2);display:block;margin-top:var(--sp-1);font-family:var(--mono);letter-spacing:.5px}
 /* P3-2: 主题按钮重定位到 logo 右侧 */
@@ -55,7 +55,7 @@ a{color:var(--link)} ::-webkit-scrollbar{width:6px;height:6px}
 .theme-btn:hover{border-color:var(--accent);background:var(--card)}
 .status-bar{display:flex;align-items:center;gap:var(--sp-2);margin-top:var(--sp-3);padding:var(--sp-2) var(--sp-3);background:var(--bg);border-radius:var(--radius);font-size:var(--fs-xs);color:var(--text2)}
 .status-dot{width:7px;height:7px;border-radius:50%;background:var(--text2);flex-shrink:0}
-.status-dot.on{background:var(--down);box-shadow:0 0 5px var(--down)}
+.status-dot.on{background:var(--ok);box-shadow:0 0 5px var(--ok)}
 .status-dot.busy{background:var(--warn);animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
 
@@ -87,7 +87,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .boundary-banner-more summary{display:inline;color:var(--link);cursor:pointer;font-size:var(--fs-xs);user-select:none;list-style:none;white-space:nowrap}
 .boundary-banner-more summary::before{content:'▸ '}
 .boundary-banner-more[open] summary::before{content:'▾ '}
-.boundary-banner-body{position:absolute;right:0;top:calc(100% + 6px);z-index:70;width:min(560px, 90vw);max-height:60vh;overflow:auto;padding:var(--sp-2) var(--sp-3);border:1px solid var(--accent);border-radius:var(--radius-sm);background:var(--bg);box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:var(--fs-xs);color:var(--text2);line-height:1.6}
+.boundary-banner-body{position:absolute;right:0;top:calc(100% + 6px);z-index:70;width:min(560px, 90vw);max-height:60vh;overflow:auto;padding:var(--sp-2) var(--sp-3);border:1px solid var(--accent);border-radius:var(--radius-sm);background:var(--bg);box-shadow:var(--shadow-md);font-size:var(--fs-xs);color:var(--text2);line-height:1.6}
 .boundary-banner-body b{color:var(--text);display:block;margin:var(--sp-1) 0 1px}
 .boundary-banner-body ul{margin:0;padding-left:16px}
 .boundary-banner-body li{margin:1px 0}
@@ -97,11 +97,17 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 
 /* ====== Buttons ====== */
 .btn{display:inline-flex;align-items:center;gap:var(--sp-1);padding:var(--sp-2) var(--sp-3);border-radius:var(--radius-sm);font-size:var(--fs-sm);font-weight:500;cursor:pointer;border:1px solid var(--border);transition:background .15s,border-color .15s,color .15s,box-shadow .15s,opacity .15s,filter .15s,transform .15s;font-family:var(--font)}
-.btn-primary{background:var(--accent);color:#1a1d24;border-color:var(--accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 35%,transparent)}
+.btn-primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 35%,transparent)}
 .btn-primary:hover{filter:brightness(1.08);transform:translateY(-1px);box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 45%,transparent)}
 .btn-secondary{background:var(--card);color:var(--text)}
 .btn-secondary:hover{background:var(--border)}
-.btn-danger{background:var(--up);color:#fff;border-color:var(--up)}
+/* 2026-09-19 UIUX: 危险/错误红与涨红 --up 脱钩 (--danger 系); 补悬停反馈(原来最危险的按钮恰恰没 hover 态) */
+.btn-danger{background:var(--danger);color:var(--on-danger);border-color:var(--danger)}
+.btn-danger:hover{filter:brightness(1.08)}
+/* 卖出=绿(红绿铁律, 用户拍板 2026-09-19): 实底用加深档 --down-strong 保文字对比度 */
+.btn-sell{background:var(--down-strong);color:var(--on-down);border-color:var(--down-strong)}
+.btn-sell:hover{filter:brightness(1.08)}
+.btn-xs{padding:2px var(--sp-3);font-size:var(--fs-xs)}
 .btn-sm{padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs)}
 .btn-block{width:100%;justify-content:center}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
@@ -151,11 +157,11 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .td-up{color:var(--up)} .td-down{color:var(--down)}
 /* 2026-07-26: 十五五行业优先级徽章 (政策匹配 A 层) — 复用 .trade-badge 的 color-mix 模式, 不引 rogue hue */
 .policy-badge{display:inline-block;padding:2px var(--sp-2);border-radius:var(--radius-md);font-size:var(--fs-xs);font-weight:600;white-space:nowrap;font-family:inherit}/* W4-2: 删死引用 var(--base-font,inherit) — 该变量从未定义 */
-.policy-badge.p1{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.policy-badge.p1{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok-text)}
 .policy-badge.p2{background:color-mix(in srgb,var(--link) 16%,transparent);color:var(--link)}
 .policy-badge.p3{background:color-mix(in srgb,var(--text2) 12%,transparent);color:var(--text2)}
-.policy-badge.avoid{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
-.policy-badge.untagged{background:transparent;color:var(--text2);opacity:.55}
+.policy-badge.avoid{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger-text)}
+.policy-badge.untagged{background:transparent;color:var(--text2)}/* 2026-09-19 UIUX: 删 opacity.55 — 淡化用颜色值不用透明度, --text2 修正后已达标 */
 /* 2026-07-28 P1.5: 概念标签 list 渲染 (一票多概念) */
 .concept-list{display:flex;flex-wrap:wrap;gap:2px;max-width:150px}
 .concept-tag{display:inline-block;padding:1px var(--sp-1);border-radius:4px;font-size:var(--fs-xs);background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--text);white-space:nowrap}
@@ -191,7 +197,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 .config-block .cfg-summary{font-size:var(--fs-xs);color:var(--text);line-height:1.6}
 .config-block .cfg-summary b{color:var(--link);font-weight:600}
 .config-block .cfg-summary .saved-badge{display:inline-block;font-size:var(--fs-xs);padding:1px var(--sp-2);border-radius:var(--radius-md);margin-left:var(--sp-1);font-weight:500;transition:opacity .25s,background .2s,color .2s}
-.config-block .cfg-summary .saved-badge.saved{background:color-mix(in srgb,var(--down) 20%,transparent);color:var(--down)}
+.config-block .cfg-summary .saved-badge.saved{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok-text)}
 .config-block .cfg-summary .saved-badge.unsaved{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
 .config-block .cfg-fields{display:none;margin-top:var(--sp-3)}
 .config-block.editing .cfg-fields{display:block}
@@ -203,21 +209,21 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:var(--shadow-glow
 
 /* ====== Log Panel ====== */
 .log-panel{background:var(--bg);border-radius:var(--radius);padding:var(--sp-2) var(--sp-3);font-family:var(--mono);font-size:var(--fs-xs);color:var(--text2);max-height:160px;overflow-y:auto;line-height:1.6}
-.log-info{color:var(--text2)} .log-ok{color:var(--down)} .log-error{color:var(--up)}
+.log-info{color:var(--text2)} .log-ok{color:var(--ok-text)} .log-error{color:var(--danger-text)}
 
 /* P1-4: Toast 通知 */
-.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:var(--sp-2);pointer-events:none}.toast{padding:var(--sp-3) var(--sp-5);border-radius:var(--radius-md);font-size:var(--fs-sm);color:#fff;max-width:400px;pointer-events:auto;
-  animation:toastIn .3s ease,toastOut .3s ease 2.7s forwards;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-.toast-error{background:var(--up)}.toast-ok{background:var(--down)}.toast-info{background:var(--accent);color:#1a1d24}
-/* U1 (审计): 旧版引擎结果提示条 */
-.legacy-warning{padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-3);background:var(--warn);color:#fff;border-radius:var(--radius);font-size:var(--fs-sm);font-weight:500;line-height:1.5}
-[data-theme="dark"] .legacy-warning{background:#7a3600}
+.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:var(--sp-2);pointer-events:none}.toast{padding:var(--sp-3) var(--sp-5);border-radius:var(--radius-md);font-size:var(--fs-sm);color:var(--on-danger);max-width:400px;pointer-events:auto;
+  animation:toastIn .3s ease,toastOut .3s ease 2.7s forwards;box-shadow:var(--shadow-md)}
+.toast-error{background:var(--danger)}.toast-ok{background:var(--ok);color:var(--on-ok)}.toast-info{background:var(--accent);color:var(--on-accent)}
+/* U1 (审计): 旧版引擎结果提示条 — 2026-09-19 UIUX: --on-warn 深字两主题实测均 ≥5:1,
+   删掉暗色特调 #7a3600 (rogue hue) */
+.legacy-warning{padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-3);background:var(--warn);color:var(--on-warn);border-radius:var(--radius);font-size:var(--fs-sm);font-weight:500;line-height:1.5}
 @keyframes toastIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:translateX(0)}}
 @keyframes toastOut{from{opacity:1}to{opacity:0}}
 
 /* P1-5: 表单即时校验 */
-input.invalid{border-color:var(--up)!important}
-.input-error{color:var(--up);font-size:var(--fs-xs);margin-top:2px;display:none}
+input.invalid{border-color:var(--danger)!important}
+.input-error{color:var(--danger-text);font-size:var(--fs-xs);margin-top:2px;display:none}
 input.invalid~.input-error{display:block}
 
 /* B-14: 行业板块 — 可折叠面板 + 搜索高亮 + 已选计数徽章 */
@@ -235,7 +241,7 @@ input.invalid~.input-error{display:block}
 .sector-selected{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-2);max-height:120px;overflow-y:auto}
 .sector-selected:empty{display:none}
 .sector-tag{display:inline-flex;align-items:center;gap:var(--sp-1);background:color-mix(in srgb,var(--accent2) 15%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent2) 40%,transparent);border-radius:10px;padding:var(--sp-1) var(--sp-2);font-size:var(--fs-xs);cursor:pointer;font-weight:500;transition:background .15s,color .15s,border-color .15s}
-.sector-tag:hover{background:color-mix(in srgb,var(--up) 18%,transparent);color:var(--up);border-color:var(--up)}
+.sector-tag:hover{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger-text);border-color:var(--danger)}
 .sector-tag .x{font-weight:700;opacity:.7}
 .sector-toolbar{display:flex;gap:var(--sp-2);margin-bottom:var(--sp-2);align-items:center}
 .sector-toolbar input{flex:1;padding:var(--sp-1) var(--sp-2);font-size:var(--fs-xs)}
@@ -258,11 +264,12 @@ input.invalid~.input-error{display:block}
 .ff-rule-row input[type=checkbox]{width:auto;margin:0;flex:none}
 .ff-rule-row .ff-label{flex:1;line-height:1.4}
 .ff-rule-row .ff-badge{flex:none;font-size:var(--fs-xs);white-space:nowrap}
-.ff-badge-ok{color:var(--ok)}
-.ff-badge-pending{color:var(--pending)}
-.ff-badge-fail{color:var(--fail)}
-.tab-bar{display:flex;gap:var(--sp-1);padding:var(--sp-2) var(--sp-4);background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:60}
-.tab-btn{padding:var(--sp-2) var(--sp-5);border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:var(--fs-md)}
+.ff-badge-ok{color:var(--ok-text)}
+.ff-badge-pending{color:var(--pending-text)}
+.ff-badge-fail{color:var(--fail-text)}
+/* 2026-09-19 UIUX: 页签栏加横向滚动兜底(字体放大/加页签不再被裁), tab-btn 不压缩 */
+.tab-bar{display:flex;gap:var(--sp-1);padding:var(--sp-2) var(--sp-4);background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:60;overflow-x:auto}
+.tab-btn{padding:var(--sp-2) var(--sp-5);border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:var(--fs-md);flex:none;white-space:nowrap}
 .tab-btn:hover{color:var(--text)}
 .tab-btn.active{background:var(--card);color:var(--text);border-color:var(--border);font-weight:600}
 /* 分析 Tab — 日历格子 */
@@ -276,16 +283,18 @@ input.invalid~.input-error{display:block}
 .cal-pnl.cal-up{color:var(--up)} .cal-pnl.cal-down{color:var(--down)}
 .cal-amt{font-size:var(--fs-xs);font-family:var(--mono);color:var(--text2)}
 .cal-trades{font-size:var(--fs-xs);color:var(--text2);margin-top:2px}
-#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData,#pageFarm,#pageAi,#pageMarket{display:none;position:fixed;top:41px;left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:var(--sp-5) var(--sp-6)}
+/* 2026-09-19 UIUX: top 不再写死 41px 魔法数 —— --tabbar-h 由 vera-ui.js 用页签栏
+   实测高度回写 (tokens.css 有 53px 兜底) */
+#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData,#pageFarm,#pageAi,#pageMarket{display:none;position:fixed;top:var(--tabbar-h,53px);left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:var(--sp-5) var(--sp-6)}
 #pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active,#pageFarm.active,#pageAi.active,#pageMarket.active{display:block}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-4) var(--sp-5);margin-bottom:var(--sp-4);box-shadow:var(--shadow-sm)}
 .lab-card h2{margin:0 0 var(--sp-3);font-size:var(--fs-md);color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border-bottom:1px dashed var(--border);font-size:var(--fs-sm)}
 .lab-row:last-child{border-bottom:none}
 .lab-badge{padding:1px var(--sp-2);border-radius:var(--radius-md);font-size:var(--fs-xs);white-space:nowrap}
-.lab-badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
-.lab-badge.fail{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
-.lab-badge.run{background:color-mix(in srgb,var(--info) 16%,transparent);color:var(--info)}
+.lab-badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok-text)}
+.lab-badge.fail{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger-text)}
+.lab-badge.run{background:color-mix(in srgb,var(--info) 16%,transparent);color:var(--info-text)}
 .lab-badge.wait{background:var(--surface);color:var(--text2)}
 .lab-rules{margin:var(--sp-1) 0 var(--sp-1) var(--sp-6);font-size:var(--fs-xs);color:var(--text2)}
 .lab-rules div{padding:2px 0}
@@ -323,11 +332,16 @@ input.invalid~.input-error{display:block}
 /* ===== 交易页 (P1 第三阶段, 2026-07-26) ===== */
 .trade-status-bar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap}
 .trade-badge{padding:var(--sp-1) var(--sp-3);border-radius:10px;font-size:var(--fs-xs);font-weight:600;white-space:nowrap}
-.trade-badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
-.trade-badge.bad{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
+.trade-badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok-text)}
+.trade-badge.bad{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger-text)}
 .trade-badge.wait{background:var(--surface);color:var(--text2)}
-.trade-kill-btn{padding:var(--sp-3) var(--sp-6);border:none;border-radius:var(--radius-md);font-size:var(--fs-lg);font-weight:700;cursor:pointer;background:var(--up);color:#fff;letter-spacing:2px}
-.trade-kill-btn.armed{background:var(--ok)}
+/* 2026-09-19 UIUX: 急停颜色按真实语义两级化 —— trade.js renderStatus 里
+   .armed 类 = "急停未激活、按钮待命"(classList.toggle('armed', !kill_active)),
+   所以: 默认态(急停激活中·点击解除)=危险红 --danger, .armed(待命)=警示黄 --warn。
+   (原实现正好反着: 急停中红/正常绿, 且占用涨跌红绿) */
+.trade-kill-btn{padding:var(--sp-3) var(--sp-6);border:none;border-radius:var(--radius-md);font-size:var(--fs-lg);font-weight:700;cursor:pointer;background:var(--danger);color:var(--on-danger);letter-spacing:2px;transition:filter .15s}
+.trade-kill-btn:hover{filter:brightness(1.08)}
+.trade-kill-btn.armed{background:var(--warn);color:var(--on-warn)}
 .td-table{width:100%;border-collapse:collapse;font-size:var(--fs-sm);font-family:var(--mono)}
 .td-table th{text-align:right;padding:var(--sp-2) var(--sp-3);color:var(--text2);font-weight:500;font-size:var(--fs-xs);text-transform:uppercase;border-bottom:2px solid var(--border)}
 .td-sortable{cursor:pointer;user-select:none;transition:color .15s}
@@ -337,7 +351,10 @@ input.invalid~.input-error{display:block}
 .td-table td{text-align:right;padding:var(--sp-1) var(--sp-3);border-bottom:1px solid var(--border)}
 .td-table td:first-child,.td-table th:first-child{text-align:left}
 .td-table tr:hover td{background:var(--surface)}
-.trade-sell-btn{padding:2px var(--sp-3);border:1px solid var(--up);border-radius:var(--radius-sm);background:transparent;color:var(--up);cursor:pointer;font-size:var(--fs-xs)}
+.trade-sell-btn{padding:2px var(--sp-3);border:1px solid var(--down-strong);border-radius:var(--radius-sm);background:transparent;color:var(--down-strong);cursor:pointer;font-size:var(--fs-xs)}/* 2026-09-19: 卖出=绿(用户拍板), 文字用加深档保浅色对比度 */
+.trade-sell-btn:hover{background:color-mix(in srgb,var(--down-strong) 12%,transparent)}
+/* 2026-09-19 UIUX: 交易页宽表横向滚动兜底 (持仓/委托 10+ 列在 1280px 下不再撑破卡片) */
+.td-scroll{overflow-x:auto}
 .trade-hint{font-size:var(--fs-xs);color:var(--text2);min-height:14px}
 /* ===== 交易页设置面板 (2026-07-26) ===== */
 .tds-sec{border-top:1px dashed var(--border);padding:var(--sp-3) 0 var(--sp-1);margin-top:var(--sp-2)}
@@ -349,7 +366,7 @@ input.invalid~.input-error{display:block}
 .tds-row select{padding:var(--sp-1) var(--sp-2);border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:var(--fs-sm)}
 .tds-lv-row{display:flex;gap:var(--sp-2);align-items:center;margin:var(--sp-1) 0 var(--sp-1) var(--sp-5);font-size:var(--fs-sm);color:var(--text2)}
 .tds-lv-row input{width:80px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:var(--fs-sm);font-family:var(--mono)}
-.tds-del{border:none;background:transparent;color:var(--up);cursor:pointer;font-size:var(--fs-sm)}
+.tds-del{border:none;background:transparent;color:var(--danger-text);cursor:pointer;font-size:var(--fs-sm)}
 .tds-summary{cursor:pointer;font-size:var(--fs-md);color:var(--text2);font-weight:600;user-select:none}
 
 /* ====== 可访问性补强(ui-ux-pro-max 审查 2026-07-24) ====== */
@@ -427,9 +444,81 @@ input:focus-visible,select:focus-visible{outline:none}
 .dec-holiday{background:var(--bg);border-style:dashed}
 .dec-holiday .dec-day-num,.dec-holiday .dec-day-txt{opacity:.55}
 .dec-norun{border-color:var(--warn)}
-.dec-norun .dec-day-txt{color:var(--warn)}
+.dec-norun .dec-day-txt{color:var(--warn-text)}/* 2026-09-19 UIUX: --warn 浅色当文字仅 3.28:1, 文字走深色变体 */
+
+/* ===== 大盘环境仪表盘 (2026-09-18 四页签; 2026-09-19 UIUX 改造: 样式从
+   market_dashboard.js 的 JS 字符串注入迁回本层 —— 走令牌/双主题换血/
+   prefers-reduced-motion 全局降级, 类名不变 JS 零感知) ===== */
+#mdSubtabs{display:flex;gap:var(--sp-1);margin-bottom:var(--sp-3);border-bottom:1px solid var(--border)}
+.md-subtab{padding:var(--sp-2) var(--sp-3);font-size:var(--fs-sm);background:none;border:none;
+  border-bottom:2px solid transparent;cursor:pointer;color:var(--text2)}
+.md-subtab.active{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+.md-pane{animation:mdFade .18s ease}
+@keyframes mdFade{from{opacity:.4}to{opacity:1}}
+.md-statusbar{display:flex;flex-wrap:wrap;gap:var(--sp-6);align-items:flex-start}
+.md-status-label{font-size:var(--fs-xs);color:var(--text2)}
+.md-status-value{font-size:var(--fs-sm);font-weight:600;margin-top:var(--sp-1);font-variant-numeric:tabular-nums}
+.md-status-sub{font-size:var(--fs-xs);color:var(--text2);margin-top:2px}
+.md-countdown{font-size:var(--fs-xl);font-weight:600;font-family:var(--mono);margin-top:2px;font-variant-numeric:tabular-nums}
+.md-status-action{margin-left:auto;padding-top:var(--sp-3)}
+.md-dataasof{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--border)}
+.md-chip{font-size:var(--fs-xs);padding:2px var(--sp-3);border-radius:var(--radius-sm);background:var(--card);
+  border:1px solid var(--border);color:var(--text2)}
+.md-chip.warn{color:var(--warn-text);border-color:color-mix(in srgb,var(--warn) 55%,transparent);
+  background:color-mix(in srgb,var(--warn) 8%,transparent)}
+.md-chip-mini{padding:0 var(--sp-1)}
+.md-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--sp-3);margin-top:var(--sp-3)}
+.md-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-3) var(--sp-4)}
+.md-card-label{font-size:var(--fs-xs);color:var(--text2)}
+.md-card-value{font-size:var(--fs-xl);font-weight:600;margin-top:var(--sp-1);font-variant-numeric:tabular-nums}
+.md-card-value.sm{font-size:var(--fs-lg);line-height:1.4}
+.md-card-unit{font-size:var(--fs-md);color:var(--text2);font-weight:400}
+.md-card-sub{font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)}
+.md-compare{display:flex;gap:var(--sp-6);flex-wrap:wrap;margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--border)}
+.md-drivers{margin-top:var(--sp-3);padding-top:0;border-top:none}
+.md-dim{border:1px solid var(--border);border-radius:var(--radius-md);margin-top:var(--sp-3);overflow:hidden}
+.md-dim-head{display:flex;align-items:baseline;gap:var(--sp-3);padding:var(--sp-3);background:var(--card);flex-wrap:wrap}
+.md-dim-name{font-weight:600;font-size:var(--fs-sm)}
+.md-dim-meta{font-size:var(--fs-xs);color:var(--text2)}
+.md-dim-avg{margin-left:auto;font-size:var(--fs-sm);font-weight:600;font-variant-numeric:tabular-nums}
+.md-ind-row{display:flex;align-items:baseline;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-top:1px solid var(--border);font-size:var(--fs-sm);flex-wrap:wrap}
+.md-ind-head{color:var(--text2);font-size:var(--fs-xs);border-top:none}
+.md-ind-name{flex:1;min-width:200px;color:var(--text)}
+.md-ind-val{color:var(--text2);font-variant-numeric:tabular-nums}
+.md-ind-score{font-weight:600;font-variant-numeric:tabular-nums;min-width:56px;text-align:right}
+.md-ind-delta{font-size:var(--fs-xs);min-width:74px;text-align:right;font-variant-numeric:tabular-nums}
+/* 方向色(合法红绿): 变好=红 变差=绿; 温度档(2026-09-19 语义修正): 热=警示 温=中性 冷=信息 */
+.md-up{color:var(--up)} .md-down{color:var(--down)} .md-flat{color:var(--text2)}
+.md-err{color:var(--danger-text)} .md-ok{color:var(--ok-text)}
+.md-score-hot{color:var(--warn-text)} .md-score-mid{color:var(--text)} .md-score-cold{color:var(--info-text)}
+.md-note{font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-3);line-height:1.7}
+.md-dim-note{padding:0 var(--sp-3) var(--sp-3)}
+.md-warn-box{font-size:var(--fs-xs);color:var(--warn-text);background:color-mix(in srgb,var(--warn) 8%,transparent);
+  border:1px solid color-mix(in srgb,var(--warn) 55%,transparent);border-radius:var(--radius-sm);padding:var(--sp-2) var(--sp-3);margin-top:var(--sp-3);line-height:1.7}
+.md-risk{font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-3);padding-top:var(--sp-3);
+  border-top:1px solid var(--border);line-height:1.8}
+.md-hist-on{font-weight:600;border-color:var(--accent)}
+/* 2026-09-19 多维图表 (计划书 docs/plan/2026-09-19_大盘仪表盘多维图表_计划书.md):
+   图表高度三档例外在此集中登记 (高度令牌化是上一轮延期项), 其余全走令牌 */
+.md-chart-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3);margin-top:var(--sp-3)}
+.md-chart-xs{height:200px;width:100%}
+.md-chart-sm{height:260px;width:100%}
+.md-chart-lg{height:420px;width:100%}
+.md-chart-note{font-size:var(--fs-xs);color:var(--text2);line-height:1.7;margin-bottom:var(--sp-2)}
+/* 证据等级徽章: 有预测证据=信息蓝, 仅描述现状=警示黄 (文字变体保对比度) */
+.md-badge{display:inline-block;font-size:var(--fs-xs);font-weight:600;padding:1px var(--sp-2);
+  border-radius:10px;margin-left:var(--sp-2);vertical-align:2px;white-space:nowrap}
+.md-badge-ev{color:var(--info-text);border:1px solid color-mix(in srgb,var(--info) 45%,transparent);
+  background:color-mix(in srgb,var(--info) 10%,transparent)}
+.md-badge-desc{color:var(--warn-text);border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);
+  background:color-mix(in srgb,var(--warn) 8%,transparent)}
+/* 「只说现状」折叠区 (指标明细页底, 模式出处: 旧 market_position.js 的 mpLowEvidence) */
+.md-desc-only{margin-top:var(--sp-4);border:1px dashed var(--border);border-radius:var(--radius-md)}
+.md-desc-only>summary{cursor:pointer;padding:var(--sp-3) var(--sp-4);font-size:var(--fs-sm);
+  font-weight:600;color:var(--warn-text);user-select:none}
+.md-desc-only>div{padding:0 var(--sp-4) var(--sp-3)}
 </style>
-<link rel="stylesheet" href="/web/css/polish.css?v=20260916a">
+<link rel="stylesheet" href="/web/css/polish.css?v=20260919b">
 <link rel="stylesheet" href="/web/css/brain-md.css?v=20260906c">
 </head>
 <body>
@@ -444,7 +533,7 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn" id="tabBtnResearch">研究</button>
   <button class="tab-btn" id="tabBtnData">数据准备</button>
   <button class="tab-btn" id="tabBtnAi" title="对话大脑三档(快速/标准/深度)的 API Key 与模型配置">AI 设置</button>
-  <button class="tab-btn" id="tabBtnMarket" title="大盘位置: 十年百分位/市场宽度/历史照镜子/择时规则影子(只读参考)">大盘位置</button>
+  <button class="tab-btn" id="tabBtnMarket" title="大盘环境仪表盘: 温度分总览/指标明细/事件跟踪/历史走势(只读参照)">大盘位置</button>
   <!-- 2026-09-16: 手机版直达入口 (手机浏览器访问 http://<本机IP 或 tailnet-IP>:8080/m) -->
   <a class="tab-btn" href="/m" target="_blank" rel="noopener"
      style="margin-left:auto;text-decoration:none"
@@ -519,7 +608,7 @@ input:focus-visible,select:focus-visible{outline:none}
         <div class="form-section-title">选股设置</div>
         <div class="form-row">
           <div class="form-group"><label for="cfgFormula">选股公式</label><input id="cfgFormula" value="UPN"></div>
-          <div class="form-group"><label for="cfgFormulaArg">公式参数</label><input id="cfgFormulaArg" value="3"></div>
+          <div class="form-group"><label for="cfgFormulaArg">公式参数</label><input id="cfgFormulaArg" value="3"><div class="input-error">公式参数不能为空</div></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label for="cfgUniverse">股票池</label><select id="cfgUniverse">
@@ -594,12 +683,12 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="form-group"><label for="cfgSlippage">滑点</label><input id="cfgSlippage" value="0.001" step="0.0001"><div class="input-error">不能为负数</div></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label for="cfgMinBuy">最低买入额</label><input id="cfgMinBuy" value="2000" type="number"></div>
-          <div class="form-group"><label for="cfgMaxBuy">最高买入额</label><input id="cfgMaxBuy" value="20000" type="number"></div>
+          <div class="form-group"><label for="cfgMinBuy">最低买入额</label><input id="cfgMinBuy" value="2000" type="number"><div class="input-error">必须是大于 0 的数字</div></div>
+          <div class="form-group"><label for="cfgMaxBuy">最高买入额</label><input id="cfgMaxBuy" value="20000" type="number"><div class="input-error">必须大于 0，且不能小于最低买入额</div></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label for="cfgLotSize">每手股数</label><input id="cfgLotSize" value="100" type="number"></div>
-          <div class="form-group"><label for="cfgMinLots">最小手数</label><input id="cfgMinLots" value="1" type="number"></div>
+          <div class="form-group"><label for="cfgLotSize">每手股数</label><input id="cfgLotSize" value="100" type="number"><div class="input-error">必须是大于 0 的数字</div></div>
+          <div class="form-group"><label for="cfgMinLots">最小手数</label><input id="cfgMinLots" value="1" type="number"><div class="input-error">必须是大于 0 的数字</div></div>
         </div>
       </div>
 
@@ -630,7 +719,7 @@ input:focus-visible,select:focus-visible{outline:none}
           </div>
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgCostStopEn" checked><label for="cfgCostStopEn">启用成本止损</label></div>
-            <div class="form-group"><label for="cfgCostStopVal">亏损阈值 (%)</label><input id="cfgCostStopVal" value="12" type="number"></div>
+            <div class="form-group"><label for="cfgCostStopVal">亏损阈值 (%)</label><input id="cfgCostStopVal" value="12" type="number"><div class="input-error">必须是大于 0 的数字</div></div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
         </div>
@@ -642,8 +731,8 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="cfg-fields">
             <div class="checkbox-group"><input type="checkbox" id="cfgTrailingEn" checked><label for="cfgTrailingEn">启用移动止盈</label></div>
             <div class="form-row">
-              <div class="form-group"><label for="cfgTrailingAct">激活盈利 (%)</label><input id="cfgTrailingAct" value="3.5" type="number"></div>
-              <div class="form-group"><label for="cfgTrailingDD">回撤触发 (%)</label><input id="cfgTrailingDD" value="1" type="number"></div>
+              <div class="form-group"><label for="cfgTrailingAct">激活盈利 (%)</label><input id="cfgTrailingAct" value="3.5" type="number"><div class="input-error">必须是大于 0 的数字</div></div>
+              <div class="form-group"><label for="cfgTrailingDD">回撤触发 (%)</label><input id="cfgTrailingDD" value="1" type="number"><div class="input-error">必须是大于 0 的数字</div></div>
             </div>
             <div class="form-group"><label for="cfgTrailingConfirm">确认方式</label>
               <select id="cfgTrailingConfirm">
@@ -653,7 +742,7 @@ input:focus-visible,select:focus-visible{outline:none}
                 <option value="low">尾盘最低价确认：当日最低价碰线，按收盘价成交 (阶梯值班日休息)</option>
                 <option value="close">尾盘收盘价确认：收盘价跌破线才卖，按收盘价成交 (阶梯值班日休息)</option>
               </select>
-              <div class="input-hint">确认方式只影响回测；实盘为 tick 级即时监控（现价触线即卖，买一价成交），不受此选项影响。</div>
+              <div class="hint">确认方式只影响回测；实盘为 tick 级即时监控（现价触线即卖，买一价成交），不受此选项影响。</div>
             </div>
           </div>
           <div class="cfg-actions"><button class="btn btn-sm btn-secondary edit-btn">编辑</button> <button class="btn btn-sm btn-primary save-btn">保存</button> <button class="btn btn-sm btn-secondary cancel-btn" style="display:none">取消</button></div>
@@ -737,7 +826,8 @@ input:focus-visible,select:focus-visible{outline:none}
       <!-- 2026-07-10: 前端配置存取 current.yaml（保存/加载/删除，单一覆盖文件） -->
       <button class="btn btn-secondary btn-block btn-sm" id="btnSaveToFile" style="margin-top:var(--sp-2)">保存配置到文件</button>
       <button class="btn btn-secondary btn-block btn-sm" id="btnLoadFile" style="margin-top:var(--sp-2)" disabled>从文件加载配置</button>
-      <button class="btn btn-secondary btn-block btn-sm" id="btnDeleteFile" style="margin-top:var(--sp-2)" disabled>删除已保存配置</button>
+      <!-- 2026-09-19 UIUX: 删除是破坏性操作, 与"保存/加载"视觉区分开 -->
+      <button class="btn btn-danger btn-block btn-sm" id="btnDeleteFile" style="margin-top:var(--sp-2)" disabled>删除已保存配置</button>
       <div class="progress-bar" style="display:none" id="progressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
       <div class="progress-text" id="progressText"></div>
     </div>
@@ -932,7 +1022,7 @@ input:focus-visible,select:focus-visible{outline:none}
 </div>
 
 <!-- 2026-09-16 达标榜回填回测页: 全局悬浮横幅 (方案 A 只回填不代跑, 人工核对后手动跑) -->
-<div id="farmPrefillBanner" style="display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;max-width:880px;background:color-mix(in srgb, #f59e0b 14%, var(--bg));border:1px solid #f59e0b;border-radius:8px;padding:10px 14px;font-size:var(--fs-sm);box-shadow:0 4px 18px rgba(0,0,0,.25)">
+<div id="farmPrefillBanner" style="display:none;position:fixed;top:var(--sp-3);left:50%;transform:translateX(-50%);z-index:9999;max-width:880px;background:color-mix(in srgb, var(--warn) 14%, var(--bg));border:1px solid var(--warn);border-radius:var(--radius-md);padding:var(--sp-3) var(--sp-4);font-size:var(--fs-sm);box-shadow:var(--shadow-md)">
   <span id="farmPrefillText"></span>
   <span style="margin-left:12px;white-space:nowrap">
     <button class="btn" id="farmPrefillRestore" style="font-size:var(--fs-xs)">恢复原配置</button>
@@ -1048,7 +1138,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <div class="chart-box full" id="analysisDailyReportBox" style="display:none;margin-bottom:var(--sp-3)">
       <div class="chart-box-header">
         <span id="analysisDailyReportTitle">盘后日报</span>
-        <button class="btn btn-sm" id="analysisDailyReportClose" title="收起" style="font-size:var(--fs-xs);padding:2px var(--sp-3)">收起</button>
+        <button class="btn btn-xs" id="analysisDailyReportClose" title="收起">收起</button>
       </div>
       <div class="chart-box-body" id="analysisDailyReport" style="padding:var(--sp-3)"></div>
     </div>
@@ -1278,7 +1368,7 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="tds-row">
             <label for="tdsRotRatio">ETF 池占比</label>
             <input type="range" id="tdsRotRatio" min="10" max="90" step="5" style="width:180px">
-            <span id="tdsRotRatioLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
+            <span id="tdsRotRatioLabel" style="color:var(--text);font-family:var(--mono);min-width:150px"></span>
           </div>
           <div class="tds-row"><label>执行时点</label>
             <input type="text" id="tdsRotTime" class="lab-input" style="width:70px;font-family:var(--mono)" placeholder="14:54">
@@ -1296,7 +1386,7 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="tds-row">
             <label for="tdsRotHedge">避险篮子黄金占比</label>
             <input type="range" id="tdsRotHedge" min="0" max="100" step="5" value="100" style="width:180px">
-            <span id="tdsRotHedgeLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
+            <span id="tdsRotHedgeLabel" style="color:var(--text);font-family:var(--mono);min-width:150px"></span>
           </div>
           <div class="tds-row"><label>动量窗口</label>
             <input type="number" id="tdsRotMomWin" step="1" min="2" style="width:70px"> 交易日
@@ -1304,7 +1394,7 @@ input:focus-visible,select:focus-visible{outline:none}
           <div class="tds-row">
             <label for="tdsRotTrail">移动止损</label>
             <input type="range" id="tdsRotTrail" min="5" max="50" step="1" style="width:180px">
-            <span id="tdsRotTrailLabel" style="color:var(--up);font-family:var(--mono);min-width:150px"></span>
+            <span id="tdsRotTrailLabel" style="color:var(--text);font-family:var(--mono);min-width:150px"></span>
           </div>
           <div class="tds-row"><label>信号日</label>
             <select id="tdsRotSignalDay" class="lab-input" multiple size="5"
@@ -1365,8 +1455,9 @@ input:focus-visible,select:focus-visible{outline:none}
       <input class="lab-input" id="tdBuyQty" placeholder="数量 (100整数倍)" aria-label="买入数量, 100 的整数倍" style="width:130px" type="number" step="100" min="100">
       <input class="lab-input" id="tdBuyPrice" placeholder="限价 (留空=最新价)" aria-label="买入限价, 留空为最新价" style="width:140px" type="number" step="0.01">
       <button class="btn btn-primary" id="tdBuyBtn">买入</button>
-      <!-- 2026-07-30: 配套手工卖出 (用户要求) — 走 /api/trade/sell 卖全部可用 -->
-      <button class="btn btn-danger" id="tdSellBtn">卖出</button>
+      <!-- 2026-07-30: 配套手工卖出 (用户要求) — 走 /api/trade/sell 卖全部可用;
+           2026-09-19 红绿铁律拍板: 卖出=绿 (btn-sell), 红只留涨/买方向 -->
+      <button class="btn btn-sell" id="tdSellBtn">卖出</button>
       <button class="btn" id="tdLadderBtn">手动触发当日预埋</button>
     </div>
     <div class="trade-hint" id="tdBuyHint" aria-live="polite"></div>
@@ -1374,12 +1465,12 @@ input:focus-visible,select:focus-visible{outline:none}
 
   <div class="lab-card">
     <h2>持仓</h2>
-    <div id="tdPositions"><div style="color:var(--text2);font-size:var(--fs-sm)">加载中…</div></div>
+    <div id="tdPositions" class="td-scroll"><div style="color:var(--text2);font-size:var(--fs-sm)">加载中…</div></div>
   </div>
 
   <div class="lab-card">
     <h2>当日委托</h2>
-    <div id="tdOrders"><div style="color:var(--text2);font-size:var(--fs-sm)">加载中…</div></div>
+    <div id="tdOrders" class="td-scroll"><div style="color:var(--text2);font-size:var(--fs-sm)">加载中…</div></div>
   </div>
 </div>
 
@@ -1440,13 +1531,13 @@ input:focus-visible,select:focus-visible{outline:none}
 
   <div class="lab-card">
     <h2>对账记录
-      <button class="btn" id="recReconcileBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button></h2>
+      <button class="btn btn-xs" id="recReconcileBtn" style="margin-left:var(--sp-2)">刷新</button></h2>
     <div id="tdReconciles"><div style="color:var(--text2);font-size:var(--fs-sm)">切换到本页时自动加载</div></div>
   </div>
 
   <div class="lab-card">
     <h2>审计日志
-      <button class="btn" id="recAuditBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button></h2>
+      <button class="btn btn-xs" id="recAuditBtn" style="margin-left:var(--sp-2)">刷新</button></h2>
     <div class="lab-pre" id="tdAudits">切换到本页时自动加载</div>
   </div>
 </div>
@@ -1456,7 +1547,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <div id="pageData">
   <div class="lab-card">
     <h2>K线缓存状态
-      <button class="btn" id="dcRefreshBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button>
+      <button class="btn btn-xs" id="dcRefreshBtn" style="margin-left:var(--sp-2)">刷新</button>
       <span class="trade-hint" id="dcRefreshHint"></span></h2>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
       缓存新鲜回测就快 (分钟级)；过期则回测时逐只走网络补数据 (小时级)。
@@ -1501,16 +1592,17 @@ input:focus-visible,select:focus-visible{outline:none}
 
   <div class="lab-card">
     <h2>补拉日志
-      <button class="btn" id="dcLogBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button>
+      <button class="btn btn-xs" id="dcLogBtn" style="margin-left:var(--sp-2)">刷新</button>
       <span class="trade-hint" id="dcLogHint"></span></h2>
     <div class="lab-pre" id="dcLog" style="max-height:320px;overflow-y:auto">暂无日志</div>
   </div>
 </div>
 
-<!-- 2026-09-17: 大盘位置 TAB — 位置/宽度/照镜子/择时影子。
-     数据源 data/market_position/daily.jsonl (调度器每交易日 15:50 落盘,
-     也可点下面按钮手动采集)。口径唯一真相源 core/market_position.py。
-     铁律: 本页只做提示与参考, 绝不联动仓位 (业务铁律 1)。 -->
+<!-- 2026-09-19: 大盘位置 TAB 已改造为「大盘环境仪表盘」四页签(总览/指标明细/事件跟踪/
+     历史走势), 旧视图(三大指数位置/估值/照镜子/分桶/影子规则/今日复盘/完整体温表)按用户拍板全删。
+     打分 core/market_score.py + 事件 core/market_events.py + 编排 core/market_dashboard_runner.py,
+     落库 data/market_position/dashboard.jsonl。铁律: 温度分只读参照, 绝不联动仓位(业务铁律 1)。
+     注: 旧的 market_position 后端 API(/latest|report|review 等)与每天 15:55 飞书复盘推送不受影响。 -->
 <div id="pageMarket">
   <!-- ═══ 大盘环境仪表盘 (2026-09-18 四页签改造) ═══
        打分 core/market_score.py(纯函数,温度分) + 事件 core/market_events.py +
@@ -1543,18 +1635,18 @@ input:focus-visible,select:focus-visible{outline:none}
     <div class="md-dataasof" id="mdDataAsof"></div>
   </div>
 
-  <!-- 子页签栏 -->
-  <div id="mdSubtabs">
-    <button class="md-subtab active" data-pane="overview">大盘总览</button>
-    <button class="md-subtab" data-pane="detail">指标明细</button>
-    <button class="md-subtab" data-pane="events">事件跟踪</button>
-    <button class="md-subtab" data-pane="history">历史走势</button>
+  <!-- 子页签栏 (2026-09-19: 补 tablist/tab/tabpanel 语义, aria-selected 由 JS 同步) -->
+  <div id="mdSubtabs" role="tablist" aria-label="大盘仪表盘子页签">
+    <button class="md-subtab active" data-pane="overview" role="tab" aria-selected="true" aria-controls="mdPaneOverview">大盘总览</button>
+    <button class="md-subtab" data-pane="detail" role="tab" aria-selected="false" aria-controls="mdPaneDetail">指标明细</button>
+    <button class="md-subtab" data-pane="events" role="tab" aria-selected="false" aria-controls="mdPaneEvents">事件跟踪</button>
+    <button class="md-subtab" data-pane="history" role="tab" aria-selected="false" aria-controls="mdPaneHistory">历史走势</button>
   </div>
 
   <!-- TAB1 大盘总览 -->
-  <div class="md-pane" data-pane="overview" id="mdPaneOverview">
+  <div class="md-pane" data-pane="overview" id="mdPaneOverview" role="tabpanel">
     <div class="lab-card">
-      <h2>大盘总览 <span class="trade-hint" id="mdHint"></span></h2>
+      <h2>大盘总览 <span class="trade-hint" id="mdHint" aria-live="polite"></span></h2>
       <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
         这是一个<b>温度计</b>：把"现在市场热不热"打成一个 0~10 的分。
         它<b>只描述现状</b>，<b>不预测明天涨跌</b>，也<b>不联动任何实盘仓位</b>（只读参照）。
@@ -1563,184 +1655,83 @@ input:focus-visible,select:focus-visible{outline:none}
       <div id="mdOverviewCompare"></div>
       <div id="mdOverviewDrivers"></div>
       <div id="mdOverviewCredibility"></div>
+
+      <!-- 2026-09-19 多维图表 (计划书 docs/plan/2026-09-19_大盘仪表盘多维图表_计划书.md):
+           有预测证据的(ERP/十年百分位)画成主角, 其余挂徽章; 全部只读参照不联仓位 -->
+      <div class="md-chart-row">
+        <div class="lab-card" style="margin-bottom:0">
+          <h2>当前温度</h2>
+          <div class="md-chart-note">总分 0~10 的温度计：越热越要小心。<span class="md-badge md-badge-desc">描述现状</span></div>
+          <div id="mdGauge" class="md-chart-sm"></div>
+        </div>
+        <div class="lab-card" style="margin-bottom:0">
+          <h2>五维雷达</h2>
+          <div class="md-chart-note">五个角=五个维度，角越往外撑该项越"热"。外凸最明显的角就是当前主支撑。<span class="md-badge md-badge-desc">描述现状</span></div>
+          <div id="mdRadar" class="md-chart-sm"></div>
+        </div>
+      </div>
+      <div class="lab-card">
+        <h2>股债性价比（ERP）· 22 年长卷</h2>
+        <div class="md-chart-note">线越高 = 股票相对国债越划算（越便宜）。三条虚线 = 十年来的最贵/中位/最便宜。<b>这是全部指标里唯一"又强又稳"通过预测检验的</b>（越高，之后一年倾向越好）。沪深300 口径。<span class="md-badge md-badge-ev">有预测证据</span></div>
+        <div id="mdChartErp" class="md-chart-lg"></div>
+      </div>
+      <div class="lab-card">
+        <h2>三大指数 · 十年百分位 + 牛熊背景带</h2>
+        <div class="md-chart-note">90% = 比过去十年九成的日子都高（<b>反向指标：位置越高，之后一年倾向越差</b>）。底色带 = 沪深300 牛熊口径（绿=牛/灰=震荡/红=熊）。<span class="md-badge md-badge-ev">有预测证据（反向）</span></div>
+        <div id="mdChartPct" class="md-chart-lg"></div>
+      </div>
+      <div class="lab-card">
+        <h2>市场温度带</h2>
+        <div class="md-chart-note">每列一天、三行三个指数；越红位置越高（烫），越蓝越低（冷）。两年的冷热分布一屏扫完。<span class="md-badge md-badge-ev">有预测证据（反向）</span></div>
+        <div id="mdChartHeat" class="md-chart-xs"></div>
+      </div>
     </div>
   </div>
 
-  <!-- TAB2 指标明细: 新打分明细 + 下面原有卡片作"原始数据证据" -->
-  <div class="md-pane" data-pane="detail" id="mdPaneDetail" style="display:none">
+  <!-- TAB2 指标明细 -->
+  <div class="md-pane" data-pane="detail" id="mdPaneDetail" role="tabpanel" style="display:none">
     <div class="lab-card">
       <h2>指标明细（每个分数是怎么来的）</h2>
       <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
         按五大维度分组，每个指标给出：原始数值、单项得分、比昨天/比30天前的变化。
-        得分怎么算的，把鼠标放到指标名上看口径说明。
+        得分高低的含义见每组底部说明（注意估值维度是"分越高越便宜"，和趋势维度方向相反）；鼠标放指标名上可看该指标的数据截止日。
       </div>
       <div id="mdDetail"></div>
-    </div>
-    <div class="lab-card" style="border-left:3px solid var(--border)">
-      <h2 style="font-size:var(--fs-md)">原始数据证据（旧视图）</h2>
-      <div style="font-size:var(--fs-xs);color:var(--text2)">
-        下面是这套打分背后的原始数据分析卡片（三大指数位置、估值、历史照镜子、前期涨跌分桶、
-        候选择时规则影子回放），保留作证据，方便你核对分数来源。
-      </div>
-    </div>
-  <div class="lab-card">
-    <h2>大盘位置
-      <button class="btn" id="mpRefreshBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button>
-      <button class="btn" id="mpCollectBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="近 300 个交易日重算并写入连续录像 (约 30 秒)">立即采集</button>
-      <button class="btn" id="mpBackfillBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="从本地日线缓存回填十年录像, 让「照镜子」有参照系 (约 1 分钟)">全量回填</button>
-      <button class="btn" id="mpReportBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="展开完整「大盘体温表」Markdown (与飞书推送同一份文案)">完整报告</button>
-      <span class="trade-hint" id="mpHint"></span></h2>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
-      把大盘从"一张照片"变成"连续录像"：十年百分位看贵不贵，市场宽度看
-      "多少股票在涨"，照镜子看历史上像今天的时候之后怎么走。
-      <b>只读参考，不联动任何仓位</b>（业务铁律 1）。
-    </div>
-    <div id="mpSummary" style="font-size:var(--fs-sm);line-height:1.7;padding:var(--sp-2) var(--sp-3);background:var(--card);border-radius:6px;border:1px solid var(--border)">加载中…</div>
-  </div>
 
-  <div class="lab-card">
-    <h2>位置（三大指数，各自独立，不合成总分）</h2>
-    <div class="trade-table-wrap" style="max-height:none">
-      <table class="trade-table" id="mpPositionTable">
-        <thead><tr><th>指数</th><th>收盘</th><th>十年百分位</th><th>距十年最高</th><th>年化波动20日</th><th>近一年</th><th>偏离年线</th><th>牛熊</th></tr></thead>
-        <tbody id="mpPositionBody"><tr><td colspan="8" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
-      </table>
+      <!-- 2026-09-19 多维图表: 「只说现状」折叠区 —— 体检未通过预测检验的指标
+           收进来, 区首写明月度体检结论; 折叠时容器 0 宽, 图首开才画 -->
+      <details class="md-desc-only" id="mdDescOnly">
+        <summary>只说现状、不作预测（成交/宽度/涨跌停：体检未能证明它们能预测未来，只看热闹别当依据）</summary>
+        <div>
+          <div class="lab-card">
+            <h2>成交额 + 一年分位</h2>
+            <div class="md-chart-note">柱子 = 全市场每天成交多少钱；线 = 这个量在过去一年里排百分之几。量在冰点+价格在高位 = 虚火旺。<span class="md-badge md-badge-desc">仅描述现状</span></div>
+            <div id="mdChartAmt" class="md-chart-sm"></div>
+          </div>
+          <div class="md-chart-row">
+            <div class="lab-card" style="margin-bottom:0">
+              <h2>市场宽度：站上均线占比</h2>
+              <div class="md-chart-note">多少比例的股票站在 20 日/60 日均线上。指数涨而宽度缩 = 少数股票硬拉。<span class="md-badge md-badge-desc">仅描述现状</span></div>
+              <div id="mdChartBreadth" class="md-chart-sm"></div>
+            </div>
+            <div class="lab-card" style="margin-bottom:0">
+              <h2>新高 − 新低家数</h2>
+              <div class="md-chart-note">创 60 日新高家数减创新低家数。红=扩张，绿=收缩。<span class="md-badge md-badge-desc">仅描述现状</span></div>
+              <div id="mdChartHL" class="md-chart-sm"></div>
+            </div>
+          </div>
+          <div class="lab-card">
+            <h2>涨跌停家数</h2>
+            <div class="md-chart-note">红柱涨停、绿柱跌停（跌停向下画）。情绪温度计，不是方向预测器。<span class="md-badge md-badge-desc">仅描述现状</span></div>
+            <div id="mdChartLimit" class="md-chart-sm"></div>
+          </div>
+        </div>
+      </details>
     </div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
-      十年百分位 = 现在的位置比过去十年百分之多少的交易日高（90% = 偏贵区）。
-      <b>牛熊</b> = 按「年线斜率」判：价格在过去 250 个交易日平均价的<b>上方还是下方</b>，
-      而且这条平均线自己在<b>往上还是往下</b>（与「大盘快照」用的是同一套口径，core/index_regime.py）。
-      <br><b>注意</b>：这张表只回答「贵不贵」，<b>不回答「接下来涨还是跌」</b>；
-      三个指数各自独立看，我们<b>不合成一个总分</b>。
-    </div>
-  </div>
-
-  <div class="lab-card">
-    <h2>估值（贵不贵，跟位置是两回事）</h2>
-    <div id="mpValuation" style="font-size:var(--fs-sm);line-height:1.7">加载中…</div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
-      为什么单列这一节：上面那张位置表全是<b>价格</b>算出来的 ——
-      价格在高位不等于<b>贵</b>（如果公司盈利涨得比股价还快，价格高但估值不高）。
-      指标体检里，这一维是唯一同时通过 3/6/12 个月检验的正向指标。
-    </div>
-  </div>
-
-  <div class="lab-card">
-    <h2>照镜子（历史上跟今天最像的那些日子，之后实际怎么走）</h2>
-    <div id="mpMirrorSummary" style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)"></div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin:var(--sp-2) 0 var(--sp-1) 0">
-      <b>按年份拆开看</b>（看有没有哪一年在唱独角戏——如果命中日大半挤在同一年，
-      那"历史平均"其实只是那一次经验的很多分身）
-    </div>
-    <div class="trade-table-wrap" style="max-height:none">
-      <table class="trade-table">
-        <thead><tr><th>命中日所属年份</th><th>命中几天</th><th>之后20日(沪深300)中位</th><th>上涨占比</th></tr></thead>
-        <tbody id="mpMirrorYears"><tr><td colspan="4" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
-      </table>
-    </div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin:var(--sp-2) 0 var(--sp-1) 0">
-      <b>最像的几天（明细）</b>——只作展示，"像"是按六个指标的距离算出来的
-    </div>
-    <div class="trade-table-wrap" style="max-height:none">
-      <table class="trade-table">
-        <thead><tr><th>相似日</th><th>距离(越小越像)</th><th>之后20日(沪深300)</th><th>之后60日(沪深300)</th><th>之后20日(上证)</th></tr></thead>
-        <tbody id="mpMirrorBody"><tr><td colspan="5" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
-      </table>
-    </div>
-    <div id="mpMirrorWarn" style="font-size:var(--fs-xs);color:var(--up);margin-top:var(--sp-2);line-height:1.6"></div>
-  </div>
-
-  <div class="lab-card">
-    <h2>站在今天的位置，历史上后来一年怎么走（前期12个月涨跌 → 未来12个月收益）</h2>
-    <div id="mpMomNow" style="font-size:var(--fs-sm);margin-bottom:var(--sp-2)"></div>
-    <div id="mpMomChart" style="width:100%;height:300px"></div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
-      做法：把历史上每个月末按「过去 12 个月涨了多少」分成 6 档；<b>柱子 = 该档月份之后一年的平均涨跌</b>，
-      <b>虚线 = 该档之后一年上涨的月份占比</b>（胜率，右轴）；柱顶的 n = 该档有多少个月。
-      三个指数各算各的、分开画，不合成一个数——中间几档的排名换个指数口径就会变，合并会假装有唯一答案。<br>
-      <b>怎么读</b>：左边深跌的档柱子高、右边暴涨的档柱子塌，呈「两头翘」= 跌透了会弹、涨疯了会落。
-      这张图和「照镜子」是互补的：照镜子只挑最像的几天，这张图把<b>全部历史月份</b>都分档用上。
-    </div>
-    <div id="mpMomWarn" style="font-size:var(--fs-xs);color:var(--up);margin-top:var(--sp-2);line-height:1.6"></div>
-  </div>
-
-  <details class="lab-card" id="mpLowEvidence">
-    <summary style="cursor:pointer;font-size:var(--fs-md);color:var(--text2);letter-spacing:.5px;outline:none">
-      这一区只说现状、不作预测（位置趋势 / 箱线图）——点开展开
-    </summary>
-    <div style="font-size:var(--fs-xs);color:var(--up);margin:var(--sp-3) 0;line-height:1.7">
-      这里的指标在「指标体检」里<b>没通过预测检验</b>：它们的高低与之后 1/3/6/12 个月的涨跌<b>看不出相关性</b>。
-      所以只能当<b>体温计</b>用 —— 告诉您「现在市场是什么状态」
-      （比如指数在高位、但只有少数股票在涨的「背离」），<b>回答不了「接下来会怎样」</b>。
-      请别拿这一区当买卖依据；上面各卡（估值 / 照镜子 / 分桶图）才是有历史证据支撑的。
-    </div>
-    <h2>位置趋势（近 250 个交易日）</h2>
-    <div id="mpTrend" style="width:100%;height:280px"></div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
-      蓝实线 = 站上 20 日均线的股票占比（市场宽度，虚线为 50% 中性线）；
-      橙点线 = 上证指数十年百分位。两条线背离时（指数高、宽度低）说明只有少数大票在拉。<br>
-      <b>底色的背景带 = 牛熊状态</b>（按沪深300 的年线斜率口径涂色：绿=牛、灰=震荡、红=熊）——
-      这样一眼能看出"这段位置是在什么大势里走出来的"。
-    </div>
-    <h2 style="margin-top:var(--sp-4)">这张图是"指标到底有没有区分度"的照妖镜（按牛/震荡/熊分组的箱线图）</h2>
-    <div id="mpBox" style="width:100%;height:260px"></div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">
-      做法：把历史上"上证十年百分位"这个指标，按当天的牛熊状态分成三堆，各画一个箱线图
-      （箱体 = 中间一半的日子落在哪，横线 = 中位数，须 = 最高最低）。<br>
-      <b>怎么读</b>：如果三个箱子明显错开，说明这个指标在大势不同阶段确实不一样；
-      如果三个箱子叠在一起，说明它<b>分不出大势</b>。这一张图比一长串数字更容易看出门道。
-    </div>
-  </details>
-
-  <div class="lab-card">
-    <h2>候选择时规则（只记录不交易）</h2>
-    <div id="mpShadowNow" style="font-size:var(--fs-sm);margin-bottom:var(--sp-1)"></div>
-    <div id="mpShadowCaliber" style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)"></div>
-    <div class="trade-table-wrap" style="max-height:none">
-      <table class="trade-table">
-        <thead><tr><th>规则</th><th>建仓次数</th><th>毛年化<br><span style="font-weight:400">(不算费用)</span></th><th>净年化<br><span style="font-weight:400">(扣费用)</span></th><th>净年化95%区间</th><th>净最大回撤</th><th>在场时间占比</th><th>每笔平均<br><span style="font-weight:400">(扣费后)</span></th></tr></thead>
-        <tbody id="mpShadowBody"><tr><td colspan="8" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
-      </table>
-    </div>
-    <div id="mpShadowVerdict" style="font-size:var(--fs-sm);margin-top:var(--sp-2);line-height:1.7"></div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin:var(--sp-3) 0 var(--sp-1) 0">
-      <b>双窗口一致性</b>——把这段历史对半切开，两半各算一遍，只有<b>两半同向</b>才算数
-      （项目《公式因子体检方法论》纪律 2）
-    </div>
-    <div class="trade-table-wrap" style="max-height:none">
-      <table class="trade-table">
-        <thead><tr><th>规则</th><th>前半段净年化</th><th>后半段净年化</th><th>两半一致?</th></tr></thead>
-        <tbody id="mpShadowWindows"><tr><td colspan="4" style="text-align:left;color:var(--text2)">加载中…</td></tr></tbody>
-      </table>
-    </div>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2)">
-      三条候选规则按「<b>收盘后出信号、第二天才生效</b>」回放（空仓的时段按不赚不赔算）。
-      这是研究记录，<b>不是交易建议</b>；换规则要人工拍板。<br>
-      <b>哪几个指标真的有用</b>（每个指标 vs 之后 1/3/6/12 个月涨跌的相关性体检）
-      见下面「完整体温表」里的「指标体检」一节。
-    </div>
-  </div>
-
-  <div class="lab-card">
-    <h2>今日复盘（账户 + 今天做对的 + 需要留意的清单）</h2>
-    <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
-      与每天 15:55 推送到飞书的那条消息**同一份内容**（体温表 + 我的账户 + 留意清单）。
-      全程只读，<b>不联入任何仓位调度</b>。报告落盘在 <code>data/daily_review/</code>。
-    </div>
-    <button class="btn" id="mpReviewBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs)"
-            title="生成当日盘后复盘（只读 trade.db）">生成今日复盘</button>
-    <div class="lab-pre" id="mpReview" style="display:none;max-height:520px;overflow-y:auto;margin-top:var(--sp-2)"></div>
-  </div>
-
-  <div class="lab-card">
-    <h2>完整体温表</h2>
-    <div class="lab-pre" id="mpReport" style="display:none;max-height:520px;overflow-y:auto"></div>
-    <div id="mpReportHint" style="font-size:var(--fs-xs);color:var(--text2)">点上方「完整报告」展开（与飞书推送内容一致）。</div>
-  </div>
   </div>
 
   <!-- TAB3 事件跟踪 -->
-  <div class="md-pane" data-pane="events" id="mdPaneEvents" style="display:none">
+  <div class="md-pane" data-pane="events" id="mdPaneEvents" role="tabpanel" style="display:none">
     <div class="lab-card">
       <h2>事件跟踪（最近有什么大事、影响还剩几天）</h2>
       <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
@@ -1754,7 +1745,7 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 
   <!-- TAB4 历史走势 -->
-  <div class="md-pane" data-pane="history" id="mdPaneHistory" style="display:none">
+  <div class="md-pane" data-pane="history" id="mdPaneHistory" role="tabpanel" style="display:none">
     <div class="lab-card">
       <h2>历史走势（总分曲线）</h2>
       <div id="mdHistoryControls" style="margin-bottom:var(--sp-2)"></div>
@@ -1776,7 +1767,7 @@ input:focus-visible,select:focus-visible{outline:none}
 <div id="pageAi">
   <div class="lab-card">
     <h2>AI 设置
-      <button class="btn" id="aiRefreshBtn" style="padding:2px var(--sp-3);font-size:var(--fs-xs);margin-left:var(--sp-2)">刷新</button>
+      <button class="btn btn-xs" id="aiRefreshBtn" style="margin-left:var(--sp-2)">刷新</button>
       <span class="trade-hint" id="aiHint"></span></h2>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-2)">
       配置 VERA 对话大脑三档的接入。保存即生效(无需重启); Key 留空 = 保留旧值, 只存本机 config/ai.json, 不回传明文。
@@ -1789,13 +1780,13 @@ input:focus-visible,select:focus-visible{outline:none}
         <code>https://api.deepseek.com</code>; 换别家填对应 OpenAI 兼容地址。
       </div>
       <div class="ai-row">
-        <input class="lab-input" id="aiFastBase" placeholder="接入地址 base_url (留空=DeepSeek 默认)">
-        <input class="lab-input" id="aiFastKey" type="password" placeholder="API Key (留空不修改)" style="font-family:var(--mono)">
-        <input class="lab-input" id="aiFastModel" placeholder="模型名 (留空=deepseek-v4-flash)" style="font-family:var(--mono)">
+        <input class="lab-input" id="aiFastBase" placeholder="接入地址 base_url (留空=DeepSeek 默认)" aria-label="快速档接入地址 base_url, 留空为 DeepSeek 默认">
+        <input class="lab-input" id="aiFastKey" type="password" placeholder="API Key (留空不修改)" aria-label="快速档 API Key, 留空不修改" style="font-family:var(--mono)">
+        <input class="lab-input" id="aiFastModel" placeholder="模型名 (留空=deepseek-v4-flash)" aria-label="快速档模型名, 留空为 deepseek-v4-flash" style="font-family:var(--mono)">
       </div>
       <div class="ai-btns">
-        <button class="btn" id="aiTestFast" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs)">测试连接</button>
-        <button class="btn" id="aiClearFast" title="清空本档配置, 回落默认 (需二次确认)" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs);color:var(--up)">清空本档</button>
+        <button class="btn btn-xs" id="aiTestFast">测试连接</button>
+        <button class="btn btn-xs" id="aiClearFast" title="清空本档配置, 回落默认 (需二次确认)" style="color:var(--danger-text)">清空本档</button>
         <span class="trade-hint" id="aiFastState"></span>
       </div>
     </div>
@@ -1807,13 +1798,13 @@ input:focus-visible,select:focus-visible{outline:none}
         <code>/api/anthropic</code>)。配好后直接连这里, 不动 ~/.claude 原文件。
       </div>
       <div class="ai-row">
-        <input class="lab-input" id="aiStdBase" placeholder="接入地址 base_url (Anthropic 兼容)">
-        <input class="lab-input" id="aiStdKey" type="password" placeholder="Auth Token / API Key (留空不修改)" style="font-family:var(--mono)">
-        <input class="lab-input" id="aiStdModel" placeholder="模型名 (留空=跟随 ~/.claude)" style="font-family:var(--mono)">
+        <input class="lab-input" id="aiStdBase" placeholder="接入地址 base_url (Anthropic 兼容)" aria-label="标准档接入地址 base_url, Anthropic 兼容">
+        <input class="lab-input" id="aiStdKey" type="password" placeholder="Auth Token / API Key (留空不修改)" aria-label="标准档 Auth Token 或 API Key, 留空不修改" style="font-family:var(--mono)">
+        <input class="lab-input" id="aiStdModel" placeholder="模型名 (留空=跟随 ~/.claude)" aria-label="标准档模型名, 留空为跟随 ~/.claude" style="font-family:var(--mono)">
       </div>
       <div class="ai-btns">
-        <button class="btn" id="aiTestStd" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs)">测试连接</button>
-        <button class="btn" id="aiClearStd" title="清空本档配置, 回落默认 (需二次确认)" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs);color:var(--up)">清空本档</button>
+        <button class="btn btn-xs" id="aiTestStd">测试连接</button>
+        <button class="btn btn-xs" id="aiClearStd" title="清空本档配置, 回落默认 (需二次确认)" style="color:var(--danger-text)">清空本档</button>
         <span class="trade-hint" id="aiStdState"></span>
       </div>
     </div>
@@ -1825,11 +1816,11 @@ input:focus-visible,select:focus-visible{outline:none}
         <code>deepseek-official</code>); 换别家需对应凭据已在 dsh-runtime 凭据库。
       </div>
       <div class="ai-row">
-        <input class="lab-input" id="aiDeepProvider" placeholder="适配器 provider (留空=deepseek-official)" style="font-family:var(--mono)">
-        <input class="lab-input" id="aiDeepModel" placeholder="模型名 (留空=deepseek-v4-flash)" style="font-family:var(--mono)">
+        <input class="lab-input" id="aiDeepProvider" placeholder="适配器 provider (留空=deepseek-official)" aria-label="深度档适配器 provider, 留空为 deepseek-official" style="font-family:var(--mono)">
+        <input class="lab-input" id="aiDeepModel" placeholder="模型名 (留空=deepseek-v4-flash)" aria-label="深度档模型名, 留空为 deepseek-v4-flash" style="font-family:var(--mono)">
       </div>
       <div class="ai-btns">
-        <button class="btn" id="aiClearDeep" title="清空本档配置, 回落默认 (需二次确认)" style="padding:var(--sp-1) var(--sp-3);font-size:var(--fs-xs);color:var(--up)">清空本档</button>
+        <button class="btn btn-xs" id="aiClearDeep" title="清空本档配置, 回落默认 (需二次确认)" style="color:var(--danger-text)">清空本档</button>
         <span class="trade-hint" id="aiDeepState"></span>
       </div>
     </div>
@@ -1847,20 +1838,21 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/echarts.min.js"></script>
 <script src="/web/js/recover.js"></script>
 <script src="/web/js/stock_link.js?v=20260826a"></script>
-<script src="/web/js/trade.js?v=20260906c"></script>
+<!-- 2026-09-19: trade.js 转 ES module (复用 decision_util 的 describeTradeError);
+     模块按文档顺序延迟执行, 仍先于 decision.js, recordsPageEnter 包装链不断 -->
+<script type="module" src="/web/js/trade.js?v=20260919b"></script>
 <!-- 2026-09-18: 决策台账两张卡 (当日决策 + 决策日历)。必须是 module 且放在 trade.js 之后:
      module 解析完才执行, 那时 trade.js 已定义好 window.recordsPageEnter/recordsPageLeave,
      本模块才能把它们"包"起来 (包装而非被调用 -> 本文件加载失败也不影响原有四张卡)。 -->
-<script type="module" src="/web/js/decision.js?v=20260918a"></script>
+<script type="module" src="/web/js/decision.js?v=20260919b"></script>
 <script src="/web/marked.min.js"></script>
 <script src="/web/purify.min.js"></script>
 <script src="/web/js/brain_viz.js?v=20260906d"></script>
 <script src="/web/js/brain_chat.js?v=20260906c"></script>
-<script src="/web/js/data_cache.js?v=20260906c"></script>
+<script src="/web/js/data_cache.js?v=20260919b"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
-<script src="/web/js/market_position.js?v=20260917f"></script>
-<script src="/web/js/market_dashboard.js?v=20260918a"></script>
-<script type="module" src="/web/js/analysis.js?v=20260911a"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260917b"></script>
+<script type="module" src="/web/js/market_dashboard.js?v=20260919b"></script>
+<script type="module" src="/web/js/analysis.js?v=20260919b"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260919b"></script>
 </body>
 </html>

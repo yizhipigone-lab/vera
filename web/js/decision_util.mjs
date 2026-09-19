@@ -11,10 +11,14 @@
 // 大白话要求 (AGENTS.md 第 7 条): 用户是量化入门者, 卡片上的每句话都要先有
 // 人话再说数字。所以这里所有文案都写成完整的句子, 术语首次出现配解释。
 
-/** 色调 → CSS 变量 (全站红绿铁律: 买=红 --up / 卖=绿 --down / 警示=黄 --warn)。 */
+/** 色调 → CSS 变量 (全站红绿铁律: 买=红 --up / 卖=绿 --down / 警示=黄)。
+ * 2026-09-19 UIUX 改造: warn/info/ok 改指 *-text 文字变体 —— 本 map 的消费方是
+ * 徽章文字/边框/日历格 tint 底; 浅色下 --warn/--info/--ok 原值当文字仅 2.6~3.8:1
+ * 不及格, 文字变体全部 ≥4.5:1; tint 底用深色变体视觉无差。涨跌方向色不动
+ * (test_decision_util.mjs 第 47-49 行锁死买红卖绿)。 */
 export const TONE_VAR = {
   up: 'var(--up)', down: 'var(--down)', muted: 'var(--text2)',
-  warn: 'var(--warn)', info: 'var(--info)', ok: 'var(--ok)',
+  warn: 'var(--warn-text)', info: 'var(--info-text)', ok: 'var(--ok-text)',
 };
 
 /** 可信度来源 → 卡片上的小角标。空/未知给空串 (不显示角标)。 */
@@ -299,21 +303,37 @@ export function fetchJson(fetchImpl, base, path) {
 }
 
 /**
- * 把请求失败翻译成哥能看懂、且**能据此行动**的一句话。
+ * 把请求失败翻译成哥能看懂、且**能据此行动**的一句话（泛化版）。
  *
- * 「连不上」→ 去看交易进程有没有开;「服务端报错」→ 去看日志/数据。两者混成
+ * 「连不上」→ 去看进程有没有开;「服务端报错」→ 去看日志/数据。两者混成
  * 一句"不可达"时, 人会去查错的东西 (2026-09-19 就是这么白查了一轮)。
+ * @param {Error} err
+ * @param {string} serviceDesc - 服务人话名, 例如 '交易服务 (端口 8081)'
+ * @param {string} [fixHint] - 连不上时的处置提示
+ * @returns {string}
+ */
+export function describeFetchError(err, serviceDesc, fixHint) {
+  const msg = String((err && err.message) || err || '');
+  // 2026-09-19: AbortController 超时要单独说 —— 它既不是"连不上"也不是"服务端报错",
+  // 是"对方接了话但半天没回" (进程忙/半死), 三者处置路径不同
+  const isAbort = (err && err.name === 'AbortError') || /aborted|timeout/i.test(msg);
+  if (isAbort) return serviceDesc + ' 超时无响应 —— 进程可能在忙或半死';
+  const isNetwork = (typeof TypeError !== 'undefined' && err instanceof TypeError)
+    || /failed to fetch|networkerror|load failed|err_connection/i.test(msg);
+  if (isNetwork) {
+    return '连不上' + serviceDesc + (fixHint ? ' —— ' + fixHint : '');
+  }
+  return serviceDesc.replace(/\s*\(.*$/, '') + '报错: ' + (msg || '未知错误');
+}
+
+/**
+ * 交易服务 (8081) 的失败翻译 —— describeFetchError 的交易口径薄封装。
+ * 文案与 2026-09-19 原版逐字一致 (tests/web/test_decision_util.mjs 锁死)。
  * @param {Error} err
  * @returns {string}
  */
 export function describeTradeError(err) {
-  const msg = String((err && err.message) || err || '');
-  const isNetwork = (typeof TypeError !== 'undefined' && err instanceof TypeError)
-    || /failed to fetch|networkerror|load failed|err_connection/i.test(msg);
-  if (isNetwork) {
-    return '连不上交易服务 (端口 ' + TRADE_API_PORT + ') —— 交易进程没在跑, '
-      + '双击项目根目录的 start_vera.bat 启动它';
-  }
-  return '交易服务报错: ' + (msg || '未知错误');
+  return describeFetchError(err, '交易服务 (端口 ' + TRADE_API_PORT + ')',
+    '交易进程没在跑, 双击项目根目录的 start_vera.bat 启动它');
 }
 

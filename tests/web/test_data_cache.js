@@ -17,8 +17,15 @@ for (const cell of ['5m', '6098', '20240627', '20260810', '20260813', '过期', 
 }
 // 2026-09-17 修正过期断言: 2026-09-07 的 tokens.css 设计令牌收口把 --red 改成了
 // --up(#d6342f, A股红), 全项目已 0 处 var(--red) —— 旧断言让本文件自 09-07 起一直红,
-// 红测试会掩盖真回归。语义不变: 过期仍是最醒目的红色。
-assert.ok(row.includes('var(--up'), '过期应红色');
+// 红测试会掩盖真回归。
+// 2026-09-19 再修正: UIUX 改造把"过期/错误"从涨红 --up 脱钩到 --danger-text
+// (红绿铁律只管涨跌方向, 健康度用 danger/ok 语义色)。语义不变: 过期仍是醒目的红系。
+assert.ok(row.includes('var(--danger-text'), '过期应危险红');
+// 新鲜 = 成功青绿 (不占跌绿 --down)
+const rowOk = dc.statusRowHtml(
+  { period: '1d', stocks: 5000, first_date: '20200101', last_date: '20260919',
+    expected: '20260919', stale: false, not_intact: 0 }, false);
+assert.ok(rowOk.includes('var(--ok-text'), '新鲜应成功青绿');
 
 // 缺值显示 —（如 manifest 不存在）
 const rowEmpty = dc.statusRowHtml(

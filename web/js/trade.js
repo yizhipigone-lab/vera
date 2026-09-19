@@ -3,13 +3,41 @@
 // 交易 API 由交易进程 (trade_main.py, 默认 8081) 提供 —— 交易系统是
 // 独立单进程, 不寄生在回测服务器 (8080) 里; 页面仍由 8080 serve。
 // 轮询生命周期由 vera-ui.js 的 switchTab 经 window 钩子驱动。
+//
+// 2026-09-19 UIUX 改造 (docs/plan/2026-09-19_UIUX综合改造_计划书.md):
+//   ① 转 ES module, 复用 decision_util 的 describeTradeError (错误口径统一:
+//      "连不上"≠"服务端报错", 不再六处各写一份"不可达");
+//   ② get() 补 r.ok 检查 (POST 2026-08-13 修过, GET 漏了 —— 后端 500 带 JSON body
+//      会被当成功渲染成"该日无成交", 比报错更危险);
+//   ③ 页面切后台停 1s 轮询, 回前台立即补刷 (手机版 9 月 16 日同款);
+//   ④ 失败/废单文案色从涨红 --up 改 --danger-text (红绿只留给涨跌方向)。
+import { describeTradeError } from './decision_util.mjs?v=20260919b';
+
 (function () {
 'use strict';
 
 var BASE = 'http://' + location.hostname + ':8081';
 var pollTimer = null;
 
-function get(u, signal) { return fetch(BASE + u, { signal: signal }).then(function (r) { return r.json(); }); }
+function get(u, signal) { return fetch(BASE + u, { signal: signal }).then(function (r) {
+  // 2026-09-19: GET 与 POST 同口径 —— r.ok 不通过时, JSON body 里的 detail
+  // 才是真话, 不能当成功数据往下渲染
+  return r.json().then(function (d) {
+    if (!r.ok) {
+      var msg = 'HTTP ' + r.status;
+      if (d && d.detail) {
+        msg = (typeof d.detail === 'string') ? d.detail
+          : d.detail.map(function (e) {
+              return (e.loc ? e.loc.join('.') + ': ' : '') + e.msg;
+            }).join('; ');
+      }
+      var err = new Error(msg);
+      err.serverMsg = msg;
+      throw err;
+    }
+    return d;
+  });
+}); }
 function post(u, body, signal) {
   return fetch(BASE + u, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -293,8 +321,8 @@ var ORDER_STATUS_TEXT = {
 function orderStatusHtml(st, msg) {
   var txt = ORDER_STATUS_TEXT[st] || ('未知(' + st + ')');
   var html;
-  if (st === 57) html = '<span style="color:var(--up);font-weight:700">' + txt + '</span>';
-  else if (st === 50 || st === 51 || st === 55) html = '<span style="color:var(--pending)">' + txt + '</span>';
+  if (st === 57) html = '<span style="color:var(--danger-text);font-weight:700">' + txt + '</span>';
+  else if (st === 50 || st === 51 || st === 55) html = '<span style="color:var(--pending-text)">' + txt + '</span>';
   else html = txt;
   // 2026-08-07: 废单/已撤原因 (XtOrder.status_msg, 券商原话) 挂在状态下方
   if (msg) html += '<br><span style="color:var(--text2);font-size:var(--fs-xs)">' + esc(msg) + '</span>';
@@ -348,8 +376,8 @@ function renderReconciles(d) {
   var html = '<table class="td-table"><tr><th>时间</th><th>级别</th><th>代码</th><th>简称</th>'
     + '<th>本地</th><th>QMT</th><th>说明</th></tr>';
   d.reconciles.slice(0, 20).forEach(function (r) {
-    var color = r.level === 'CRITICAL' ? 'color:var(--up);font-weight:700'
-      : r.level === 'WARN' ? 'color:var(--pending)' : 'color:var(--ok)';
+    var color = r.level === 'CRITICAL' ? 'color:var(--danger-text);font-weight:700'
+      : r.level === 'WARN' ? 'color:var(--pending-text)' : 'color:var(--ok-text)';
     var detail = '';
     try { detail = JSON.parse(r.detail_json || '{}').reason || ''; } catch (e) {}
     html += '<tr><td>' + fmtTs(r.ts) + '</td><td style="' + color + '">' + esc(r.level)
@@ -450,8 +478,8 @@ function loadDeals() {
   var q = _dateParam('recDealDate', 'recDealHint');
   if (q === null) return;
   _withBtnLoading(document.getElementById('recDealBtn'), function () {
-    return get('/api/trade/deals' + q).then(renderDeals).catch(function () {
-      document.getElementById('recDealHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+    return get('/api/trade/deals' + q).then(renderDeals).catch(function (err) {
+      document.getElementById('recDealHint').textContent = '查询失败: ' + describeTradeError(err);
     });
   });
 }
@@ -460,25 +488,25 @@ function loadHistoryOrders() {
   var q = _dateParam('recOrderDate', 'recOrderHint');
   if (q === null) return;
   _withBtnLoading(document.getElementById('recOrderBtn'), function () {
-    return get('/api/trade/orders' + q).then(renderHistoryOrders).catch(function () {
-      document.getElementById('recOrderHint').textContent = '查询失败: 交易服务 (8081) 不可达';
+    return get('/api/trade/orders' + q).then(renderHistoryOrders).catch(function (err) {
+      document.getElementById('recOrderHint').textContent = '查询失败: ' + describeTradeError(err);
     });
   });
 }
 
 function loadReconciles() {
   _withBtnLoading(document.getElementById('recReconcileBtn'), function () {
-    return get('/api/trade/reconciles?limit=50').then(renderReconciles).catch(function () {
+    return get('/api/trade/reconciles?limit=50').then(renderReconciles).catch(function (err) {
       document.getElementById('tdReconciles').innerHTML =
-        '<div style="color:var(--text2);font-size:var(--fs-sm)">查询失败: 交易服务 (8081) 不可达</div>';
+        '<div style="color:var(--danger-text);font-size:var(--fs-sm)">查询失败: ' + esc(describeTradeError(err)) + '</div>';
     });
   });
 }
 
 function loadAudits() {
   _withBtnLoading(document.getElementById('recAuditBtn'), function () {
-    return get('/api/trade/audits?limit=100').then(renderAudits).catch(function () {
-      document.getElementById('tdAudits').textContent = '查询失败: 交易服务 (8081) 不可达';
+    return get('/api/trade/audits?limit=100').then(renderAudits).catch(function (err) {
+      document.getElementById('tdAudits').textContent = '查询失败: ' + describeTradeError(err);
     });
   });
 }
@@ -606,6 +634,19 @@ window.tradePageEnter = function () {
 window.tradePageLeave = function () {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 };
+
+// 2026-09-19 UIUX: 页面切后台(浏览器 tab 隐藏/锁屏)停 1s 轮询, 回前台立即补刷 —
+// 手机版 9 月 16 日已修同款问题, PC 端补齐 (window._veraTab 由 vera-ui.js 维护)
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    return;
+  }
+  if (window._veraTab === 'trade' && !pollTimer) {
+    refresh();
+    pollTimer = setInterval(refresh, 1000);
+  }
+});
 
 // ── 命令绑定 ─────────────────────────────────────────
 
@@ -789,7 +830,7 @@ function renderAutoBuy(d) {
     return;
   }
   if (last.error) {
-    box.innerHTML = '<div style="color:var(--up);font-size:var(--fs-sm)">运行失败: '
+    box.innerHTML = '<div style="color:var(--danger-text);font-size:var(--fs-sm)">运行失败: '
       + esc(last.error) + '</div>';
     return;
   }
@@ -834,7 +875,7 @@ function renderRotation(d) {
     return;
   }
   if (last.error) {
-    box.innerHTML = '<div style="color:var(--down);font-size:var(--fs-sm)">失败: '
+    box.innerHTML = '<div style="color:var(--danger-text);font-size:var(--fs-sm)">失败: '
       + esc(last.error) + '</div>';
     return;
   }
@@ -1100,8 +1141,8 @@ document.getElementById('tdSettings').addEventListener('toggle', function () {
       fillSettings(cfg);
       settingsLoaded = true;
       document.getElementById('tdsHint').textContent = '';
-    }).catch(function () {
-      document.getElementById('tdsHint').textContent = '配置加载失败: 交易服务不可达';
+    }).catch(function (err) {
+      document.getElementById('tdsHint').textContent = '配置加载失败: ' + describeTradeError(err);
     });
   }
 });
@@ -1133,7 +1174,7 @@ document.getElementById('tdsSaveBtn').addEventListener('click', function () {
         // 422: 后端校验的字段错误原样展示 (真相校验在后端)
         hint.textContent = '保存被拒: ' + (res.d.detail || '未知错误');
       }
-    }).catch(function () { hint.textContent = '保存失败: 交易服务不可达或超时 (4s)'; })
+    }).catch(function (err) { hint.textContent = '保存失败: ' + describeTradeError(err); })
     .finally(function () { clearTimeout(timer); btn.disabled = false; });
 });
 
@@ -1237,11 +1278,11 @@ function _chRenderBody(d) {
   }
   html += '<div>武装意图: <b>' + (mgr.armed_intent ? '开' : '关') + '</b>'
     + ' &nbsp;·&nbsp; 武装生效: <b style="color:'
-    + (mgr.armed_effective ? 'var(--ok)' : 'var(--warn)') + '">'
+    + (mgr.armed_effective ? 'var(--ok-text)' : 'var(--warn-text)') + '">'
     + (mgr.armed_effective ? '是 (实盘下单放行)' : '否 (下单拒绝)') + '</b></div>'
     + '<div>上次探针: ' + esc(_chProbeText(mgr)) + '</div>'
     + (mgr.channel_down
-      ? '<div style="color:var(--up);font-weight:600">⚠ 断线哨兵触发: 轮询连续失败, 请检查同花顺客户端</div>' : '')
+      ? '<div style="color:var(--warn-text);font-weight:600">⚠ 断线哨兵触发: 轮询连续失败, 请检查同花顺客户端</div>' : '')
     + '</div>';
 
   if (mgr.armed_effective) {

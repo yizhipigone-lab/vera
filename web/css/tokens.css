@@ -19,9 +19,18 @@
   /* 浅色(双主题的浅面):克制纸感 — 暖纸白底 + 深炭字 + 暗金强调 */
   color-scheme: light;
   --bg: #f6f4ee; --surface: #eeeae0; --card: #ffffff;
-  --border: #d8d2c4; --text: #1a1d24; /* 2026-09-06 审计: 浅色边框提一档 */ --text2: #6b7280;
+  --border: #d8d2c4; --text: #1a1d24; /* 2026-09-06 审计: 浅色边框提一档 */ --text2: #5b6472; /* 2026-09-19 UIUX 改造: #6b7280 在 --surface 上仅 4.02:1 不及格, 加深到 4.98:1 */
   --up: #d6342f; --down: #1f8a5b; --accent: #b8860b;
   --accent2: #2a9d8f; --warn: #c47f17;
+  /* 2026-09-19 UIUX 改造: 危险/错误红 与 涨红 --up 脱钩 (红绿铁律只管涨跌方向,
+     删除/急停/报错走 --danger 系); 数值均过 WCAG 实算, 见 docs/plan/2026-09-19_UIUX综合改造_计划书.md §6.1 */
+  --danger: #c0392b; --on-danger: #ffffff; --danger-text: #b03a2e;
+  --on-accent: #1a1d24; --on-warn: #1a1d24; --on-ok: #1a1d24;
+  /* 卖出绿底按钮: --down 浅色 #1f8a5b 上白字仅 4.33:1 → 实底用加深档 --down-strong */
+  --down-strong: #177a4f; --on-down: #ffffff;
+  /* 浅色主题语义色的"文字用深色变体" (原值当文字 2.6~3.8:1 全不及格, 只配当底色/图形色) */
+  --ok-text: #1f7a6d; --pending-text: #8a6414; --info-text: #3a66c4;
+  --fail-text: #5f6b7a; --warn-text: #8a5a00;
   /* 分类语义色(体检页/饼图共用,收编原硬编码 #2a9d8f/#c89030/#5080dc 等 rogue hues) */
   --ok: #2a9d8f; --pending: #c89030; --fail: #9aa3b2; --info: #5080dc;
   /* 基准/多系列 categorical palette(非红绿,避免与涨跌红绿混淆) */
@@ -30,6 +39,9 @@
   --link: #8a5a00;
   /* 圆角分级 (W4-2: 8px 高频出现, 收编为 --radius-md) */
   --radius: 10px; --radius-sm: 6px; --radius-md: 8px;
+  /* 2026-09-19 UIUX 改造: 页签栏实测高度锚点 (覆盖层 top 不再写死 41px 魔法数;
+     vera-ui.js 启动/resize 时用 tabBar.offsetHeight 实测回写本变量) */
+  --tabbar-h: 53px;
   /* 字号分级 (2026-09-06 UICraft 审计: 实测 12 档散值收敛为 5 档 + KPI 独占档;
      原 9/10/10.5px 全并入 11px 地板, 14~18px 并入 13/17, 20px 并入 24) */
   --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 17px; --fs-xl: 24px;
@@ -53,6 +65,13 @@
   --border: #232b3a; --text: #e8ecf4; --text2: #8b95a8;   /* W4-1: 并入 polish.css F4 提亮终值(原 #7a8499, 对比贴线) */
   --up: #ff4d5a; --down: #2ec27e; --accent: #f0b429;
   --accent2: #4cc9d4; --warn: #e8833a;
+  /* --danger 系语义同浅色 (2026-09-19): 实底红两主题同值(白字 7.09:1),
+     文字档暗色提亮; 文字变体在暗色下 = 原语义色(本就是为暗底挑的亮色) */
+  --danger: #c0392b; --on-danger: #ffffff; --danger-text: #ff6b66;
+  --on-accent: #1a1d24; --on-warn: #1a1d24; --on-ok: #1a1d24;
+  --down-strong: #2ec27e; --on-down: #1a1d24;
+  --ok-text: #3dd68c; --pending-text: #e8b339; --info-text: #4cc9d4;
+  --fail-text: #9aa3b2; --warn-text: #e8833a;
   --ok: #3dd68c; --pending: #e8b339; --fail: #7a8499; --info: #4cc9d4;
   --bm-1: #e8833a; --bm-2: #4cc9d4; --bm-3: #f0b429; --bm-4: #b07ee0; --bm-5: #b8a88a;
   --link: #f0b429;

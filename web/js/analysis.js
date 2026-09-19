@@ -21,9 +21,21 @@ let _selectedDate = '';
 let _dailyReportSeq = 0;  // 2026-08-07 审计 HIGH#2: showDailyReport 请求序号, 防快连点慢响应覆盖快响应
 let _calLoadSeq = 0;      // 2026-09-04 对手审计: 日历月度数据请求序号, 防切月/进页竞态 (慢的旧月响应后到覆盖新月渲染)
 let _lastDailyPnl = null; // 2026-09-10: 最近一次 daily_pnl 响应 (日报面板/补算提示复用, 免二次请求)
+let _dailyPnlFailed = false; // 2026-09-19 UIUX: daily_pnl 那路挂了要显形, 不许渲染成全灰"未归档"
+let _dealsLoadError = false; // 2026-09-19 UIUX: 成交加载失败 ≠ "共 0 笔"
 let _allDeals = [];
 let _dealPage = 0;
 const DEAL_PAGE_SIZE = 200;
+
+// 2026-09-19 UIUX: 本文件原来是全站唯一裸 fetch 无超时的模块 ("加载中…"可永久挂住)。
+// 统一收口: AbortController 超时 + r.ok 检查。
+function fetchT(url, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms || 10000);
+  return fetch(url, { signal: ctl.signal })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .finally(() => clearTimeout(t));
+}
 
 // ── Entry (called by vera-ui.js switchTab) ──
 window.analysisPageEnter = async function() {
@@ -45,14 +57,15 @@ async function loadAnalysisData() {
   chartsShowLoading(ANALYSIS_CHART_IDS, true);   // W4-4: 加载占位
   try {
     const results = await Promise.allSettled([
-      fetch(API_BASE + '/summary').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
-      fetch(API_BASE + '/equity').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
-      fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+      fetchT(API_BASE + '/summary'),
+      fetchT(API_BASE + '/equity'),
+      fetchT(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth),
     ]);
     const summary = results[0].status === 'fulfilled' ? results[0].value : null;
     const equity = results[1].status === 'fulfilled' ? results[1].value : null;
     const dailyPnl = results[2].status === 'fulfilled' ? results[2].value : null;
     if (results.some(r => r.status === 'rejected')) fetchError = true;
+    _dailyPnlFailed = results[2].status === 'rejected';  // 日历"未归档"与"加载失败"必须分得清
 
     if (!summary || (!fetchError && summary.total_trades === 0 && (!equity || !equity.equity || equity.equity.length === 0))) {
       if (emptyEl) { emptyEl.style.display = ''; emptyEl.querySelector('p').textContent = fetchError ? '数据加载失败，请确认 trade 服务运行中' : '实盘开始后这里会出现业绩分析'; }
@@ -103,7 +116,7 @@ async function loadAnalysisData() {
     // 深挖包 Phase 2: 实盘业绩归因 (板块 + 个股 Top10)。
     // 端点未就绪/失败 → 隐藏两个容器; meta.skipped_no_pnl > 0 由渲染层出副标题提示
     try {
-      const attr = await fetch(API_BASE + '/attribution').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      const attr = await fetchT(API_BASE + '/attribution');
       renderAttribution('chartAnalysisAttrSector', attr, getColors());
       renderAttributionStocks('chartAnalysisAttrStock', attr, getColors());
     } catch (e) {
@@ -168,7 +181,7 @@ function renderKpiCards(s) {
       tip: '总盈利 ÷ 总亏损。<1 必亏, 1.0-1.5 勉强, >1.5 较好, >2 优秀。' },
   ];
   const warnHtml = s.reconciliation_warning
-    ? '<span style="color:var(--warn);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="净值推算与QMT资产偏差>1%">⚠</span>' : '';
+    ? '<span style="color:var(--warn-text);font-size:var(--fs-xs);margin-left:var(--sp-1)" title="净值推算与QMT资产偏差>1%">⚠</span>' : '';
   const labelHtml = c => c.tip
     ? c.label + ' <span style="cursor:help;color:var(--text2);font-size:var(--fs-xs)" title="' + c.tip + '">?</span>'
     : c.label;
@@ -190,7 +203,8 @@ function renderCalendar(calData, dailyPnl) {
   if (!grid) return;
   _lastDailyPnl = dailyPnl || null;   // 日报面板/补算提示复用同一份数据
   const missing = (dailyPnl && dailyPnl._missing) ? dailyPnl._missing : {};
-  title.textContent = _calendarYear + '年' + _calendarMonth + '月';
+  title.textContent = _calendarYear + '年' + _calendarMonth + '月'
+    + (_dailyPnlFailed ? '（当日盈亏数据加载失败，格子状态不可信，请刷新重试）' : '');
   // 2026-09-04: 月度收益行随日历一起渲染 — 首载/切月/今天按钮三条路径都走这里
   renderMonthSummary(dailyPnl);
   renderGapfillNote(dailyPnl);
@@ -235,13 +249,14 @@ function renderCalendar(calData, dailyPnl) {
     // 没补上的停机日: 把差额摆在格子里 (「未归档·差¥1,847」), 不再是含糊的"无成交"
     const missAmt = miss ? Math.abs(Math.round(Number(miss.residual || 0))) : 0;
     const missAmtStr = missAmt >= 1
-      ? '<span style="color:var(--warn);font-size:var(--fs-xs)">差¥' + missAmt.toLocaleString('zh-CN') + '</span>' : '';
+      ? '<span style="color:var(--warn-text);font-size:var(--fs-xs)">差¥' + missAmt.toLocaleString('zh-CN') + '</span>' : '';
     const tradeInfo = pnl ? ('买' + pnl.buy_count + ' 卖' + pnl.sell_count)
       : !isTrading ? '休市'
+      : _dailyPnlFailed ? '加载失败'   // 2026-09-19: 数据没拉下来 ≠ 未归档
       : isToday ? '待归档' : '未归档';
     // 推算日标出来 (程序没开机那天是算出来的, 不是 QMT 报出来的)
     const badge = isDerived
-      ? '<span title="停机日推算值: 程序没开机那天按 持仓×当日收盘价 推出来, 并与右端实测夹逼校验过" style="color:var(--warn);font-size:var(--fs-xs)">推算</span> '
+      ? '<span title="停机日推算值: 程序没开机那天按 持仓×当日收盘价 推出来, 并与右端实测夹逼校验过" style="color:var(--warn-text);font-size:var(--fs-xs)">推算</span> '
       : '';
     const aria = d + '日 ' + tradeInfo + ' ' + pnlRateStr
       + (isDerived ? ' (推算值)' : '') + (miss ? ' ' + (miss.reason || '未归档') : '');
@@ -299,7 +314,7 @@ function renderMonthSummary(dailyPnl) {
   const sep = '<span style="color:var(--border)">|</span>';
   // 2026-09-10: 本月含推算日时明说 (推算日照常参与盈亏链, 但用户有权知道哪天是算的)
   const derivedTxt = m.derived_days
-    ? sep + '<span style="color:var(--warn)" title="程序没开机的交易日, 用 持仓×当日收盘价 推算补齐; 已与相邻实测日两端夹逼校验">含 <b>' + m.derived_days + '</b> 天推算</span>'
+    ? sep + '<span style="color:var(--warn-text)" title="程序没开机的交易日, 用 持仓×当日收盘价 推算补齐; 已与相邻实测日两端夹逼校验">含 <b>' + m.derived_days + '</b> 天推算</span>'
     : '';
   el.innerHTML =
     '<span style="color:var(--text2)">本月收益 <span style="cursor:help;color:var(--text2);font-size:var(--fs-xs)" title="' + tip + '">?</span></span>' +
@@ -327,13 +342,13 @@ function renderGapfillNote(dailyPnl) {
     const state = { write: '已推算', reject: '拒写', skip: '跳过' }[g.status] || esc(g.kind || '');
     parts.push('<span style="color:var(--text2)">上次补算 ' + esc(when) + (g.dry_run ? ' (仅预览)' : '') + '</span>');
     parts.push('<span>' + state + (g.dates && g.dates.length ? ' ' + esc(g.dates.join('、')) : '') + '</span>');
-    if (g.residual) parts.push('<span style="color:var(--warn)">两端差 ¥' + Math.abs(Number(g.residual)).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + '</span>');
+    if (g.residual) parts.push('<span style="color:var(--warn-text)">两端差 ¥' + Math.abs(Number(g.residual)).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + '</span>');
     if (g.reason) parts.push('<span style="color:var(--text2)" title="' + esc(g.reason) + '">' + esc(String(g.reason).slice(0, 60)) + '</span>');
   } else {
     parts.push('<span style="color:var(--text2)">还没有补算记录 —— 程序没开机的交易日会在下次启动时自动补算</span>');
   }
   if (missKeys.length) {
-    parts.push('<span style="color:var(--warn)">未补齐 ' + missKeys.length + ' 天: ' + esc(missKeys.join('、')) + ' (补录成交后点「补算停机日」重跑)</span>');
+    parts.push('<span style="color:var(--warn-text)">未补齐 ' + missKeys.length + ' 天: ' + esc(missKeys.join('、')) + ' (补录成交后点「补算停机日」重跑)</span>');
   }
   el.innerHTML = parts.join(sep);
 }
@@ -379,7 +394,7 @@ async function submitGapfill(dryRun) {
 
 function elNote(msg) {
   const el = document.getElementById('calGapfillNote');
-  if (el) el.innerHTML = '<span style="color:var(--warn)">' + esc(msg) + '</span>';
+  if (el) el.innerHTML = '<span style="color:var(--warn-text)">' + esc(msg) + '</span>';
 }
 
 // ── 盘后日报详情 (2026-08-07): 点击日历格子展示当日全明细 ──
@@ -516,10 +531,10 @@ function renderGapfillPanel(dateStr, day, miss) {
     title.innerHTML = '未归档 · ' + esc(dateStr);
   }
   if (miss) {
-    rows.push(['状态', '<span style="color:var(--warn)">未补齐' +
+    rows.push(['状态', '<span style="color:var(--warn-text)">未补齐' +
       (miss.status ? ' (' + esc(miss.status) + ')' : '') + '</span>']);
     if (Math.abs(Number(miss.residual || 0)) >= 1) {
-      rows.push(['两端差额', '<span style="color:var(--warn)">¥' +
+      rows.push(['两端差额', '<span style="color:var(--warn-text)">¥' +
         Math.abs(Number(miss.residual)).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + '</span>']);
     }
     if (miss.reason) rows.push(['原因', '<span style="font-size:var(--fs-xs)">' + esc(miss.reason) + '</span>']);
@@ -542,7 +557,7 @@ async function showDailyReport(dateStr) {
   if (body) body.innerHTML = '<div style="padding:var(--sp-6);text-align:center;color:var(--text2);font-size:var(--fs-sm)">加载中…</div>';
   if (box) box.style.display = '';
   try {
-    const resp = await fetch(API_BASE + '/daily_report?date=' + dateStr).then(r => r.json());
+    const resp = await fetchT(API_BASE + '/daily_report?date=' + dateStr);
     if (seq !== _dailyReportSeq) return;  // 已被更新的点击取代, 丢弃陈旧响应
     if (!resp.report) {
       // 2026-09-10: 推算日/未归档日没有盘后日报 —— 用补算信息说明白, 别只说"无记录"
@@ -601,7 +616,10 @@ async function refreshCalendarMonth() {
     hideDailyReport();
   }
   const calData = await fetchCalendar(_calendarYear, _calendarMonth).catch(() => null);
-  const dailyPnl = await fetch(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth).then(r => r.json()).catch(() => null);
+  // 2026-09-19 UIUX: 裸 fetch 改 fetchT (超时+r.ok), 失败置标志让日历说"加载失败"而不是全灰"未归档"
+  let dailyPnl = null;
+  try { dailyPnl = await fetchT(API_BASE + '/daily_pnl?year=' + _calendarYear + '&month=' + _calendarMonth); _dailyPnlFailed = false; }
+  catch (e) { _dailyPnlFailed = true; }
   if (seq !== _calLoadSeq) return;  // 已有更新的切月请求, 丢弃本次陈旧响应
   renderCalendar(calData, dailyPnl);
 }
@@ -806,19 +824,22 @@ function renderExitPie(deals) {
 
 // ── Deals table ──
 async function loadDeals() {
+  // 2026-09-19 UIUX: ①裸 fetch 改 fetchT (超时+r.ok); ②失败置标志显形,
+  // 原实现失败静默渲染"共 0 笔" —— 服务端报错被伪装成"本来就没数据"
+  const today = new Date();
+  const end = today.getFullYear() + String(today.getMonth() + 1).padStart(2, '0') + String(today.getDate()).padStart(2, '0');
   try {
     // 2026-08-13 修复: 旧调用不带日期 → 后端只给当日成交, 盈亏分布/卖出原因
     // 永远凑不出完整买卖对。改为拉全量历史 (2020 起, 上限 5000 笔),
     // 表格的日期过滤仍由 filterDealsByDate 在前端做。
-    const today = new Date();
-    const end = today.getFullYear() + String(today.getMonth() + 1).padStart(2, '0') + String(today.getDate()).padStart(2, '0');
-    const resp = await fetch(TRADE_API + '/deals?start=20200101&end=' + end + '&limit=5000').then(r => r.json()).catch(() => null);
+    const resp = await fetchT(TRADE_API + '/deals?start=20200101&end=' + end + '&limit=5000');
     _allDeals = (resp && resp.deals) ? resp.deals : [];
-    renderDealTable();
+    _dealsLoadError = false;
   } catch (e) {
     _allDeals = [];
-    renderDealTable();
+    _dealsLoadError = true;
   }
+  renderDealTable();
 }
 
 function filterDealsByDate(dateStr) {
@@ -858,6 +879,13 @@ function renderDealTable(forceDate) {
   if (_dealPage >= nPages) _dealPage = nPages - 1;
   const pageRows = rows.slice().reverse().slice(_dealPage * DEAL_PAGE_SIZE, (_dealPage + 1) * DEAL_PAGE_SIZE);
   const tbody = document.getElementById('analysisTradeBody');
+  // 2026-09-19 UIUX: 加载失败与"真的没有成交"必须分两句话说
+  if (_dealsLoadError) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--danger-text)">成交记录加载失败（网络/服务异常）—— 请切页重进或稍后再试</td></tr>';
+    document.getElementById('analysisTradeCount').textContent = '加载失败';
+    document.getElementById('analysisTradePager').innerHTML = '';
+    return;
+  }
   tbody.innerHTML = pageRows.map((t, i) => {
     const ts = new Date(t.ts * 1000);
     const ds = ts.getFullYear() + '-' + String(ts.getMonth() + 1).padStart(2, '0') + '-' + String(ts.getDate()).padStart(2, '0');

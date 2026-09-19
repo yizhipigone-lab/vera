@@ -231,8 +231,9 @@ async function loadSectors() {
   const fail = (msg) => {
     grid.innerHTML = '';                      // 清掉上一轮残留, 让错误提示看得见
     const e = _sectorEmptyBox(grid);
-    e.innerHTML = msg + '<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>';
-    e.style.color = 'var(--up)';
+    // 2026-09-19 UIUX: msg 携带后端 error/异常文本, 必须转义后再拼 innerHTML
+    e.innerHTML = esc(msg) + '<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>';
+    e.style.color = 'var(--danger-text)';
     setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0);
   };
   try { const result = await apiFetchSectors();
@@ -323,7 +324,10 @@ function _ffState() { const f = _ffFormula(); if (!_factorFilter[f]) _factorFilt
 
 async function loadFactorRules() { const box = document.getElementById('factorRuleList'), formula = _ffFormula();
   if (!formula) { box.textContent = '先填公式名'; return; }
-  try { _factorRulesData = await apiFetchFactorRules(formula); } catch(e) { _factorRulesData = { exists: false, rules: [] }; } renderFactorRules(); }
+  // 2026-09-19 UIUX: 网络/服务失败必须说"加载失败", 原实现失败被伪装成"该公式暂无体检规则"
+  try { _factorRulesData = await apiFetchFactorRules(formula); }
+  catch(e) { _factorRulesData = null; box.innerHTML = '<div style="color:var(--danger-text)">体检规则加载失败（网络或服务异常）— 请稍后重试</div>'; return; }
+  renderFactorRules(); }
 
 function renderFactorRules() { const box = document.getElementById('factorRuleList'), d = _factorRulesData||{ exists: false, rules: [] }, state = _ffState();
   document.getElementById('cfgFactorFilterEn').checked = !!state.enabled;
@@ -357,6 +361,7 @@ document.getElementById('cfgFormula').addEventListener('change', loadFactorRules
 
 let _labPollTimer = null;
 function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade', isAnalysis = name==='analysis';
+  window._veraTab = name;  // 2026-09-19 UIUX: 记录当前页签, visibilitychange 恢复轮询时要用
   // 2026-08-14: backtest 激活条件从"非lab/trade/analysis"改为显式等值 —
   // research/records/data 三个后加 TAB 会让旧判断把回测按钮也点亮 (cosmetic bug)
   document.getElementById('tabBtnBacktest').classList.toggle('active', name==='backtest');
@@ -368,6 +373,8 @@ function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade',
   var _tabM = document.getElementById('tabBtnMarket'); if (_tabM) _tabM.classList.toggle('active', isMarket);
   var _pM = document.getElementById('pageMarket'); if (_pM) _pM.classList.toggle('active', isMarket);
   if (isMarket && window.marketPageEnter) window.marketPageEnter();
+  // 2026-09-19 UIUX: 补离场钩子 (倒计时 1s 定时器原来切走后空跑+到点后台白刷新)
+  if (!isMarket && window.marketPageLeave) window.marketPageLeave();
   document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis||isMarket)?'none':'';
   document.getElementById('pageLab').classList.toggle('active', isLab);
   document.getElementById('pageTrade').classList.toggle('active', isTrade);
@@ -449,15 +456,17 @@ function refreshLabStatus() { fetchLabStatus().then(d => { const box = document.
     if (!d.queue||!d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无任务</div>'; return; }
     box.innerHTML = d.queue.slice().reverse().map(t => { const mins = Math.floor(t.elapsed_s/60);
       let html = '<div class="lab-row">'+_labStatusBadge(t)+' <b>'+esc(t.formulas.join(','))+'</b><span style="color:var(--text2)">'+esc(t.stage)+(t.status!=='queued'&&mins?' · '+mins+'分钟':'')+'</span></div>';
-      if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:var(--up)">'+esc(t.error.slice(0,200))+'</div></div>';
+      if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:var(--danger-text)">'+esc(t.error.slice(0,200))+'</div></div>';
       if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <button type="button" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--link);background:none;border:none;padding:0;cursor:pointer;font-size:var(--fs-xs);text-decoration:underline">查看报告</button></div></div>'; return html; }).join('');
     setTimeout(() => { box.querySelectorAll('.lab-report-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0);
-    if (d.running||d.queue.some(t=>t.status==='queued')) startLabPoll(); loadLabHistory(); }).catch(() => {}); }
+    if (d.running||d.queue.some(t=>t.status==='queued')) startLabPoll(); loadLabHistory(); })
+    .catch(() => { const h = document.getElementById('labHint'); if (h) h.textContent = '状态刷新失败（网络/服务），轮询会继续重试'; }); }
 
 function loadLabHistory() { fetchLabHistory().then(d => { const box = document.getElementById('labHistory');
     if (!d.items||!d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无体检记录</div>'; return; }
     box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><button type="button" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--link);background:none;border:none;padding:0;cursor:pointer;font-size:var(--fs-xs);text-decoration:underline">查看</button></div>').join('');
-    setTimeout(() => { box.querySelectorAll('.lab-hist-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0); }).catch(() => {}); }
+    setTimeout(() => { box.querySelectorAll('.lab-hist-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0); })
+    .catch(() => { box.innerHTML = '<div style="color:var(--danger-text);font-size:var(--fs-sm)">体检记录加载失败（网络/服务）</div>'; }); }
 
 function viewLabReport(formula) { fetchLabReport(formula).then(d => { if (!d.success) { showToast(d.error||'无报告', 'error'); return; }
     document.getElementById('labReportCard').style.display = ''; document.getElementById('labReportTitle').textContent = '体检报告: '+d.file;
@@ -495,7 +504,7 @@ document.getElementById('btnFarmCheck')?.addEventListener('click', () => farmGat
 document.getElementById('btnFarmOnboard')?.addEventListener('click', () => farmGate(farmOnboard, '一键入库'));
 document.getElementById('btnFarmVerify')?.addEventListener('click', () => farmGate(farmVerify, '定量复核'));
 document.getElementById('btnFarmBacktest')?.addEventListener('click', () => farmGate(farmBacktest, '开始粗扫'));
-document.getElementById('btnFarmStop')?.addEventListener('click', () => farmStop().then(() => showToast('已请求停止')).catch(() => {}));
+document.getElementById('btnFarmStop')?.addEventListener('click', () => farmStop().then(() => showToast('已请求停止')).catch((e) => showToast('停止请求失败: ' + (e && e.message || e), 'error')));
 
 // ═══════════════════════════════════════════
 // Farm Page (公式农场三段闸门, 2026-09-06)
@@ -516,7 +525,17 @@ function refreshFarmStatus() {
   fetchFarmStatus().then(d => {
     const cur = d.current, last = d.last || {};
     const setS = (id, gate) => { const el = document.getElementById(id); if (!el) return;
-      if (cur && cur.gate === gate && cur.status === 'running') { el.textContent = '⏳ 运行中: ' + (cur.stage || ''); return; }
+      if (cur && cur.gate === gate && cur.status === 'running') {
+        // 2026-09-19 UIUX: 四道闸门运行中都给停止入口 (原来只有闸门②有) ——
+        // /api/farm/stop 作用于整个串行 runner, 不分闸门 (core/farm_api.py)
+        el.innerHTML = '';
+        el.appendChild(document.createTextNode('⏳ 运行中: ' + (cur.stage || '') + ' '));
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'btn btn-danger btn-xs';
+        stopBtn.textContent = '■ 停止';
+        stopBtn.addEventListener('click', () => { farmStop().then(() => showToast('已请求停止')).catch((e) => showToast('停止请求失败: ' + (e && e.message || e), 'error')); });
+        el.appendChild(stopBtn);
+        return; }
       if (cur && cur.gate === gate && cur.status !== 'running') { el.textContent = _farmStatusMark(cur.status, true) + (cur.finished_at || '') + (cur.error ? ' — ' + cur.error : ''); return; }
       const l = last[gate];
       el.textContent = l ? ('上次: ' + _farmStatusMark(l.status, false) + ' ' + (l.finished_at || '')) : '未运行'; };
@@ -595,8 +614,13 @@ function renderFarmOverview(d) {
     ? '这批货主要死在: ' + ov.top_reasons.map(r => r[0] + ' ' + r[1] + ' 条').join(' · ') : '';
   const board = document.getElementById('farmBoard');
   if (board) {
+    // 2026-09-18 用户拍板"卡片不许说黑话": 最优组合列摆人话 (combo_text,
+    // 后端唯一生成), 原始参数串收进鼠标悬停提示; 回测区间单列 —— 池子/周期
+    // 全榜统一在上方口径行说, 区间每条公式不同, 必须逐行给
     const rowHtml = (r, withBtn) => '<tr><td>' + esc(r.gs) + '</td><td>' + esc((r.file || '').replace(/\.md$/, '').slice(0, 20)) + '</td>'
-      + '<td>' + esc(r.key || '—') + '</td><td class="num">' + _pct(r.annret) + '</td>'
+      + '<td title="' + escAttr(r.key || '') + '">' + esc(r.combo_text || r.key || '—') + '</td>'
+      + '<td style="white-space:nowrap">' + esc((r.window && r.window[0] && r.window[1]) ? r.window[0] + ' ~ ' + r.window[1] : '—') + '</td>'
+      + '<td class="num">' + _pct(r.annret) + '</td>'
       + '<td class="num">' + (r.calmar == null ? '—' : Number(r.calmar).toFixed(2)) + '</td>'
       + '<td class="num">' + _pct(r.maxdd) + '</td><td class="num">' + _pct(r.winrate, 0) + '</td>'
       + '<td class="num">' + (r.trades == null ? '—' : esc(String(r.trades))) + '</td>'
@@ -606,12 +630,14 @@ function renderFarmOverview(d) {
       + '<td>' + (/^https?:\/\//i.test(r.url || '') ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td>'
       // 2026-09-16 回填回测页计划书: 按钮只放达标组 (样本不足/未达标不放, 防误导)
       + (withBtn ? '<td><button class="btn farm-to-bt" data-gs="' + escAttr(r.gs) + '" style="font-size:var(--fs-xs);padding:1px 8px">→ 回测页</button></td>' : '') + '</tr>';
-    const table = (rows, withBtn) => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th>' + (withBtn ? '<th>操作</th>' : '') + '</tr></thead><tbody>'
+    const table = (rows, withBtn) => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合(卖出纪律)</th><th>回测区间</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th>' + (withBtn ? '<th>操作</th>' : '') + '</tr></thead><tbody>'
       + rows.map(r => rowHtml(r, withBtn)).join('') + '</tbody></table>';
     const b = ov.board || { pass: [], insufficient: [], fail: [] };
     const totals = ov.board_totals || { pass: b.pass.length, insufficient: b.insufficient.length, fail: b.fail.length };
     const capNote = (rows, total) => rows.length < total ? ' (仅列前 ' + rows.length + ' 条)' : '';
     let html = '';
+    // 粗扫口径一行 (后端唯一生成): 股票池/周期/本金/买入方式/达标线
+    if (ov.caliber_text) html += '<div style="color:var(--text2);font-size:var(--fs-sm);margin:2px 0 8px">' + esc(ov.caliber_text) + '</div>';
     if (!ov.board_total) html = '<div style="color:var(--text2);font-size:var(--fs-sm)">粗扫还没跑出结果——点下方「④ 开始粗扫」试第一批。</div>';
     if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + totals.pass + ' 条' + capNote(b.pass, totals.pass) + '</div>' + table(b.pass, true);
     if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + totals.insufficient + ' 条 (数字好看但笔数不足 20, 不作数)' + capNote(b.insufficient, totals.insufficient) + '</div>' + table(b.insufficient);
@@ -794,7 +820,7 @@ function loadFarmReports() {
         b.scrollIntoView({ behavior: 'smooth' });
       }).catch(e => showToast(e.message, 'error'));
     }));
-  }).catch(() => {});
+  }).catch(() => { box.innerHTML = '<div style="color:var(--danger-text)">报告列表加载失败（网络/服务）</div>'; });
 }
 document.querySelector('.theme-btn').addEventListener('click', toggleTheme);
 document.querySelector('.sidebar-toggle').addEventListener('click', toggleSidebar);
@@ -809,7 +835,16 @@ document.getElementById('cfgFactorFilterEn').addEventListener('change', saveFact
 const sidebar = document.querySelector('.sidebar');
 sidebar.addEventListener('input', function(e) { const el = e.target;
   if (el.id==='cfgStart'||el.id==='cfgEnd') validateDate(el); else if (el.id==='cfgCapital') validatePositive(el);
-  else if (el.id==='cfgCommission'||el.id==='cfgSlippage') validateNonNeg(el); else if (el.id==='cfgLadderVal') validateLadder(el); });
+  else if (el.id==='cfgCommission'||el.id==='cfgSlippage') validateNonNeg(el); else if (el.id==='cfgLadderVal') validateLadder(el);
+  // 2026-09-19 UIUX: 校验扩面 —— 数字输入全部接入即时校验, 不再裸奔
+  else if (el.id==='cfgFormulaArg') el.classList.toggle('invalid', !el.value.trim());
+  else if (['cfgMinBuy','cfgMaxBuy','cfgLotSize','cfgMinLots','cfgCostStopVal','cfgTrailingAct','cfgTrailingDD'].includes(el.id)) validatePositive(el);
+  // 交叉校验: 最低买入额 > 最高买入额 时两框同时标红 (先各自重验, 防修复后残留红框)
+  if (el.id==='cfgMinBuy'||el.id==='cfgMaxBuy') {
+    const mn = document.getElementById('cfgMinBuy'), mx = document.getElementById('cfgMaxBuy');
+    validatePositive(mn); validatePositive(mx);
+    const bad = parseFloat(mn.value) > 0 && parseFloat(mx.value) > 0 && parseFloat(mn.value) > parseFloat(mx.value);
+    if (bad) { mn.classList.add('invalid'); mx.classList.add('invalid'); } } });
 sidebar.addEventListener('click', function(e) { const btn = e.target.closest('button'); if (!btn) return;
   const block = btn.closest('[id^="blk"]'); if (!block) return;
   if (btn.classList.contains('edit-btn')) toggleEdit(block.id); else if (btn.classList.contains('save-btn')) saveBlock(block.id);
@@ -856,7 +891,7 @@ loadConfig(); refreshAllSummaries(); loadSectors(); loadFactorRules();
   if (s1) s1.placeholder = f(y1); if (e1) e1.placeholder = f(now);
   if (s2) s2.placeholder = f(y3); if (e2) e2.placeholder = f(now);
 })();
-fetchSavedConfig().then(res => { _savedFileExists = !!(res&&res.exists); toggleSavedButtons(_savedFileExists); }).catch(() => {});
+fetchSavedConfig().then(res => { _savedFileExists = !!(res&&res.exists); toggleSavedButtons(_savedFileExists); }).catch((e) => { console.warn('已保存配置探测失败:', e); });
 if (localStorage.getItem('vera_sector_collapsed')==='1') { const sec = document.querySelector('.sector-section'); if (sec) sec.classList.add('collapsed'); }
 // W1-2: 板块折叠头初始 aria-expanded 同步 (须在 localStorage 折叠恢复之后)
 (function syncSectorAria() {
@@ -865,11 +900,26 @@ if (localStorage.getItem('vera_sector_collapsed')==='1') { const sec = document.
 })();
 addLog('前端就绪，等待执行回测', 'info');
 
+// 2026-09-19 UIUX 改造: ①页签覆盖层 top 不再写死 41px 魔法数 —— 启动/缩放时
+// 用页签栏实测高度回写 --tabbar-h; ②PC 端页面隐藏暂停轮询 (手机版 9 月 16 日
+// 已修, PC 端补齐): 隐藏停 lab/farm 轮询, 回前台若仍在该页签立即补刷一次再恢复。
+(function syncTabbarH() {
+  const apply = () => { const tb = document.querySelector('.tab-bar');
+    if (tb) document.documentElement.style.setProperty('--tabbar-h', tb.offsetHeight + 'px'); };
+  apply(); window.addEventListener('resize', apply);
+})();
+window._veraTab = window._veraTab || 'backtest';
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopLabPoll(); stopFarmPoll(); return; }
+  if (window._veraTab === 'lab') { refreshLabStatus(); loadLabHistory(); startLabPoll(); }
+  if (window._veraTab === 'farm') { refreshFarmStatus(); loadFarmReports(); startFarmPoll(); }
+});
+
 fetchResults().then(list => { if (list&&list.length>0) { document.getElementById('historyCount').textContent = '('+list.length+'条)';
   const sel = document.getElementById('historySelect'); sel.innerHTML = '<option value="">-- 选择历史回测 --</option>';
   list.forEach(item => { const o = document.createElement('option'); o.value = item.id;
     const cumRet = (item.cumulative_return!=null&&!isNaN(item.cumulative_return))?(item.cumulative_return*100).toFixed(1)+'%':'--';
-    o.textContent = item.time+' | '+item.formula+' '+item.date_range+' | '+item.trade_count+'笔 '+cumRet; sel.appendChild(o); }); } }).catch(() => {});
+    o.textContent = item.time+' | '+item.formula+' '+item.date_range+' | '+item.trade_count+'笔 '+cumRet; sel.appendChild(o); }); } }).catch(() => { document.getElementById('historyCount').textContent = '(加载失败)'; });
 
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200); });
 

@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import {
   TONE_VAR, SOURCE_LABELS, actionBadge, statusLine, evidenceRows,
   calCellLabel, dominantTone, parseIso, fmtEvents,
-  tradeApiBase, fetchJson, describeTradeError,
+  tradeApiBase, fetchJson, describeTradeError, describeFetchError,
 } from '../../web/js/decision_util.mjs';
 
 let _pass = 0, _fail = 0;
@@ -305,6 +305,19 @@ const _srvMsg = describeTradeError(
   new Error('HTTP 404 http://127.0.0.1:8081/api/trade/decisions'));
 case_('服务端报错不能说成"连不上"', _srvMsg.includes('连不上'), false);
 case_('服务端报错要带上真实原因', _srvMsg.includes('404'), true);
+
+// ── describeFetchError (2026-09-19 UIUX: 泛化层, describeTradeError 的上游) ──
+case_('泛化版: 自定义服务名连不上', describeFetchError(new TypeError('Failed to fetch'),
+  '页面服务 (端口 8080)', 'server.py 没在跑，重启它').includes('连不上页面服务 (端口 8080)'), true);
+case_('泛化版: 连不上带处置提示', describeFetchError(new TypeError('Failed to fetch'),
+  '页面服务 (端口 8080)', 'server.py 没在跑，重启它').includes('重启它'), true);
+case_('泛化版: 服务端报错去掉括号端口再说', describeFetchError(new Error('HTTP 500'),
+  '页面服务 (端口 8080)') === '页面服务报错: HTTP 500', true);
+case_('泛化版: AbortController 超时单独说', describeFetchError(
+  Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }),
+  '交易服务 (端口 8081)').includes('超时无响应'), true);
+case_('describeTradeError 默认行为不变(连不上)', describeTradeError(new TypeError('Failed to fetch'))
+  === '连不上交易服务 (端口 8081) —— 交易进程没在跑, 双击项目根目录的 start_vera.bat 启动它', true);
 
 console.log(`\n${_fail === 0 ? '[OK]' : '[FAIL]'} decision_util 契约测试: ${_pass} passed, ${_fail} failed`);
 process.exit(_fail === 0 ? 0 : 1);

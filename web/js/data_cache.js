@@ -22,9 +22,11 @@ function statusRowHtml(p, refreshing, esc) {
     });
   };
   var b = statusBadge(p, refreshing);
-  // W4-1: --green/--red 在 CSS 中从未定义、恒走 fallback — 归并到红绿铁律令牌 (新鲜=绿--down, 过期=红--up)
-  var color = b.cls === 'ok' ? 'var(--down)'
-            : b.cls === 'err' ? 'var(--up)' : 'var(--accent)';
+  // W4-1: --green/--red 在 CSS 中从未定义、恒走 fallback — 归并到语义令牌。
+  // 2026-09-19 UIUX: 健康度不再占用涨跌红绿 (红=涨/绿=跌是方向色) ——
+  // 新鲜=--ok-text 青绿(成功语义), 过期=--danger-text(错误语义), 文字变体保浅色对比度
+  var color = b.cls === 'ok' ? 'var(--ok-text)'
+            : b.cls === 'err' ? 'var(--danger-text)' : 'var(--link)';
   return '<tr><td>' + esc(p.period) + '</td>'
     + '<td>' + esc(p.stocks) + '</td>'
     + '<td>' + esc(p.first_date || '—') + '</td>'
@@ -95,15 +97,15 @@ function submitBackfill() {
     .then(function (d) {
       if (!msg) return;
       if (d.success) {
-        msg.style.color = 'var(--down)';
+        msg.style.color = 'var(--ok-text)';
         msg.textContent = '✓ 补拉已启动（' + (d.periods || []).join(',') + '），见下方日志';
         refreshStatus(); refreshLog();
       } else {
-        msg.style.color = 'var(--up)';
+        msg.style.color = 'var(--danger-text)';
         msg.textContent = '✗ ' + (d.error || d.reason || '启动失败');
       }
     }).catch(function (e) {
-      if (msg) { msg.style.color = 'var(--up)'; msg.textContent = '✗ 网络错误: ' + e.message; }
+      if (msg) { msg.style.color = 'var(--danger-text)'; msg.textContent = '✗ 网络错误: ' + e.message; }
     });
 }
 
