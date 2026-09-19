@@ -5,6 +5,31 @@
 
 ---
 
+## 2026-09-19 — 架构审查修订批次 5.1 第二刀：拆出 regime / 指标体检 / ERP 三个分析模块
+
+**一句话（大白话）**：把大盘文件里的三块"算给人看"的逻辑各自独立成小文件 ——
+牛熊区间、指标体检、股债性价比。它们原本全挤在一个 111KB 的文件里，现在各自
+5~14KB，主文件瘦到 86KB。
+
+- **新增三个模块**（均只依赖共享底座，单向）：
+  - `core/market_erp.py`（7.4KB）：ERP 股债性价比 —— 取数/读缓存/表/快照 + `ERP_*` 常量；
+  - `core/market_regime.py`（5.4KB）：牛熊区间与时长（`_regime_episodes`/`_summary`/`_all`）；
+  - `core/market_validity.py`（13.7KB）：指标体检（`_spearman`/`_quintile_spread`/`_dimension_validity`）
+    —— 单向 import `market_erp._erp_table`（估值的证据维度要它）。
+- **底座再進两批原语**：`ERP_PATH`（路径单一所有者再扩一条）+ 格式化原语
+  `_num`/`_pct`/`_rat`/`_yi` + `_features_frame`（照镜子与体检共用，放底座避免环）。
+- **实测数字**：`market_position_runner.py` **111.4KB → 86.4KB**（2051 → 1610 行，
+  本刀搬走 441 行）；base 10.3KB。三块合计 26.5KB。
+- **踩坑记录（都当场修掉）**：①提取脚本把上轮改过的 `mpio._ROOT` 一起搬进了基座
+  自己（基座里没有 `mpio`）→ 手工改正；②新模块缺 `os`/`json`/`warnings` 标准库导入
+  → 由"未解析名 AST 扫描"逐模块查出补齐（这个方法以后每次搬运都该跑）。
+- **测试隔离继续跟着搬**：`ERP_PATH` 也进了基座，conftest 改为 patch 基座
+  （`_IO_STATE_NAMES` 守卫同步加 `ERP_PATH`）。
+- **验收**：大盘域 126 例绿；全量 **3028 例绿 / 7 skip**；生产
+  `daily.jsonl`/`erp.jsonl` mtime 仍是 9/18 15:55。
+
+---
+
 ## 2026-09-19 — 架构审查修订批次 5.1 第一刀：抽出共享底座 `market_position_io`
 
 **一句话（大白话）**：本想直接拆最大的那个大盘文件，动手前先用工具扫了一遍

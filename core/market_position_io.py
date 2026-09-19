@@ -214,3 +214,57 @@ def latest() -> dict | None:
     """最新一条记录 (无录像返 None)。"""
     h = history(limit=1)
     return h[-1] if h else None
+
+
+# ── 第二批搬运 (2026-09-19 批次 5.1 第二刀): 路径 + 格式化/特征原语 ──
+
+#: 外部估值序列 (ERP 股债性价比) 的本地缓存, 一天一行。
+#: **为什么单独一个文件**: 它来自网络 (乐咕乐股), 与日线缓存这个数据源无关;
+#: 混进 daily.jsonl 会让"回填"这条纯本地路径变成联网路径。
+ERP_PATH = _ROOT / "data" / "market_position" / "erp.jsonl"
+
+
+def _features_frame(recs: list[dict]) -> pd.DataFrame:
+    """连续录像 → 照镜子用的特征表 (列 = SIMILAR_FEATURES, 索引 = 日期)。"""
+    rows = []
+    for r in recs:
+        idx = r.get("indices") or {}
+        b = r.get("breadth") or {}
+        t = r.get("turnover") or {}
+        traded = b.get("traded") or 0
+        hs = idx.get("hs300") or {}
+        sh = idx.get("shanghai") or {}
+        rows.append({
+            "date": r["date"],
+            "sh_pct": sh.get("pct_10y"),
+            "hs300_pct": hs.get("pct_10y"),
+            "above_ma20_pct": b.get("above_ma20_pct"),
+            "hl_spread_pct": (b.get("hl_spread") / traded * 100) if traded else None,
+            "vol_ann_20": hs.get("vol_ann_20"),
+            "amount_pct_1y": t.get("amount_pct_1y"),
+        })
+    df = pd.DataFrame(rows)
+    return df.set_index("date") if len(df) else df
+
+
+def _num(v, nd: int = 2) -> str:
+    return "【缺】" if v is None else f"{v:.{nd}f}"
+
+
+def _pct(v) -> str:
+    """带符号百分数 (收益/偏离/回撤 这类有方向的量)。
+
+    四舍五入后是 0 时不写符号 —— 写 "+0.0%" / "-0.0%" 会被当成有方向, 误导。
+    """
+    if v is None:
+        return "【缺】"
+    return "0.0%" if abs(float(v)) < 0.05 else f"{float(v):+.1f}%"
+
+
+def _rat(v) -> str:
+    """不带符号百分数 (占比/分位 这类 0~100 的量, 写 +90.9% 会误导)。"""
+    return "【缺】" if v is None else f"{v:.1f}%"
+
+
+def _yi(v) -> str:
+    return "【缺】" if v is None else f"{v:,.0f}亿元"
