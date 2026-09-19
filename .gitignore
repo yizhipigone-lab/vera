@@ -90,8 +90,14 @@ data/market_position/
 docs/research_inbox/
 
 # 2026-09-19 架构修订批次 1.4: 运行时数据/日志收口 (此前漏网, git status 1298 条噪音)
-data/formula_farm/       # 公式农场抓取的公式原文/账本 (运行时产物, 可重建)
-data/daily_review/       # 盘后复盘报告 (机器生成, 落盘即归档)
-data/morning_brief/      # 隔夜简报 (同上)
-logs/                    # 进程控制台日志 + .prev 轮转 (*.log 管不到 .prev 后缀)
-.agent-teams/            # agent 协作运行时状态
+# 注意: gitignore 不支持行内注释, # 必须在行首 (本次实测踩坑)
+# 公式农场抓取的公式原文/账本 (运行时产物, 可重建)
+data/formula_farm/
+# 盘后复盘报告 (机器生成, 落盘即归档)
+data/daily_review/
+# 隔夜简报 (同上)
+data/morning_brief/
+# 进程控制台日志 + .prev 轮转 (*.log 管不到 .prev 后缀)
+logs/
+# agent 协作运行时状态
+.agent-teams/
