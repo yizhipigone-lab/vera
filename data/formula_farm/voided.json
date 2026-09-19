@@ -1,0 +1,1401 @@
+{
+  "updated": "2026-09-17",
+  "note": "公式作废名单 — 唯一真相源。入库之后才发现源码踩中未来函数/漂移画图黑名单的公式登记在此: 原始成绩仍保留在 archive.json(数据不删, 可追溯), 但达标榜不计入、且禁止从达标榜回填回测页复跑。本文件独立于 archive.json, 因为 farm_backtest --rebuild-archive 会全量重建档案、会冲掉写在档案里的标记。",
+  "why": "2026-09-17 事件: 第一批达标 7 条里 6 条踩线(GS0607/GS1318/GS0737/GS1333 用 PLOYLINE, GS0651 用 DYNAINFO, GS0634 用 DYNAINFO+FINANCE)。根因 = 黑名单只在采集入库那一刻跑一次(farm_check 闸门①), 入库后不重判; 且当时黑名单里没有 PLOYLINE(POLYLINE 的俗写拼法), DYNAINFO/FINANCE/CAPITAL 也是 2026-09-17 才补录。",
+  "items": {
+    "GS0607": {
+      "date": "2026-09-17",
+      "reason": "未来函数:PLOYLINE(漂移画线, 返回值 ANA/ANB 直接参与买点判断)",
+      "prev_verdict": "pass",
+      "prev_annret": 0.244
+    },
+    "GS1318": {
+      "date": "2026-09-17",
+      "reason": "未来函数:PLOYLINE(漂移画线, 返回值 X_3/X_4 直接进信号条件)",
+      "prev_verdict": "pass",
+      "prev_annret": 0.228
+    },
+    "GS0737": {
+      "date": "2026-09-17",
+      "reason": "未来函数:PLOYLINE(与 GS1318 源码逐字相同, 同一族换皮)",
+      "prev_verdict": "pass",
+      "prev_annret": 0.227
+    },
+    "GS1333": {
+      "date": "2026-09-17",
+      "reason": "未来函数:PLOYLINE(斜率族换皮, 返回值 XG6/XG7 直接进信号条件)",
+      "prev_verdict": "pass",
+      "prev_annret": 0.224
+    },
+    "GS0651": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO(即时行情 DYNAINFO(4)>0 参与选股, 回测里拿的是当前值)",
+      "prev_verdict": "pass",
+      "prev_annret": 0.19
+    },
+    "GS0634": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO+FINANCE(竞价量/额/量比与流通股本撑起强度指标, 全部为实时+最新财务值)",
+      "prev_verdict": "pass",
+      "prev_annret": 0.172
+    },
+    "GS0654": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.05255603557161481,
+      "source_file": "59039_通达信放量粘合选股指标公式.md"
+    },
+    "GS0657": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0020026075416341715,
+      "source_file": "59095_通达信板后捉妖选股指标公式.md"
+    },
+    "GS0658": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.018107534600746655,
+      "source_file": "59107_通达信回调抄底选股指标公式.md"
+    },
+    "GS0673": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "59344_通达信小牛爬坡选股指标公式.md"
+    },
+    "GS0674": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0006729022132658802,
+      "source_file": "59396_通达信捕风捉影选股指标公式.md"
+    },
+    "GS0497": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "59523_通达信鱼跃于渊选股指标公式.md"
+    },
+    "GS0499": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0040825234549215494,
+      "source_file": "59560_通达信坦克冲锋选股指标公式.md"
+    },
+    "GS0503": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0944636361861908,
+      "source_file": "59629_通达信抄底至宝选股指标公式.md"
+    },
+    "GS0504": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.03737667800418021,
+      "source_file": "59648_通达信主升浪中短线选股指标公式.md"
+    },
+    "GS0528": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.008522140809894552,
+      "source_file": "60287_通达信超强潜伏选股指标公式.md"
+    },
+    "GS0533": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.09442398758298354,
+      "source_file": "60406_通达信火热抄底选股指标公式.md"
+    },
+    "GS0538": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0023319502560756877,
+      "source_file": "60554_通达信开花骑牛选股指标公式.md"
+    },
+    "GS0548": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.004455634987301504,
+      "source_file": "60788_通达信一触即发选股指标公式.md"
+    },
+    "GS0553": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "60939_通达信二板竞价选股指标公式.md"
+    },
+    "GS0557": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.007809043031436369,
+      "source_file": "61079_通达信潜伏在上涨前选股指标公式.md"
+    },
+    "GS0561": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0035577263354737987,
+      "source_file": "61207_通达信关注阴线买入选股指标公式.md"
+    },
+    "GS0562": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01229043966599308,
+      "source_file": "61223_通达信妖中妖选股指标公式.md"
+    },
+    "GS0565": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.014302183744650199,
+      "source_file": "61269_通达信妖股平台突破选股指标公式.md"
+    },
+    "GS0566": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "61286_通达信竞价龙选股指标公式.md"
+    },
+    "GS0567": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "61287_通达信超短强股选股指标公式.md"
+    },
+    "GS0568": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0023131245155607605,
+      "source_file": "61315_通达信板后缺三选股指标公式.md"
+    },
+    "GS0569": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0023787895665354775,
+      "source_file": "61317_通达信一箭双雕选股指标公式.md"
+    },
+    "GS0572": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005021791493291516,
+      "source_file": "61353_通达信三天二口选股指标公式.md"
+    },
+    "GS0574": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0018556363199675463,
+      "source_file": "61366_通达信猎杀起飞选股指标公式.md"
+    },
+    "GS0577": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "61424_通达信猛虎潜伏选股指标公式.md"
+    },
+    "GS0586": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -9.738247457669047e-05,
+      "source_file": "61543_通达信神奇地量选股指标公式.md"
+    },
+    "GS0587": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "61554_通达信潜伏区选股指标公式.md"
+    },
+    "GS0594": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.09442398758298354,
+      "source_file": "61675_通达信潜伏回升选股指标公式.md"
+    },
+    "GS0602": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0010330679274739296,
+      "source_file": "61845_通达信破板低吸选股指标公式.md"
+    },
+    "GS0605": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0025558276104994393,
+      "source_file": "61873_通达信小步上涨选股指标公式.md"
+    },
+    "GS0608": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0007792177491247054,
+      "source_file": "61957_通达信短线3个点选股指标公式.md"
+    },
+    "GS0610": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.07391926991974906,
+      "source_file": "61999_通达信擒妖选股指标公式.md"
+    },
+    "GS0619": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.07214054659664648,
+      "source_file": "62091_通达信埋伏低吸选股指标公式.md"
+    },
+    "GS0626": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.03930017802381269,
+      "source_file": "62161_通达信主升浪加强版选股指标公式.md"
+    },
+    "GS0629": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.09506814557977994,
+      "source_file": "62216_通达信潜伏准备选股指标公式.md"
+    },
+    "GS0630": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01810766121484364,
+      "source_file": "62229_通达信回调突破选股指标公式.md"
+    },
+    "GS0636": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0020188246861854164,
+      "source_file": "62287_通达信龙头启动抓板选股指标公式.md"
+    },
+    "GS0637": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0019062999310498485,
+      "source_file": "62288_通达信尾盘擒妖选股指标公式.md"
+    },
+    "GS0642": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0019062999310498485,
+      "source_file": "62329_通达信千万尾盘选股指标公式.md"
+    },
+    "GS0679": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0021322872872973075,
+      "source_file": "62471_通达信突破箱体选股指标公式.md"
+    },
+    "GS0680": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0014076646163672102,
+      "source_file": "62485_通达信雄霸天下选股指标公式.md"
+    },
+    "GS0681": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.11346437356762529,
+      "source_file": "62494_通达信竞价资金启动选股指标公式.md"
+    },
+    "GS0685": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0025206879571832985,
+      "source_file": "62533_通达信绝密换手率选股指标公式.md"
+    },
+    "GS0694": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0024012925391476703,
+      "source_file": "62598_通达信多头擒妖选股指标公式.md"
+    },
+    "GS0700": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0021322363128128963,
+      "source_file": "62651_通达信连阳首阴缩量选股指标公式.md"
+    },
+    "GS0701": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0013197150079358178,
+      "source_file": "62662_通达信牛什么牛选股指标公式.md"
+    },
+    "GS0711": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005421734947890888,
+      "source_file": "62850_通达信定首板选股指标公式.md"
+    },
+    "GS0716": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.00428165629184174,
+      "source_file": "62896_通达信倚天屠龙记选股指标公式.md"
+    },
+    "GS0717": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.075014863663309,
+      "source_file": "62897_通达信量价启动选股指标公式.md"
+    },
+    "GS0741": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.022946999062759765,
+      "source_file": "63148_通达信突破龙头选股指标公式.md"
+    },
+    "GS0742": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.006821450799202822,
+      "source_file": "63159_通达信老妖异动选股指标公式.md"
+    },
+    "GS0743": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "63168_通达信肉肉低吸选股指标公式.md"
+    },
+    "GS0745": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "63177_通达信N字首板选股指标公式.md"
+    },
+    "GS0749": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "63234_通达信五线上翘选股指标公式.md"
+    },
+    "GS0761": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "63368_通达信强势妖股选股指标公式.md"
+    },
+    "GS0774": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.051852900924889145,
+      "source_file": "63502_通达信小阳过半阴选股指标公式.md"
+    },
+    "GS0777": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005240948587533101,
+      "source_file": "63530_通达信开盘资金竞价选股指标公式.md"
+    },
+    "GS0780": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.011281714152927114,
+      "source_file": "63552_通达信深水摸鱼选股指标公式.md"
+    },
+    "GS0781": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0008871610854084278,
+      "source_file": "63554_通达信竞价优选选股指标公式.md"
+    },
+    "GS0782": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "63560_通达信主力进场选股指标公式.md"
+    },
+    "GS0784": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.02344340507800413,
+      "source_file": "63583_通达信巡阳雷达选股指标公式.md"
+    },
+    "GS0791": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0022533712015380125,
+      "source_file": "63718_通达信四阴跳空选股指标公式.md"
+    },
+    "GS0794": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.004852196677177956,
+      "source_file": "63746_通达信牛股潜伏选股指标公式.md"
+    },
+    "GS0801": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0006593156125496158,
+      "source_file": "63832_通达信大妖起爆选股指标公式.md"
+    },
+    "GS0805": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.002190283433476825,
+      "source_file": "63872_通达信龙头趋势启动选股指标公式.md"
+    },
+    "GS0806": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.10252202025264912,
+      "source_file": "63904_通达信原则抄底选股指标公式.md"
+    },
+    "GS0818": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "64026_通达信波段异动选股指标公式.md"
+    },
+    "GS0826": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "64126_通达信彩虹低吸选股指标公式.md"
+    },
+    "GS0836": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "64231_通达信竞价无敌选股指标公式.md"
+    },
+    "GS0848": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0002234913988143905,
+      "source_file": "64356_通达信凌波微步选股指标公式.md"
+    },
+    "GS0853": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0021323416265157658,
+      "source_file": "64406_通达信决战主升浪选股指标公式.md"
+    },
+    "GS0857": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.009770001395839056,
+      "source_file": "64471_通达信黄金共振选股指标公式.md"
+    },
+    "GS0858": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.003689996007506746,
+      "source_file": "64480_通达信三天缩量涨停选股指标公式.md"
+    },
+    "GS0861": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0025069543950155815,
+      "source_file": "64523_通达信一进二大全选股指标公式.md"
+    },
+    "GS0862": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.045034022201927426,
+      "source_file": "64533_通达信多头强势选股指标公式.md"
+    },
+    "GS0866": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0005628863304298903,
+      "source_file": "64575_通达信猎杀强势股选股指标公式.md"
+    },
+    "GS0878": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.003855961767012195,
+      "source_file": "64727_通达信中冲剑选股指标公式.md"
+    },
+    "GS0884": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0005613469904135471,
+      "source_file": "64755_通达信简单首板选股指标公式.md"
+    },
+    "GS0886": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.03849594574429305,
+      "source_file": "64764_通达信突破短买选股指标公式.md"
+    },
+    "GS0894": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.010102404308018342,
+      "source_file": "64844_通达信去除垃圾股选股指标公式.md"
+    },
+    "GS0896": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0007483293411236769,
+      "source_file": "64859_通达信今日连板选股指标公式.md"
+    },
+    "GS0899": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0007407593550310398,
+      "source_file": "64911_通达信涨停起爆点选股指标公式.md"
+    },
+    "GS0903": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.025592717186890157,
+      "source_file": "64975_通达信金峰暴力选股指标公式.md"
+    },
+    "GS0907": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.004791922387332281,
+      "source_file": "65009_通达信买入吃波段选股指标公式.md"
+    },
+    "GS0909": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0018776919474130516,
+      "source_file": "65034_通达信牛股起点选股指标公式.md"
+    },
+    "GS0912": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.004570687377829952,
+      "source_file": "65046_通达信黑马聚宝盆选股指标公式.md"
+    },
+    "GS0916": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0030080044327787103,
+      "source_file": "65089_通达信买点五选股指标公式.md"
+    },
+    "GS0921": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.001527308592355281,
+      "source_file": "65143_通达信剑傲群雄选股指标公式.md"
+    },
+    "GS0926": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0014215925016813902,
+      "source_file": "65183_通达信牛熊通吃选股指标公式.md"
+    },
+    "GS0929": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01090505124952279,
+      "source_file": "65205_通达信主力尾盘选股指标公式.md"
+    },
+    "GS0945": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0187686432988714,
+      "source_file": "65375_通达信中长价金叉选股指标公式.md"
+    },
+    "GS0955": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.001026978711275106,
+      "source_file": "65458_通达信创业板N形态选股指标公式.md"
+    },
+    "GS0956": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.008497999577992355,
+      "source_file": "65464_通达信连阴洗盘抄底选股指标公式.md"
+    },
+    "GS0959": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.013595588616789112,
+      "source_file": "65490_通达信薛斯擒龙选股指标公式.md"
+    },
+    "GS0960": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0017789773415770593,
+      "source_file": "65497_通达信超级打首板选股指标公式.md"
+    },
+    "GS0978": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01591626338886032,
+      "source_file": "65652_通达信锁定起爆点选股指标公式.md"
+    },
+    "GS0979": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0006523002507601294,
+      "source_file": "65654_通达信找牛股选股指标公式.md"
+    },
+    "GS0982": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0013146126275465075,
+      "source_file": "65681_通达信龙舟抓龙选股指标公式.md"
+    },
+    "GS0992": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "65797_通达信竞价捉牛选股指标公式.md"
+    },
+    "GS0994": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0002773837593166295,
+      "source_file": "65806_通达信一夜持股选股指标公式.md"
+    },
+    "GS0995": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0014099367751525538,
+      "source_file": "65817_通达信强庄起爆点选股指标公式.md"
+    },
+    "GS0997": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.00719533201716982,
+      "source_file": "65857_通达信竞价首板精选选股指标公式.md"
+    },
+    "GS0998": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.013482071455192202,
+      "source_file": "65868_通达信温和放量选股指标公式.md"
+    },
+    "GS1006": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.016999027529340793,
+      "source_file": "65949_通达信圣龙抄底选股指标公式.md"
+    },
+    "GS1008": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005409045068907492,
+      "source_file": "65973_通达信进场飞龙选股指标公式.md"
+    },
+    "GS1013": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0029145309105884643,
+      "source_file": "66039_通达信核心竞选选股指标公式.md"
+    },
+    "GS1017": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "66081_通达信临近尾盘选股指标公式.md"
+    },
+    "GS1021": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0009086725870506296,
+      "source_file": "66127_通达信一剑化清风选股指标公式.md"
+    },
+    "GS1023": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.013042094441766405,
+      "source_file": "66155_通达信精心优化选股指标公式.md"
+    },
+    "GS1024": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "66176_通达信牛影选股指标公式.md"
+    },
+    "GS1025": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005238208338247841,
+      "source_file": "66188_通达信新仙人指路选股指标公式.md"
+    },
+    "GS1032": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.04553724834229267,
+      "source_file": "66307_通达信财务突破买点选股指标公式.md"
+    },
+    "GS1035": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0022436065225677204,
+      "source_file": "66335_通达信龙头首阴选股指标公式.md"
+    },
+    "GS1041": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "66412_通达信爆量竞价打板选股指标公式.md"
+    },
+    "GS1049": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0014942786027898336,
+      "source_file": "66469_通达信私募强庄选股指标公式.md"
+    },
+    "GS1053": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.006699294766959962,
+      "source_file": "66530_通达信竞价力道选股指标公式.md"
+    },
+    "GS1058": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.09790088605828151,
+      "source_file": "66557_通达信下单买入选股指标公式.md"
+    },
+    "GS1059": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01056492562975997,
+      "source_file": "66558_通达信牛妖回头选股指标公式.md"
+    },
+    "GS1064": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0025223229734807617,
+      "source_file": "66602_通达信一进二选股指标公式.md"
+    },
+    "GS1071": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.022079852856262905,
+      "source_file": "66682_通达信超级趋势选股指标公式.md"
+    },
+    "GS1080": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.015830075145540023,
+      "source_file": "66762_通达信超跌低买选股指标公式.md"
+    },
+    "GS1090": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": -0.0018152241410436254,
+      "source_file": "66847_通达信尾盘绝杀选股指标公式.md"
+    },
+    "GS1094": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.002214760423833839,
+      "source_file": "66887_通达信小阳建仓选股指标公式.md"
+    },
+    "GS1095": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.011357112480600895,
+      "source_file": "66895_通达信了凡抄底选股指标公式.md"
+    },
+    "GS1099": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "66929_通达信啄木鸟金妖选股指标公式.md"
+    },
+    "GS1103": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.11822478906084011,
+      "source_file": "66976_通达信金回头选股指标公式.md"
+    },
+    "GS1109": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0014025678960585264,
+      "source_file": "67037_通达信红利支点选股指标公式.md"
+    },
+    "GS1113": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": -9.899118884293401e-05,
+      "source_file": "67085_通达信抓连板打妖王选股指标公式.md"
+    },
+    "GS1114": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0004418786931396079,
+      "source_file": "67096_通达信超牛短线选股指标公式.md"
+    },
+    "GS1115": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.006834487723934579,
+      "source_file": "67108_通达信抓板块龙头选股指标公式.md"
+    },
+    "GS1119": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0008321779684632435,
+      "source_file": "67145_通达信追击尾盘选股指标公式.md"
+    },
+    "GS1121": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0045061241676978,
+      "source_file": "67164_通达信妖股强势选股指标公式.md"
+    },
+    "GS1130": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.00011387956858766035,
+      "source_file": "67251_通达信超牛地量选股指标公式.md"
+    },
+    "GS1131": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01683257067162347,
+      "source_file": "67256_通达信回调买点选股指标公式.md"
+    },
+    "GS1136": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.042605487781743,
+      "source_file": "67295_通达信潜伏启动选股指标公式.md"
+    },
+    "GS1139": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": -0.0006061697590296067,
+      "source_file": "67325_通达信拉升后回调选股指标公式.md"
+    },
+    "GS1143": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.003372471329099902,
+      "source_file": "67406_通达信极品阳包阴选股指标公式.md"
+    },
+    "GS1144": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.007706107885021574,
+      "source_file": "67419_通达信大底反转选股指标公式.md"
+    },
+    "GS1155": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0040365003512001785,
+      "source_file": "67507_通达信绝对龙头选股指标公式.md"
+    },
+    "GS1159": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.04227754359152858,
+      "source_file": "67545_通达信赢钱选股指标公式.md"
+    },
+    "GS1175": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.015939768099558105,
+      "source_file": "67783_通达信多头逼空主升选股指标公式.md"
+    },
+    "GS1181": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.03050800043513513,
+      "source_file": "67840_通达信一字板开口选股指标公式.md"
+    },
+    "GS1182": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.011019374978276542,
+      "source_file": "67845_通达信板妖股第二波选股指标公式.md"
+    },
+    "GS1183": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0029818866115058906,
+      "source_file": "67851_通达信挖掘资金波动选股指标公式.md"
+    },
+    "GS1184": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0026464111886157493,
+      "source_file": "67871_通达信尾盘抢筹选股指标公式.md"
+    },
+    "GS1187": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0007116911518760816,
+      "source_file": "67898_通达信凹底掘金选股指标公式.md"
+    },
+    "GS1188": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0008916933109146541,
+      "source_file": "67903_通达信变盘速买选股指标公式.md"
+    },
+    "GS1194": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.011676029841506619,
+      "source_file": "67946_通达信强牛启动选股指标公式.md"
+    },
+    "GS1195": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0016887930039675147,
+      "source_file": "67952_通达信伏击潜力选股指标公式.md"
+    },
+    "GS1196": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "67958_通达信利剑出击竞价选股指标公式.md"
+    },
+    "GS1197": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.015725142698246986,
+      "source_file": "67965_通达信黑马起爆选股指标公式.md"
+    },
+    "GS1208": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": -0.000644015679367671,
+      "source_file": "68080_通达信尾盘进选股指标公式.md"
+    },
+    "GS1209": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.003153852533062107,
+      "source_file": "68087_通达信缩量回调放量选股指标公式.md"
+    },
+    "GS1210": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0004996426537233756,
+      "source_file": "68093_通达信兵贵神速选股指标公式.md"
+    },
+    "GS1211": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.011647712674984101,
+      "source_file": "68107_通达信私幕打板选股指标公式.md"
+    },
+    "GS1215": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0021685289612556335,
+      "source_file": "68254_通达信斗转星移选股指标公式.md"
+    },
+    "GS1219": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0061793865882942,
+      "source_file": "68302_通达信加仓先锋选股指标公式.md"
+    },
+    "GS1227": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0007817126849836153,
+      "source_file": "68377_通达信龙腾飞升选股指标公式.md"
+    },
+    "GS1228": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.002173984207136659,
+      "source_file": "68384_通达信强势龙头股选股指标公式.md"
+    },
+    "GS1230": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "68397_通达信弱势阳包阴选股指标公式.md"
+    },
+    "GS1234": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "68434_通达信隔夜获利选股指标公式.md"
+    },
+    "GS1237": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0025223229734807617,
+      "source_file": "68453_通达信游资主力一进二选股指标公式.md"
+    },
+    "GS1238": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.025961527935150608,
+      "source_file": "68461_通达信三阴杀入选股指标公式.md"
+    },
+    "GS1248": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.007109243802671861,
+      "source_file": "68552_通达信扶摇美人肩选股指标公式.md"
+    },
+    "GS1250": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "68571_通达信品字形选股指标公式.md"
+    },
+    "GS1251": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "68578_通达信阴阳诀选股指标公式.md"
+    },
+    "GS1269": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0011518953933675746,
+      "source_file": "68721_通达信N字双板选股指标公式.md"
+    },
+    "GS1270": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0011444147551582518,
+      "source_file": "68732_通达信起死回生选股指标公式.md"
+    },
+    "GS1273": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.01354588736549922,
+      "source_file": "68753_通达信换手底部选股指标公式.md"
+    },
+    "GS1277": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.002189612372408778,
+      "source_file": "68776_通达信主力真突破选股指标公式.md"
+    },
+    "GS1283": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.05765730072691633,
+      "source_file": "68812_通达信捉妖筹码选股指标公式.md"
+    },
+    "GS1285": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0014024682185831416,
+      "source_file": "68824_通达信妖股起飞选股指标公式.md"
+    },
+    "GS1286": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.002189612372408778,
+      "source_file": "68830_通达信判断真假突破选股指标公式.md"
+    },
+    "GS1289": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": -0.00020364250116100546,
+      "source_file": "69359_通达信龙头出现选股指标公式.md"
+    },
+    "GS1292": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0010114990053033956,
+      "source_file": "68901_通达信百战功成选股指标公式.md"
+    },
+    "GS1297": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.014175424385809654,
+      "source_file": "68948_通达信游资短线选股指标公式.md"
+    },
+    "GS1299": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0021813968975890052,
+      "source_file": "69440_通达信超强主力选股指标公式.md"
+    },
+    "GS1306": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "69003_通达信炸板倍阳选股指标公式.md"
+    },
+    "GS1307": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 5.9028690997386946e-05,
+      "source_file": "69016_通达信新低爆量选股指标公式.md"
+    },
+    "GS1315": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.029280797046657092,
+      "source_file": "69072_通达信趋势寻妖选股指标公式.md"
+    },
+    "GS1321": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0015428549913394374,
+      "source_file": "69124_通达信二波启动选股指标公式.md"
+    },
+    "GS1325": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.09334639111612897,
+      "source_file": "69149_通达信主力猎手选股指标公式.md"
+    },
+    "GS1332": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005267788687294939,
+      "source_file": "69207_通达信乾坤尾盘选股指标公式.md"
+    },
+    "GS1293": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0007571332834765965,
+      "source_file": "69389_通达信高开阳选股指标公式.md"
+    },
+    "GS1294": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.003177440506764162,
+      "source_file": "69395_通达信龙头起点选股指标公式.md"
+    },
+    "GS1296": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.005553248252290421,
+      "source_file": "69411_通达信龙头浮现选股指标公式.md"
+    },
+    "GS1298": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.012834058704960682,
+      "source_file": "69429_通达信资金先知加强选股指标公式.md"
+    },
+    "GS1300": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.026053227784636368,
+      "source_file": "69445_通达信龙头万手单选股指标公式.md"
+    },
+    "GS1310": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "invalid",
+      "prev_annret": null,
+      "source_file": "69486_通达信拐点必杀选股指标公式.md"
+    },
+    "GS1311": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.11988892875197132,
+      "source_file": "69492_通达信昨日涨停接力选股指标公式.md"
+    },
+    "GS0457": {
+      "date": "2026-09-17",
+      "reason": "未来函数:DYNAINFO",
+      "prev_verdict": "fail",
+      "prev_annret": 0.002222068932015153,
+      "source_file": "70575_通达信龙头高歌选股指标公式.md"
+    },
+    "GS0459": {
+      "date": "2026-09-17",
+      "reason": "未来函数:PLOYLINE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.030368955057975766,
+      "source_file": "70587_通达信牛妖预警选股指标公式.md"
+    },
+    "GS0462": {
+      "date": "2026-09-17",
+      "reason": "未来函数:FINANCE",
+      "prev_verdict": "fail",
+      "prev_annret": 0.0002936373320752139,
+      "source_file": "70606_通达信巨量上涨选股指标公式.md"
+    },
+    "GS0463": {
+      "date": "2026-09-17",
+      "reason": "未来函数:CAPITAL",
+      "prev_verdict": "insufficient",
+      "prev_annret": 0.0032901537258955837,
+      "source_file": "70612_通达信历史低位抄底选股指标公式.md"
+    }
+  }
+}

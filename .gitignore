@@ -93,8 +93,13 @@ docs/research_inbox/
 
 # 2026-09-19 架构修订批次 1.4: 运行时数据/日志收口 (此前漏网, git status 1298 条噪音)
 # 注意: gitignore 不支持行内注释, # 必须在行首 (本次实测踩坑)
-# 公式农场抓取的公式原文/账本 (运行时产物, 可重建)
-data/formula_farm/
+# 公式农场: 抓取的公式原文/日报属运行时产物(可重建), 但 **voided.json 是
+# 203 条人工作废判定 = 唯一真相源, 不可重建** —— 必须入库 (2026-09-20 审计 P1-2:
+# 原规则把它一起挡在 git 外, 一条 git clean 就永久删除)。
+# 坑: 不能写 `data/formula_farm/` 再 `!.../voided.json` —— 父目录被整体忽略后
+# git 不再往里看, 例外永不生效; 必须写成 `data/formula_farm/*` (忽略内容)。
+data/formula_farm/*
+!data/formula_farm/voided.json
 # 盘后复盘报告 (机器生成, 落盘即归档)
 data/daily_review/
 # 隔夜简报 (同上)
@@ -103,3 +108,9 @@ data/morning_brief/
 logs/
 # agent 协作运行时状态
 .agent-teams/
+
+# 2026-09-20 审计 P1-3: `*.csv` / `*.json` 会误伤测试夹具 —— 新克隆跑
+# test_market_event_sources 直接 FileNotFoundError (全量套件不可复现)。
+# 夹具是"测试输入", 不是运行时产物, 一律入库。
+!tests/fixtures/**
+!tests/web/mobile_contract_snapshot.json
