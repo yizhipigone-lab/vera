@@ -230,6 +230,97 @@ def _register_market_position(sched: VeraScheduler) -> None:
                     hhmm="09:05")
 
 
+# ── 大盘环境仪表盘 (2026-09-18 四页签改造) ─────────────────────────
+# 三个 daily job 的时点由**数据物理时序**决定(见计划书 §8, 非设计偏好):
+#   16:30 全量(A股收盘版): 晚于 15:45 缓存补尾段; 此刻两融/美债仍是 T-1(标注滞后)
+#   08:30 全球补齐: 两融(T日晚才发)/美债(美东未收盘)此刻才齐, 重算并覆盖同一交易日快照
+#   09:30 宏观轮询: 央行/统计局多在上午发 M1M2/PMI/PPI, 仅发布窗口内真正取数
+# 另加一个 weekly job(2026-09-19 用户拍板): 周六 18:00 周末快照刷新 ——
+#   daily job 有交易日门槛周末不跑, 而事件扫描可能在周末落库, 没有它事件
+#   要等下周一 08:30 才进快照(周末打开"事件跟踪"是空的)。
+
+def _job_market_dashboard_close() -> None:
+    """每交易日 16:30: 大盘仪表盘全量更新(A股收盘版)。"""
+    from core import market_dashboard_runner as mdr
+    res = mdr.refresh_close(write=True)
+    if not res.get("ok"):
+        _logger.warning("大盘仪表盘 16:30 全量更新失败: %s", res.get("reason"))
+        return
+    s = res["snapshot"]["scores"]
+    _logger.info("大盘仪表盘 16:30: %s 总分 %.2f (%s), 校验 err=%.4f",
+                 res["snapshot"]["date"], s["final_total"], s["label"], s["check_err"])
+
+
+def _job_market_dashboard_fill() -> None:
+    """每交易日 08:30: 全球补齐版(重取两融/美债/汇率/宏观, 覆盖同一交易日快照)。
+
+    2026-09-19 起, 补齐前先刷新美联储利率预期常驻事件(美债2年, 美财政部一手源):
+    财政部日度收益率美东傍晚发布 ≈ 北京时间清晨, 08:30 必能取到 T-1 值;
+    先更新台账再 refresh_fill, 新读数当次就烤进快照。fail-soft: 失败只告警,
+    绝不阻塞仪表盘补齐本身。
+    """
+    try:
+        from core import market_event_scan as ms
+        r = ms.update_fed_rate_event()
+        if r["updated"]:
+            _logger.info("fed_rate 跟踪器: %s, 分数 %+.2f (%s)",
+                         "分数变动" if r["changed"] else "读数刷新", r["score"],
+                         r["proxy"]["source"])
+        else:
+            _logger.warning("fed_rate 跟踪器无数据(双源全失败), 本次不更新")
+    except Exception as e:
+        _logger.warning("fed_rate 跟踪器刷新失败(不阻塞仪表盘): %s", e)
+    from core import market_dashboard_runner as mdr
+    res = mdr.refresh_fill(write=True)
+    if not res.get("ok"):
+        _logger.warning("大盘仪表盘 08:30 全球补齐: %s", res.get("reason"))
+        return
+    s = res["snapshot"]["scores"]
+    _logger.info("大盘仪表盘 08:30 补齐: %s 总分 %.2f", res["snapshot"]["date"], s["final_total"])
+
+
+def _job_market_dashboard_macro() -> None:
+    """每交易日 09:30: 宏观月度数据轮询(仅发布窗口内真正取数, 否则秒回 no-op)。"""
+    from core import market_dashboard_runner as mdr
+    res = mdr.refresh_macro(write=True)
+    if res.get("skipped"):
+        _logger.info("大盘仪表盘宏观轮询: 不在发布窗口, 跳过")
+    elif not res.get("ok"):
+        _logger.warning("大盘仪表盘宏观轮询失败: %s", res.get("reason"))
+
+
+def _job_market_dashboard_weekend() -> None:
+    """每周六 18:00: 周末快照刷新 (不看交易日)。
+
+    背景(2026-09-19 用户拍板): 事件扫描可能在周末落库, 而三个 daily job
+    有交易日门槛、周末不跑 → 事件要等下周一 08:30 才进快照, 周末打开页面
+    事件跟踪是空的。本 job 周六晚跑一次 refresh_close: 内部自动回退到最近
+    交易日落账(不落"周六快照"), 把周末新录的事件烤进快照。指标数据周末
+    几乎不变, 主要收益就是让事件清单/修正分及时可见; 周日录的事件仍等
+    周一 08:30 补齐版(或页面手动刷新)。
+    """
+    from core import market_dashboard_runner as mdr
+    res = mdr.refresh_close(write=True)
+    if not res.get("ok"):
+        _logger.warning("大盘仪表盘周六刷新失败: %s", res.get("reason"))
+        return
+    s = res["snapshot"]["scores"]
+    _logger.info("大盘仪表盘周六刷新: %s 总分 %.2f (%s), 事件修正 %+.2f",
+                 res["snapshot"]["date"], s["final_total"], s["label"],
+                 s["event_adj"])
+
+
+def _register_market_dashboard(sched: VeraScheduler) -> None:
+    """注册大盘仪表盘三个 job (与既有 market_position 并列, 不改动旧 job)。"""
+    sched.add_daily("market_dashboard_close", _job_market_dashboard_close, hhmm="16:30")
+    sched.add_daily("market_dashboard_fill", _job_market_dashboard_fill, hhmm="08:30")
+    sched.add_daily("market_dashboard_macro", _job_market_dashboard_macro, hhmm="09:30")
+    # 周末快照刷新: weekly 语义不看交易日(同 weekly_evolution 的 P0-2 修复),
+    # 周六 18:00 跑一次, 把周末落库的事件烤进快照
+    sched.add_weekly("market_dashboard_weekend", _job_market_dashboard_weekend,
+                     weekday=5, hhmm="18:00")
+
+
 def _register_sentiment(sched: VeraScheduler) -> None:
     """注册盘中舆情扫描 interval job。
 
@@ -290,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     # 大盘位置: 15:50 采集(排在 15:45 缓存补尾段之后) → 15:55 补采+推体温表
     # → 次日 09:05 只补采(兜底, 不推送)。详见 _register_market_position。
     _register_market_position(sched)
+    _register_market_dashboard(sched)
     _register_sentiment(sched)
     sched.start(block=False)
 

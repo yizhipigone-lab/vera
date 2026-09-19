@@ -138,3 +138,93 @@ def mp_collect(backfill: bool = Query(False)):
     if not res.get("ok"):
         raise HTTPException(409, res.get("reason") or "采集失败")
     return {"success": True, **{k: v for k, v in res.items() if k != "snapshot"}}
+
+
+# ════════════════ 大盘环境仪表盘 (2026-09-18 四页签改造) ════════════════
+# 打分引擎 core/market_score / 事件引擎 core/market_events / 编排
+# core/market_dashboard_runner 均为只读研判, **不 import trade**(业务铁律 1),
+# 与既有 market_position 同一套 AST 守护。薄层只做转发, 不重复实现逻辑。
+
+
+@router.get("/api/market_position/dashboard")
+async def mp_dashboard():
+    """最新仪表盘完整数据 (四个页签共用: 总览/指标明细/事件跟踪/历史走势)。"""
+    try:
+        from core import market_dashboard_runner as mdr
+        snap = mdr.latest()
+        if snap is None:
+            return {"success": True, "snapshot": None,
+                    "reason": "还没有仪表盘快照，先跑 refresh_close 或点页面「手动刷新」"}
+        return {"success": True, "snapshot": snap, "status": mdr.status()}
+    except Exception as e:  # 松耦合: 本页挂了不影响其他页签
+        logger.warning("大盘仪表盘读取异常: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/market_position/dashboard/history")
+async def mp_dashboard_history(days: int = Query(30, ge=1, le=500)):
+    """历史总分序列 (TAB4 趋势图, days ∈ 7/30/90)。"""
+    try:
+        from core import market_dashboard_runner as mdr
+        return {"success": True, "items": mdr.history(days)}
+    except Exception as e:
+        logger.warning("大盘仪表盘历史读取异常: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/market_position/dashboard/erp_series")
+async def mp_dashboard_erp_series():
+    """ERP 股债性价比全历史序列 (总览页「22 年长卷」图用; 只读本地文件)。"""
+    try:
+        from core import market_dashboard_runner as mdr
+        return mdr.erp_series()
+    except Exception as e:
+        logger.warning("ERP 序列读取异常: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/market_position/dashboard/status")
+async def mp_dashboard_status():
+    """更新状态 (上次更新/下次更新时点/各维度数据截止) —— 状态栏与倒计时用。"""
+    try:
+        from core import market_dashboard_runner as mdr
+        return {"success": True, **mdr.status()}
+    except Exception as e:
+        logger.warning("大盘仪表盘状态读取异常: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/api/market_position/dashboard/refresh")
+def mp_dashboard_refresh():
+    """手动全量刷新 (状态栏「手动刷新」按钮用; 同步端点 → FastAPI 自动丢线程池)。"""
+    from core import market_dashboard_runner as mdr
+    try:
+        res = mdr.refresh_close(write=True)
+    except Exception as e:
+        logger.warning("大盘仪表盘手动刷新异常: %s", e, exc_info=True)
+        raise HTTPException(500, f"刷新异常: {e}") from None
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("reason") or "刷新失败")
+    snap = res["snapshot"]
+    return {"success": True, "date": snap["date"],
+            "final_total": snap["scores"]["final_total"],
+            "label": snap["scores"]["label"]}
+
+
+@router.post("/api/market_position/dashboard/event")
+async def mp_dashboard_event_add(level: str = Query(..., description="epic/major/minor"),
+                                 title: str = Query(..., description="事件简述"),
+                                 score: float = Query(..., description="初始修正分(±), 会被 clamp 到该等级上限"),
+                                 logic: str = Query("", description="打分逻辑(大白话)")):
+    """人工录入一个重大事件 (TAB3 事件跟踪用; 本期事件靠人工录入, 自动扫描二期再做)。"""
+    import datetime as _dt
+    from core import market_events as me
+    try:
+        e = me.add_event(level=level, title=title, initial_score=score,
+                         start_date=_dt.date.today(), logic=logic)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex)) from None
+    except Exception as e:
+        logger.warning("事件录入异常: %s", e, exc_info=True)
+        raise HTTPException(500, f"事件录入异常: {e}") from None
+    return {"success": True, "event": e}
