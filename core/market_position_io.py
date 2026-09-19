@@ -268,3 +268,29 @@ def _rat(v) -> str:
 
 def _yi(v) -> str:
     return "【缺】" if v is None else f"{v:,.0f}亿元"
+
+
+# ── 第三批搬运 (2026-09-19 批次 5.1 第三刀): 年份分解 (照镜子与影子回放共用) ──
+
+def _year_breakdown(items: list[dict], key: str) -> list[dict]:
+    """按年份拆解命中日: 该年命中几天、之后涨跌的中位数、上涨占比 (§14.3)。
+
+    **为什么必须有这张表**: 没有它, "命中日之后 20 日中位数 −12.3%" 就是一个没有
+    出处的数字 —— 它可能来自 **5 个不同的年份**(那是 5 份独立经验), 也可能来自
+    **同一个年份的 20 个交易日**(那其实是 1 份经验的 20 个分身, 涨跌还高度重叠)。
+    这两种情况的含义天差地别。
+    """
+    grp: dict[str, list] = {}
+    for it in items:
+        v = it.get(key)
+        if v is None:
+            continue
+        grp.setdefault(str(it["date"])[:4], []).append(float(v))
+    out = []
+    for y in sorted(grp):
+        vs = grp[y]
+        out.append({"year": y, "n": len(vs),
+                    "median_pct": _f(pd.Series(vs).median(), 2),
+                    "up_ratio_pct": _f(sum(1 for x in vs if x > 0) / len(vs) * 100, 0)})
+    return out
+
