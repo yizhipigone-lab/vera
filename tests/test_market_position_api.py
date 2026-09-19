@@ -23,9 +23,16 @@ from market_position_api import router  # noqa: E402
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
-    """独立 app（只挂大盘位置路由）+ 录像目录指向 tmp（不碰生产录像）。"""
-    from core import market_position_runner as mpr
-    monkeypatch.setattr(mpr, "DAILY_PATH", tmp_path / "daily.jsonl")
+    """独立 app（只挂大盘位置路由）+ 录像目录指向 tmp（不碰生产录像）。
+
+    2026-09-19 批次 5.1: DAILY_PATH 的家已搬到共享底座
+    `core/market_position_io` —— **patch 点必须跟着搬**。别 patch
+    `mpr.DAILY_PATH`: 那是模块级 `__getattr__` 转发出来的, monkeypatch 撤销时
+    会把它**实体化成真实属性**, 从此永久 shadow 转发 (实测: 本文件跑完后
+    runner 测试全红 —— 写 tmp、读生产, 正是投毒型事故)。
+    """
+    from core import market_position_io as mpio
+    monkeypatch.setattr(mpio, "DAILY_PATH", tmp_path / "daily.jsonl")
     app = FastAPI()
     app.include_router(router)
     return TestClient(app)

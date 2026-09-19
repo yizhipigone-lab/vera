@@ -5,6 +5,35 @@
 
 ---
 
+## 2026-09-19 — 架构审查修订批次 5.1 第一刀：抽出共享底座 `market_position_io`
+
+**一句话（大白话）**：本想直接拆最大的那个大盘文件，动手前先用工具扫了一遍
+依赖，发现四块全都挂在同一组共享函数上、先拆谁都会撞循环 import —— 于是先抽
+**共享底座**（路径常量 + 取数/落盘/读取原语），为后面几刀铺路。这一刀顺带
+把一个"测试写生产数据"的隐患改成了机器守卫。
+
+- **新增 `core/market_position_io.py`（216 行）**：`_ROOT` / `KLINE_1D_DIR` /
+  `DAILY_PATH` / `INDEX_SPECS` / `_UPSERT_LOCK_TIMEOUT` + `_index_series` / `_f` /
+  `_expected_trading_day` / `_upsert`(+`_upsert_locked`/`_cross_process_lock`/平台锁原语) /
+  `history` / `latest`。runner 2166 → 2051 行（搬走 157 行 + 新增转发层约 42 行）。
+- **路径常量单一所有者（关键设计）**：这三个路径只在基座定义，runner **不留副本**，
+  旧入口 `mpr.DAILY_PATH` / `mpr.KLINE_1D_DIR` 由**模块级 `__getattr__`（PEP 562）
+  动态转发** —— 不做 `X = mpio.X` 快照（快照会在基座被 patch 后变陈旧，谁读它谁写
+  生产路径）。runner 内部一律 `mpio.X` **调用期取值**。
+- **测试隔离 patch 点跟着搬**：conftest 改 patch 基座（`ERP_PATH` 仍在 runner）；
+  `tests/test_market_position_api.py` 的 `setattr(mpr, "DAILY_PATH", …)` 改 patch 基座。
+- **实测踩坑并加了守卫**：`monkeypatch.setattr(mpr, "DAILY_PATH", …)` 撤销时会把它
+  **实体化成真实属性**，从此永久 shadow `__getattr__` 转发 → 之后"写 tmp、读生产"
+  （全量跑出 4 例失败，正是这个机制）。处置：①改打基座；②新增 `TestIsolationGuard`
+  三条守卫 —— 路径必须落在 tmp、runner 不许有 `_IO_STATE_NAMES`（路径/阈值）的实体
+  副本、runner 的 `history()` 必须跟着基座走（证明是调用期取值而非快照）。
+- **module 内裸全局名不走 `__getattr__`**：runner 内部还在用的 `_upsert` 必须显式
+  import（只靠转发会在运行期 `NameError` —— 实测踩中）。
+- **测试**：全量 **3028 例绿 / 7 skip**；生产 `data/market_position/daily.jsonl` 与
+  `erp.jsonl` 的 mtime 仍是 9/18 15:55（**测试没碰生产数据**，直接证据）。
+
+---
+
 ## 2026-09-19 — 架构审查修订批次 5（5.3 完成；5.1/5.2 勘误后延后）
 
 **一句话（大白话）**：把"模块公开方法 ≤8"这条规矩从**数个数**改成**看本质** ——

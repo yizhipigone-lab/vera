@@ -142,12 +142,16 @@ def _isolate_caches(tmp_path):
         _rot.SHADOW_LOG_PATH = tmp_shadow
     # 2026-09-17: 大盘位置连续录像 + 日线缓存目录 —— 同一投毒风险 (测试若真跑
     # collect 会把假指标写进生产 data/market_position/daily.jsonl)。
+    # 2026-09-19 批次 5.1: 这三个路径里的 DAILY_PATH / KLINE_1D_DIR 已搬到共享
+    # 底座 core/market_position_io.py —— **patch 点必须跟着搬**: 只 patch runner
+    # 的话, 基座里的实现照旧读生产路径 (投毒型事故)。ERP_PATH 仍在 runner。
+    import core.market_position_io as _mpio
     import core.market_position_runner as _mpr
-    orig_mp_path = _mpr.DAILY_PATH
-    orig_mp_kline = _mpr.KLINE_1D_DIR
+    orig_mp_path = _mpio.DAILY_PATH
+    orig_mp_kline = _mpio.KLINE_1D_DIR
     orig_mp_erp = _mpr.ERP_PATH
-    _mpr.DAILY_PATH = tmp_path / "market_position" / "daily.jsonl"
-    _mpr.KLINE_1D_DIR = tmp_path / "kline_cache" / "1d"
+    _mpio.DAILY_PATH = tmp_path / "market_position" / "daily.jsonl"
+    _mpio.KLINE_1D_DIR = tmp_path / "kline_cache" / "1d"
     _mpr.ERP_PATH = tmp_path / "market_position" / "erp.jsonl"
     # ERP 是**联网**取数 —— 测试里必须关掉 (否则跑一次测试就真去拉网络,
     # 既不隔离也不可重复)。要测取数逻辑的用例自己 monkeypatch 打开并打桩。
@@ -181,8 +185,8 @@ def _isolate_caches(tmp_path):
         _shadow.SHADOW_LOG_PATH = orig_shadow_path
         if _rot is not None:
             _rot.SHADOW_LOG_PATH = orig_rot_shadow
-        _mpr.DAILY_PATH = orig_mp_path
-        _mpr.KLINE_1D_DIR = orig_mp_kline
+        _mpio.DAILY_PATH = orig_mp_path
+        _mpio.KLINE_1D_DIR = orig_mp_kline
         _mpr.ERP_PATH = orig_mp_erp
         _drev.REVIEW_DIR = orig_review_dir
         _mtc.CORPUS_DIR = orig_corpus_dir

@@ -48,6 +48,21 @@ from core.market_position import (PCT_WINDOW_BARS, POSITION_COLUMNS,
 # 私有接缝 (有意为之): 纯数学层公开函数已顶到铁律 8 上限, 分桶统计以私有名
 # 引入, 本模块是它唯一生产消费者 (其余只许是测试)。
 from core.market_position import _momentum_bucket_stats
+# 2026-09-19 批次 5.1: 共享底座端出 core/market_position_io.py。
+# 路径常量/落盘原语/读取原语都在那边, 这里**不再留副本** ——
+# 本模块函数一律用 `mpio.X` 调用期取值 (测试隔离只 patch 基座一处即全局生效),
+# 旧入口 `mpr.DAILY_PATH` / `mpr.KLINE_1D_DIR` 由文件末尾的模块级 __getattr__ 转发。
+from core import market_position_io as mpio  # noqa: E402
+from core.market_position_io import (  # noqa: E402,F401  (re-export: 旧 mpr.X 入口不变)
+    INDEX_SPECS,
+    _expected_trading_day,
+    _f,
+    _index_series,
+    _upsert,          # 本模块内部也用 (collect 落盘 / ERP 落盘); 注意模块级
+    #                   __getattr__ 只管"外部属性访问", 模块内裸全局名必须显式 import
+    history,
+    latest,
+)
 
 #: `POSITION_COLUMNS` 里**是文本**的列（牛熊标签）。
 #: 其余都是数值列、走 `_f()` 转 float —— 两类必须分开处理，否则文本列会被
@@ -67,15 +82,10 @@ __all__ = ["collect", "latest", "history", "mirror", "shadow_replay",
            "INDEX_SPECS", "SHADOW_RULES", "DAILY_PATH", "MIRROR_WARNING",
            "MOMENTUM_BUCKET_WARNING"]
 
-_ROOT = Path(__file__).resolve().parent.parent
-#: 日线缓存目录 (与 core.kline_cache 的 <cache_dir>/<period>/<code>.parquet 约定一致)
-KLINE_1D_DIR = _ROOT / "data" / "kline_cache" / "1d"
-#: 连续录像落盘路径 (JSONL, 一天一行)
-DAILY_PATH = _ROOT / "data" / "market_position" / "daily.jsonl"
 #: 外部估值序列 (ERP 股债性价比) 的本地缓存, 一天一行。
 #: **为什么单独一个文件**: 它来自网络 (乐咕乐股), 与日线缓存这个数据源无关;
 #: 混进 daily.jsonl 会让"回填"这条纯本地路径变成联网路径。
-ERP_PATH = _ROOT / "data" / "market_position" / "erp.jsonl"
+ERP_PATH = mpio._ROOT / "data" / "market_position" / "erp.jsonl"
 #: 估值维度的数据源 (2026-09-17 实测核实, 不是猜的):
 #:   akshare `stock_ebs_lg()` → 乐咕乐股「股债性价比(股债利差)」,
 #:   日频 2005-04-08 ~ 2026-09-16 共 5207 条, 无缺失。
@@ -95,10 +105,6 @@ ERP_MIN_OBS = 750
 #: 关掉 ERP 联网取数的环境变量 (测试/离线用; tests/conftest.py 默认设上)
 ERP_FETCH_ENV = "VERA_MP_NO_ERP_FETCH"
 
-#: 三大指数: (内部键, 中文名, TDX 代码)
-INDEX_SPECS = (("shanghai", "上证指数", "000001.SH"),
-               ("hs300", "沪深300", "000300.SH"),
-               ("chuangyeban", "创业板指", "399006.SZ"))
 #: 沪深股票代码 (沪市 6 开头, 深市 000/001/002/003/300/301) —— 排除指数/ETF/债券
 _STOCK_RE = re.compile(r"^(6\d{5}\.SH|(000|001|002|003|300|301)\d{3}\.SZ)$")
 #: 日常采集窗口: 覆盖"成交额一年百分位"(250 根) + 60 日新高低 + 缓冲
@@ -186,8 +192,6 @@ CALIBER_FOOTER = (
 #: 两个写入方并发读写同一个 JSONL 会互相覆盖丢记录 (upsert 是"读全量→写全量")。
 _COLLECT_LOCK = threading.Lock()
 
-#: 跨进程写锁等待上限 (秒) —— 采集是后台任务, 卡住不如报错; 测试可注入短值。
-_UPSERT_LOCK_TIMEOUT = 30.0
 
 
 # ───────────────────── 内部: 取数 ─────────────────────
@@ -195,7 +199,7 @@ _UPSERT_LOCK_TIMEOUT = 30.0
 
 def _load_matrices(bars: int):
     """读全部沪深日线 → (close, volume, amount) 三个宽表 (索引=日期, 列=代码)。"""
-    files = sorted(f for f in KLINE_1D_DIR.glob("*.parquet")
+    files = sorted(f for f in mpio.KLINE_1D_DIR.glob("*.parquet")
                    if _STOCK_RE.match(f.stem))
     cs, vs, ams = {}, {}, {}
     bad = 0
@@ -222,42 +226,10 @@ def _load_matrices(bars: int):
             pd.DataFrame(ams).sort_index())
 
 
-def _index_series(code: str) -> pd.Series | None:
-    """读单个指数日线 close 序列; 文件不存在/为空返 None。"""
-    p = KLINE_1D_DIR / f"{code}.parquet"
-    if not p.exists():
-        return None
-    try:
-        df = pd.read_parquet(p, columns=["date", "close"])
-    except Exception as e:
-        _logger.warning("大盘位置: 读指数 %s 失败: %s", code, e)
-        return None
-    if len(df) == 0:
-        return None
-    s = pd.Series(df["close"].to_numpy(dtype=float),
-                  index=pd.to_datetime(df["date"]))
-    return s[~s.index.duplicated(keep="last")].sort_index()
 
 
-def _f(v, nd: int = 1):
-    """→ float 或 None (NaN/inf 一律 None, 不拿 0 冒充缺失)。"""
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return None
-    if x != x or x in (float("inf"), float("-inf")):
-        return None
-    return round(x, nd)
 
 
-def _expected_trading_day() -> dt.date:
-    """最近应有日线数据的交易日 (复用 kline_cache_maintenance 单一真相源)。"""
-    try:
-        from core.kline_cache_maintenance import expected_last_trading_day
-        return expected_last_trading_day()
-    except Exception as e:      # 日历不可用 → 退化为今天 (上层只会更宽松, 不谎报新鲜)
-        _logger.warning("大盘位置: 交易日历不可用, 按今天处理: %s", e)
-        return dt.date.today()
 
 
 # ───────────────────── 内部: 记录组装 ─────────────────────
@@ -819,104 +791,12 @@ def _dimension_validity() -> dict:
 # ───────────────────── 内部: JSONL 读写 ─────────────────────
 
 
-def _upsert(records: list[dict], path: Path | None = None) -> int:
-    """按日期 upsert 到 JSONL (同一天覆盖, 不追加重复行) → 返回总行数。
-
-    原子写: 临时文件 + os.replace (照 VeraScheduler._save_state 的写法),
-    防崩溃写半个文件把整段录像毁掉。
-
-    2026-09-19 批次 4.4: 加**跨进程文件锁** —— 本文件的写者有两个进程
-    (scheduler 的 15:50/15:55/09:05 三个 job + server 的手动 collect 接口),
-    而 `_COLLECT_LOCK` 只是 threading.Lock, 跨进程毫无作用; 原来靠"原子写
-    last-write-wins"兜底, 两个进程同时读-改-写会丢记录。锁超时 (默认 30s)
-    抛 TimeoutError, 由调用方转成"另一个进程正在采集"的明确错误 (fail-closed,
-    绝不静默丢一半)。
-    """
-    if not records:
-        return 0
-    p = Path(path or DAILY_PATH)
-    with _cross_process_lock(p, timeout=_UPSERT_LOCK_TIMEOUT):
-        return _upsert_locked(records, p)
 
 
-def _upsert_locked(records: list[dict], p: Path) -> int:
-    """_upsert 的实际实现 (调用方已持跨进程锁)。"""
-    existing: dict[str, dict] = {}
-    if p.exists():
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                o = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(o, dict) and o.get("date"):
-                existing[str(o["date"])] = o
-    for r in records:
-        existing[str(r["date"])] = r
-    rows = [json.dumps(existing[k], ensure_ascii=False) for k in sorted(existing)]
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
-    return len(rows)
 
 
-@contextlib.contextmanager
-def _cross_process_lock(p: Path, timeout: float = 30.0, poll: float = 0.1):
-    """跨进程写锁 (2026-09-19 批次 4.4)。
-
-    实现: 数据文件同目录的 `<名>.lock` + 平台文件锁 (Windows msvcrt.locking /
-    POSIX fcntl.flock), 非阻塞尝试 + 轮询到 timeout。拿不到 → TimeoutError
-    (调用方转人话错误; **不阻塞长等**, 采集是后台任务, 卡住不如报错)。
-    锁文件本身不删 (删除会引入"删了别人的锁"竞态), 内容仅 1 字节占位。
-    """
-    lock_path = p.with_suffix(p.suffix + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "a+b")
-    try:
-        if lock_path.stat().st_size == 0:
-            fh.write(b"L")
-            fh.flush()
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                _lock_file(fh)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"跨进程写锁超时 ({timeout:.0f}s): {lock_path.name} "
-                        "被另一个进程持有 (scheduler 采集 或 页面手动采集)") from None
-                time.sleep(poll)
-        try:
-            yield
-        finally:
-            try:
-                _unlock_file(fh)
-            except OSError:
-                pass
-    finally:
-        fh.close()
 
 
-if sys.platform == "win32":  # pragma: no cover - 平台分支
-    import msvcrt
-
-    def _lock_file(fh) -> None:
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-
-    def _unlock_file(fh) -> None:
-        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-else:  # pragma: no cover - 平台分支
-    import fcntl
-
-    def _lock_file(fh) -> None:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    def _unlock_file(fh) -> None:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 # ───────────────────── 公开接口 ─────────────────────
@@ -950,7 +830,7 @@ def _collect_locked(*, bars: int, write: bool,
     # 多读 WARMUP_BARS 做预热 (否则窗口头部的长回看指标是 NaN, 会把历史记录改缺)
     close_df, vol_df, amt_df = _load_matrices(bars + WARMUP_BARS if bars else 0)
     if close_df.empty:
-        return {"ok": False, "reason": f"本地日线缓存为空 ({KLINE_1D_DIR})"}
+        return {"ok": False, "reason": f"本地日线缓存为空 ({mpio.KLINE_1D_DIR})"}
     asof = last_valid_date(vol_df, min_ratio=MIN_TRADED_RATIO)
     if asof is None:
         return {"ok": False, "reason": "没有一天满足有效成交判据 (全是空壳 bar?)"}
@@ -1013,30 +893,8 @@ def _collect_locked(*, bars: int, write: bool,
             "snapshot": records[-1] if records else None}
 
 
-def history(limit: int = 250) -> list[dict]:
-    """读连续录像, 按日期升序; limit=0 返全部。文件坏行跳过不抛。"""
-    p = Path(DAILY_PATH)
-    if not p.exists():
-        return []
-    out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            o = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(o, dict) and o.get("date"):
-            out.append(o)
-    out.sort(key=lambda r: str(r["date"]))
-    return out[-int(limit):] if limit else out
 
 
-def latest() -> dict | None:
-    """最新一条记录 (无录像返 None)。"""
-    h = history(limit=1)
-    return h[-1] if h else None
 
 
 # ───────────────── 内部: 统计 (成本 / HAC / 持有段 / 双窗口) ─────────────────
@@ -2164,3 +2022,30 @@ def push_thermometer(rec: dict | None = None, title: str | None = None,
         return {"ok": True, "cards": len(chunks), "codes": codes}
     except Exception as e:
         return {"ok": False, "reason": f"推送失败: {e}"}
+
+
+# ───────────────── 模块级转发 (2026-09-19 批次 5.1) ─────────────────
+#: 已搬到 core/market_position_io.py 的旧入口名单。用 PEP 562 模块级 __getattr__
+#: **动态**转发 —— 不做 `X = mpio.X` 快照: 快照会在 conftest patch 基座后变成陈旧
+#: 副本 (谁读它谁写生产路径), 动态转发永远拿到基座当前值。
+_FORWARDED_TO_IO = frozenset({
+    "_ROOT", "KLINE_1D_DIR", "DAILY_PATH", "INDEX_SPECS",
+    "_UPSERT_LOCK_TIMEOUT", "_index_series", "_f", "_expected_trading_day",
+    "_upsert", "_upsert_locked", "_cross_process_lock", "_lock_file",
+    "_unlock_file", "history", "latest",
+})
+
+#: 上面那批里的**可变状态** (路径/阈值) —— 这几个绝不许在本模块留下实体副本:
+#: 副本是 import 时快照, 基座被 patch (测试隔离) 后会指向生产路径。
+#: 其余名字是**函数对象**, 显式 import 是合法且必要的 (模块内裸全局名不走
+#: __getattr__; 函数对象也不承载可变状态)。测试 `TestIsolationGuard` 用它守门。
+_IO_STATE_NAMES = frozenset({
+    "_ROOT", "KLINE_1D_DIR", "DAILY_PATH", "_UPSERT_LOCK_TIMEOUT",
+})
+
+
+def __getattr__(name: str):
+    """旧入口转发到共享底座 (PEP 562)。未知名照常 AttributeError。"""
+    if name in _FORWARDED_TO_IO:
+        return getattr(mpio, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

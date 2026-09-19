@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -835,7 +836,10 @@ class TestCrossProcessWriteLock:
     def test_upsert_blocks_when_lock_held(self, tmp_path, monkeypatch):
         p = tmp_path / "daily.jsonl"
         p.write_text("", encoding="utf-8")
-        monkeypatch.setattr(mpr, "_UPSERT_LOCK_TIMEOUT", 0.3)
+        # 2026-09-19 批次 5.1: _upsert/_UPSERT_LOCK_TIMEOUT 已搬到基座
+        # core/market_position_io —— **patch 实现所在模块**, 不是 runner 转发名
+        from core import market_position_io as mpio
+        monkeypatch.setattr(mpio, "_UPSERT_LOCK_TIMEOUT", 0.3)
         # 同进程另开一个句柄持锁 —— Windows 文件锁按句柄生效, 会真冲突
         with mpr._cross_process_lock(p):
             with pytest.raises(TimeoutError, match="跨进程写锁超时"):
@@ -853,7 +857,8 @@ class TestCrossProcessWriteLock:
     def test_collect_reports_lock_conflict_as_reason(self, tmp_path, monkeypatch):
         """collect 拿到锁冲突 → ok False + 人话 reason (不是抛栈)。"""
         _write_cache()
-        monkeypatch.setattr(mpr, "_UPSERT_LOCK_TIMEOUT", 0.3)
+        from core import market_position_io as mpio
+        monkeypatch.setattr(mpio, "_UPSERT_LOCK_TIMEOUT", 0.3)
         real_upsert = mpr._upsert
 
         def _conflicted(records, path=None):
@@ -865,3 +870,59 @@ class TestCrossProcessWriteLock:
             monkeypatch.setattr(mpr, "_upsert", real_upsert)
         assert r["ok"] is False
         assert "另一个进程正在采集" in r["reason"]
+
+
+class TestIsolationGuard:
+    """隔离守卫 (2026-09-19 批次 5.1 抽底座时新增)。
+
+    底座把路径常量集中到 `core/market_position_io` 后, 风险从"忘了隔离"变成
+    "隔离打在了旧位置" —— 只 patch runner 而实现读基座, 测试就会写**生产**
+    data/market_position/daily.jsonl (2026-07-27 缓存投毒、2026-09-17 向量索引
+    投毒同一病类)。本测试直接断言: 测试期间三个路径**都**在 tmp 下。
+    """
+
+    def test_paths_are_isolated_into_tmp(self):
+        from core import market_position_io as mpio
+        prod = Path(__file__).resolve().parents[1] / "data"
+        for name, val in (("mpio.DAILY_PATH", mpio.DAILY_PATH),
+                          ("mpio.KLINE_1D_DIR", mpio.KLINE_1D_DIR),
+                          ("mpr.ERP_PATH", mpr.ERP_PATH)):
+            p = Path(val).resolve()
+            assert prod not in p.parents and p != prod, (
+                f"{name} 指向生产目录 ({p}) —— conftest 的隔离没生效, "
+                "跑 collect 会把假数据写进真实录像")
+
+    def test_no_forwarded_name_is_materialized_on_runner(self):
+        """防 shadow 守卫: runner 模块**不许真的有**这些转发名。
+
+        坑 (2026-09-19 实测): `monkeypatch.setattr(mpr, "DAILY_PATH", …)` 在撤销时
+        会把转发出来的值**实体化成真实属性**, 从此永久 shadow 模块级 __getattr__
+        —— 之后"写 tmp、读生产"或反之, 正是投毒型事故的病根。要 patch 就打基座。
+        本断言把这类误用变成会响的铃。
+        """
+        # 只查**可变状态**名 (路径/阈值): 函数对象 (history/_upsert/…) 显式 import
+        # 是合法且必要的, 且它们不承载可变状态 (见 runner 的 _IO_STATE_NAMES 注释)
+        materialized = set(mpr._IO_STATE_NAMES) & set(vars(mpr))
+        assert not materialized, (
+            f"runner 模块上出现了转发名的实体属性 {sorted(materialized)} —— "
+            "有人 patch 了 mpr.X 而不是 core.market_position_io.X, "
+            "会永久 shadow __getattr__ 转发 (隔离失效)")
+
+    def test_runner_reads_base_paths_at_call_time(self):
+        """runner 内部必须**调用期**读基座路径 (不能是 import 时快照)。
+
+        手法: 临时把基座路径指到 tmp, 断言 runner 的 history() 跟着走 ——
+        若 runner 里存了快照副本, 这里读的还是旧路径。
+        """
+        from core import market_position_io as mpio
+        orig = mpio.DAILY_PATH
+        try:
+            mpio.DAILY_PATH = Path(orig).parent / "____guard_probe.jsonl"
+            Path(mpio.DAILY_PATH).parent.mkdir(parents=True, exist_ok=True)
+            Path(mpio.DAILY_PATH).write_text(
+                '{"date": "2026-09-19", "probe": true}\n', encoding="utf-8")
+            assert mpr.history(limit=1)[-1].get("probe") is True
+            assert mpr.latest().get("probe") is True
+        finally:
+            Path(mpio.DAILY_PATH).unlink(missing_ok=True)
+            mpio.DAILY_PATH = orig
