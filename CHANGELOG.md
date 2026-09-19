@@ -5,7 +5,43 @@
 
 ---
 
-## 2026-09-19 — 架构审查修订批次 3：引擎准备段收口 + 校验下沉 + 缓存声明 + tools 淤积清单
+## 2026-09-19 — 架构审查修订批次 4（前半）：HTTP 线程零接触 QMT + 第二写者守卫 + 跨进程写锁
+
+**一句话（大白话）**：把三条"两个线程/两个进程抢同一份数据"的路给堵了 ——
+网页查资产不再自己伸手问柜台（改成排队让交易线程去问）、回填脚本不再和
+运行中的交易进程抢着写库（活着就拒）、大盘录像的写入加了跨进程锁
+（原来两个进程同时读改写会丢记录）。**4.2（消费者线程阻塞）与 4.5
+（rotation 拆包）留待下一轮**：它们要动实盘状态机与 89KB 主文件，单独做。
+
+- **4.1 HTTP 线程零接触 QMT（审查 P0-2）**：新增事件 `EVENT_READ_QUERY`
+  （按关键事件对待，被丢会让等待方白等超时）+ `TradeApp._on_read_query`
+  （消费者线程执行只读查询，结果经 `concurrent.futures.Future` 回传）+
+  公开缝 `read_via_consumer(fn, timeout)` / `read_asset(timeout)`。
+  `trade/api.py` 的 `/api/trade/asset` 与 `trade/analysis_api.py` 的资产对账
+  改走该缝，超时转人话 503「资产查询超时 —— 交易进程忙」。
+  **专项测试直接证明查询发生在消费者线程**（`test_api_no_direct_gateway.py`：
+  探针记录 `threading.current_thread().name == "trade-event-consumer"`，
+  外加超时/异常回传 2 例）—— 不是"接口还返回 200"就算过。
+- **4.3 trade.db 第二写者守卫（审查 P0-5）**：`tools/backfill_daily_decision.py`
+  直写 `daily_decision` 表, 是 trade.db 的第二写者, 与运行中的 trade_main 并发
+  原来只靠 WAL busy 重试兜底。现在**交易进程活着就拒绝执行**（TCP 探活
+  8081，退出码 3 + 三条处置指引），`--force` 可自担风险绕过，`--dry-run` 不拦。
+  **坑**：探活最初用 `urlopen`，但 `tests/conftest.py` session 级焊死 urllib
+  （假 200），测试里死端口被判成"活着" → 改用 socket TCP 连通性判据（更简单
+  也更可靠，且测得出真实行为）。
+- **4.4 daily.jsonl 跨进程写锁（审查 P0-6）**：`core/market_position_runner._upsert`
+  加**跨进程文件锁**（同目录 `.lock` + Windows `msvcrt.locking` / POSIX `fcntl`，
+  非阻塞轮询到 `_UPSERT_LOCK_TIMEOUT` 默认 30 秒），超时抛 `TimeoutError`，
+  `collect()` 转成"另一个进程正在采集"的明确错误（fail-closed，不静默丢一半）。
+  原来 `_COLLECT_LOCK` 只是 threading.Lock，跨进程毫无作用（scheduler 三个 job
+  与 server 手动采集并发时靠 last-write-wins 兜底会丢记录）。
+- **测试**：新增 3 个测试文件（4.1 专项 3 例 / 4.3 守卫 5 例 / 4.4 锁 3 例）；
+  trade 全域 **969 例全绿**，大盘域 123 例全绿。
+- **上线约束**：4.1/4.3/4.4 都动 trade 包或 trade 侧工具 → **trade_main 需重启
+  生效，且必须 ≥15:05 窗口**；scheduler 侧（写 daily.jsonl 的三个 job）也要重启
+  才用上新锁。
+
+---
 
 **一句话（大白话）**：把"同一段配方抄四份"和"校验只在一条路上做"两个静默漂移
 温床拆了 —— 4 个扫描脚本改走引擎公开接缝、口径校验搬到引擎里（直调也管）、

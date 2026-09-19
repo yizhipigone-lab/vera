@@ -51,6 +51,7 @@ from trade.events import (  # noqa: E402
     EVENT_ORDER_ERROR,
     EVENT_ORDER_UPDATE,
     EVENT_QUOTE_SNAPSHOT,
+    EVENT_READ_QUERY,
     EVENT_RECONCILE,
     EVENT_ROTATION,
     EVENT_SIGNALS,
@@ -282,6 +283,8 @@ class TradeApp:
                 EVENT_CONNECTION_LOST: lambda e: self._on_connection_lost(e.data),
                 EVENT_ORDER_ERROR: lambda e: self._on_order_error(e.data),
                 EVENT_CANCEL_ERROR: lambda e: self._on_cancel_error(e.data),
+                # 2026-09-19 批次 4.1: HTTP 线程的只读查询 (消费者线程执行)
+                EVENT_READ_QUERY: lambda e: self._on_read_query(e.data or {}),
             },
             audit_sink=self.store.write_audit,  # 审计M4: 队列满丢弃要留痕
         )
@@ -874,6 +877,46 @@ class TradeApp:
         # 审计M4修复: 事件自带 ts 透传给 monitor (心跳用生产时刻,
         # 不用消费时刻; 过旧 tick 在 monitor 侧丢弃)
         self.monitor.on_quote(data["code"], data, event_ts=event_ts)
+
+    def _on_read_query(self, data: dict) -> None:
+        """消费者线程执行一个只读查询 (2026-09-19 批次 4.1)。
+
+        动机(架构审查 P0-2): HTTP 线程原先直调 `gateway.query_asset()` 等同步
+        接口, 与消费者线程并发打 xtquant (官方死锁坑的擦边)。现在 HTTP 线程
+        只投递任务 + 等 Future, xtquant 调用回到唯一消费者线程。
+        异常原样交给等待方 (HTTP 层转 503), 绝不吞。
+        """
+        fut = data.get("future")
+        fn = data.get("fn")
+        try:
+            result = fn() if callable(fn) else None
+            if fut is not None and not fut.done():
+                fut.set_result(result)
+        except Exception as e:  # noqa: BLE001 —— 原样回传给等待方
+            if fut is not None and not fut.done():
+                fut.set_exception(e)
+            else:
+                logger.warning("只读查询异常 (无等待方): %s", e, exc_info=True)
+
+    def read_via_consumer(self, fn, timeout: float = 2.0):
+        """把只读查询丢给消费者线程执行, 本线程只等结果 (批次 4.1)。
+
+        这是 HTTP 线程接触 QMT 数据的**唯一合法路径** (铁律 2/3: 回调线程与
+        HTTP 线程都不许直接调 xtquant)。超时抛 TimeoutError, 由调用方转 503
+        —— 宁可让页面看到"繁忙", 也不让 HTTP 线程卡死或并发打柜台。
+        """
+        from concurrent.futures import Future
+        fut: Future = Future()
+        self._engine.put(Event(type=EVENT_READ_QUERY,
+                               data={"fn": fn, "future": fut}))
+        return fut.result(timeout=timeout)
+
+    def read_asset(self, timeout: float = 2.0) -> dict:
+        """资产快照 (批次 4.1): QMT 资产查询统一走消费者线程。
+
+        页面 (PC/手机各 5 秒轮询) 只经此口取资产, 不再直接碰 gateway。
+        """
+        return self.read_via_consumer(self.gateway.query_asset, timeout=timeout)
 
     def _on_scan(self, data: dict) -> None:
         # 2026-07-31 方案C: 断线重连挪出 _on_connection_lost 的阻塞循环,

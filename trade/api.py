@@ -140,9 +140,15 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
 
         2026-08-07: 附 prev_day_asset (最近一个非当日的日终资产快照),
         前端当日盈亏基准统一用它 (此前用 localStorage 首拉基准,
-        换浏览器/晚开页面即漂移, 与分析板块日历对不上)。"""
+        换浏览器/晚开页面即漂移, 与分析板块日历对不上)。
+        2026-09-19 批次 4.1: 资产查询改走 trade_app.read_asset() —— HTTP 线程
+        不再直调 gateway (与消费者线程并发打 xtquant 是官方死锁坑的擦边,
+        架构审查 P0-2)。超时 = 交易进程繁忙, 人话 503。
+        """
         try:
-            a = trade_app.gateway.query_asset()
+            a = trade_app.read_asset()
+        except TimeoutError:
+            raise HTTPException(503, "资产查询超时 —— 交易进程忙 (稍后重试)")
         except Exception as e:
             raise HTTPException(503, f"QMT 资产查询失败: {e}")
         try:

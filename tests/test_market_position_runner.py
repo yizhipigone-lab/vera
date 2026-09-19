@@ -822,3 +822,46 @@ class TestPushFailsSoft:
         r = mpr.push_thermometer()
         assert r["ok"] is False
         assert "还没有连续录像" in r["reason"]
+
+
+class TestCrossProcessWriteLock:
+    """跨进程写锁 (2026-09-19 批次 4.4)。
+
+    背景: daily.jsonl 的写者跨两个进程 (scheduler 三个 job + server 手动 collect),
+    `_COLLECT_LOCK` 只是 threading.Lock 跨进程无效, 原来靠原子写 last-write-wins
+    兜底 —— 两个进程同时读-改-写会丢记录。现在 _upsert 拿文件锁, 超时明确报错。
+    """
+
+    def test_upsert_blocks_when_lock_held(self, tmp_path, monkeypatch):
+        p = tmp_path / "daily.jsonl"
+        p.write_text("", encoding="utf-8")
+        monkeypatch.setattr(mpr, "_UPSERT_LOCK_TIMEOUT", 0.3)
+        # 同进程另开一个句柄持锁 —— Windows 文件锁按句柄生效, 会真冲突
+        with mpr._cross_process_lock(p):
+            with pytest.raises(TimeoutError, match="跨进程写锁超时"):
+                mpr._upsert([{"date": "2026-09-18", "x": 1}], path=p)
+
+    def test_upsert_works_after_lock_released(self, tmp_path):
+        p = tmp_path / "daily.jsonl"
+        n = mpr._upsert([{"date": "2026-09-18", "x": 1}], path=p)
+        assert n == 1 and p.with_suffix(".jsonl.lock").exists()
+        # 再来一次: 锁已释放, 同日覆盖不追加
+        n2 = mpr._upsert([{"date": "2026-09-18", "x": 2}], path=p)
+        assert n2 == 1
+        assert json.loads(p.read_text(encoding="utf-8").strip())["x"] == 2
+
+    def test_collect_reports_lock_conflict_as_reason(self, tmp_path, monkeypatch):
+        """collect 拿到锁冲突 → ok False + 人话 reason (不是抛栈)。"""
+        _write_cache()
+        monkeypatch.setattr(mpr, "_UPSERT_LOCK_TIMEOUT", 0.3)
+        real_upsert = mpr._upsert
+
+        def _conflicted(records, path=None):
+            raise TimeoutError("跨进程写锁超时 (0s): daily.jsonl.lock 被另一个进程持有")
+        monkeypatch.setattr(mpr, "_upsert", _conflicted)
+        try:
+            r = mpr.collect(bars=60, write=True)
+        finally:
+            monkeypatch.setattr(mpr, "_upsert", real_upsert)
+        assert r["ok"] is False
+        assert "另一个进程正在采集" in r["reason"]

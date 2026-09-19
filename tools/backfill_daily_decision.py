@@ -27,14 +27,39 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import socket
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trade.decision_backfill import LEDGER_START, run  # noqa: E402
 
 _DEFAULT_DB = "data/trade/trade.db"
+_DEFAULT_API = "http://127.0.0.1:8081"
+
+
+def _trade_api_alive(base: str = _DEFAULT_API, timeout: float = 1.5) -> bool:
+    """交易进程 (8081) 是否活着 —— 2026-09-19 批次 4.3 的并发守卫探针。
+
+    背景(架构审查 P0-5): 本 CLI 直写 daily_decision 表, 是 trade.db 的**第二
+    写者**, 与运行中的 trade_main (唯一写者铁律) 并发, 原来只靠 WAL busy 重试
+    兜底。现在活进程在跑就拒绝执行 (除非 --force)。
+
+    判据用 **TCP 连通性** (端口有没有人 listen), 不要 HTTP 请求:
+      ① 本函数只回答"进程在不在", 更简单的判据更可靠;
+      ② tests/conftest.py 会 session 级焊死 urllib.request.urlopen (假 200),
+         走 HTTP 的话测试根本测不出真实行为 (实测踩坑: 死端口被判成 True)。
+    """
+    u = urlparse(base if "://" in base else "http://" + base)
+    host = u.hostname or "127.0.0.1"
+    port = u.port or 8081
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _parse_day(text: str, *, default: str) -> str:
@@ -66,7 +91,22 @@ def main(argv: list[str] | None = None) -> int:
                          "当场记录的行永远不删）")
     ap.add_argument("--overwrite-live", action="store_true",
                     help="连当场记录的行也覆盖（修数据用，平时别开）")
+    ap.add_argument("--api-base", default=_DEFAULT_API,
+                    help=f"交易进程地址（探活用，缺省 {_DEFAULT_API}）")
+    ap.add_argument("--force", action="store_true",
+                    help="交易进程在跑也照样写（危险：绕过第二写者守卫，"
+                         "仅在你确信当前无委托/无成交时用）")
     args = ap.parse_args(argv)
+
+    # 2026-09-19 批次 4.3: 活进程守卫 —— daily_decision 直写是 trade.db 的
+    # 第二写者, 与 trade_main (唯一写者) 并发有风险。dry-run 只读, 不拦。
+    if not args.dry_run and not args.force and _trade_api_alive(args.api_base):
+        print(f"[!] 交易进程活着 ({args.api_base} 有响应), 拒绝直写 trade.db:"
+              "\n    它是「QMT/账本唯一写者」铁律下的另一个进程, 并发写有风险。"
+              "\n    做法二选一: ①收盘后停掉 trade_main 再跑本命令;"
+              "\n                ②--dry-run 先看结果 (只读不写)。"
+              "\n    确实要带病写: 加 --force (自担风险)。")
+        return 3
 
     today = _dt.date.today().isoformat()
     start = _parse_day(args.start, default=LEDGER_START)

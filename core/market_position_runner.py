@@ -24,11 +24,14 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
 import re
+import sys
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -182,6 +185,9 @@ CALIBER_FOOTER = (
 #: 采集串行锁: 页面手动采集与调度器 15:50 的 job 可能同时跑,
 #: 两个写入方并发读写同一个 JSONL 会互相覆盖丢记录 (upsert 是"读全量→写全量")。
 _COLLECT_LOCK = threading.Lock()
+
+#: 跨进程写锁等待上限 (秒) —— 采集是后台任务, 卡住不如报错; 测试可注入短值。
+_UPSERT_LOCK_TIMEOUT = 30.0
 
 
 # ───────────────────── 内部: 取数 ─────────────────────
@@ -818,10 +824,23 @@ def _upsert(records: list[dict], path: Path | None = None) -> int:
 
     原子写: 临时文件 + os.replace (照 VeraScheduler._save_state 的写法),
     防崩溃写半个文件把整段录像毁掉。
+
+    2026-09-19 批次 4.4: 加**跨进程文件锁** —— 本文件的写者有两个进程
+    (scheduler 的 15:50/15:55/09:05 三个 job + server 的手动 collect 接口),
+    而 `_COLLECT_LOCK` 只是 threading.Lock, 跨进程毫无作用; 原来靠"原子写
+    last-write-wins"兜底, 两个进程同时读-改-写会丢记录。锁超时 (默认 30s)
+    抛 TimeoutError, 由调用方转成"另一个进程正在采集"的明确错误 (fail-closed,
+    绝不静默丢一半)。
     """
     if not records:
         return 0
     p = Path(path or DAILY_PATH)
+    with _cross_process_lock(p, timeout=_UPSERT_LOCK_TIMEOUT):
+        return _upsert_locked(records, p)
+
+
+def _upsert_locked(records: list[dict], p: Path) -> int:
+    """_upsert 的实际实现 (调用方已持跨进程锁)。"""
     existing: dict[str, dict] = {}
     if p.exists():
         for line in p.read_text(encoding="utf-8").splitlines():
@@ -844,6 +863,62 @@ def _upsert(records: list[dict], path: Path | None = None) -> int:
     return len(rows)
 
 
+@contextlib.contextmanager
+def _cross_process_lock(p: Path, timeout: float = 30.0, poll: float = 0.1):
+    """跨进程写锁 (2026-09-19 批次 4.4)。
+
+    实现: 数据文件同目录的 `<名>.lock` + 平台文件锁 (Windows msvcrt.locking /
+    POSIX fcntl.flock), 非阻塞尝试 + 轮询到 timeout。拿不到 → TimeoutError
+    (调用方转人话错误; **不阻塞长等**, 采集是后台任务, 卡住不如报错)。
+    锁文件本身不删 (删除会引入"删了别人的锁"竞态), 内容仅 1 字节占位。
+    """
+    lock_path = p.with_suffix(p.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+b")
+    try:
+        if lock_path.stat().st_size == 0:
+            fh.write(b"L")
+            fh.flush()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                _lock_file(fh)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"跨进程写锁超时 ({timeout:.0f}s): {lock_path.name} "
+                        "被另一个进程持有 (scheduler 采集 或 页面手动采集)") from None
+                time.sleep(poll)
+        try:
+            yield
+        finally:
+            try:
+                _unlock_file(fh)
+            except OSError:
+                pass
+    finally:
+        fh.close()
+
+
+if sys.platform == "win32":  # pragma: no cover - 平台分支
+    import msvcrt
+
+    def _lock_file(fh) -> None:
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+
+    def _unlock_file(fh) -> None:
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+else:  # pragma: no cover - 平台分支
+    import fcntl
+
+    def _lock_file(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_file(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 # ───────────────────── 公开接口 ─────────────────────
 
 
@@ -860,7 +935,11 @@ def collect(*, bars: int = DEFAULT_BARS, write: bool = True,
     if not _COLLECT_LOCK.acquire(blocking=False):
         return {"ok": False, "reason": "另一次采集正在进行中 (稍后重试)"}
     try:
-        return _collect_locked(bars=bars, write=write, expected=expected)
+        try:
+            return _collect_locked(bars=bars, write=write, expected=expected)
+        except TimeoutError as e:
+            # 2026-09-19 批次 4.4: 跨进程锁超时 → 人话错误 (另一进程在写)
+            return {"ok": False, "reason": f"另一个进程正在采集: {e}"}
     finally:
         _COLLECT_LOCK.release()
 

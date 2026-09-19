@@ -40,12 +40,18 @@ EVENT_CONNECTION_LOST = "connection_lost"  # 断线 (回调或心跳双检测)
 EVENT_SYNC_REPORTS = "sync_reports"        # 增量同步 (成交补记+委托回写)
 EVENT_ORDER_ERROR = "order_error"          # 下单失败回报 (拒单原因, 2026-08-07)
 EVENT_CANCEL_ERROR = "cancel_error"        # 撤单失败回报 (2026-08-07)
+# 2026-09-19 批次 4.1: HTTP 线程的只读查询入队 (资产/持仓类) —— 消费者线程执行,
+# 结果经 concurrent.futures.Future 回给 HTTP 线程。修"HTTP 线程直调 gateway
+# 同步查询, 与消费者线程并发打 xtquant" (架构审查 P0-2)。
+EVENT_READ_QUERY = "read_query"
 
 # 2026-08-01 M1: 关键事件类型 —— 队列满时优先保留, tick/快照可驱逐
 _CRITICAL_TYPES = frozenset({
     EVENT_RECONCILE, EVENT_SYNC_REPORTS, EVENT_TIMER_SCAN,
     EVENT_COMMAND, EVENT_SIGNALS, EVENT_ROTATION, EVENT_CONNECTION_LOST,
     EVENT_EOD, EVENT_ORDER_ERROR, EVENT_CANCEL_ERROR,
+    # 只读查询也按关键处理: 被丢弃会让 HTTP 线程白等到超时 (有 caller 在等)
+    EVENT_READ_QUERY,
 })
 
 

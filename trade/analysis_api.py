@@ -237,7 +237,9 @@ def analysis_router(trade_app) -> APIRouter:
         # —— None 传给视图层即告警, 不可静默吞掉 (违反对账只告警铁律)。
         qmt_total = None
         try:
-            qmt_asset = trade_app.gateway.query_asset()
+            # 2026-09-19 批次 4.1: 走消费者线程查询 (HTTP 线程不直调 gateway);
+            # 查询超时/异常 → 仍落 qmt_total=None, 交由视图层告警 (语义不变)
+            qmt_asset = trade_app.read_asset(timeout=2.0)
             # 审计 P0-5 (2026-09-16): 键名是 "total_asset" (gateway 实际
             # 返回口径, trade/gateway.py query_asset), 原写 "totalAsset"
             # 恒落到本地兜底 → 对账告警永远不触发 (fail-open)。取不到
