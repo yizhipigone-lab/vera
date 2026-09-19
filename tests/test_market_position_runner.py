@@ -285,7 +285,11 @@ class TestMirrorCaliber:
         fake = {"picks": band[:1], "band": band, "n_band": len(band),
                 "eligible": 900, "exclude_recent": 252, "min_gap": 20,
                 "quantile": 0.05}
-        monkeypatch.setattr(mpr, "similar_days", lambda *a, **k: fake)
+        # 2026-09-19 批次 5.1 第四刀: mirror 已搬到 core/market_mirror ——
+        # **patch 实现所在模块** (mpr.similar_days 是转发出来的, patch 它不会
+        # 影响实现: 实测两例红, 症状是"六特征齐全 0 条")。
+        from core import market_mirror as _mm
+        monkeypatch.setattr(_mm, "similar_days", lambda *a, **k: fake)
 
     def test_mirror_names_dominating_year(self, tmp_path, monkeypatch):
         _write_cache(n_days=400)

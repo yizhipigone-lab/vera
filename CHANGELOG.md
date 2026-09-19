@@ -5,6 +5,36 @@
 
 ---
 
+## 2026-09-19 — 架构审查修订批次 5.1 收尾（第四/五刀）：照镜子 + 体温表文案层，5.1 全部完成
+
+**一句话（大白话）**：把最后两块也搬出去了 —— 照镜子和体温表文案（那篇"大白话
+报告"）。**主文件从 111.4KB 瘦到 26KB（-77%）**，八种职责拆成六个小模块 +
+一个共享底座。搬迁途中我自己踩了一个"碰生产数据"的坑，如实记在下面。
+
+- **新增两个模块**：`core/market_mirror.py`（6.4KB / 137 行，`mirror` + 四个照镜子
+  常量）、`core/market_thermometer.py`（**39KB / 641 行**，`thermometer_md` +
+  10 个人话模板 + `push_thermometer` + `CALIBER_FOOTER`）。文案层是依赖链最上层：
+  单向 import 底面五块（底座/照镜子/牛熊/体检/影子），无环。
+- **实测数字（5.1 五刀累计）**：`market_position_runner.py` **111.4KB → 26KB
+  （-77%，2166 → 606 行）**；新模块合计约 **96KB**：底座 11.4 + erp 7.4 +
+  regime 5.4 + validity 13.7 + shadow_replay 18.7 + mirror 6.4 + thermometer 39。
+  剩余 runner = 数据准备 + 记录组装 + `collect` + 分桶 + 旧入口转发层。
+- **实测坑（两处 patch 位置）**：①测试用 `monkeypatch.setattr(mpr, "similar_days", …)`
+  造分位带 —— mirror 搬走后该 patch 不再影响实现（症状: "六特征齐全 0 条"），
+  改打 `core.market_mirror.similar_days`；②`market_thermometer.py` 漏了
+  `pandas` 与 `INDEX_SPECS` 导入（由"未解析名 AST 扫描"查出补齐）。
+- **⚠️ 我自己的工作失误（如实记录）**：排查上面两例时写的**临时诊断脚本只隔离了
+  `DAILY_PATH`/`KLINE_1D_DIR`，没隔离 `ERP_PATH`、也没设 `VERA_MP_NO_ERP_FETCH`**
+  → 脚本里的 `collect()` 联网刷新并**写了生产 `data/market_position/erp.jsonl`**。
+  事后逐项核对：**5209 行 / 无重复日期 / 最大日期 2026-09-18（最后交易日）**，
+  新增的 2 行正是 9/17、9/18 两天的真实 ERP —— 每日 15:50 job 本来也会写，**结果无害
+  但流程违规**。教训：**临时脚本必须照 conftest 隔离全部落盘路径 + 关联网取数**，
+  不能只隔离"当前正在改的那条"。
+- **验收**：大盘域 126 例绿；全量 **3028 例绿 / 7 skip**；`daily.jsonl` mtime 未变
+  （9/18 15:55），`erp.jsonl` 经逐行核对内容正确。**5.1 全部完成**；仅剩 5.2（core 收包）。
+
+---
+
 ## 2026-09-19 — 架构审查修订批次 5.1 第三刀：拆出影子回放 + 转发改按归属表
 
 **一句话（大白话）**：把"择时影子回放"这块（约 360 行）也搬出大盘主文件，
