@@ -88,3 +88,10 @@ data/market_position/
 
 # 2026-09-17 (M5): 邮箱收到的外部研究产物 —— 第三方内容、体积随收信增长、可重建
 docs/research_inbox/
+
+# 2026-09-19 架构修订批次 1.4: 运行时数据/日志收口 (此前漏网, git status 1298 条噪音)
+data/formula_farm/       # 公式农场抓取的公式原文/账本 (运行时产物, 可重建)
+data/daily_review/       # 盘后复盘报告 (机器生成, 落盘即归档)
+data/morning_brief/      # 隔夜简报 (同上)
+logs/                    # 进程控制台日志 + .prev 轮转 (*.log 管不到 .prev 后缀)
+.agent-teams/            # agent 协作运行时状态
