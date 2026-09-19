@@ -5,6 +5,170 @@
 
 ---
 
+## 2026-09-19 — 事件跟踪数据源扩充（P0 四源 + P1 调度挂载，计划书先行）
+
+**一句话（大白话）**：事件扫描原来只盯"三家通讯社的电报"（财联社/同花顺/新浪），
+海外事只能靠它们转述；本次加了两个海外直通信道（美联储公告 RSS、华尔街见闻快讯），
+并把美债 2 年收益率从"转载"升级到"发行方本尊"（美财政部 CSV）——海外事件从
+"等二手转述"变成"看一手原文"。计划书 `docs/plan/2026-09-19_事件跟踪数据源扩充_计划书.md`
+（含 15 个候选源的本机连通性实测矩阵：FRED/GDELT/BLS 被墙、金十 502、RSSHub 403，一律不接）。
+
+- **P0-① 新取数层 `core/market_event_sources.py`（新模块，公开接口仅 3 个）**：
+  五源候选池（akshare 三源自 scan 迁入 + **美联储 RSS** + **华尔街见闻快讯**）+
+  美财政部 2 年收益率序列。候选新增 `fact_level`（primary=一手可指原文 /
+  secondary=转述须复核）与 `hint` 字段；`_SOURCES` 注册表，加新源 = 加一行，
+  公开接口不涨。美联储 RSS 两个坑被 fixture 锁死：**UTF-8 BOM**（实测 EF BB BF，
+  必须 utf-8-sig）与 **GMT→北京日换算**（FOMC 声明 18:00 GMT = 北京次日凌晨，
+  不换算事件日期整体错一天，测试锁：9/16 18:00 GMT → 2026-09-17）。
+- **P0-② fed_rate 跟踪器升级一手源**：`fetch_fed_rate_proxy` 改"美财政部主源 →
+  akshare 兜底 → 双源同日偏差 >5bp 写 cross_check 告警"。实测两源同为 4.76
+  （2026-09-18），分毫不差。财政部 CSV 最新行在最上、年度文件，年初交界当年
+  <25 行才补拉上年（一年省 ~360 次请求）。
+- **P0-③ RUBRIC 加「溯源终点清单」**：政策类→央行/统计局/证监会/政府网原文页；
+  美联储类→federalreserve.gov 原文；secondary 源（华尔街见闻）录普通重大及以上档
+  前必须复核到一手终点 —— 把 9月19日 事实溯源铁律落到具体 URL 级别。
+- **P1 fed_rate 挂调度器**：`_job_market_dashboard_fill`（每交易日 08:30）开头
+  先 `update_fed_rate_event()` 再补齐快照（财政部数据美东傍晚发布≈北京清晨，
+  08:30 必取到 T-1；fail-soft 失败不阻塞补齐）。不加新 job 不加进程；
+  **scheduler 需重启生效**（core 层改动零重启：scan/sources 不被 server/trade_main 引用）。
+- **两遍全面自检抓到并修掉 2 个真问题**：①交叉校验原按"两源最新值"直接比，
+  一方滞后一天就误报（实测相邻日差 9bp > 5bp 阈值）→ 改为**只在同日比数**，
+  日期不齐不告警，测试锁；②akshare 兜底取数起初留在判定层 scan 里（分层漏洞，
+  scan 还 import akshare）→ 挪进取数层为第 3 个公开函数，scan 不再 import akshare。
+- **深模块浅模块审查（照 research/2026-08-16 框架）**：sources = 深模块（3 接口藏
+  5 源 HTTP/BOM/时区/年度拼接，删除测试通过）；scan 变薄属"有意的接缝"
+  （RUBRIC/关键词/主备策略是它的领域知识）；接口数 scan=7 不变 / sources=3，
+  铁律 8 内。
+- **测试**：新增 `tests/test_market_event_sources.py` 16 例（fixture =
+  2026-09-19 真实响应落 `tests/fixtures/market_event_sources/`，**零联网**：
+  BOM/GMT/解析/隔离/fallback/交叉校验/AST 不 import trade）；大盘域四套件 82 例全绿；
+  真实联网冒烟：候选池 26 条五源齐（财联社4/同花顺1/新浪7/华尔街见闻10/美联储4），
+  FOMC 声明正确标高优先，fed_rate proxy 双源一致无告警。
+- **剩余风险**：华尔街见闻/美联储为公网免费端点，稳定性无担保（fail-soft 已兜：
+  挂了只是少一路候选）；scheduler 的 fed_rate 行要重启后 08:30 才首次出现。
+
+---
+
+## 2026-09-19 — 事件跟踪「台账有货、页面为空」排障 + 两条刷新约定落地
+
+**一句话（大白话）**：事件跟踪页像饭店出菜窗口 —— 事件先记在点菜台账
+（`events.jsonl`），但窗口只摆"烤好的菜"（`dashboard.jsonl` 快照）；9 月 19 日
+下午录了 5 条事件，可最后一次快照是 9 月 18 日晚生成的，周末调度器又不跑，
+页面自然空。本次把两条"让菜及时上桌"的约定落地，并顺手修了一个会被周末
+刷新每周触发的分数放大 bug。
+
+- **根因**：数据流是单向的 —— 事件落台账 → 仪表盘刷新时才"烤进"快照 →
+  页面只读快照。三个定时刷新 job（每交易日 16:30/08:30/09:30）走 `add_daily`，
+  有交易日门槛，周末一次都不跑；事件扫描与快照刷新两条链之间没有钩子。
+- **必要性结论（用户拍板按此执行）**：交易决策链无盲区 —— 周一 08:30 补齐版
+  会在开盘前把事件烤进快照；要补的只是"周末看页面新鲜"，因此不做事件驱动
+  即时重刷（违反勿增实体 + 削弱可复现性），只做下面两条轻量约定。
+- **约定①扫描收尾必刷新（零代码）**：`core/market_event_scan.py` 用法说明新增
+  第 5 步 —— 事件落库后顺手触发一次刷新（POST
+  `/api/market_position/dashboard/refresh` 或本地 `mdr.refresh_close(write=True)`）；
+  `core/event_cli.py` 文档字符串同步提醒"录的是台账、页面读的是快照"。
+- **约定②周末兜底 job**：`scheduler/__main__.py` 新增
+  `market_dashboard_weekend` —— `add_weekly(weekday=5, hhmm="18:00")`
+  （weekly 语义不看交易日，同 weekly_evolution 的 P0-2 修复），每周六 18:00
+  跑一次 `refresh_close`（内部自动回退到最近交易日落账，不落"周六快照"）。
+  周日录入的事件仍等周一 08:30 补齐版或页面手动刷新。**scheduler 需重启生效。**
+- **顺手修 bug**：周末刷新用"最近交易日"做衰减基准，晚于基准日录入的事件
+  `elapsed` 为负，剩余天数曾会超过满额、把分数放大到初始分之上（如 -0.4 变
+  -0.44）——`_days_left` 已 clamp 到满额，`days_left` 不再超过 `expire_days`。
+- **测试**：`tests/test_market_events.py` 新增
+  `test_future_start_event_score_capped_at_full`（未来起始日事件分数封顶满额）；
+  大盘域回归全绿。
+- **登记**：CLAUDE.md 架构骨架新增「大盘环境仪表盘·事件跟踪」行（数据流铁律
+  + 两条约定 + 衰减口径 + 本坑）。
+
+---
+
+## 2026-09-19 — 大盘仪表盘多维图表上线（设计预览 → 计划书 → 实施）
+
+**一句话（大白话）**：大盘位置页签从"只有一张只有 1 天数据的总分图"变成七张图 ——
+温度仪表、五维雷达、股债性价比 22 年长卷、三大指数十年百分位+牛熊背景带、市场温度带
+热力图，外加收进「只说现状」折叠区的成交额/市场宽度/涨跌停三张。
+
+- 依据：设计预览 `docs/2026-09-19_大盘仪表盘多维图表设计预览.html` → 计划书
+  `docs/plan/2026-09-19_大盘仪表盘多维图表_计划书.md`（两轮自审后实施）。
+- **证据分层**：ERP（12 个月相关性 +0.55）与十年百分位（−0.57 反向）是唯一通过预测
+  检验的两个维度 → 画成主角挂「有预测证据」徽章；成交/宽度/涨跌停挂「仅描述现状」徽章
+  收折叠区（延续 9 月 17 日"降级保留"裁决）。
+- **后端**：`market_dashboard_runner.erp_series()`（第 7 个公开函数，铁律 8 上限内）+
+  路由 `GET /api/market_position/dashboard/erp_series`（只读本地 erp.jsonl，fail-soft）；
+  日线序列零新增 —— 复用既有 `/api/market_position/history?limit=520`。
+  **server.py 已重启**（仅它，trade_main 未动）。
+- **前端**：market_dashboard.js 加图表层 —— 全令牌取色（getColors）、echartsInit 共享
+  注册表（resize 全站覆盖）、主题切换经 MutationObserver 七图重上色、折叠区首开才画
+  （0 宽容器坑，模式出处注明）、erp_series 404 专门识别为"server.py 需要重启"。
+- **测试**：tests/js/test_market_dashboard.js 33 例（+14：radarFromDims/buildRegimeBands/
+  buildHeatRows 三个纯函数）；pytest 大盘域 116 例全绿；前端 13 套件全绿。
+- **未做（计划内）**：五维堆叠面积图、事件甘特图 —— dashboard.jsonl 只有 1 天、
+  events 0 条，攒够 30 天再做。
+
+---
+
+## 2026-09-19 — UI/UX 综合改造（UI/UX Pro Max 技能评估 → 计划书 → 落地）
+
+**一句话（大白话）**：按 9 月 19 日的界面评估报告把界面欠账集中还了一遍 —— 新 TAB（大盘环境
+仪表盘）修了一个真 bug 和一堆"不守图纸"，全站把"危险红"和"涨红"分开，暗色模式下原本
+看不清的字全部修到达标，PC 端页面切后台不再空跑轮询。
+
+依据：`docs/audit/2026-09-19_UIUX综合评估报告_UI-UX-PRO-MAX.html`（81 条发现）→
+计划书 `docs/plan/2026-09-19_UIUX综合改造_计划书.md`（两轮自审后实施）→
+实施报告 `docs/audit/2026-09-19_UIUX综合改造_实施报告.md`。
+
+### 关键改动
+
+- **新 TAB 真 bug（P0）**：`market_dashboard.js` 历史走势摘要的运算符优先级错误 ——
+  `+` 先于 `===` 执行，"近N个交易日：总分从 X 到 Y（"整句被吞、永远显示"变化"。
+  Node 实测复现后修复，并有 `tests/js/test_market_dashboard.js`（19 例）锁死。
+- **新 TAB 重构**：整段 CSS 从 JS 字符串注入迁回 index.html 走令牌；转 ES module 复用
+  charts.js 的 getColors/echartsInit（图表随主题换血，原写死 #378add）；补
+  `marketPageLeave` 离场钩子 + visibilitychange（倒计时不再切走后空跑）；温度分着色
+  与涨跌红绿脱钩（热=警示黄/温=中性/冷=信息蓝，估值维度"分高=便宜"不再刷红）；手动刷新
+  按钮带已耗时秒数；子页签补 tablist/tab/aria-selected 语义。
+- **交易页（P0）**：`trade.js` `get()` 补 r.ok 检查（后端 500 带 JSON body 原会被渲染成
+  "该日无成交"）；六处"交易服务 (8081) 不可达"统一改 `describeTradeError`（连不上 /
+  服务端报错 / 超时三种说法分开，超时分支为新增）；trade.js 转 ES module。
+- **红绿铁律收口（用户拍板"全部照建议改"）**：tokens.css 新增 `--danger`/`--on-danger`/
+  `--danger-text`/`--on-accent`/`--on-warn`/`--on-ok`/`--down-strong`/`--on-down` 与浅色
+  文字变体 `--ok-text/--pending-text/--info-text/--fail-text/--warn-text`；卖出按钮改绿
+  （btn-sell，卖出=卖出方向色）；急停按钮按真实语义两级化（激活=危险红，待命=警示黄 ——
+  实施期发现评估报告把 .armed 语义读反，按 trade.js 第 133 行代码真相落地）；危险/错误/
+  删除全站改走 --danger 系，不再占用涨红 --up。
+- **对比度（WCAG 实算）**：浅色 --text2 #6b7280→#5b6472（on surface 4.02→4.98:1）；
+  原不及格的 10 组文字组合全部修到 ≥4.5:1（复算表见实施报告）。
+- **健壮性**：analysis.js 全模块裸 fetch 收口到 fetchT（10s 超时+r.ok）；成交加载失败
+  不再伪装成"共 0 笔"；日历 daily_pnl 失败时格子显示"加载失败"而非全灰"未归档"；
+  decision.js 补请求序号守卫（防慢响应覆盖新响应）+ role=button 键盘激活（同一 bug
+  第三次出现，连根修）；vera-ui.js 五处静默吞错改显形；板块加载失败文案补 esc 转义。
+- **无障碍与一致性**：AI 设置页 8 个输入补 aria-label；新增 .btn-xs 收编 9 处内联小按钮；
+  表单即时校验扩面 8 个数字字段 + 买卖上下限交叉校验；页签覆盖层 top:41px 魔法数改
+  --tabbar-h 实测回写；页签栏加横向滚动兜底；交易页宽表加 .td-scroll。
+- **卫生**：polish.css 农场段写死 hex 全部收编回令牌；audit_css_vars.mjs 巡逻清单补
+  market_dashboard.js/decision.js/decision_util.mjs；market_position.js 保留并加注
+  （评估报告误判为孤儿文件 —— 实为跨语言文案反向锁的一半，勿删）。
+
+### 测试增量
+
+- 新增 `tests/js/test_market_dashboard.js`（19 例：摘要文案三档 + 温度着色边界 + 方向三态）。
+- `tests/web/test_decision_util.mjs` +5 例（describeFetchError 泛化 + describeTradeError
+  默认行为逐字不变）。
+- `tests/web/test_data_cache.js` 断言随新红绿口径更新（过期=--danger-text，新鲜=--ok-text）。
+- 基线全绿；`test_brain_viz.mjs` 有 1 个**既有**失败（"集成: marked 渲染出 h1"，
+  开工前就在，与本批改动无关，未触碰）。
+
+### 剩余风险 / 明确未做
+
+- 徽章六合一、表格二合一、echarts 懒加载、图表高度令牌化、emoji 图标替换 —— 纯视觉
+  重构，留待带截图验收的专项（理由见计划书 §1）。
+- trade.js 第 891/923 行"目标腿"仍用涨红做强调色（计划内明确不动，后续可改 --link）。
+- 改动全是前端静态文件，server.py/trade_main 均无需重启；浏览器需硬刷新一次拿新资源
+  （版本号已全部 bump 到 20260919b，正常刷新即可）。
+
+---
+
 ## 2026-09-19 — 决策台账上线当天修一个「谎报军情」的前端 bug：8081 明明是好的
 
 **一句话（大白话）**：重启交易进程后，页面上那张卡报**「查询失败: 交易服务 (8081) 不可达」**，
