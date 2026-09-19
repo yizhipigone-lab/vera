@@ -30,6 +30,14 @@ UNIVERSE_TYPE_MAP = {
 # ETF 基金的 TDX list_type (原生分类, 天然含 51/56/58/511, 排除 501/508 LOF)
 ETF_LIST_TYPE = "31"
 
+#: universe 配置里**缺省为 True** 的键 (2026-09-19 架构修订批次 3.3)。
+#: 语义归属地就是本文件 (真正决定缺省值的是下方 `u.get("exclude_quit", True)`);
+#: 缓存 key 归一化必须知道这份名单 —— 这类键的**显式 False 与"缺键"语义相反**
+#: (保留退市股 vs 剔除), 当假值剔掉会让两种池子撞同一个 key (2026-09-16 P0-1)。
+#: **新增此类键时只改这里**, 缓存层自动跟随; tests/test_universe_key_spec.py
+#: 用 AST 扫描本文件的 `u.get(k, True)` 调用, 保证声明与实现不漂移。
+UNIVERSE_TRUE_DEFAULT_KEYS = frozenset({"exclude_quit"})
+
 
 def _merge_etf(stocks: List[str]) -> List[str]:
     """拉 ETF 池 (list_type='31') 并与现有股票池合并去重。"""

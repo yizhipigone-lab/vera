@@ -86,10 +86,7 @@ def do_prep(args):
     from backtest.engine import (
         ENGINE_VERSION,
         BacktestEngine,
-        _build_tradable_from_raw,
-        recompute_last_tradable_idx,
     )
-    from core.data_fetcher import DataFetcher
     from selection.selector import StockSelector
 
     formula = args.formula
@@ -141,50 +138,26 @@ def do_prep(args):
     }
     engine = BacktestEngine(bt_cfg)
 
-    # 3. 5m 稀疏窗口取数 (复刻 engine.run() 数据准备, 一次做完)
+    # 3. 矩阵准备 (2026-09-19 架构修订批次 3.1: 收编到 engine 公开接缝
+    #    prepare_matrices —— 本段原是 engine.run() 准备段的手工复刻,
+    #    引擎一改即静默漂移, 详见架构审查 P1-7。口径变化提示: 接缝会把
+    #    窗口终点截断到 args.end (2026-07-21 引擎口径), 旧复刻段不截断
+    #    → meta 加 prep_seam 标记, 旧缓存加载时告警)
     t0 = time.time()
-    kline, window_mask = DataFetcher.get_kline_windowed(
-        selections, period="5m", window_trading_days=win_td,
-        dividend_type="front", fill_data=False, use_cache=True,
-    )
-    logger.info("[prep:%s] 窗口取数完成 %.1fs", formula, time.time() - t0)
-
-    # get_kline_windowed 返回 dict {'Open':df,...,'Close':df}; 空结果 = {} (dict 无 Close 键)。
-    # 2026-09-08: 上次误用 hasattr(dict,'columns') 判空 → 真数据全被误标 no_kline (GS1072 冤案)。
-    if not kline or "Close" not in kline:
-        # 池内某股取数全空 → kline 空 dict, 原代码 KeyError 崩批。
-        # 空数据多为瞬时(补数据后即有), 打标返回, 由批量层下轮重试。
+    prep = engine.prepare_matrices(selections, args.start, args.end, win_td)
+    if prep is None:
+        # 池内取数全空 (多为瞬时, 补数据后即有) → 打标返回, 批量层下轮重试
         logger.warning("[prep:%s] 窗口取数为空, 本轮跳过(下轮重试)", formula)
         print(json.dumps({"status": "no_kline", "formula": formula}))
         return
+    logger.info("[prep:%s] 窗口取数+矩阵准备完成 %.1fs", formula, time.time() - t0)
 
-    close = engine._ensure_index(kline["Close"])
-    high_df = engine._ensure_index(kline["High"])
-    low_df = engine._ensure_index(kline["Low"])
-    open_df = engine._ensure_index(kline["Open"])
-
-    # 5m 非标准时刻 bar 过滤 (审计 C1, 001399/300227 实盘事件)
-    close, high_df, low_df, open_df = BacktestEngine._drop_nonstandard_5m_bars(
-        close, high_df, low_df, open_df)
-
-    entries = engine._build_entry_signals(selections, close)
-    cols = sorted(close.columns.intersection(entries.columns))
-    cols = sorted(set(cols) & set(high_df.columns) & set(low_df.columns))
-
-    close_raw = close.reindex(index=close.index, columns=cols)
-    close = close_raw.ffill()
-    entries = entries.reindex(index=close.index, columns=cols, fill_value=False)
-    entries = engine._filter_limit_up(entries, close)
-    idx = close.index
-
-    high_np = high_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    low_np = low_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64)
-
-    tradable_np, _ = _build_tradable_from_raw(close_raw, close)
-    wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
-    tradable_np = tradable_np & wm
-    last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+    close = prep["close"]
+    idx, cols = prep["idx"], prep["cols"]
+    high_np, low_np, open_np = prep["high"], prep["low"], prep["open"]
+    tradable_np, last_tradable_idx = prep["tradable"], prep["last_tradable_idx"]
+    # 涨停预过滤是 sweep 特有步骤 (stop 无关, 只滤一次), 不在接缝内
+    entries = engine._filter_limit_up(prep["entries"], close)
 
     np.save(os.path.join(cache_dir, "close.npy"), close.values.astype(np.float64))
     np.save(os.path.join(cache_dir, "high.npy"), high_np)
@@ -199,6 +172,7 @@ def do_prep(args):
         "start": args.start, "end": args.end, "formula": formula,
         "window_td": win_td, "capital": capital, "max_buy": max_buy,
         "engine_version": ENGINE_VERSION,
+        "prep_seam": "engine_prepare_matrices@2026-09-19",
         "n_signals": int(entries.values.sum()), "shape": [int(len(idx)), int(len(cols))],
     }
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -244,6 +218,11 @@ def do_run(args):
     if meta.get("engine_version") and meta["engine_version"] != ENGINE_VERSION:
         logger.warning("[%s] 引擎版本漂移: prep=%s 现在=%s, Top 组合须 run() 复跑核对",
                        formula, meta["engine_version"], ENGINE_VERSION)
+    # 2026-09-19 批次 3.1: 旧缓存是"手工复刻配方"产物 (窗口不截断到 end),
+    # 接缝口径是截断的 —— 缺标记的旧缓存告警, 提示重 prep
+    if meta.get("prep_seam") != "engine_prepare_matrices@2026-09-19":
+        logger.warning("[%s] 缓存为旧复刻配方产物 (窗口口径不同), 建议重跑 prep",
+                       formula)
     sel_path = os.path.join(_cache_dir(formula, args.window_td), "selections.csv")
     selections = pd.read_csv(sel_path, dtype={"stock_code": str})
 

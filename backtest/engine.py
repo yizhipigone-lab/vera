@@ -179,6 +179,11 @@ class BacktestEngine:
             raise ValueError(
                 f"entry_price_mode 非法: {self.entry_price_mode!r} "
                 f"(合法: close_t/open_t1)")
+        # 2026-09-19 架构修订批次 3.1: 涨停过滤显式开关 (默认开, 零行为变化)。
+        # 此前要关只能 monkeypatch _filter_limit_up (tools/attr_gp1014.py 的
+        # no_limit_filter 变体就是这么干的) —— 显式配置取代运行时打补丁。
+        # open_t1 口径下本开关不适用 (T 日涨停过滤被 T+1 一字板判定替代)。
+        self.filter_limit_up = bool(config.get("filter_limit_up", True))
         # 2026-08-20 审计 HIGH: open_t1 仅支持日频语义 period — "次日开盘价"在
         # 1w (周线) 下会被静默解释成"下周开盘价" (BARS_PER_DAY[1w]=1, T+1=下一根周 bar),
         # 语义偷换且无任何告警。构造期 fail-fast, 不许静默跑错口径。
@@ -222,12 +227,29 @@ class BacktestEngine:
             )
         return win_td
 
+    def prepare_matrices(self, selections, start_time, end_time, win_td):
+        """准备段公开接缝 (2026-09-19 架构修订批次 3.1)。
+
+        run() 的准备段对外出口: 取数 → 非标准 bar 过滤 → (可选) 降级 →
+        entries → 列对齐 → ffill → tradable。tools/ 的 4 个 sweep 脚本曾把
+        这段配方各复刻一份 (engine 一改即静默漂移, 2026-09-19 架构审查 P1-7),
+        一律改调本方法。
+
+        返回 dict (run()/matrix_cache 的内部契约: close/entries/high/low/open/
+        tradable/last_tradable_idx/idx/cols/degraded_np/degrade_res/turnover_day);
+        取数为空返回 None。**注意**: 不含涨停过滤 —— 那是买入口径的事
+        (_apply_entry_price_mode, 与 entry_price_mode 绑定), 需要预过滤的
+        调用方在拿到 entries 后自行调 _filter_limit_up (sweep 脚本即如此)。
+        """
+        return self._prepare_run_matrices(selections, start_time, end_time, win_td)
+
     def _prepare_run_matrices(self, selections, start_time, end_time, win_td):
         """run() 的准备段 (2026-07-18 抽出, 供矩阵级缓存复用)。
 
         取数 → 非标准bar过滤 → degrade → entries → 列对齐 → ffill → tradable。
         产物只依赖 选股结果/区间/period/窗口/复权/数据, 与止盈止损参数无关。
         取数为空返回 None (调用方转 _empty_result)。
+        2026-09-19: 公开出口 = prepare_matrices (本方法保持私有实现)。
         """
         window_mask = None
         if self.bars_per_day > 1:
@@ -490,6 +512,10 @@ class BacktestEngine:
         open_t1 需要 OHLC 齐全, 缺失 fail-fast (不许静默退化成错误口径)。
         """
         if self.entry_price_mode != "open_t1":
+            # 2026-09-19: filter_limit_up=False 时恒等放行 (显式配置,
+            # 取代 tools/attr_gp1014.py 的 monkeypatch 变体)
+            if not self.filter_limit_up:
+                return entries, None, None
             return self._filter_limit_up(entries, close), None, None
         if open_np is None or high_np is None or low_np is None:
             raise ValueError(
@@ -515,13 +541,50 @@ class BacktestEngine:
             t1.n_no_t1_bar, t1.n_no_tradable_bar)
         return t1.entries, np.asarray(open_np), info
 
-    def run(self, selections, start_time="", end_time="", stop_config=None):
-        """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
+    def _validate_caliber(self, caliber):
+        """选股口径校验 (2026-09-19 架构修订批次 3.2 —— 自 pipeline 下沉)。
 
-        调用方注意：若 selections 来自不复权数据源，需通过 Pipeline.run() 统一入口，
-        pipeline 会在 step1 之后校验复权口径一致性。直接调 engine.run() 绕过了此校验。
+        原本只在 Pipeline.step2_backtest 里校验, **直调 engine.run() 全部绕过**
+        (本类 run() 的旧 docstring 自己承认)。下沉后: 传了 caliber 就校验
+        (复权不一致直接抛 ValueError; period 不一致告警), 没传则打 WARNING
+        明示"本次未校验" —— 不留静默旁路 (静默旁路才是真问题)。
+
+        caliber: {"dividend_type": int|str, "period": str}; None = 未声明。
         """
-        if selections.empty: return self._empty_result()
+        if not caliber:
+            logger.warning(
+                "caliber_unverified: 本次 run() 未声明选股口径 (selection_caliber), "
+                "跳过复权一致性校验 —— Pipeline 路径会自动带该声明; 直调本方法"
+                "请显式传 {\"dividend_type\":…, \"period\":…}, 否则选股与回测"
+                "复权口径不一致时不会被发现 (engine 硬编码 front)")
+            return
+        from core.dividend_type import assert_consistent
+        assert_consistent(caliber.get("dividend_type", 1), "front")
+        sel_period = caliber.get("period", "1d")
+        if sel_period != self.period:
+            # P1-8 (2026-07-17, 002008 bug): 1d 选股 + 5m 回测是合法组合, 仅告警
+            logger.warning(
+                "period_mismatch: 选股 period=%s 与 回测 period=%s 不一致, "
+                "若回测 period 数据有缺口, 选股信号会被丢弃 (不顺延)。"
+                "1d 选股 + 5m 回测为合法组合, 数据完整时可忽略; "
+                "若非有意, 请统一 period 或补全回测 period 的盘后数据。",
+                sel_period, self.period,
+            )
+
+    def run(self, selections, start_time="", end_time="", stop_config=None,
+            selection_caliber=None):
+        """执行回测。dividend_type 硬编码 "front"（前复权）。
+
+        selection_caliber: 选股口径声明 {"dividend_type":…, "period":…}。
+        Pipeline 路径自动传 (校验在此处统一执行, 2026-09-19 批次 3.2 自 pipeline
+        下沉); 直调不传则打 WARNING 明示"未校验", 不再静默绕过。
+        """
+        if selections is None or selections.empty:
+            # 口径校验先于空信号早退 —— 空 selections 也代表一次"用某口径跑的请求",
+            # 复权不一致该抛还是要抛 (与 pipeline 下沉前行为一致)
+            self._validate_caliber(selection_caliber)
+            return self._empty_result()
+        self._validate_caliber(selection_caliber)
 
         # 2026-07-26: 1m 数据深度硬限制 (探针实测 TDX 1m 仅 2026-01-26 起,
         # 更早区间无数据 → 截断不静默); win_td 过大时告警 (取数跨度守卫在

@@ -5,7 +5,49 @@
 
 ---
 
-## 2026-09-19 — 架构审查修订批次 2：8081 基址收编 + 错误契约统一 + 手机版契约快照
+## 2026-09-19 — 架构审查修订批次 3：引擎准备段收口 + 校验下沉 + 缓存声明 + tools 淤积清单
+
+**一句话（大白话）**：把"同一段配方抄四份"和"校验只在一条路上做"两个静默漂移
+温床拆了 —— 4 个扫描脚本改走引擎公开接缝、口径校验搬到引擎里（直调也管）、
+缓存 key 的"缺省 True 键"名单由 selector 声明（新增键不会再漏）、tools/ 有了
+分级清单工具（不删，只分类给人看）。
+
+- **3.1 sweep 复刻收口（审查 P1-7，本批大头）**：`backtest/engine.py` 新增公开
+  接缝 **`prepare_matrices()`**（run() 准备段的对外出口，返回既有 dict 契约；
+  取数为空返回 None）；4 个 sweep（`gs_5m_sweep`、`quantqq_5m_sweep`、
+  `quantqq_1m_sweep`、`quantqq_5m_sweep_2010`）各自那段"取数→非标准 bar 过滤→
+  列对齐→ffill→tradable"复刻全部删除，改调接缝（涨停预过滤是 sweep 特有步骤，
+  在接缝之后补，行为不变）；`tools/attr_gp1014.py` 的
+  `BacktestEngine._filter_limit_up` **运行时 monkeypatch 改为显式配置**
+  `filter_limit_up: False`（新增引擎配置键，默认 True 零行为变化）。
+  **口径变化（有意）**：接缝会把窗口终点截断到请求区间终点（2026-07-21 引擎口径），
+  旧复刻段有的没截断 → sweep 缓存 meta 加 `prep_seam` 标记，加载旧缓存时告警。
+  **parity 锁**：`tests/test_prepare_matrices_parity.py` 用合成 5m 数据把"接缝产物"
+  与"旧复刻配方（参考实现内联在测试里）"逐字段对拍（close/entries/high/low/open/
+  tradable/last_tradable_idx/idx/cols），3 例全绿。
+- **3.2 口径校验下沉（审查 P1-14）**：复权一致性 + period 一致性校验自
+  `pipeline.step2_backtest` 下沉到 `engine._validate_caliber`，`engine.run()` 新增
+  `selection_caliber` 参数（pipeline 如实传）；**直调 run() 不再静默绕过** ——
+  传了就校验（复权不一致直接抛），不传就打 `caliber_unverified` WARNING 明示。
+  校验先于"空 selections 早退"（空信号也照样抛坏口径）。`tests/test_engine_caliber.py`
+  5 例 + 既有 period_mismatch 两例改 logger 出处（pipeline→backtest.engine）。
+- **3.3 缓存缺省键声明式导出（审查 P1-15）**：`UNIVERSE_TRUE_DEFAULT_KEYS`
+  唯一声明搬到 `selection/selector.py`（语义归属地，真正决定缺省值的那行旁边），
+  `selection_cache` 函数内引用（不在模块级拖 selector 的 TDX 依赖）；
+  `_normalize_universe` 提升为公开名 **`normalize_universe`**（跨模块走私私有名正名，
+  `universe_cache` 与测试同步改）；新增 **AST 防漂移锁**
+  `tests/test_universe_key_spec.py` —— 扫描 selector 里真实的 `u.get(k, True)`
+  调用与声明比对，新增同类键忘登记立刻红（P0-1 复发防护）。L0/L2 缓存口径
+  不对称的取舍理由写进 docstring（不是 bug，别"统一"）。
+- **3.4 tools/ 淤积治理机制（审查 P2-16）**：新增 `tools/tools_inventory.py`
+  —— 三级分类（被生产引用/仅文档引用=研究证据/全仓零引用），**只分类不删除**，
+  每季度人工过目后处理孤儿。首跑实测：**128 个脚本 → 生产引用 57 / 仅文档 51 /
+  零引用 20**（此前粗估"82 个零引用"是没算研究引用，工具证明了一刀切删会毁证据链）。
+  4 例测试锁分类判据（含"运行时产物目录不算引用来源"）。
+- **测试**：批次新增 3 个测试文件（parity 3 例 / caliber 5 例 / universe 键 2 例 /
+  tools 清单 4 例）；全量 pytest 见提交时的基线。
+
+---
 
 **一句话（大白话）**：治"同一个地址抄四遍"和"报错格式四种写法" —— 9 月 19 日
 "404 被报成 8081 不可达"事故和"_month 幽灵行"事故的同源温床，这次拆掉了。

@@ -196,14 +196,10 @@ def do_prep(args):
             s, e = pd.Timestamp(start_time), pd.Timestamp(end_time)
             return [d for d in _cal if s <= d <= e]
         _DF.get_trading_days = classmethod(_local_trading_days)
-    from backtest._constants import STD_BAR_TIMES
     from backtest.engine import (
         ENGINE_VERSION,
         BacktestEngine,
-        _build_tradable_from_raw,
-        recompute_last_tradable_idx,
     )
-    from core.data_fetcher import DataFetcher
     from selection.selector import StockSelector
 
     win_td = args.window_td
@@ -242,45 +238,22 @@ def do_prep(args):
     }
     engine = BacktestEngine(bt_cfg)
 
-    # 3. 5m 稀疏窗口取数 (本地缓存, 2004 至今覆盖本区间)
-    # end_time 截断到区间终点 (2026-08-14 修复): 不截断则窗口尾巴伸到"今天",
-    # 每只票都触发缓存末段之后的 TDX 补拉 —— 既慢又踩中偶发段错误路径
+    # 3. 矩阵准备 (2026-09-19 架构修订批次 3.1: 收编到 engine 公开接缝
+    #    prepare_matrices —— 本段原是 engine.run() 准备段的手工复刻,
+    #    引擎一改即静默漂移, 详见架构审查 P1-7。本文件的 end_time 截断
+    #    (2026-08-14 修复) 与接缝口径一致, 迁移零口径变化)
     t0 = time.time()
-    kline, window_mask = DataFetcher.get_kline_windowed(
-        selections, period="5m", window_trading_days=win_td,
-        dividend_type="front", fill_data=False, use_cache=True,
-        end_time=END,
-    )
-    logger.info("[prep] 窗口取数完成 %.1fs", time.time() - t0)
+    prep = engine.prepare_matrices(selections, START, END, win_td)
+    if prep is None:
+        raise RuntimeError("QUANTQQ 5m 窗口取数为空, 无法继续")
+    logger.info("[prep] 窗口取数+矩阵准备完成 %.1fs", time.time() - t0)
 
-    close = engine._ensure_index(kline["Close"])
-    high_df = engine._ensure_index(kline["High"])
-    low_df = engine._ensure_index(kline["Low"])
-    open_df = engine._ensure_index(kline["Open"])
-
-    # 5m 非标准时刻 bar 过滤 (同 engine.run() 口径, 48 根/天不变量)
-    close, high_df, low_df, open_df = BacktestEngine._drop_nonstandard_intraday_bars(
-        close, high_df, low_df, open_df, STD_BAR_TIMES["5m"])
-
-    entries = engine._build_entry_signals(selections, close)
-    cols = sorted(close.columns.intersection(entries.columns))
-    cols = sorted(set(cols) & set(high_df.columns) & set(low_df.columns))
-
-    close_raw = close.reindex(index=close.index, columns=cols)
-    close = close_raw.ffill()
-    entries = entries.reindex(index=close.index, columns=cols, fill_value=False)
-    entries = engine._filter_limit_up(entries, close)  # stop 无关, 预过滤一次
-    idx = close.index
-
-    high_np = high_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    low_np = low_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    # Open 不 ffill (停牌 NaN 保留, P1-1/P1-2)
-    open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64)
-
-    tradable_np, _ = _build_tradable_from_raw(close_raw, close)
-    wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
-    tradable_np = tradable_np & wm
-    last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+    close = prep["close"]
+    idx, cols = prep["idx"], prep["cols"]
+    high_np, low_np, open_np = prep["high"], prep["low"], prep["open"]
+    tradable_np, last_tradable_idx = prep["tradable"], prep["last_tradable_idx"]
+    # 涨停预过滤是 sweep 特有步骤 (stop 无关, 只滤一次), 不在接缝内
+    entries = engine._filter_limit_up(prep["entries"], close)
 
     # 4. 落盘 (float64 mmap; bool/int 小数组同目录)
     np.save(os.path.join(cache_dir, "close.npy"), close.values.astype(np.float64))
@@ -298,6 +271,7 @@ def do_prep(args):
         "window_td": win_td, "capital": CAPITAL, "max_buy": MAX_BUY,
         "universe": UNIVERSE, "period": "5m", "trailing_confirm": "real",
         "engine_version": ENGINE_VERSION,
+        "prep_seam": "engine_prepare_matrices@2026-09-19",
         "n_signals": int(entries.values.sum()),
         "shape": [int(len(idx)), int(len(cols))],
     }

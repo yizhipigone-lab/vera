@@ -45,35 +45,53 @@ def default_cache_root() -> Path:
 
 
 # 2026-09-16 审计 P0-1 修复: selector 中缺省为 True 的键 (exclude_quit,
-# 见 selection/selector.py:146 的 u.get("exclude_quit", True)), 显式 False
+# 见 selection/selector.py 的 u.get("exclude_quit", True)), 显式 False
 # 是"保留退市股"非缺省语义, 绝不能当假值剔掉 — 否则 exclude_quit: False
 # 与缺键撞 key, 两种池子内容不同却共用一份缓存 (回测池语义被偷换)。
 # 这类键: 显式 False 保留在 key 里; 值恰为 True (= 缺省) 才剔除
 # (与"缺键"语义相同, 维持 web/yaml 两入口 key 收敛)。其余键维持原假值剔除。
-_DEFAULT_TRUE_KEYS = {"exclude_quit"}
+#
+# 2026-09-19 架构修订批次 3.3: 名单**不再在本文件手工维护** —— 唯一声明在
+# selection/selector.py 的 UNIVERSE_TRUE_DEFAULT_KEYS (语义归属地),
+# 本层只引用。原手工名单的问题是"selector 新增同类键 → 缓存层不知道 → P0-1 复发"。
+def _true_default_keys() -> frozenset:
+    """取 selector 声明的"缺省为 True"键集合。
+
+    函数内 import 而非模块级: selector 模块级拖 core.data_fetcher /
+    core.formula_runner (TDX 依赖), 缓存层不该为此加负担, 也避免潜在 import 环。
+    """
+    from selection.selector import UNIVERSE_TRUE_DEFAULT_KEYS
+    return UNIVERSE_TRUE_DEFAULT_KEYS
 
 
 def _keep_universe_key(k: str, v) -> bool:
     """归一化单键判定 (2026-09-16 P0-1 缺省表驱动)。
 
-    - _DEFAULT_TRUE_KEYS (缺省为 True 的键): 仅 True (= 缺省值) 与 None 剔除,
-      显式 False 必须保留在 key 里 (语义与缺省相反 — 保留退市股);
+    - 缺省为 True 的键 (selector.UNIVERSE_TRUE_DEFAULT_KEYS): 仅 True (= 缺省值)
+      与 None 剔除, 显式 False 必须保留在 key 里 (语义与缺省相反 — 保留退市股);
       注意不能走通用假值链 — Python 里 False == 0, 会被 v != 0 误剔
     - 其余键维持原假值剔除逻辑 (False/""/[]/None/0)
     """
-    if k in _DEFAULT_TRUE_KEYS:
+    if k in _true_default_keys():
         return v is not None and v is not True
     return v is not None and v is not False and v != "" and v != 0 and v != []
 
 
-def _normalize_universe(cfg: dict) -> dict:
+def normalize_universe(cfg: dict) -> dict:
     """universe 配置归一化 (R5: 完整配置哈希, 新增字段自动纳入)。
+
+    2026-09-19 批次 3.3: 原名 `_normalize_universe`, 因 universe_cache 也要用
+    (跨模块走私私有名) 提升为公开名 —— 单一实现, 不写第二份。
 
     - 剔除假值键 (False/""/[]/None/0): selector 全部 u.get(k, 假值默认),
       "缺键" 与 "显式默认值" 语义相同 — web 路径 (补全默认键) 与 yaml 路径
       (省略默认键) 应产出同 key, 否则跨入口永远 miss。
-      例外: _DEFAULT_TRUE_KEYS 的显式 False 保留 (见 _keep_universe_key)
+      例外: 缺省 True 键的显式 False 保留 (见 _keep_universe_key)
     - 列表值排序: sectors/stocks 语义上是集合, 顺序无关, 防顺序漂移假 miss
+      2026-09-19 (批次3.3 文档补记): L0 选股缓存 key 不含池**内容**哈希
+      (算它要先花 17s, R8 权衡), L2 按日信号缓存 key 含池内容哈希 ——
+      两层口径故意不对称: L0 靠 today 按日失效 + force_refresh 兜底,
+      L2 用池哈希做精确失效。不是 bug, 是权衡, 别试图"统一"。
     """
     u = {k: v for k, v in dict(cfg or {}).items()
          if _keep_universe_key(k, v)}
@@ -92,7 +110,7 @@ def build_key(formula_name: str, formula_arg: str, universe_cfg: dict,
     today_str (YYYYMMDD) 由调用方注入: 生产侧 datetime.now(), 测试传常量
     绕过真实跨日等待。formula_arg 的 None 与空串统一归一化 (R6)。
     """
-    uni_json = json.dumps(_normalize_universe(universe_cfg),
+    uni_json = json.dumps(normalize_universe(universe_cfg),
                           sort_keys=True, ensure_ascii=False, default=str)
     # 2026-08-01: 哈希拼接收编 pcu.blake2b_key, 与旧实现逐字节一致 (文件名不变)
     return pcu.blake2b_key(formula_name, formula_arg or "", uni_json,

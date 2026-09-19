@@ -49,9 +49,13 @@ def default_cache_root() -> Path:
 
 
 def build_key(universe_cfg: dict, today_str: str) -> str:
-    """universe 完整配置归一化哈希 + 当天日期 (复用一期归一化: 假值默认键剔除)。"""
-    from selection.selection_cache import _normalize_universe
-    uni_json = json.dumps(_normalize_universe(universe_cfg),
+    """universe 完整配置归一化哈希 + 当天日期 (复用一期归一化: 假值默认键剔除)。
+
+    2026-09-19 批次 3.3: 引用公开名 normalize_universe (原走私私有名
+    _normalize_universe) —— 单一实现不变, 只是把"私有名跨模块引用"正名。
+    """
+    from selection.selection_cache import normalize_universe
+    uni_json = json.dumps(normalize_universe(universe_cfg),
                           sort_keys=True, ensure_ascii=False, default=str)
     # 2026-08-01: 哈希拼接收编 pcu.blake2b_key, 与旧实现逐字节一致 (文件名不变)
     return pcu.blake2b_key(uni_json, today_str, SCHEMA_VERSION)
