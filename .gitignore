@@ -61,6 +61,8 @@ docs/research/
 # A5 parity snapshots must be versioned (regression baseline, overrides *.json above)
 !tests/snapshots/
 !tests/snapshots/*.json
+# 手机版契约快照同理必须入库 (2026-09-19 批次 2.3; *.json 规则的例外)
+!tests/web/mobile_contract_snapshot.json
 
 # DSH 深度思考便携运行时 (含 node 二进制/凭据/会话日志, 不入 git;
 # 重建: 从 IRX 拷贝或 python scripts/setup_dsh_home.py --apply) — 2026-09-04
