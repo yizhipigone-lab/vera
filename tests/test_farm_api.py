@@ -8,12 +8,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core import farm_runner as fr
-from core.farm_api import create_farm_router
+from farm_api import create_farm_router
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    import core.farm_api as fa
+    import farm_api as fa
     monkeypatch.setattr(fr, "LAST", tmp_path / "last_status.json")
     monkeypatch.setattr(fr, "DATA", tmp_path)
     monkeypatch.setattr(fa, "REPORTS", tmp_path / "reports")  # 隔离真实报告目录
@@ -155,7 +155,7 @@ def test_failed_gate_writes_log_and_extracts_reason(tmp_path, monkeypatch):
 
 
 def test_farm_log_endpoint(client, monkeypatch):
-    import core.farm_api as fa
+    import farm_api as fa
     c, farm = client
     monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
     # 没跑过 → 404; 未知闸门 → 400
@@ -175,7 +175,7 @@ def test_farm_log_endpoint(client, monkeypatch):
 
 def test_farm_log_rejects_tampered_path(client, monkeypatch):
     """复审 LOW: last_status.json 被改 → 指向 runs 外必须 400, 非字符串不炸 500。"""
-    import core.farm_api as fa
+    import farm_api as fa
     c, farm = client
     monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
     fa.RUNS.mkdir(parents=True, exist_ok=True)
@@ -189,7 +189,7 @@ def test_farm_log_rejects_tampered_path(client, monkeypatch):
 
 def test_farm_log_truncates_long_file(client, monkeypatch):
     """复审 LOW: 超上限只 tail-read 并标注, 不全文读入。"""
-    import core.farm_api as fa
+    import farm_api as fa
     c, farm = client
     monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
     monkeypatch.setattr(fa, "LOG_MAX_CHARS", 100)
@@ -206,7 +206,7 @@ def test_farm_log_truncates_long_file(client, monkeypatch):
 
 def test_farm_log_does_not_pay_summary_cost(client, monkeypatch):
     """审计 L4: 读日志走 last_status() 轻路径 —— 全程不触发全量汇总。"""
-    import core.farm_api as fa
+    import farm_api as fa
     from core import farm_summary as fsm
     c, farm = client
     monkeypatch.setattr(fa, "RUNS", fa.REPORTS.parent / "runs")
@@ -234,7 +234,7 @@ def _write_archive(fa, gs="GS0607", params=True):
 
 
 def test_prefill_endpoint_200(client, monkeypatch):
-    import core.farm_api as fa
+    import farm_api as fa
     from core import farm_summary as fsm
     c, farm = client
     monkeypatch.setattr(fa, "FARM_DATA", fa.REPORTS.parent)
@@ -249,7 +249,7 @@ def test_prefill_endpoint_200(client, monkeypatch):
 
 
 def test_prefill_endpoint_errors(client, monkeypatch):
-    import core.farm_api as fa
+    import farm_api as fa
     from core import farm_summary as fsm
     c, farm = client
     monkeypatch.setattr(fa, "FARM_DATA", fa.REPORTS.parent)
@@ -273,7 +273,7 @@ def test_backtest_rejected_when_pipeline_busy(tmp_path, monkeypatch):
 
 
 def test_report_endpoints(client, monkeypatch):
-    import core.farm_api as fa
+    import farm_api as fa
     c, farm = client
     # 无报告 → 空表
     assert c.get("/api/farm/reports").json()["items"] == []

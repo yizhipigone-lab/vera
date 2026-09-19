@@ -124,7 +124,7 @@ lab_status = LabQueue(pipeline_busy=lambda: pipeline_status.running)
 app.include_router(create_lab_router(lab_status, pipeline_status))
 # 2026-09-06: 公式农场页签 (三段闸门: 检查增量/一键入库/开始回测)
 from core.farm_runner import FarmRunner  # noqa: E402
-from core.farm_api import create_farm_router  # noqa: E402
+from farm_api import create_farm_router  # noqa: E402
 
 farm_status = FarmRunner()
 app.include_router(create_farm_router(farm_status, pipeline_status))

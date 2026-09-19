@@ -11,7 +11,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
-ROOT = Path(__file__).resolve().parent.parent
+# 2026-09-19 批次 5.2: 本文件自 core/ 搬到根目录 (API 层位置口径统一 —— 其余
+# *_api.py 都在根: lab_api/ai_api/research_api/data_cache_api/market_position_api),
+# 层级少一层, ROOT 相应改为 .parent。
+ROOT = Path(__file__).resolve().parent
 REPORTS = ROOT / "data" / "formula_farm" / "reports"
 RUNS = ROOT / "data" / "formula_farm" / "runs"
 FARM_DATA = ROOT / "data" / "formula_farm"

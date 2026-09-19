@@ -5,6 +5,37 @@
 
 ---
 
+## 2026-09-19 — 架构审查修订批次 5.2：API 层位置统一；core 收包按证据改判"不硬搬"
+
+**一句话（大白话）**：把唯一一个放错地方的接口文件挪回它该在的位置；至于
+"给 core/ 分家（market_/farm_/数据访问 三个包）"——量化完改动面后决定**不硬搬**：
+要改 100 多处引用、动到测试里的路径锚点与 patch 点，而收益只是"文件夹好看"。
+理由与数据留在下面，你要是觉得该搬，说一声我照搬。
+
+- **做了（低风险、审计明确点名的口径不一）**：`core/farm_api.py` → 根目录
+  `farm_api.py`（`git mv`），与其余 5 个 `*_api.py` 位置口径统一；同步改
+  `server.py` + `tests/test_farm_api.py` 共 10 处引用；**搬家必改点**：文件里
+  `ROOT = Path(__file__).resolve().parent.parent` 少一层 → 改 `.parent`（否则指向
+  项目外）。验证：`ROOT` 实测正确、`test_farm_api` 等 68 例绿、全量 3028 例绿。
+  （插曲：冒烟检查一度以为 farm 路由没挂上 —— 实为 FastAPI 新版把 include 的路由
+  存成 `_IncludedRouter` 不再摊平，**是检查方法错了，不是代码错了**。）
+- **没做（附量化证据）**：`market_*` 一族（10 个模块）、`farm_*`（5 个）、数据访问
+  一族（`data_fetcher`/`kline_cache`/`data_cache`/`tdx_tq`）收进子包。实测改动面：
+  `core.data_fetcher` 被 **39 个生产 + 20 个测试文件**引用、`core.market_position*`
+  约 **25 + 11**、`core.farm_rules` **12 + 3**；另有测试用**文件路径字符串**做锚点
+  （`test_market_position.py::_POSITION_MODULES`、`test_daily_review.py` 的 AST 守卫）。
+  改名还会牵动 logger 名（`get_logger(__name__)`）与各处 patch 点 —— 今天已两次踩到
+  "实现搬了、patch 没搬"的坑。**收益仅是组织性，代价是 100+ 引用点 + 锚点重写 +
+  patch/logger 风险** → 决定：**存量不搬**，新代码继续用 `market_*`/`farm_*` 前缀
+  （事实上已按族分名），需要分家时再按"先抽共享底座"的成功路径做。
+- **终态体检（计划书 §六 四指标）**：① 最大文件 < 60KB —— **未达成**：`trade_main.py`
+  84.6KB / `trade/rotation.py` 73.5KB / `backtest/engine.py` 72.9KB / `trade/store.py`
+  63.9KB（这四个都不在本计划书条目内，列为后续候选）；② tools 零引用清单机制 —— ✅
+  `tools/tools_inventory.py`；③ 8081 写端点鉴权 —— 用户拍板不做（已记档）；④ 跨进程写
+  全部有锁 —— ✅（`daily.jsonl` 文件锁 + raw 日志按月轮转 + kline_cache 原子写）。
+
+---
+
 ## 2026-09-19 — 架构审查修订批次 5.1 收尾（第四/五刀）：照镜子 + 体温表文案层，5.1 全部完成
 
 **一句话（大白话）**：把最后两块也搬出去了 —— 照镜子和体温表文案（那篇"大白话
