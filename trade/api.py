@@ -94,6 +94,15 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
         allow_methods=["*"], allow_headers=["*"],
     )
 
+    # 2026-09-19 架构修订批次 2.2: 与 server.py 同一错误契约 —— 未捕获异常
+    # 统一 JSON {"detail": ...} (前端 trade.js/decision.js 都按 detail 解析),
+    # 不返回 Starlette 默认的纯文本 500。
+    @app.exception_handler(Exception)
+    async def _unhandled_exc(request, exc):  # noqa: ANN001
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500,
+                            content={"detail": f"交易服务内部错误: {exc}"})
+
     # ── 读快照 ──────────────────────────────────────────────────
 
     @app.get("/api/trade/status")

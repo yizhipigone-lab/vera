@@ -11,12 +11,15 @@
 //      会被当成功渲染成"该日无成交", 比报错更危险);
 //   ③ 页面切后台停 1s 轮询, 回前台立即补刷 (手机版 9 月 16 日同款);
 //   ④ 失败/废单文案色从涨红 --up 改 --danger-text (红绿只留给涨跌方向)。
-import { describeTradeError } from './decision_util.mjs?v=20260919b';
+import { describeTradeError, tradeApiBase } from './decision_util.mjs?v=20260919b';
 
 (function () {
 'use strict';
 
-var BASE = 'http://' + location.hostname + ':8081';
+// 2026-09-19 架构修订批次 2.1: 8081 基址唯一出口 = decision_util.tradeApiBase
+// (原来这里手写拼一份, 与 analysis.js/decision.js/mobile.html 共四份硬编码,
+//  9-19 "404 被报成 8081 不可达"事故的同源温床)
+var BASE = tradeApiBase(location.hostname);
 var pollTimer = null;
 
 function get(u, signal) { return fetch(BASE + u, { signal: signal }).then(function (r) {

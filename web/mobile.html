@@ -206,14 +206,25 @@ body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-ri
   <button class="tab-btn" data-tab="research">研究</button>
 </nav>
 
+<script type="module">
+// 2026-09-19 架构修订批次 2.1: 8081 基址唯一出口 = decision_util.tradeApiBase
+// (node 可测的那份实现), 这里桥到 window 供下面的 classic 主脚本用。
+// 主脚本已包 DOMContentLoaded —— module 是 deferred, 先于 DOMContentLoaded 执行,
+// 时序有保。
+import { tradeApiBase } from '/web/js/decision_util.mjs?v=20260919b';
+window.tradeApiBase = tradeApiBase;
+</script>
 <script>
-(function(){
+// 2026-09-19: 包 DOMContentLoaded —— 上面的 module 桥是 deferred, 若 IIFE 立刻跑,
+// window.tradeApiBase 尚未挂上; DOMContentLoaded 在所有 deferred module 之后触发。
+document.addEventListener('DOMContentLoaded', function(){
 'use strict';
 // 2026-09-16: 交易服务地址可配 — 默认 http://<当前主机>:8081 (局域网/ tailscale 直连);
 // 走单端口反代或 https 时用 ?trade=<base> 覆盖 (如 ?trade=https://vera.example.com/trade),
 // 覆盖值记入 localStorage, 下次免带参数; ?trade=reset 清除记忆回落默认。
+// 2026-09-19: 默认基址改走唯一出口 window.tradeApiBase (上面的 module 桥)。
 var TRADE_BASE = (function(){
-  var def = 'http://' + location.hostname + ':8081';
+  var def = window.tradeApiBase(location.hostname);
   var m = location.search.match(/[?&]trade=([^&]+)/);
   if(m){
     var v = decodeURIComponent(m[1]).replace(/\/+$/,'');
@@ -554,7 +565,7 @@ $('btnReset').addEventListener('click', function(){
 
 // ── 启动 ─────────────────────────────────────────────
 refreshTrade();
-})();
+});
 </script>
 </body>
 </html>

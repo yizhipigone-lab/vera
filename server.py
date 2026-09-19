@@ -68,6 +68,22 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="VERA 量化回测系统", version="1.0.0", lifespan=_lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])  # 2026-08-18: 放行局域网手机访问
 
+
+# 2026-09-19 架构修订批次 2.2: 未捕获异常的全局兜底 —— 统一 JSON {"detail": ...},
+# 不再让 Starlette 默认返回纯文本 "Internal Server Error" (前端两个 fetch 封装
+# api.js/trade.js 都按 detail 解析, 纯文本 500 会让 r.json() 抛 SyntaxError,
+# 错误信息不可控)。
+# 全站错误契约 (两种许可形状, 不许发明第三种):
+#   传输/意外错误 → 非 200 状态码 + {"detail": "人话"} (HTTPException / 本 handler)
+#   业务软失败    → 200 + {"success": false, "error": "..."} (只读查询类接口,
+#                   前端按 success 分支处理, 如大盘仪表盘快照缺失)
+@app.exception_handler(Exception)
+async def _unhandled_exc(request, exc):
+    logger.warning(f"未捕获异常 {request.method} {request.url.path}: {exc}",
+                   exc_info=True)
+    return JSONResponse(status_code=500,
+                        content={"detail": f"服务器内部错误: {exc}"})
+
 # 静态文件
 app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
 app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")

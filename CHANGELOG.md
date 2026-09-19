@@ -5,7 +5,36 @@
 
 ---
 
-## 2026-09-19 — 架构审查修订批次 1：QMT 就绪等待 + 日历工具搬家 + raw 日志轮转 + 仓库清尾
+## 2026-09-19 — 架构审查修订批次 2：8081 基址收编 + 错误契约统一 + 手机版契约快照
+
+**一句话（大白话）**：治"同一个地址抄四遍"和"报错格式四种写法" —— 9 月 19 日
+"404 被报成 8081 不可达"事故和"_month 幽灵行"事故的同源温床，这次拆掉了。
+（批次 2.4 的 8081 鉴权由用户拍板不做：都是自己用，无需密钥。）
+
+- **2.1 8081 基址唯一出口**：`decision_util.mjs` 的 `tradeApiBase` 本就是唯一
+  实现；`trade.js:19`、`analysis.js:8-9`（两份常量）改为 import 它；
+  `mobile.html` 加 module 桥挂 `window.tradeApiBase`（主脚本包 DOMContentLoaded
+  等桥 —— module 是 deferred 先于 DOMContentLoaded，时序有保），`?trade=`
+  覆盖功能保留。新增接线守卫 `tests/web/test_trade_base_wiring.mjs`（13 例，
+  文本断言四个消费方零 `:8081` 硬编码）。
+- **esc() 收编勘察后放弃**：`charts.js` 的 esc 走 DOM（`createElement`），与
+  node 可测文件的 regex 版语义不同源也不同实现，合并会破坏 node 测试 ——
+  正确的决定是不合，留档备查。
+- **2.2 错误契约统一**：两台服务（server.py / trade/api.py）各加一个全局
+  exception handler，未捕获异常统一 JSON `{"detail": ...}`，不再回 Starlette
+  纯文本 500（前端 `r.json()` 会炸成 SyntaxError）。契约成文：**传输错误 =
+  非 200 + {detail}；业务软失败 = 200 + {success:false}**，写在 handler 注释里，
+  谁也不许发明第三种。坑：Starlette 的 ServerErrorMiddleware 发完 500 还会
+  再 raise 一次，TestClient 必须 `raise_server_exceptions=False` 才测得到响应形状。
+- **2.3 手机版契约快照**：`tests/trade/test_mobile_contract.py` +
+  `tests/web/mobile_contract_snapshot.json` —— 把 mobile.html 实际消费的 9 个
+  端点（grep 实证清单）的响应形状（字段名+类型递归）锁死；后端改字段即红，
+  并打印逐端点 diff。快照更新走 `VERA_UPDATE_MOBILE_SNAPSHOT=1` 环境变量
+  （pytest_addoption 在非 conftest 模块不生效，实测踩坑）。
+- **测试**：契约测试 3 例 + 手机快照 1 例 + 接线守卫 13 例新增；trade 全域 +
+  server 相关 981 例全绿；前端 15 套件 14 绿（test_brain_viz 历史遗留红除外）。
+
+---
 
 **一句话（大白话）**：按当天架构审查报告（`docs/audit/2026-09-19_代码库架构审查报告.md`）
 的计划书（`docs/plan/2026-09-19_架构审查修订计划书.md`）执行批次 1 —— 全是"纯卫生、

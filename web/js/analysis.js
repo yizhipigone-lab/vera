@@ -4,9 +4,11 @@ import { renderUnderwater, renderRolling, renderAttribution, renderAttributionSt
 import { bucketReason, isKnownReason } from './reason_util.mjs';
 // 2026-09-05 (治理III W4-e): 同源取数收敛到统一 client
 import { fetchBenchmarkHistory, fetchCalendar } from './api.js?v=20260911a';
+// 2026-09-19 架构修订批次 2.1: 8081 基址唯一出口 = tradeApiBase (原手写两份常量)
+import { tradeApiBase } from './decision_util.mjs?v=20260919b';
 
-const API_BASE = 'http://' + location.hostname + ':8081/api/trade/analysis';
-const TRADE_API = 'http://' + location.hostname + ':8081/api/trade';
+const API_BASE = tradeApiBase(location.hostname) + '/api/trade/analysis';
+const TRADE_API = tradeApiBase(location.hostname) + '/api/trade';
 const DIR_BUY = 23, DIR_SELL = 24;
 
 // 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (web/js/stock_link.js 提供 window.stockLink)
