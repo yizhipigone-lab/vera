@@ -8,10 +8,15 @@
 //   1. 卡片一顶部状态条的四态 (休市 / 跑过 / 半跑 / 没跑) 不能混;
 //   2. 颜色铁律: 买=红(up) / 卖=绿(down) / 没动=灰(muted) / 该做没做成=黄(warn);
 //   3. 日历格文案: 休市 ≠ 没运行 ≠ 有记录 —— 三者在页面上长得必须不一样。
+//
+// 第四条重点 (2026-09-19 补, 上线当天踩过): **请求要打到 8081, 不是页面的 8080**。
+// 当时只测了"文案生成"和"后端接口", 中间这段"地址怎么拼"没人管, 于是页面报
+// "交易服务 (8081) 不可达" 而 8081 其实是通的。见文件末尾「接口接线」一组。
 import assert from 'node:assert/strict';
 import {
   TONE_VAR, SOURCE_LABELS, actionBadge, statusLine, evidenceRows,
   calCellLabel, dominantTone, parseIso, fmtEvents,
+  tradeApiBase, fetchJson, describeTradeError,
 } from '../../web/js/decision_util.mjs';
 
 let _pass = 0, _fail = 0;
@@ -245,6 +250,61 @@ case_('端到端: 徽章文字齐', badges, ['没动', '没做成']);
 const tones = day.groups.flatMap(g => g.rows.map(r => actionBadge(r.action).tone));
 case_('端到端: 一格主色是警示', dominantTone(Object.fromEntries(
   tones.map(t => [t, 1]))), 'warn');
+
+// ── 接口接线: 请求必须打到 8081 (2026-09-19 真踩的坑) ────────────
+// 上线当天哥在页面上看到"交易服务 (8081) 不可达", 但 8081 其实好好的
+// (curl 直打 http://127.0.0.1:8081/api/trade/decisions 返回 200)。
+// 真因: 请求根本没发到 8081 —— 被静默打到了同源的 8080, 404 后被 catch
+// 统一报成"不可达"。下面这组就是钉死"地址怎么拼"。
+case_('base 用 127.0.0.1', tradeApiBase('127.0.0.1'), 'http://127.0.0.1:8081');
+case_('base 用 localhost', tradeApiBase('localhost'), 'http://localhost:8081');
+case_('base 跟着页面走 (手机走局域网 IP 时也能连上)',
+  tradeApiBase('192.168.1.9'), 'http://192.168.1.9:8081');
+case_('base 拿不到 hostname 时兜底回环', tradeApiBase(''), 'http://127.0.0.1:8081');
+case_('base 端口是交易进程的 8081, 不是页面的 8080',
+  tradeApiBase('127.0.0.1').includes(':8081'), true);
+case_('base 绝不能是空串 (空串=同源=打到 8080=就是那个 bug)',
+  tradeApiBase('127.0.0.1').length > 0, true);
+
+const _seen = [];            // 记下真实请求的 URL, 这是本组的核心证据
+const _fakeOk = (url) => {
+  _seen.push(url);
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: 1 }) });
+};
+
+const _got = await fetchJson(_fakeOk, tradeApiBase('127.0.0.1'),
+  '/api/trade/decisions?date=20260918');
+case_('请求 URL 带上了 8081', _seen[0],
+  'http://127.0.0.1:8081/api/trade/decisions?date=20260918');
+case_('请求 URL 不是裸相对路径 (裸路径会打到页面的 8080)',
+  _seen[0].startsWith('/'), false);
+case_('正常响应解析出 JSON', _got, { ok: 1 });
+
+// 服务端 4xx/5xx: 必须抛错, 且错误里带完整 URL —— 否则排查时看不出请求打去了哪
+let _errMsg = '';
+try {
+  await fetchJson(() => Promise.resolve(
+    { ok: false, status: 404, json: () => Promise.resolve({}) }),
+    tradeApiBase('127.0.0.1'), '/api/trade/decisions');
+} catch (e) { _errMsg = e.message; }
+case_('非 2xx 会抛错', _errMsg !== '', true);
+case_('错误信息里带 HTTP 状态码', _errMsg.includes('404'), true);
+case_('错误信息里带完整 URL (排查用)', _errMsg.includes('http://127.0.0.1:8081'), true);
+
+// 忘了注入 fetch 必须报错, 不能偷偷用全局的 —— 那样又变成"猜"
+let _noFetch = '';
+try { await fetchJson(undefined, 'http://x:8081', '/p'); } catch (e) { _noFetch = e.message; }
+case_('没注入 fetchImpl 会报错', _noFetch.includes('fetch'), true);
+
+// 「连不上」和「服务端报错」必须说成两句不同的话 —— 处理方式本来就不同
+const _netMsg = describeTradeError(new TypeError('Failed to fetch'));
+case_('连不上就说"连不上"', _netMsg.includes('连不上'), true);
+case_('连不上要告诉他去开哪个进程', _netMsg.includes('start_vera.bat'), true);
+case_('连不上要报出端口号', _netMsg.includes('8081'), true);
+const _srvMsg = describeTradeError(
+  new Error('HTTP 404 http://127.0.0.1:8081/api/trade/decisions'));
+case_('服务端报错不能说成"连不上"', _srvMsg.includes('连不上'), false);
+case_('服务端报错要带上真实原因', _srvMsg.includes('404'), true);
 
 console.log(`\n${_fail === 0 ? '[OK]' : '[FAIL]'} decision_util 契约测试: ${_pass} passed, ${_fail} failed`);
 process.exit(_fail === 0 ? 0 : 1);

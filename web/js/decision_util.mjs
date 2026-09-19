@@ -1,7 +1,12 @@
 // ====== 决策台账前端纯函数 (2026-09-18) ======
-// 为什么单独一个 .mjs: 这些"把后端的结构化行说成人话"的规则, 抽出来就能在
-// node 下直接单测 (仿 web/js/reason_util.mjs 先例), 不必打开浏览器靠肉眼看。
-// 零浏览器依赖 —— 不碰 document / window / fetch。
+// 为什么单独一个 .mjs: 这些规则抽出来就能在 node 下直接单测
+// (仿 web/js/reason_util.mjs 先例), 不必打开浏览器靠肉眼看。
+// 零浏览器依赖 —— 不碰 document / window, 也不碰全局 fetch
+// (fetch 由调用方注入, 见文件末尾「接口接线」一节)。
+//
+// 本文件管两件事, 都在这一层测:
+//   1. 把后端的结构化行**说成人话**(徽章/状态条/日历格文案/证据明细);
+//   2. 把请求**发到正确的地址**(交易 API 在 8081, 页面却在 8080 —— 见末尾)。
 //
 // 大白话要求 (AGENTS.md 第 7 条): 用户是量化入门者, 卡片上的每句话都要先有
 // 人话再说数字。所以这里所有文案都写成完整的句子, 术语首次出现配解释。
@@ -234,3 +239,81 @@ export function parseIso(iso) {
   if (!m) return null;
   return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
 }
+
+// ── 接口接线 ─────────────────────────────────────────────────────
+//
+// 2026-09-19 上线当天踩的坑 (哥在页面上看到"查询失败: 交易服务 (8081) 不可达",
+// 而实际上 8081 好得很 —— curl 直打 http://127.0.0.1:8081/api/trade/decisions 返回 200):
+//
+//   原实现想复用 trade.js 里的 `get()`, 写成
+//       `if (typeof window.get === 'function') return window.get(path);
+//        return fetch(path)…`
+//   但 trade.js 整个被包在 `(function () { … })()` 里, 它的 `get` 是**函数内部**的
+//   局部函数, 从来没挂到 `window` 上 (trade.js 只暴露了 recordsPageEnter 等 4 个钩子)。
+//   于是每一次都走到 fallback 的 `fetch(path)` —— 那是**同源**相对路径, 打到页面的
+//   8080 上, 而 8080 根本没有 /api/trade/* 这些路由 → 404 → 被 catch 吞掉,
+//   统一报成"8081 不可达"。**真正的错因和报出来的话完全不是一回事。**
+//
+// 两条教训, 都固化在这里:
+//   1. **地址要算出来, 不要猜。** 交易 API 固定在同一台机器的 8081 上, 直接拼出来;
+//      不写"先试试全局函数、不行再退化的"投机分支 —— 那条分支会安静地走错路。
+//   2. **错误的说法要和错因对得上。** "连不上"和"服务端报错"是两件事, 处理方式也
+//      不同(一个去开进程, 一个去看日志), 不能都说成"不可达"。见 describeTradeError。
+
+/** 交易 API 端口。交易进程 trade_main.py 默认开在这里, 页面本身由 8080 serve。 */
+export const TRADE_API_PORT = 8081;
+
+/**
+ * 拼交易 API 的基地址。
+ *
+ * 用传进来的 hostname (页面里是 ``location.hostname``) 而不是写死 ``127.0.0.1``:
+ * 手机通过局域网 IP 打开页面时, 写死回环地址会连到手机自己身上。
+ * @param {string} hostname - 例如 '127.0.0.1' / 'localhost' / '192.168.1.9'
+ * @returns {string} - 例如 'http://127.0.0.1:8081'
+ */
+export function tradeApiBase(hostname) {
+  const h = String(hostname || '').trim() || '127.0.0.1';
+  return 'http://' + h + ':' + TRADE_API_PORT;
+}
+
+/**
+ * GET 一个 JSON。
+ *
+ * ``fetchImpl`` 必须由调用方注入 (页面传全局 ``fetch``, 测试传假的) ——
+ * 本文件因此不碰全局 fetch, 才能在 node 下直接跑。
+ * 失败时抛出的 Error 里**带上完整 URL**, 否则排查时看不出请求到底打去了哪。
+ * @param {Function} fetchImpl
+ * @param {string} base - tradeApiBase() 的结果
+ * @param {string} path - 以 / 开头, 例如 '/api/trade/decisions?date=20260918'
+ * @returns {Promise<object>}
+ */
+export function fetchJson(fetchImpl, base, path) {
+  if (typeof fetchImpl !== 'function') {
+    return Promise.reject(new Error('没有可用的 fetch —— 调用方忘了注入'));
+  }
+  const url = String(base || '') + String(path || '');
+  return Promise.resolve(fetchImpl(url)).then(function (r) {
+    if (!r || r.ok !== true) throw new Error('HTTP ' + ((r && r.status) || '?') + ' ' + url);
+    return r.json();
+  });
+}
+
+/**
+ * 把请求失败翻译成哥能看懂、且**能据此行动**的一句话。
+ *
+ * 「连不上」→ 去看交易进程有没有开;「服务端报错」→ 去看日志/数据。两者混成
+ * 一句"不可达"时, 人会去查错的东西 (2026-09-19 就是这么白查了一轮)。
+ * @param {Error} err
+ * @returns {string}
+ */
+export function describeTradeError(err) {
+  const msg = String((err && err.message) || err || '');
+  const isNetwork = (typeof TypeError !== 'undefined' && err instanceof TypeError)
+    || /failed to fetch|networkerror|load failed|err_connection/i.test(msg);
+  if (isNetwork) {
+    return '连不上交易服务 (端口 ' + TRADE_API_PORT + ') —— 交易进程没在跑, '
+      + '双击项目根目录的 start_vera.bat 启动它';
+  }
+  return '交易服务报错: ' + (msg || '未知错误');
+}
+

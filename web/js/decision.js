@@ -14,8 +14,8 @@
 // 这样即使本文件加载失败, 原有四张卡照常工作。
 
 import {
-  actionBadge, calCellLabel, dominantTone, evidenceRows, parseIso,
-  SOURCE_LABELS, statusLine, TONE_VAR,
+  actionBadge, calCellLabel, describeTradeError, dominantTone, evidenceRows,
+  fetchJson, parseIso, SOURCE_LABELS, statusLine, TONE_VAR, tradeApiBase,
 } from './decision_util.mjs';
 
 const WEEK_HEADS = ['一', '二', '三', '四', '五', '六', '日'];
@@ -29,13 +29,13 @@ function esc(s) {
   });
 }
 
-/** 走页面统一的 get (trade.js 的全局函数); 拿不到就退化成 fetch。 */
+// 交易 API 在 8081, 页面在 8080 —— 地址是**算出来的**, 不是猜出来的。
+// (2026-09-19 修: 原来想复用 trade.js 的 get(), 但它是 IIFE 里的局部函数、没挂到
+//  window 上, 于是每次都静默退化成同源 fetch 打到 8080 → 404 → 误报"8081 不可达"。)
+const API_BASE = tradeApiBase(location.hostname);
+
 function apiGet(path) {
-  if (typeof window.get === 'function') return window.get(path);
-  return fetch(path).then(function (r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
-  });
+  return fetchJson(fetch, API_BASE, path);
 }
 
 function el(id) {
@@ -58,8 +58,8 @@ function loadDecisions() {
   if (btn) { btn.disabled = true; btn.textContent = '查询…'; }
   apiGet('/api/trade/decisions' + (v ? '?date=' + v : ''))
     .then(renderDecisions)
-    .catch(function () {
-      hint.textContent = '查询失败: 交易服务 (8081) 不可达';
+    .catch(function (err) {
+      hint.textContent = '查询失败: ' + describeTradeError(err);
       if (el('decStatus')) el('decStatus').style.display = 'none';
       if (el('decBody')) el('decBody').innerHTML = '';
     })
@@ -169,8 +169,8 @@ function loadCalendar() {
       if (hint) hint.textContent = '';
       renderCalendar(data);
     })
-    .catch(function () {
-      if (hint) hint.textContent = '查询失败: 交易服务 (8081) 不可达';
+    .catch(function (err) {
+      if (hint) hint.textContent = '查询失败: ' + describeTradeError(err);
     });
 }
 
