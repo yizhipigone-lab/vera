@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from scheduler.trading_calendar import is_trading_day, next_trading_day
+from utils.trading_calendar import is_trading_day, next_trading_day
 from utils.logger import get_logger
 
 _logger = get_logger("scheduler.vera_scheduler")

@@ -90,7 +90,7 @@ def _expected_last_bar_day(today: dt.date, now_hm: int) -> str:
     日历不可用/异常 → '' (判不出就不猜, 调用方不补下载)。
     """
     try:
-        from scheduler.trading_calendar import calendar_covers, is_trading_day
+        from utils.trading_calendar import calendar_covers, is_trading_day
         trusted = calendar_covers(today)
         if not trusted:
             _warn_calendar_not_covered(today)

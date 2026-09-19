@@ -64,7 +64,7 @@ _handles: dict = {}
 
 def expected_last_trading_day(now: dt.datetime | None = None) -> dt.date:
     """最近应有数据的交易日：交易日 15:00 后=今天，否则=上一交易日。"""
-    from scheduler.trading_calendar import is_trading_day
+    from utils.trading_calendar import is_trading_day
     now = now or dt.datetime.now()
     d = now.date()
     if is_trading_day(d) and now.hour >= 15:

@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from scheduler import trading_calendar as tc
+from utils import trading_calendar as tc
 from scheduler import vera_scheduler as vs
 from scheduler.graceful_shutdown import install
 
@@ -55,7 +55,7 @@ class TestTradingCalendar:
                 raise ImportError("模拟缺失")
             return real_import(name, *a, **kw)
         monkeypatch.setattr(builtins, "__import__", fake_import)
-        with caplog.at_level("WARNING", logger="scheduler.trading_calendar"):
+        with caplog.at_level("WARNING", logger="utils.trading_calendar"):
             assert tc.is_trading_day(dt.date(2026, 1, 5)) is True
         assert "降级" in caplog.text
 

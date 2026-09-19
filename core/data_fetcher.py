@@ -196,7 +196,7 @@ class DataFetcher(ConnectorSeam):
         【robust 版】: 异常吞掉返空 + 排序去重 —— 回测/选股窗口数学的
         唯一公开入口 (engine / signal_day_cache / window)。窗口数学依赖
         有序, 用本方法。字符串版日历 (raw, 工具/缓存用) 走 get_calendar_days;
-        UI 展示用精确历在 scheduler.trading_calendar (2026-09-04 起 server 已切)。
+        UI 展示用精确历在 utils.trading_calendar (2026-09-04 起 server 已切)。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()
@@ -626,7 +626,7 @@ class DataFetcher(ConnectorSeam):
 
         与 get_trading_days (robust, Timestamp, 回测窗口数学) 刻意**不同名**:
         名字点明"字符串日历", 防误选。展示用精确历已迁
-        scheduler.trading_calendar (2026-09-04), 本方法仅供工具/缓存。
+        utils.trading_calendar (2026-09-04), 本方法仅供工具/缓存。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()

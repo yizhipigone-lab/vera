@@ -470,16 +470,16 @@ async def favicon():
 
 @app.get("/api/calendar")
 async def api_calendar(year: int = 0, month: int = 0):
-    """交易日历 (scheduler.trading_calendar 精确历, 2026-09-04 修复)。
+    """交易日历 (utils.trading_calendar 精确历, 2026-09-04 修复)。
 
     旧数据源 TDX get_calendar_days (原 get_trading_dates) 派生自上证指数
     盘后数据 —— 只含 "已收盘且已下载" 的日子: 盘中永远缺当天、未来整月空白,
     周五盘中也会被标"休市" (实测 9 月只返回 1/2/3 号、10 月 0 天)。
     现改用与实盘时段感知同源的精确历 (exchange_calendars XSHG 上交所历,
     缺库时内置 2026 假日表), 今天/未来/法定节假日全部正确, 显示与实盘
-    判断同源。2026-09-15: 月历网格构建下沉 scheduler.trading_calendar
+    判断同源。2026-09-15: 月历网格构建下沉 utils.trading_calendar
     .month_grid 纯函数 (深模块治理), 本路由只转发。"""
-    from scheduler.trading_calendar import month_grid
+    from utils.trading_calendar import month_grid
     return month_grid(year, month)
 
 

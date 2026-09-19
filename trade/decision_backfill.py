@@ -55,7 +55,7 @@ import sqlite3
 import threading
 from collections import defaultdict
 
-from scheduler.trading_calendar import is_trading_day as _is_trading_day
+from utils.trading_calendar import is_trading_day as _is_trading_day
 from trade.decision_codes import (
     ACTION_BUY, ACTION_FAIL, ACTION_HOLD, ACTION_INFO, ACTION_SELL,
     action_of, classify_auto_buy, classify_rotation, classify_rotation_skip,

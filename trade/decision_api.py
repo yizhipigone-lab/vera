@@ -23,7 +23,7 @@ import datetime as _dt
 
 from fastapi import APIRouter, HTTPException, Query
 
-from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
+from utils.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.decision_codes import get as _code_get
 from utils.logger import get_logger
 

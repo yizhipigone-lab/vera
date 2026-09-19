@@ -14,7 +14,7 @@ import datetime as _dt
 import time
 from typing import Callable
 
-from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
+from utils.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.book import is_etf, label_of, ladder_tier_qty
 from trade.quote_stale import REASON_STALE, is_quote_stale
 from utils.logger import get_logger
@@ -26,7 +26,7 @@ SESSION_NAMES = {"pre_open": "盘前", "auction": "集合竞价",
                  "continuous": "盘中", "lunch": "午休中", "closed": "已收盘"}
 
 # D5 (2026-08-01): 节假日日历统一 —— trading_session 原只判周末
-# (TODO P2), 现接 scheduler.trading_calendar (exchange_calendars 精确历,
+# (TODO P2), 现接 utils.trading_calendar (exchange_calendars 精确历,
 # 缺失时降级内置 2026 假日表, 其自身松耦合不抛异常)。盘中热路径
 # (scan 每轮都调) 按日 memoize; 日历万一异常回落周末判定
 # (fail-open, 与 D5 前行为一致, 不让日历故障压制盘中规则)。

@@ -221,6 +221,18 @@ class TradeApp:
             fake = (os.environ.get("VERA_TRADE_FAKE") == "1") or config.fake_sdk
 
         # ── 按依赖顺序构造 ──
+        # 2026-09-19 架构修订批次 1.3: raw 审计日志按月轮转, 必须在 TradeStore
+        # 打开 live 文件**之前**做 (Windows 下被占用文件无法 os.replace,
+        # 且轮转中途的新写入会丢)。非当月行切到 raw_reports_YYYYMM.jsonl
+        # 归档; 当月文件无旧月数据时秒回 no-op。失败不阻断启动。
+        try:
+            from trade.raw_log import rotate_raw_log_monthly
+            _rot = rotate_raw_log_monthly(config.raw_log_path)
+            if _rot.get("archived"):
+                _logger.info("raw 日志轮转: %s", _rot)
+        except Exception:
+            _logger.warning("raw 日志轮转失败 (不阻断启动, 下次启动再试)",
+                            exc_info=True)
         self.store = TradeStore(config.db_path, config.raw_log_path)
         self.book = Book()
         self.kill = KillSwitch(self.store, config.kill_flag_path)

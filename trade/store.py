@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
+from utils.trading_calendar import is_trading_day as _cal_is_trading_day
 from trade.book import DIRECTION_BUY
 from trade.decision_codes import ACTION_RANK, action_of as _action_of
 from utils.logger import get_logger

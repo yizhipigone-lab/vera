@@ -72,7 +72,7 @@ def test_expected_last_bar_day(day, now_hm, expect):
 
 def test_expected_last_bar_day_calendar_broken(monkeypatch):
     """日历炸了 → 返回 '' (判不出就不猜), 不抛。"""
-    import scheduler.trading_calendar as cal
+    import utils.trading_calendar as cal
 
     def _boom(_d):
         raise RuntimeError("日历不可用")
@@ -271,7 +271,7 @@ def test_untrusted_calendar_drops_today_demand(monkeypatch, caplog):
     否则 2027 年落在工作日里的法定假日会被粗判成交易日, "应有一根=当日"
     永远校验不过 → 每 600s 空补一次。
     """
-    import scheduler.trading_calendar as cal
+    import utils.trading_calendar as cal
 
     monkeypatch.setattr(cal, "_XCAL", None)
     monkeypatch.setattr(cal, "_XCAL_TRIED", True)
@@ -285,7 +285,7 @@ def test_untrusted_calendar_drops_today_demand(monkeypatch, caplog):
 
 def test_covered_calendar_still_demands_today(monkeypatch, caplog):
     """对照: 内置表覆盖的 2026 年 (精确历缺失) 仍按严格判据要求当日。"""
-    import scheduler.trading_calendar as cal
+    import utils.trading_calendar as cal
 
     monkeypatch.setattr(cal, "_XCAL", None)
     monkeypatch.setattr(cal, "_XCAL_TRIED", True)

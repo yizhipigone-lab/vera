@@ -1,55 +1,75 @@
 @echo off
-chcp 65001 >nul
 rem ============================================================
-rem  VERA ä¸€é”®å¯åŠ¨(å›žæµ‹ Web + å®žç›˜äº¤æ˜“ä¸¤ä¸ªè¿›ç¨‹)
-rem  ç¼–ç :æœ¬æ–‡ä»¶ UTF-8 + CRLF,é¦–è¡Œ chcp 65001 åˆ‡æŽ§åˆ¶å°,
-rem  PYTHONIOENCODING ä¿è¯ Python ä¸­æ–‡æ—¥å¿—ä¸ä¹±ç 
+rem  VERA Ò»¼üÆô¶¯(»Ø²â Web + ÊµÅÌ½»Ò× + ¶¨Ê±µ÷¶ÈÈý¸ö½ø³Ì)
+rem  ±àÂë:±¾ÎÄ¼þ GBK + CRLF(2026-09-16 ¸Ä: cmd ¶Ô UTF-8 Åú´¦ÀíÓÐ½âÎö
+rem  bug, »á°ÑÖÐÎÄ×¢ÊÍÀ¹Ñü½Ø¶Ïµ±ÃüÁîÖ´ÐÐ, ±¨"ÕÒ²»µ½ÎÄ¼þ");
+rem  ×Ó´°¿Ú¸÷×Ô chcp 65001 + PYTHONIOENCODING ±£ Python ÖÐÎÄÈÕÖ¾²»ÂÒÂë
 rem ============================================================
 set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
-rem ---- Python å®šä½(2026-09-16 ä¿®)------------------------------------------
-rem æœ¬æœº python.exe æ²¡è¿›ç³»ç»Ÿ PATH, ç›´æŽ¥æ•² python ä¼šå‘½ä¸­å¾®è½¯å•†åº—çš„ 0 å­—èŠ‚å ä½ç¬¦
-rem (æŠ¥ "Python was not found"), çœŸå®žè§£é‡Šå™¨åœ¨ D:\Program Files\Python313ã€‚
-rem è¿™é‡ŒæŠŠå®ƒæŽ’åˆ° PATH æœ€å‰é¢, ä¸‹é¢ 3 ä¸ª start çª—å£ç»§æ‰¿åŒä¸€ä»½ PATH, ä¸å†æ’žå ä½ç¬¦ã€‚
+rem ---- Python ¶¨Î»(2026-09-16 ÐÞ)------------------------------------------
+rem ±¾»ú python.exe Ã»½øÏµÍ³ PATH, Ö±½ÓÇÃ python »áÃüÖÐÎ¢ÈíÉÌµêµÄ 0 ×Ö½ÚÕ¼Î»·û
+rem (±¨ "Python was not found"), ÕæÊµ½âÊÍÆ÷ÔÚ D:\Program Files\Python313¡£
+rem ÕâÀï°ÑËüÅÅµ½ PATH ×îÇ°Ãæ, ÏÂÃæ 3 ¸ö start ´°¿Ú¼Ì³ÐÍ¬Ò»·Ý PATH, ²»ÔÙ×²Õ¼Î»·û¡£
 set "PYDIR=D:\Program Files\Python313"
 if not exist "%PYDIR%\python.exe" (
-  echo [é”™è¯¯] æ‰¾ä¸åˆ° Python: "%PYDIR%\python.exe"
-  echo        è¯·æ”¹æœ¬æ–‡ä»¶é¡¶éƒ¨çš„ PYDIR, æˆ–æŠŠ Python ç›®å½•åŠ è¿›ç³»ç»Ÿ PATHã€‚
+  echo [´íÎó] ÕÒ²»µ½ Python: "%PYDIR%\python.exe"
+  echo        Çë¸Ä±¾ÎÄ¼þ¶¥²¿µÄ PYDIR, »ò°Ñ Python Ä¿Â¼¼Ó½øÏµÍ³ PATH¡£
   pause
   exit /b 1
 )
 set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
-rem claude CLI å®šä½(2026-09-16 ä¿®): ç ”ç©¶å¤§è„‘æ ‡å‡†æ¡£ spawn claude CLI,
-rem å®ƒè£…åœ¨ D:\Program Files\nodejs ä½†ä¸åœ¨ç³»ç»Ÿ PATH â€”â€” ä¸åŠ ä¼šæŠ¥
-rem "claude CLI æœªå®‰è£…, å¤§è„‘ä¸å¯ç”¨"å¹¶é™çº§å¿«é€Ÿæ¡£ã€‚åŒæ­¥å·²å†™å…¥ç”¨æˆ· PATHã€‚
+rem claude CLI ¶¨Î»(2026-09-16 ÐÞ): ÑÐ¾¿´óÄÔ±ê×¼µµ spawn claude CLI,
+rem Ëü×°ÔÚ D:\Program Files\nodejs µ«²»ÔÚÏµÍ³ PATH ¡ª¡ª ²»¼Ó»á±¨
+rem "claude CLI Î´°²×°, ´óÄÔ²»¿ÉÓÃ"²¢½µ¼¶¿ìËÙµµ¡£Í¬²½ÒÑÐ´ÈëÓÃ»§ PATH¡£
 set "NODEDIR=D:\Program Files\nodejs"
 if exist "%NODEDIR%\claude.cmd" set "PATH=%NODEDIR%;%PATH%"
-rem é€šè¾¾ä¿¡å®‰è£…è·¯å¾„(2026-09-16 ä¿®): ä»£ç é»˜è®¤ E:\NEW_TDX ä¸Žæœ¬æœºå®žé™…ä¸ç¬¦,
-rem ä¸è®¾ä¼šå¯¼è‡´è½®åŠ¨å–æ•°çš„ç¬¬äºŒçº§å…œåº•(TDX)ä¸Žç®€ç§°è¡¨ TDX æºé™é»˜å¤±æ•ˆã€‚
+rem Í¨´ïÐÅ°²×°Â·¾¶(2026-09-16 ÐÞ): ´úÂëÄ¬ÈÏ E:\NEW_TDX Óë±¾»úÊµ¼Ê²»·û,
+rem ²»Éè»áµ¼ÖÂÂÖ¶¯È¡ÊýµÄµÚ¶þ¼¶¶µµ×(TDX)Óë¼ò³Æ±í TDX Ô´¾²Ä¬Ê§Ð§¡£
 set "TDX_HOME=D:\new_tdx"
-echo [0/3] Python è§£é‡Šå™¨: %PYDIR%\python.exe
+echo [0/3] Python ½âÊÍÆ÷: %PYDIR%\python.exe
 
-echo [1/3] å¯åŠ¨å›žæµ‹ Web (8080) ...
-rem é»˜è®¤ç¨³å®šæ¨¡å¼(2026-09-07 èµ·): ä»£ç æ”¹åŠ¨ä¸ä¼šè‡ªåŠ¨é‡å¯, é˜²æ‰“æ–­é•¿å›žæµ‹/æ·±åº¦æ€è€ƒ
-rem å¼€å‘è¦çƒ­æ›´æ—¶: æŠŠä¸‹è¡Œæ”¹ä¸º python server.py --reload
-start "VERA-Web-8080" cmd /k python server.py
+echo [1/3] Æô¶¯»Ø²â Web (8080) ...
+rem Ä¬ÈÏÎÈ¶¨Ä£Ê½(2026-09-07 Æð): ´úÂë¸Ä¶¯²»»á×Ô¶¯ÖØÆô, ·À´ò¶Ï³¤»Ø²â/Éî¶ÈË¼¿¼
+rem ¿ª·¢ÒªÈÈ¸üÊ±: °ÑÏÂÐÐ¸ÄÎª python server.py --reload
+start "VERA-Web-8080" cmd /k "chcp 65001 >nul && python server.py"
 
-echo [2/3] å¯åŠ¨å®žç›˜äº¤æ˜“ (8081) ...
-rem æ³¨æ„:äº¤æ˜“è¿›ç¨‹éœ€è¦ miniQMT å·²ç™»å½•è¿è¡Œ
-rem æµ‹è¯•æ¨¡å¼(ä¸ä¸‹å•,ç”¨ FakeGateway): æŠŠä¸‹è¡Œæ”¹ä¸º python trade_main.py --fake
-start "VERA-Trade-8081" cmd /k python trade_main.py --config config/trade.yaml
+echo [2/3] Æô¶¯ÊµÅÌ½»Ò× (8081) ...
+rem 2026-09-19 ¼Ü¹¹ÐÞ¶©Åú´Î1.1: ÏÈµÈ QMT ¾ÍÐ÷ÔÙÆô trade_main ¡ª¡ª
+rem 2026-09-02 ÀäÆô¶¯ÊÂ¹Ê: miniQMT µÇÂ¼³õÊ¼»¯Ðè 30s~2min, Ã»¾ÍÐ÷¾ÍÆô»á
+rem connect() ·µ»Ø -1 ±ÀÀ£¡£ÓÃ tools\qmt_ready_check.py Ì½Õë(Óë trade_main
+rem Í¬Ò»·Ý config)Ã¿ 20 ÃëÊÔÒ»´Î, ×î¶à 10 ´Î; ÈÔ²»¾ÍÐ÷ÔòÌø¹ý½»Ò×½ø³Ì
+rem (fail-closed: »Ø²â/µ÷¶ÈÕÕÆð, ½»Ò×²»Æð), ¾ø²»´ø²¡Æô¶¯¡£
+rem ²âÊÔÄ£Ê½(²»ÏÂµ¥,ÓÃ FakeGateway): °ÑÏÂÐÐ start ÐÐ¸ÄÎª python trade_main.py --fake
+set "QMT_OK=0"
+for /l %%i in (1,1,10) do (
+  "%PYDIR%\python.exe" tools\qmt_ready_check.py --config config\trade.yaml 2>nul
+  if not errorlevel 1 (
+    set "QMT_OK=1"
+    goto :qmt_ready
+  )
+  echo       QMT Î´¾ÍÐ÷, 20 ÃëºóÖØÊÔ (µÚ %%i/10 ´Î) ...
+  timeout /t 20 /nobreak >nul
+)
+:qmt_ready
+if "%QMT_OK%"=="1" (
+  start "VERA-Trade-8081" cmd /k "chcp 65001 >nul && python trade_main.py --config config/trade.yaml"
+) else (
+  echo [¾¯¸æ] QMT µÈ´ý 10 ´ÎÈÔÎ´¾ÍÐ÷, ±¾´Î²»Æô¶¯½»Ò×½ø³Ì(»Ø²â/µ÷¶È²»ÊÜÓ°Ïì)¡£
+  echo        ÇëÏÈµÇÂ¼ miniQMT, ÔÙÊÖ¹¤ÔËÐÐ: python trade_main.py --config config/trade.yaml
+)
 
-echo [3/3] å¯åŠ¨å®šæ—¶è°ƒåº¦ (èˆ†æƒ…æ‰«æ/èˆ†æƒ…æ—¥æŠ¥/æœˆåº¦ç¬”è®°/å‘¨åº¦è¿›åŒ–) ...
-rem èˆ†æƒ…æ‰«æ+æ—¥æŠ¥æŒ‚åœ¨ scheduler è¿›ç¨‹, ä¸æ‹‰å®ƒå°±æ²¡æœ‰é£žä¹¦æŽ¨é€ (2026-08-14 ä¿®å¤)
-start "VERA-Scheduler" cmd /k python -m scheduler
+echo [3/3] Æô¶¯¶¨Ê±µ÷¶È (ÓßÇéÉ¨Ãè/ÓßÇéÈÕ±¨/ÔÂ¶È±Ê¼Ç/ÖÜ¶È½ø»¯) ...
+rem ÓßÇéÉ¨Ãè+ÈÕ±¨¹ÒÔÚ scheduler ½ø³Ì, ²»À­Ëü¾ÍÃ»ÓÐ·ÉÊéÍÆËÍ (2026-08-14 ÐÞ¸´)
+start "VERA-Scheduler" cmd /k "chcp 65001 >nul && python -m scheduler"
 
 echo.
-echo ä¸‰ä¸ªè¿›ç¨‹å·²åœ¨æ–°çª—å£å¯åŠ¨(çª—å£ä¿ç•™,æŠ¥é”™å¯è§):
-echo   å›žæµ‹/é€‰è‚¡/äº¤æ˜“é¡µ:  http://localhost:8080
-echo   äº¤æ˜“è¿›ç¨‹ API:      http://localhost:8081
-echo   å®šæ—¶è°ƒåº¦(é£žä¹¦èˆ†æƒ…): python -m scheduler
+echo Èý¸ö½ø³ÌÒÑÔÚÐÂ´°¿ÚÆô¶¯(´°¿Ú±£Áô,±¨´í¿É¼û):
+echo   »Ø²â/Ñ¡¹É/½»Ò×Ò³:  http://localhost:8080
+echo   ½»Ò×½ø³Ì API:      http://localhost:8081
+echo   ¶¨Ê±µ÷¶È(·ÉÊéÓßÇé): python -m scheduler
 echo.
-echo å…³é—­å¯¹åº”çª—å£å³åœæ­¢å¯¹åº”è¿›ç¨‹ã€‚
-if exist "%~dp0dsh-runtime\dsh.cmd" (echo [ä½“æ£€] DSH æ·±åº¦æ€è€ƒé€šé“: å·²éƒ¨ç½²) else (echo [ä½“æ£€] DSH æ·±åº¦æ€è€ƒé€šé“: æœªéƒ¨ç½², ç ”ç©¶ TAB å‹¾é€‰æ¡†ä¸å¯ç”¨)
+echo ¹Ø±Õ¶ÔÓ¦´°¿Ú¼´Í£Ö¹¶ÔÓ¦½ø³Ì¡£
+if exist "%~dp0dsh-runtime\dsh.cmd" (echo [Ìå¼ì] DSH Éî¶ÈË¼¿¼Í¨µÀ: ÒÑ²¿Êð) else (echo [Ìå¼ì] DSH Éî¶ÈË¼¿¼Í¨µÀ: Î´²¿Êð, ÑÐ¾¿ TAB ¹´Ñ¡¿ò²»¿ÉÓÃ)
 pause

@@ -54,7 +54,7 @@ from trade.book import (
     label_of,
     round_price_etf,  # 价格档位单一真相源 (治理III W3 自本模块迁入 book.py)
 )
-from scheduler.trading_calendar import next_trading_day
+from utils.trading_calendar import next_trading_day
 from trade import pool_money  # 市值口径单一真相源 (治理III W2-1)
 from trade.decision_codes import action_of as _decision_action  # 决策台账动作码 (2026-09-18)
 from trade.events import EVENT_ROTATION, Event
