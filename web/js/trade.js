@@ -22,18 +22,21 @@ import { describeTradeError, tradeApiBase } from './decision_util.mjs?v=20260919
 var BASE = tradeApiBase(location.hostname);
 var pollTimer = null;
 
+function _serverMsg(d, r) {
+  // 2026-09-20 审计 P2-10: 两种许可形状都认 (detail / success:false+error)
+  var d1 = (d && d.detail) || (d && d.error);
+  if (!d1) return 'HTTP ' + r.status;
+  return (typeof d1 === 'string') ? d1
+    : (Array.isArray(d1)
+      ? d1.map(function (e) { return (e.loc ? e.loc.join('.') + ': ' : '') + e.msg; }).join('; ')
+      : JSON.stringify(d1));
+}
 function get(u, signal) { return fetch(BASE + u, { signal: signal }).then(function (r) {
   // 2026-09-19: GET 与 POST 同口径 —— r.ok 不通过时, JSON body 里的 detail
   // 才是真话, 不能当成功数据往下渲染
   return r.json().then(function (d) {
     if (!r.ok) {
-      var msg = 'HTTP ' + r.status;
-      if (d && d.detail) {
-        msg = (typeof d.detail === 'string') ? d.detail
-          : d.detail.map(function (e) {
-              return (e.loc ? e.loc.join('.') + ': ' : '') + e.msg;
-            }).join('; ');
-      }
+      var msg = _serverMsg(d, r);
       var err = new Error(msg);
       err.serverMsg = msg;
       throw err;
@@ -50,13 +53,7 @@ function post(u, body, signal) {
     // 旧实现不查 r.ok, 把校验失败静默显示成"命令已受理", 实际从未下单。
     return r.json().then(function (d) {
       if (!r.ok) {
-        var msg = 'HTTP ' + r.status;
-        if (d && d.detail) {
-          msg = (typeof d.detail === 'string') ? d.detail
-            : d.detail.map(function (e) {
-                return (e.loc ? e.loc.join('.') + ': ' : '') + e.msg;
-              }).join('; ');
-        }
+        var msg = _serverMsg(d, r);
         var err = new Error(msg);
         err.serverMsg = msg;
         throw err;

@@ -412,10 +412,17 @@ class TestRunCachedSignature:
             )
 
     def test_run_cached_capability_kwargs_default_values(self):
-        """6 keyword 的精确默认值 (filter_limit_up=True 是命脉, 防被改 False)。"""
+        """6 keyword 的精确默认值。
+
+        2026-09-20 审计 P1-5: `filter_limit_up` 默认值由 `True` 改为 **`None`**
+        （None = 跟随 `self.filter_limit_up` 配置）。原默认 `True` 会把
+        `filter_limit_up=False` 的配置**静默否定** —— 配置项写了等于没写。
+        所以这条锁的语义从"默认必须是 True"改成"默认必须是 None(跟随配置)"；
+        "不许把它改回 True"由同一个断言继续守住。
+        """
         sig = inspect.signature(BacktestEngine.run_cached)
         expected_defaults = {
-            'filter_limit_up': True,
+            'filter_limit_up': None,     # 2026-09-20 P1-5: None = 跟随配置
             'formula_exit_np': None,
             'formula_exit_ratio': None,
             'formula_exit_lag_bars': 1,
@@ -426,8 +433,51 @@ class TestRunCachedSignature:
             actual = sig.parameters[kw].default
             assert actual == expected, (
                 f"run_cached.{kw} 默认值应为 {expected!r}, 实际 {actual!r} — "
-                f"改默认值会破坏行为 (filter_limit_up=True 是命脉)"
+                f"改默认值会破坏行为 (filter_limit_up 默认 None = 跟随配置, "
+                f"改回 True 会静默否定 filter_limit_up=False)"
             )
+
+    def test_run_cached_filter_limit_up_none_follows_config(self, monkeypatch):
+        """P1-5 的**功能**锁: `filter_limit_up=None` 必须跟随 engine 配置。
+
+        只断言签名默认值是不够的（实现里回落成硬编码 True 也照样通过），
+        源码 grep 更是没牙（docstring 里就有 `self.filter_limit_up` 这个串）。
+        这里真调一次 `run_cached`，用 spy 记录"到底有没有去调 `_filter_limit_up`":
+        配置 False + 传 None → 必须**不**过滤；配置 True（缺省）→ 必须过滤。
+        突变验证记录: 把回落改成硬编码 True，本用例立刻红。
+        """
+        close, entries = _default_contract_market()
+
+        class _MockLoop:
+            def run(self, *a, **kw):
+                return (np.full(len(close), 100_000.0, dtype=np.float64),
+                        np.empty((0, 9), dtype=np.float64))
+
+        monkeypatch.setattr(engine_module, "build_backtest_loop",
+                            lambda *a, **kw: _MockLoop())
+
+        def _run(cfg_filter):
+            eng = _default_contract_engine()
+            eng.filter_limit_up = cfg_filter
+            calls = []
+            monkeypatch.setattr(
+                eng, "_filter_limit_up",
+                lambda e, c: (calls.append(1), e)[1])
+            eng.run_cached(
+                PreparedMatrix(close=close, entries=entries,
+                               high_np=None, low_np=None),
+                {"trailing_stop": {"enabled": True}},
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.float64),
+                0,
+                filter_limit_up=None,      # 缺省形态 = 跟随配置
+            )
+            return calls
+
+        assert _run(False) == [], (
+            "配置 filter_limit_up=False 时 run_cached 仍去过滤了 —— "
+            "参数缺省值把配置静默否定 (P1-5 旧病)")
+        assert _run(True) == [1], "配置 True 时应当过滤 (缺省行为不许变)"
 
     def test_run_cached_forwards_capability_keywords(self):
         """源码守卫: run_cached 读 capabilities + 共享段 loop.run 必须透传能力 keyword.

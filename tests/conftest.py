@@ -153,6 +153,25 @@ def _isolate_caches(tmp_path):
     _mpio.DAILY_PATH = tmp_path / "market_position" / "daily.jsonl"
     _mpio.KLINE_1D_DIR = tmp_path / "kline_cache" / "1d"
     _mpio.ERP_PATH = tmp_path / "market_position" / "erp.jsonl"
+    # 2026-09-20 审计 P2-8: 同一个 data/market_position/ 目录下还有两条**真落盘**
+    # 路径当时漏了隔离 (仪表盘快照 / 事件台账) —— 页面刷新与事件录入在测试里真跑
+    # 就会写生产 jsonl; 属 latent 投毒面 (当前用例恰好不写, 所以没爆), 照
+    # 2026-09-17 M7 先例一并进全局隔离 (新增落盘路径必须一并进隔离, 不靠"记得传 tmp")。
+    import core.market_dashboard_runner as _mdbr
+    import core.market_events as _mev
+    orig_dash_path = _mdbr.DASHBOARD_PATH
+    orig_events_path = _mev.EVENTS_PATH
+    _mdbr.DASHBOARD_PATH = tmp_path / "market_position" / "dashboard.jsonl"
+    _mev.EVENTS_PATH = tmp_path / "market_position" / "events.jsonl"
+    # 日线缓存目录的第三个 owner (前两个 = DataFetcher._KLINE_CACHE_DIR / mpio.KLINE_1D_DIR):
+    # 维护与补拉工具自己的缓存根 + 锁/日志都挂在它下面。
+    import core.kline_cache_maintenance as _kcm
+    orig_kcm_cache_dir = _kcm._CACHE_DIR
+    orig_kcm_lock = _kcm._LOCK
+    orig_kcm_log = _kcm._REFRESH_LOG
+    _kcm._CACHE_DIR = tmp_path / "kline_cache"
+    _kcm._LOCK = _kcm._CACHE_DIR / "refresh.lock"
+    _kcm._REFRESH_LOG = _kcm._CACHE_DIR / "refresh.log"
     # ERP 是**联网**取数 —— 测试里必须关掉 (否则跑一次测试就真去拉网络,
     # 既不隔离也不可重复)。要测取数逻辑的用例自己 monkeypatch 打开并打桩。
     orig_erp_fetch = os.environ.get(_mpr.ERP_FETCH_ENV)
@@ -188,6 +207,11 @@ def _isolate_caches(tmp_path):
         _mpio.DAILY_PATH = orig_mp_path
         _mpio.KLINE_1D_DIR = orig_mp_kline
         _mpio.ERP_PATH = orig_mp_erp
+        _mdbr.DASHBOARD_PATH = orig_dash_path
+        _mev.EVENTS_PATH = orig_events_path
+        _kcm._CACHE_DIR = orig_kcm_cache_dir
+        _kcm._LOCK = orig_kcm_lock
+        _kcm._REFRESH_LOG = orig_kcm_log
         _drev.REVIEW_DIR = orig_review_dir
         _mtc.CORPUS_DIR = orig_corpus_dir
         if orig_erp_fetch is None:

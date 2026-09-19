@@ -890,6 +890,11 @@ class TradeApp:
         """
         fut = data.get("future")
         fn = data.get("fn")
+        # 2026-09-20 审计 P2-1: 等待方已经放弃 (超时后 fut.cancel() / 已取到结果)
+        # 就别再打柜台 —— 结果已无人要, 而 xtquant 同步查询在唯一消费者线程上
+        # 是实打实的时间 (还会占住别人排队的回报)。
+        if fut is not None and fut.done():
+            return
         try:
             result = fn() if callable(fn) else None
             if fut is not None and not fut.done():
@@ -906,12 +911,32 @@ class TradeApp:
         这是 HTTP 线程接触 QMT 数据的**唯一合法路径** (铁律 2/3: 回调线程与
         HTTP 线程都不许直接调 xtquant)。超时抛 TimeoutError, 由调用方转 503
         —— 宁可让页面看到"繁忙", 也不让 HTTP 线程卡死或并发打柜台。
+
+        2026-09-20 审计 P2-1: `timeout` 是**整件事**的预算 (入队 + 等结果),
+        不再只是 Future 的等待时间。此前 EVENT_READ_QUERY 走 put 的关键事件
+        5s 超时, 加上 fut.result(2s) → HTTP 线程最坏卡 ~7s。现在入队用剩余
+        预算, 拿不到立刻失败; 等待超时后 cancel() 让消费者线程知道没人等了
+        (_on_read_query 据此跳过 fn(), 不再白打一次柜台 —— 已开始执行的那次
+        无法打断, 这是 cancel 的固有边界)。
         """
+        import time as _t
         from concurrent.futures import Future
+
+        t0 = _t.monotonic()
         fut: Future = Future()
-        self._engine.put(Event(type=EVENT_READ_QUERY,
-                               data={"fn": fn, "future": fut}))
-        return fut.result(timeout=timeout)
+        budget = max(0.0, timeout - (_t.monotonic() - t0))
+        enqueued = self._engine.put(
+            Event(type=EVENT_READ_QUERY, data={"fn": fn, "future": fut}),
+            timeout=budget)
+        if not enqueued:
+            raise TimeoutError(
+                f"只读查询入队超时 (预算 {timeout}s): 消费者线程繁忙")
+        budget = max(0.0, timeout - (_t.monotonic() - t0))
+        try:
+            return fut.result(timeout=budget)
+        except TimeoutError:
+            fut.cancel()
+            raise
 
     def read_asset(self, timeout: float = 2.0) -> dict:
         """资产快照 (批次 4.1): QMT 资产查询统一走消费者线程。

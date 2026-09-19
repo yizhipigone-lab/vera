@@ -5,6 +5,77 @@
 
 ---
 
+## 2026-09-20 — 审计十条全修（P0-1…P3-8）+ 文档数字勘误
+
+**一句话（大白话）**：把 2026-09-20 质量审计报告里 P0/P1/P2/P3 **全部 23 条**都处置了
+（用户指令「全部修」）。最刺眼的一条：**`start_vera.bat` 的 QMT 等待块在 cmd 解析期就
+崩，三个进程一个都起不来** —— 它此前只有"字节级检查 + 探针单跑"，从没被真正执行过。
+
+- **P0-1（致命，自复现）**：`start_vera.bat` 块内 echo 含未转义 ASCII 圆括号 → cmd 解析期
+  提前闭合 `for` 块，报 `... was unexpected at this time.` 并中止（实测停在 `[2/3]`，
+  交易与调度都没起）。重写：提示语无括号且整行移出块外 + label 流
+  (`:qmt_ready/:qmt_config_error/:qmt_wait_done/:qmt_start_trade/:qmt_after_trade`)、
+  退出码 0/1/2 语义分流。新增 `tests/test_start_vera_bat.py` **5 例**（字节不变量
+  GBK/CRLF/无 BOM + 三场景桩化执行）；把带括号的 echo 注回 → **4 例红**。
+  **教训**：字节检查 ≠ 可执行正确性；`.bat` 必须**真跑**才算验过。
+- **P1-4/P3-7（口径守卫 + 第 5 份复刻）**：口径校验收口成 `engine.check_prep_caliber`
+  （fail-closed），四个 tools sweep **加上此前漏掉的第 5 份复刻
+  `research/gupiao_stability_sweep.py`**（新收编到 `prepare_matrices` 接缝）。
+  **顺手自捕获一个真 bug**：四个 sweep 的守卫调用写在模块级 `_load_cache` 里，而
+  `check_prep_caliber` 只在 `do_prep` 内**局部 import** → 一调用就 `NameError`
+  （"实现搬了、消费点没搬"的又一例）。改模块级导入 + 5 例**功能**测试（真调
+  `_load_cache`，不是读源码文本）；改回局部导入 → 红在 `NameError`。
+- **P1-1/P2-10（前端错误契约）**：`mobile.html` 新增 `tradeParse`（查 `r.ok`、读
+  `detail‖error`）—— 此前 POST 不查 `r.ok`，急停/解除急停遇 500 会按"成功"走；
+  `api.js`/`trade.js`/`decision_util.mjs` 统一认两种形状（server 的业务软失败是
+  `{success:false,error}`，没有 `detail`）。`tests/web/test_error_contract.mjs` 13 例
+  （真抽 `tradeParse` 跑假响应）。
+- **P2-1/P2-2/P2-3（事件引擎三处）**：①`read_via_consumer` 的 `timeout` 变成**整件事**的
+  预算（入队+等结果）—— 此前入队走关键事件 5s 超时，HTTP 线程最坏卡 ~7s；超时后
+  `fut.cancel()` 让消费者线程**不再白打一次柜台**。②`pump` 截止判定移到循环入口，
+  docstring 改成诚实的"duration 是**至少**不是至多"。③补 pump **接线**测试：
+  把 executor/rotation 的等待改回 `time.sleep` → 两条测试分别红（原先 104/33 例全绿）。
+- **P2-4（测试有效性）**：`test_prepare_matrices_parity.py` 增"脏数据"用例 ——
+  `end_time` 透传、停牌 NaN 的 ffill 与 tradable、low 列交集、非标准 bar 过滤。
+  **四个突变全部红**（此前这四个改动都是绿的）。
+- **P2-5/P2-6/P2-7（拆包引入的 patch 面，本批最重）**：六个块模块 + runner 原先各自
+  `from core.market_position_io import _f, history, _upsert…` —— 拿到的是 **import 时刻的
+  值副本**，于是 **patch 基座（测试隔离/参数扫描）是静默 no-op**。现在全部改**调用期
+  取值**（`mpio.X` / `market_xxx.X` / `mpp.X`），`_FORWARD_TABLE` 扩成**归属名册**（含
+  纯数学层 12 名，旧入口 `mpr.similar_days` 不再依赖"碰巧还有显式 import 活着"），
+  `_IO_STATE_NAMES` 补 `INDEX_SPECS`。新增 `TestOwnershipRoster` **4 例**；三个突变红
+  （含"模块级按值别名 `_upsert`"→ 回填/预热测试红，证明"patch 基座"是真的生效路径）。
+  **两处测试 patch 点跟着实现搬到 `mpio._upsert`**（不搬就是静默 no-op）。
+- **P2-8（隔离面）**：conftest 补 `DASHBOARD_PATH`/`EVENTS_PATH`/`kline_cache_maintenance`
+  缓存根（含锁与日志）—— 同目录两条真落盘路径此前漏隔离（latent 投毒面）；
+  隔离守卫扩到**五条**落盘路径，去掉新隔离即红。
+- **P2-9（tools 清单判据）**：`tools/` 列入生产目录、`.bat` **递归**扫、根级 `.md` 只算
+  文档引用。重跑实测 **129 个脚本 → 生产 74 / 仅文档 38 / 零引用 17**；审计点名的
+  `gs_top10_prep_parallel`（只被 `tools/gs_launch_prep.bat` 拉起）与
+  `formula_pipeline/verify_parse`（被同目录 run_pipeline 调用）已正确判为生产。
+- **P3 全清**：runner 删 7 个死 import + 六个**孤儿注释横幅**（109 行，内容随实现搬进
+  属主模块 docstring）→ 557 → 430 行；删 `scheduler/trading_calendar.py` 兼容 shim
+  （grep 零引用）；回填守卫探活地址改**解析链**（`--api-base` > env > `.env` > 8081，
+  治"`trade_main --api-port` 一改守卫就 fail-open 照写 trade.db"）；探针加 `--fake`
+  对齐三条 fake 来源，`start_vera.bat` 加 `VERA_TRADE_FAKE=1` 跳过等待；
+  `shadow_compare.py` 文档改指 `trade.rotation_feed.IndexFeed.closes`；
+  `trade/rotation.py` 标注**三个日志通道**（按通道查告警别漏）。
+- **数字勘误（P3-1，按 `git show <rev> | wc -l / 字节数` 重测）**：五刀累计
+  **113.6KiB → 25.4KiB（-77%，2166 → 606 行）**；第三刀末 **1294 行**（原写 1273）；
+  thermometer **644 行**（原写 641）；新模块合计 **99.9KiB**（原写 96KB）；
+  raw 轮转 **7 例**（原写 8 例）；"新增 3 个测试文件"实列 4 个；
+  计划书 §1.3 标注"按月分文件"改法**未按原样落地**（实际是启动时归档非当月行、读写侧零改动）。
+- **验证**：全量 pytest **3108 例通过 / 7 skip / 0 失败**
+  （排除并行会话在研的 `tests/test_market_dashboard.py`；该文件 3 例失败来自那份
+  未提交的 `core/market_narrative.py` 新校验，与本次无关）；
+  前端 15 套件仍只 `test_brain_viz.mjs` 1 例历史遗留红；生产
+  `data/market_position/*` 四个文件 mtime 未变（隔离实测；另有
+  `data/scheduler_heartbeat.json` 被既有调度器健康测试刷新，与本次改动无关）。
+- **重启要求**：`trade/events.py`/`trade_main.py` 改动 → **trade_main 需重启且 ≥15:05**；
+  conftest/tests/docs/tools 改动无重启要求（用户尚未部署）。
+
+---
+
 ## 2026-09-19 — 架构审查修订批次 5.2：API 层位置统一；core 收包按证据改判"不硬搬"
 
 **一句话（大白话）**：把唯一一个放错地方的接口文件挪回它该在的位置；至于
@@ -39,16 +110,16 @@
 ## 2026-09-19 — 架构审查修订批次 5.1 收尾（第四/五刀）：照镜子 + 体温表文案层，5.1 全部完成
 
 **一句话（大白话）**：把最后两块也搬出去了 —— 照镜子和体温表文案（那篇"大白话
-报告"）。**主文件从 111.4KB 瘦到 26KB（-77%）**，八种职责拆成六个小模块 +
+报告"）。**主文件从 113.6KiB 瘦到 25.4KiB（-77%）**，八种职责拆成六个小模块 +
 一个共享底座。搬迁途中我自己踩了一个"碰生产数据"的坑，如实记在下面。
 
 - **新增两个模块**：`core/market_mirror.py`（6.4KB / 137 行，`mirror` + 四个照镜子
-  常量）、`core/market_thermometer.py`（**39KB / 641 行**，`thermometer_md` +
+  常量）、`core/market_thermometer.py`（**38.4KiB / 644 行**，`thermometer_md` +
   10 个人话模板 + `push_thermometer` + `CALIBER_FOOTER`）。文案层是依赖链最上层：
   单向 import 底面五块（底座/照镜子/牛熊/体检/影子），无环。
-- **实测数字（5.1 五刀累计）**：`market_position_runner.py` **111.4KB → 26KB
-  （-77%，2166 → 606 行）**；新模块合计约 **96KB**：底座 11.4 + erp 7.4 +
-  regime 5.4 + validity 13.7 + shadow_replay 18.7 + mirror 6.4 + thermometer 39。
+- **实测数字（5.1 五刀累计）**：`market_position_runner.py` **113.6KiB → 25.4KiB
+  （-77%，2166 → 606 行）**；新模块合计 **99.9KiB**：底座 11.1 + erp 7.2 +
+  regime 5.3 + validity 13.4 + shadow_replay 18.3 + mirror 6.2 + thermometer 38.4。
   剩余 runner = 数据准备 + 记录组装 + `collect` + 分桶 + 旧入口转发层。
 - **实测坑（两处 patch 位置）**：①测试用 `monkeypatch.setattr(mpr, "similar_days", …)`
   造分位带 —— mirror 搬走后该 patch 不再影响实现（症状: "六特征齐全 0 条"），
@@ -69,7 +140,7 @@
 ## 2026-09-19 — 架构审查修订批次 5.1 第三刀：拆出影子回放 + 转发改按归属表
 
 **一句话（大白话）**：把"择时影子回放"这块（约 360 行）也搬出大盘主文件，
-主文件从 111KB 瘦到 **68.7KB**。过程中发现旧入口转发只认基座一家 —— 搬走
+主文件从 113.6KiB 瘦到 **67.5KiB**。过程中发现旧入口转发只认基座一家 —— 搬走
 名字一多就会漏，改成了**按归属表转发**。
 
 - **新增 `core/market_shadow_replay.py`（18.7KB / 363 行）**：`_cost_params` /
@@ -80,9 +151,9 @@
   测试按 `mpr._hac_tstat` 调就炸（`AttributeError`）。改为 `_FORWARD_TABLE`
   **按归属表转发**（每批搬走的名字登记归属模块）—— 确定性、不会把某模块的
   import 名（pd/dt）漏出去，也不会因同名转发到错家。
-- **实测数字**：`market_position_runner.py` **86.4KB → 68.7KB**（1610 → 1273 行）；
-  三刀累计 **111.4KB → 68.7KB（-38%）**，新模块合计：io 11.4 + erp 7.4 +
-  regime 5.4 + validity 13.7 + shadow_replay 18.7 = 56.6KB。
+- **实测数字**：`market_position_runner.py` **84.8KiB → 67.5KiB**（1610 → **1294** 行）；
+  三刀累计 **113.6KiB → 67.5KiB（-41%）**，新模块合计：io 11.1 + erp 7.2 +
+  regime 5.3 + validity 13.4 + shadow_replay 18.3 = 55.3KiB。
 - **验收**：大盘域 126 例绿；全量 **3028 例绿 / 7 skip**；生产
   `daily.jsonl`/`erp.jsonl` mtime 仍是 9/18 15:55。**剩最后一刀 = 体温表文案层**
   （+ 推送），之后是 5.2（core 收包）。
@@ -118,8 +189,8 @@
     —— 单向 import `market_erp._erp_table`（估值的证据维度要它）。
 - **底座再進两批原语**：`ERP_PATH`（路径单一所有者再扩一条）+ 格式化原语
   `_num`/`_pct`/`_rat`/`_yi` + `_features_frame`（照镜子与体检共用，放底座避免环）。
-- **实测数字**：`market_position_runner.py` **111.4KB → 86.4KB**（2051 → 1610 行，
-  本刀搬走 441 行）；base 10.3KB。三块合计 26.5KB。
+- **实测数字**：`market_position_runner.py` **109.4KiB → 84.8KiB**（2051 → 1610 行，
+  本刀搬走 441 行）；底座 11.1KiB。三块合计 25.9KiB。
 - **踩坑记录（都当场修掉）**：①提取脚本把上轮改过的 `mpio._ROOT` 一起搬进了基座
   自己（基座里没有 `mpio`）→ 手工改正；②新模块缺 `os`/`json`/`warnings` 标准库导入
   → 由"未解析名 AST 扫描"逐模块查出补齐（这个方法以后每次搬运都该跑）。
@@ -295,9 +366,11 @@
 - **3.4 tools/ 淤积治理机制（审查 P2-16）**：新增 `tools/tools_inventory.py`
   —— 三级分类（被生产引用/仅文档引用=研究证据/全仓零引用），**只分类不删除**，
   每季度人工过目后处理孤儿。首跑实测：**128 个脚本 → 生产引用 57 / 仅文档 51 /
-  零引用 20**（此前粗估"82 个零引用"是没算研究引用，工具证明了一刀切删会毁证据链）。
-  4 例测试锁分类判据（含"运行时产物目录不算引用来源"）。
-- **测试**：批次新增 3 个测试文件（parity 3 例 / caliber 5 例 / universe 键 2 例 /
+  零引用 20**（**2026-09-20 判据修正后重跑：129 个脚本 → 生产引用 74 /
+  仅文档 38 / 零引用 17** —— 原判据把 tools/ 互引与嵌套 .bat 漏成「孤儿」、
+  又把根级 .md 的一句提及算成生产引用，两类误判方向相反）（此前粗估"82 个零引用"是没算研究引用，工具证明了一刀切删会毁证据链）。
+  9 例测试锁分类判据（含"运行时产物目录不算引用来源"）。
+- **测试**：批次新增 4 个测试文件（parity 3 例 / caliber 5 例 / universe 键 2 例 /
   tools 清单 4 例）；全量 pytest 见提交时的基线。
 
 ---
@@ -356,7 +429,7 @@
   收口 `data/formula_farm/`、`data/daily_review/`、`data/morning_brief/`、`logs/`、
   `.agent-teams/`（**坑**：gitignore 不支持行内注释，首版五条规则全没生效，已改
   独立行）；61 项积压改动按主题分 6 个提交全部入库（git status 清零）。
-- **测试**：新增 `tests/trade/test_raw_log_rotate.py` 8 例；全量 pytest（除快照
+- **测试**：新增 `tests/trade/test_raw_log_rotate.py` 7 例；全量 pytest（除快照
   parity）exit=0；前端 15 个 node 套件 14 绿 —— `test_brain_viz.mjs` 1 红经 git
   worktree 对 HEAD 复跑确认**是历史遗留红**（与今日改动无关，留档待查）。
 - **遗留**：`scheduler/trading_calendar.py` shim 一版本后删；raw 历史切分随

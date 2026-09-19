@@ -68,6 +68,13 @@ from utils.logger import get_logger
 
 _logger = get_logger("trade.rotation")
 
+# 2026-09-20 审计 P3-8 (通道口径, 查告警时别踩空): 轮动现在有**三个**日志通道 ——
+#   `trade.rotation`      本文件 (择腿/分份/调仓决策)
+#   `trade.rotation_feed` 取数降级链 (原住本文件, 2026-09-19 批次 4.5 端出)
+#   `trade.rotation_ledger` 在途台账 (同上)
+# 想按通道过滤"轮动取数"日志的人过去只查 `trade.rotation`, 端出后那些行不再出现
+# 在那里 —— 三个通道都要收。这不是新加的中间层, 只是搬运留下的通道分裂。
+
 # 周频信号日锚定 weekday (config.signal_day 单项 → datetime.weekday() 0=周一)。
 _SIGNAL_DAY_WEEKDAY = {"monday": 0, "tuesday": 1, "wednesday": 2,
                        "thursday": 3, "friday": 4}

@@ -5,6 +5,11 @@
 三条候选规则 (沪深300>MA20 / 宽度≥50% / 牛熊=牛) 在同一段历史上回放, 用成本、
 HAC t 值、持有段、双窗口一致性四把尺子量化 —— **只报告不改交易规则**。
 依赖: 共享底座 (core/market_position_io) + core/market_position 的 RET_1Y_BARS。
+
+**为什么这些统计工具住在这里而不是 core/market_position.py** (2026-09-20 审计 P3-2:
+理由原写在 runner 的孤儿横幅里): 成本/HAC/持有段/双窗口不是"大盘位置指标", 而是
+**评估一套择时规则好不好**要用的统计工具, 放 IO 层的私有接缝里, 不占纯数学层
+的公开名额 (铁律 8 上限, §8.1)。
 """
 from __future__ import annotations
 
@@ -14,12 +19,6 @@ import numpy as np
 import pandas as pd
 
 from core import market_position_io as mpio
-from core.market_position_io import (  # 共享底座原语 (批次 5.1)
-    _f,
-    _index_series,
-    _year_breakdown,
-    history,
-)
 from core.market_position import RET_1Y_BARS
 from utils.logger import get_logger
 
@@ -170,15 +169,15 @@ def _segment_stats(gross: pd.Series, segs: list[tuple[int, int, int]],
             return None
         s = pd.Series(vals)
         sd = float(s.std(ddof=1))
-        return _f(float(s.mean()) / (sd / len(s) ** 0.5), 2) if sd > 0 else None
+        return mpio._f(float(s.mean()) / (sd / len(s) ** 0.5), 2) if sd > 0 else None
 
     return {"n": len(segs),
-            "median_days": _f(pd.Series(days).median(), 0),
-            "p90_days": _f(pd.Series(days).quantile(0.9), 0),
+            "median_days": mpio._f(pd.Series(days).median(), 0),
+            "p90_days": mpio._f(pd.Series(days).quantile(0.9), 0),
             "min_days": int(min(days)), "max_days": int(max(days)),
-            "mean_return_pct": _f(pd.Series(rets_net).mean() * 100, 2),
-            "median_return_pct": _f(pd.Series(rets_net).median() * 100, 2),
-            "win_ratio_pct": _f(sum(1 for r in rets_net if r > 0) / len(rets_net) * 100, 0),
+            "mean_return_pct": mpio._f(pd.Series(rets_net).mean() * 100, 2),
+            "median_return_pct": mpio._f(pd.Series(rets_net).median() * 100, 2),
+            "win_ratio_pct": mpio._f(sum(1 for r in rets_net if r > 0) / len(rets_net) * 100, 0),
             "t": _t(rets_net), "t_gross": _t(rets_gross),
             "note": "" if len(segs) >= MIN_SEGMENTS_FOR_T else
                     (f"持有段只有 {len(segs)} 个 (<{MIN_SEGMENTS_FOR_T}), "
@@ -207,11 +206,11 @@ def shadow_replay() -> dict:
     5. 措辞口径 (§15.2 E4): 置信区间含 0 只能写「**无显著净边际**」,
        **不写"无效"、也不写"跑输"**。
     """
-    recs = history(limit=0)
+    recs = mpio.history(limit=0)
     if len(recs) < 250:
         return {"ok": False,
                 "reason": f"连续录像只有 {len(recs)} 条, 至少需要 250 条才能回放"}
-    hs = _index_series("000300.SH")
+    hs = mpio._index_series("000300.SH")
     if hs is None:
         return {"ok": False, "reason": "读不到沪深300日线"}
     df = pd.DataFrame(
@@ -247,18 +246,18 @@ def shadow_replay() -> dict:
             return {}
         ann = float(equity.iloc[-1]) ** (1.0 / yrs) - 1   # 按真实跨度年化
         mdd = MetricsCalculator.max_drawdown(equity)
-        out = {"annualized_pct": _f(ann * 100, 1),
-               "max_drawdown_pct": _f(mdd * 100, 1),
-               "sharpe": _f(MetricsCalculator.sharpe_ratio(equity), 2),
-               "calmar": _f(MetricsCalculator.calmar_ratio(ann, mdd), 2),
-               "total_pct": _f((float(equity.iloc[-1]) - 1) * 100, 1)}
+        out = {"annualized_pct": mpio._f(ann * 100, 1),
+               "max_drawdown_pct": mpio._f(mdd * 100, 1),
+               "sharpe": mpio._f(MetricsCalculator.sharpe_ratio(equity), 2),
+               "calmar": mpio._f(MetricsCalculator.calmar_ratio(ann, mdd), 2),
+               "total_pct": mpio._f((float(equity.iloc[-1]) - 1) * 100, 1)}
         sig = _hac_tstat(series)
         if sig:
             # 置信区间换成"年化几个百分点"展示 (t 值线性缩放不变, 同一个数)
-            out.update({"t": _f(sig["t"], 2),
-                        "ci_low_pct": _f(sig["ci_low"] * RET_1Y_BARS * 100, 1),
-                        "ci_high_pct": _f(sig["ci_high"] * RET_1Y_BARS * 100, 1),
-                        "n_eff": _f(sig["n_eff"], 0), "hac_lags": sig["lags"]})
+            out.update({"t": mpio._f(sig["t"], 2),
+                        "ci_low_pct": mpio._f(sig["ci_low"] * RET_1Y_BARS * 100, 1),
+                        "ci_high_pct": mpio._f(sig["ci_high"] * RET_1Y_BARS * 100, 1),
+                        "n_eff": mpio._f(sig["n_eff"], 0), "hac_lags": sig["lags"]})
         return out
 
     def _cost_series(pos: pd.Series) -> pd.Series:
@@ -298,7 +297,7 @@ def shadow_replay() -> dict:
             n_seg = len(_holding_segments(sub))
             res[name] = {"start": sub.index[0].date().isoformat(),
                          "end": sub.index[-1].date().isoformat(),
-                         "years": _f(yrs, 1),
+                         "years": mpio._f(yrs, 1),
                          "round_trips": n_seg,
                          "enough": n_seg >= MIN_SEGMENTS_FOR_T,
                          **_stats(sub * sub_ret - cs, yrs)}
@@ -319,7 +318,7 @@ def shadow_replay() -> dict:
         gross = pos * ret
         segs = _holding_segments(pos)
         st = _stats(gross, years)
-        st.update({"rule": rule, "exposure_pct": _f(pos.mean() * 100, 1),
+        st.update({"rule": rule, "exposure_pct": mpio._f(pos.mean() * 100, 1),
                    "on_days": int(on.sum()), "days": int(len(on)),
                    "round_trips": len(segs),
                    "segments": _segment_stats(gross, segs, rt),
@@ -350,11 +349,11 @@ def shadow_replay() -> dict:
                "并同时报「有效独立样本数」")
     out = {"ok": True, "start": df.index[0].date().isoformat(),
            "end": df.index[-1].date().isoformat(),
-           "years": _f(years, 1), "days": len(df),
+           "years": mpio._f(years, 1), "days": len(df),
            "rows": rows, "buy_hold": bh,
-           "cost": ({"round_trip_pct": _f(rt * 100, 3),
+           "cost": ({"round_trip_pct": mpio._f(rt * 100, 3),
                      "round_trip_with_slippage_pct":
-                         _f(float(cost["round_trip_with_slippage"]) * 100, 3),
+                         mpio._f(float(cost["round_trip_with_slippage"]) * 100, 3),
                      "note": "只计佣金+印花税, 未计滑点; 滑点按项目默认 0.1%/边 另加 0.2%"}
                     if cost else None),
            "window_split": WINDOW_SPLIT,

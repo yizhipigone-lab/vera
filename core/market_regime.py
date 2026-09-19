@@ -12,12 +12,6 @@ import numpy as np
 import pandas as pd
 
 from core import market_position_io as mpio
-from core.market_position_io import (  # 共享底座原语 (批次 5.1)
-    INDEX_SPECS,
-    _f,
-    _index_series,
-    _num,
-)
 from core.market_position import index_position_series
 from utils.logger import get_logger
 
@@ -69,8 +63,8 @@ def _regime_summary(labels: pd.Series, closes: pd.Series, *,
             "start": idx[a].date().isoformat(),
             "end": idx[b].date().isoformat(),
             "days": b - a + 1,
-            "months": _f((idx[b] - idx[a]).days / 30.44, 1),
-            "ret_pct": _f((p1 / p0 - 1) * 100, 1) if p0 > 0 else None,
+            "months": mpio._f((idx[b] - idx[a]).days / 30.44, 1),
+            "ret_pct": mpio._f((p1 / p0 - 1) * 100, 1) if p0 > 0 else None,
         })
     for i, r in enumerate(rows):
         r["ongoing"] = (i == len(rows) - 1)
@@ -83,17 +77,17 @@ def _regime_summary(labels: pd.Series, closes: pd.Series, *,
     return {"caliber": caliber, "state": cur["state"], "since": cur["start"],
             "months": cur["months"], "ret_pct": cur["ret_pct"],
             "n_episodes": len(rows), "n_same_state": len(hist),
-            "median_months": _f(same.median(), 1) if hist else None,
-            "median_ret_pct": _f(pd.Series([r["ret_pct"] for r in hist]).median(), 1)
+            "median_months": mpio._f(same.median(), 1) if hist else None,
+            "median_ret_pct": mpio._f(pd.Series([r["ret_pct"] for r in hist]).median(), 1)
             if hist else None,
-            "months_percentile": (_f(float((same <= cur["months"]).mean()) * 100, 0)
+            "months_percentile": (mpio._f(float((same <= cur["months"]).mean()) * 100, 0)
                                   if hist else None),
-            "all_median_months": _f(allm.median(), 1),
-            "flips_per_year": _f(len(rows) / years, 1),
+            "all_median_months": mpio._f(allm.median(), 1),
+            "flips_per_year": mpio._f(len(rows) / years, 1),
             "too_flickery": flicker,
             "flicker_note": (
                 f"该口径在日频上翻状态很勤（历史 {len(rows)} 段、{len(rows) / years:.1f} 段/年、"
-                f"中位只有 {_num(allm.median(), 1)} 个月），所以它的「本轮已走多久」"
+                f"中位只有 {mpio._num(allm.median(), 1)} 个月），所以它的「本轮已走多久」"
                 "参考价值有限 —— 这正是需要第二条口径的原因" if flicker else ""),
             "same_state_rows": hist,
             # 明细表只列"历史上最长的 8 段": 抖动的口径会产出几十段 0.0 个月的碎片,
@@ -103,8 +97,8 @@ def _regime_summary(labels: pd.Series, closes: pd.Series, *,
 def _regime_all() -> dict:
     """三大指数 × 两条口径的区间统计 (体温表「这轮走了多久」一节用)。"""
     out = {}
-    for key, name, code in INDEX_SPECS:
-        s = _index_series(code)
+    for key, name, code in mpio.INDEX_SPECS:
+        s = mpio._index_series(code)
         if s is None or len(s) < 30:
             out[key] = None
             continue

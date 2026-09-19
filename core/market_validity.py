@@ -3,6 +3,13 @@
 
 2026-09-19 架构修订批次 5.1 第二刀: 自 core/market_position_runner.py 端出。
 依赖只有共享底座 core/market_position_io (路径/原语) + core/market_erp (_erp_table)。
+
+**验证纪律以 `docs/公式因子体检方法论.md` 为准, 这里不另立** (§16.3; 2026-09-20 审计
+P3-2: 这段纪律原写在 runner 的孤儿横幅里, 随实现搬来这里):
+  - 纪律 2「双窗口一致才算数」→ 本体检也把月频样本对半切开, 两半同号才算数;
+  - 纪律 3「数族不数因子」→ 同族的指标只算 1 份独立证据, 防多重检验挖矿;
+  - 纪律 5「报告必带可信度警告」→ 幸存者偏差等限制写进输出文案。
+**不做 DSR/PBO**(2026-07-26 用户已拍板), 只如实披露「共检验了多少个组合」。
 """
 from __future__ import annotations
 
@@ -13,19 +20,13 @@ import numpy as np
 import pandas as pd
 
 from core import market_position_io as mpio
-from core.market_position_io import (  # 共享底座原语 (批次 5.1)
-    _f,
-    _features_frame,
-    _index_series,
-    history,
-)
+# 2026-09-20 审计 P2-5: 用模块对象调用期取值 (按值 import 拿的是 import 时刻的
+# 函数对象, patch 属主 market_erp 对本模块是静默 no-op)。
+from core import market_erp
 from core.market_position import forward_return
 from utils.logger import get_logger
 
 _logger = get_logger(__name__)
-
-
-from core.market_erp import _erp_table  # noqa: F401  (体检的估值维度用它)
 
 
 #: 体检的持有期: (交易日数, 中文名)
@@ -90,7 +91,7 @@ def _quintile_spread(vals: list[float], fwds: list[float]) -> float | None:
         return None
     f = pd.Series(fwds)
     hi, lo = f[g == 4].mean(), f[g == 0].mean()
-    return _f(hi - lo, 2) if hi == hi and lo == lo else None
+    return mpio._f(hi - lo, 2) if hi == hi and lo == lo else None
 
 def _dimension_validity() -> dict:
     """**维度体检**: 每个现有指标 vs 未来 1/3/6/12 个月收益, 到底有没有相关性。
@@ -104,15 +105,15 @@ def _dimension_validity() -> dict:
       2. **双窗口一致才算数**: 月频样本对半切, 两半同号才算数, 否则标"待复核";
       3. **数族不数因子**: 同族指标只算 1 份独立证据。
     """
-    recs = history(limit=0)
-    hist = _features_frame(recs)
+    recs = mpio.history(limit=0)
+    hist = mpio._features_frame(recs)
     if len(hist) < 500:
         return {"ok": False, "reason": f"连续录像只有 {len(recs)} 条, 维度体检至少要 500 条"}
-    hs = _index_series("000300.SH")
+    hs = mpio._index_series("000300.SH")
     if hs is None:
         return {"ok": False, "reason": "读不到沪深300日线"}
     hist.index = pd.to_datetime(hist.index)
-    erp = _erp_table()
+    erp = market_erp._erp_table()
     if len(erp):                       # 没有 ERP 缓存就不并这一列 (不拿别的列冒充)
         hist = hist.join(erp[["erp"]], how="left")
     if "erp" not in hist.columns:
@@ -160,11 +161,11 @@ def _dimension_validity() -> dict:
                          "n": len(pairs),
                          # **月频采样**的有效独立样本 = 月数 ÷ 持有期月数
                          # (不是 ÷ 持有期交易日数: 观测间隔本身就是一个月)
-                         "n_eff": _f(len(pairs) / (k / BARS_PER_MONTH), 1),
-                         "rho": _f(rho, 3) if rho is not None else None,
-                         "p": _f(p, 4) if p is not None else None,
-                         "rho_in": _f(rho_i, 3) if rho_i is not None else None,
-                         "rho_out": _f(rho_o, 3) if rho_o is not None else None,
+                         "n_eff": mpio._f(len(pairs) / (k / BARS_PER_MONTH), 1),
+                         "rho": mpio._f(rho, 3) if rho is not None else None,
+                         "p": mpio._f(p, 4) if p is not None else None,
+                         "rho_in": mpio._f(rho_i, 3) if rho_i is not None else None,
+                         "rho_out": mpio._f(rho_o, 3) if rho_o is not None else None,
                          "consistent": consistent,
                          "quintile_spread_pct": _quintile_spread(xs, ys),
                          "verdict": verdict})

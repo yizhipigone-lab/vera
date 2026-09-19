@@ -6,24 +6,21 @@
 影子回放揉成一篇给人看的 Markdown (每个数字后跟一句人话解释 —— 用户规则:
 先说人话再给数字, 不许出现"生存者偏差"这类黑话, 有测试锁)。
 `push_thermometer` 走 tools/send_report_feishu 推飞书卡片。
+
+**为什么人话解释必须是函数而不是写死的句子** (2026-09-20 审计 P3-2: 理由原写在
+runner 的孤儿横幅里, 随 10 个人话模板搬来这里): 写「八成个股已经跌破 20 日均线」
+很顺口, 但明天宽度涨到 80% 那句话就成了假话 —— 解释必须**由数字生成**。
 """
 from __future__ import annotations
 
 import pandas as pd
 
 from core import market_position_io as mpio
-from core.market_position_io import (  # 共享底座原语
-    INDEX_SPECS,
-    _num,
-    _pct,
-    _rat,
-    _yi,
-    latest,
-)
-from core.market_mirror import mirror
-from core.market_regime import _regime_all
-from core.market_shadow_replay import shadow_replay
-from core.market_validity import _dimension_validity
+# 2026-09-20 审计 P2-5: 块模块之间也走**模块对象调用期取值** —— 按值 import
+# (`from core.market_mirror import mirror`) 拿的是 import 时刻的函数对象,
+# 之后 patch 属主模块对本模块是静默 no-op。
+from core import (market_mirror, market_regime, market_shadow_replay,
+                  market_validity)
 from utils.logger import get_logger
 
 _logger = get_logger(__name__)
@@ -55,7 +52,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     三个 `*_data` 参数是**注入接缝**: 传进来就直接用 (页面/测试避免重复计算),
     传 None 就现算。生产路径全部传 None。
     """
-    rec = rec or latest()
+    rec = rec or mpio.latest()
     if not rec:
         return "# 大盘体温表\n\n【缺】还没有连续录像, 先跑 " \
                "`python tools/market_position_collect.py --backfill`"
@@ -83,25 +80,25 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     out.append(
         f"**一句话（先说人话，再给数字）**\n"
         f"{day_word}全市场有 **{traded}** 只股票在交易。\n"
-        f"- **站上 20 日均线的只有 {_rat(w)}**（20 日均线 = 最近一个月的平均买入成本，"
+        f"- **站上 20 日均线的只有 {mpio._rat(w)}**（20 日均线 = 最近一个月的平均买入成本，"
         f"跌破它意味着最近一个月买的人大多在亏）—— {_width_plain(w)}\n"
         f"- 一边创新高的有 **{hi}** 家、一边创新低的却有 **{lo}** 家"
         f"（差 {spread}）—— {_hl_plain(hi, lo)}\n"
-        f"- 全市场今天成交 **{_yi(t.get('amount_yi'))}**（这是把当天所有股票的成交金额加起来），"
-        f"处在**过去一年 {_rat(apct)} 分位** —— {_amount_plain(apct)}\n"
+        f"- 全市场今天成交 **{mpio._yi(t.get('amount_yi'))}**（这是把当天所有股票的成交金额加起来），"
+        f"处在**过去一年 {mpio._rat(apct)} 分位** —— {_amount_plain(apct)}\n"
         f"- 涨停 **{lim.get('up')}** 家、跌停 **{lim.get('down')}** 家 —— {_zdt_plain(lim)}")
 
     rows = ["| 指数 | 收盘 | 十年百分位 | 距十年最高 | 年化波动20日 | 近一年 | 偏离年线 | 牛熊 |",
             "|---|---|---|---|---|---|---|---|"]
-    for _key, _name, _code in INDEX_SPECS:
+    for _key, _name, _code in mpio.INDEX_SPECS:
         item = (rec.get("indices") or {}).get(_key) or {}
         _p = item.get("pct_10y")
         rows.append("| {n}({c}) | {cl} | {p} {lbl} | {h} | {v} | {r} | {m} | {g} |".format(
             n=item.get("name", _key), c=item.get("code", _code),
-            cl=_num(item.get("close"), 2), p=_rat(_p),
+            cl=mpio._num(item.get("close"), 2), p=mpio._rat(_p),
             lbl=_position_plain(_p) if _p is not None else "",
-            h=_pct(item.get("from_high_pct")), v=_rat(item.get("vol_ann_20")),
-            r=_pct(item.get("ret_1y_pct")), m=_pct(item.get("ma250_dev_pct")),
+            h=mpio._pct(item.get("from_high_pct")), v=mpio._rat(item.get("vol_ann_20")),
+            r=mpio._pct(item.get("ret_1y_pct")), m=mpio._pct(item.get("ma250_dev_pct")),
             g={"bull": "牛", "bear": "熊", "range": "震荡"}.get(
                 item.get("regime"), "【缺】")))
     out.append(
@@ -120,7 +117,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
 
     # 牛熊区间与时长 (§14.5): 单点状态答不了"这轮走了多久", 而那是"位置"的一部分。
     # **两条口径并排** (§14.6): 同一天两封外部邮件结论相反, 根因就是口径不同。
-    rg = _regime_all()
+    rg = market_regime._regime_all()
     rg_lines = [
         "**为什么给两条口径**：2026年9月13日，同一条外部研究流水线在**同一天**发的两封邮件"
         "结论相反（相隔 47 分钟、同一批数据）—— 一封按「20% 法则」说**现在是牛市**，"
@@ -136,7 +133,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     rg_state = {"bull": "牛", "bear": "熊", "range": "震荡"}
     detail: list[str] = []
     flicked: list[str] = []
-    for key, _name, _code in INDEX_SPECS:
+    for key, _name, _code in mpio.INDEX_SPECS:
         item = rg.get(key) or {}
         for ck, short in (("ma250", "年线斜率"), ("pct20", "20% 法则")):
             s = item.get(ck)
@@ -148,9 +145,9 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             rg_lines.append(
                 f"| {item['name']}({item['code']}) | {short} | "
                 f"**{rg_state.get(s['state'], s['state'])}** | {s['since']} | "
-                f"{_num(s['months'], 1)} 个月 | {_pct(s['ret_pct'])} | "
-                f"{_num(s['median_months'], 1)} 个月 / {_pct(s['median_ret_pct'])} | "
-                f"{_rat(s['months_percentile'])} |")
+                f"{mpio._num(s['months'], 1)} 个月 | {mpio._pct(s['ret_pct'])} | "
+                f"{mpio._num(s['median_months'], 1)} 个月 / {mpio._pct(s['median_ret_pct'])} | "
+                f"{mpio._rat(s['months_percentile'])} |")
         # 沪深300 的历史明细单独列 (它是影子回放与基准的参照指数)
         if key == "hs300":
             for ck, short in (("ma250", "年线斜率"), ("pct20", "20% 法则")):
@@ -161,8 +158,8 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                             f"最长的几段（{short}口径，从长到短）**:", "",
                            "| 起 | 止 | 持续月数 | 区间涨跌 |", "|---|---|---|---|"]
                 for r in s["longest_rows"]:
-                    detail.append(f"| {r['start']} | {r['end']} | {_num(r['months'], 1)} | "
-                                  f"{_pct(r['ret_pct'])} |")
+                    detail.append(f"| {r['start']} | {r['end']} | {mpio._num(r['months'], 1)} | "
+                                  f"{mpio._pct(r['ret_pct'])} |")
         flick = [f"{item['name']}·{(item.get(ck) or {}).get('caliber', ck)}"
                  for ck in ("ma250", "pct20")
                  if (item.get(ck) or {}).get("flicker_note")]
@@ -181,15 +178,15 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     if v:
         out.append(
             "## 估值（贵不贵，跟位置是两回事）\n"
-            f"**股债性价比 {_num(v.get('erp_pct'), 2)}%**"
+            f"**股债性价比 {mpio._num(v.get('erp_pct'), 2)}%**"
             f"（= 沪深300 的盈利收益率 1/PE 减掉 10 年期国债收益率），"
-            f"处在**过去十年 {_rat(v.get('erp_pct_10y'))} 分位**。\n\n"
+            f"处在**过去十年 {mpio._rat(v.get('erp_pct_10y'))} 分位**。\n\n"
             f"怎么读：这个数**越高越划算**（拿着股票的预期回报比拿着国债强多少）。"
-            f"现在的 {_num(v.get('erp_pct'), 2)}% 意味着过去十年里只有 "
-            f"{_rat(100 - (v.get('erp_pct_10y') or 0))} 的时间比现在更划算；"
-            f"十年中位数是 {_num(v.get('erp_median_10y_pct'), 2)}%，"
-            f"十年区间 {_num(v.get('erp_min_10y_pct'), 2)}% ~ "
-            f"{_num(v.get('erp_max_10y_pct'), 2)}%。\n\n"
+            f"现在的 {mpio._num(v.get('erp_pct'), 2)}% 意味着过去十年里只有 "
+            f"{mpio._rat(100 - (v.get('erp_pct_10y') or 0))} 的时间比现在更划算；"
+            f"十年中位数是 {mpio._num(v.get('erp_median_10y_pct'), 2)}%，"
+            f"十年区间 {mpio._num(v.get('erp_min_10y_pct'), 2)}% ~ "
+            f"{mpio._num(v.get('erp_max_10y_pct'), 2)}%。\n\n"
             f"口径：{v.get('caliber')}（数据日 {v.get('asof')}，"
             f"十年窗口 {v.get('n_obs')} 个交易日；"
             f"来源：{v.get('source_plain') or v.get('source')}）。"
@@ -205,7 +202,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                    "会联网拉一次）,"
                    "或手工把 `data/market_position/erp.jsonl` 造出来。")
 
-    md = mirror_data if isinstance(mirror_data, dict) else mirror()
+    md = mirror_data if isinstance(mirror_data, dict) else market_mirror.mirror()
     if not md.get("ok"):
         out.append("## 照镜子（历史上跟今天最像的那些日子，之后实际怎么走）\n\n"
                    f"【缺】{md.get('reason')}")
@@ -220,18 +217,18 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             f"（已经把最近 {md.get('exclude_recent')} 个交易日排除掉 —— "
             "不许拿上个月的日子冒充「历史」，那等于用答案去对答案）。",
             f"- **最像的一档**（把历史上所有的日子按「像今天的程度」排序，"
-            f"取最像的前 {_rat((md.get('band_quantile') or 0) * 100)}，共 {s.get('n')} 天）："
+            f"取最像的前 {mpio._rat((md.get('band_quantile') or 0) * 100)}，共 {s.get('n')} 天）："
             f"这些日子之后 **20 个交易日**（约一个月），沪深300 涨跌的"
-            f"**中位数是 {_pct(s.get('fwd_20_median'))}**（一半的日子比它好、一半比它差），"
-            f"平均 {_pct(s.get('fwd_20_mean'))}，中间一半落在 "
-            f"{_pct(s.get('fwd_20_q25'))} 到 {_pct(s.get('fwd_20_q75'))} 之间，"
-            f"上涨的占 {_rat(s.get('fwd_20_up_ratio'))}。",
+            f"**中位数是 {mpio._pct(s.get('fwd_20_median'))}**（一半的日子比它好、一半比它差），"
+            f"平均 {mpio._pct(s.get('fwd_20_mean'))}，中间一半落在 "
+            f"{mpio._pct(s.get('fwd_20_q25'))} 到 {mpio._pct(s.get('fwd_20_q75'))} 之间，"
+            f"上涨的占 {mpio._rat(s.get('fwd_20_up_ratio'))}。",
             f"- **但这个数字要狠狠打折**：这 {s.get('n')} 天挨得很近、涨跌高度重叠，"
-            f"**真正独立的信息只有大约 {_num(s.get('n_eff_20'), 1)} 份**"
+            f"**真正独立的信息只有大约 {mpio._num(s.get('n_eff_20'), 1)} 份**"
             "（说白了：看着有一百多个样本，其实只相当于几次互不相干的经历）。"
             f"再往后看 **60 个交易日**（约三个月），中位数 "
-            f"{_pct(s.get('fwd_60_median'))}、上涨占比 {_rat(s.get('fwd_60_up_ratio'))}"
-            f"（独立信息约 {_num(s.get('n_eff_60'), 1)} 份）。",
+            f"{mpio._pct(s.get('fwd_60_median'))}、上涨占比 {mpio._rat(s.get('fwd_60_up_ratio'))}"
+            f"（独立信息约 {mpio._num(s.get('n_eff_60'), 1)} 份）。",
         ]
         yrs = md.get("years") or []
         if yrs:
@@ -242,28 +239,28 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                 mir.append(
                     f"命中日最集中的两年是 **{top2[0]['year']} 年**（{top2[0]['n']} 天）和 "
                     f"**{top2[1]['year']} 年**（{top2[1]['n']} 天），"
-                    f"两者合计占了 {_rat((top2[0]['n'] + top2[1]['n']) / tot * 100)} —— "
+                    f"两者合计占了 {mpio._rat((top2[0]['n'] + top2[1]['n']) / tot * 100)} —— "
                     "也就是说，上面的「历史平均」里有多少是这两年的经验，要心里有数。")
             mir += ["",
                     "| 命中日所属年份 | 命中几天 | 之后20日(沪深300)中位 | 上涨占比 |",
                     "|---|---|---|---|"]
             for y in yrs:
                 mir.append(f"| {y['year']} 年 | {y['n']} 天 | "
-                           f"{_pct(y.get('median_pct'))} | {_rat(y.get('up_ratio_pct'))} |")
+                           f"{mpio._pct(y.get('median_pct'))} | {mpio._rat(y.get('up_ratio_pct'))} |")
         mir += ["", "**最像的几天（明细）**:", "",
                 "| 相似日 | 像的程度(距离，越小越像) | 之后20日(沪深300) | "
                 "之后60日(沪深300) | 之后20日(上证) |",
                 "|---|---|---|---|---|"]
         for m in md.get("matches") or []:
             mir.append(f"| {m['date']} | {m['distance']} | "
-                       f"{_pct(m.get('fwd_20_hs300_pct'))} | "
-                       f"{_pct(m.get('fwd_60_hs300_pct'))} | "
-                       f"{_pct(m.get('fwd_20_sh_pct'))} |")
+                       f"{mpio._pct(m.get('fwd_20_hs300_pct'))} | "
+                       f"{mpio._pct(m.get('fwd_60_hs300_pct'))} | "
+                       f"{mpio._pct(m.get('fwd_20_sh_pct'))} |")
         mir += ["", md.get("warning", "")]
         out.append("## 照镜子（历史上跟今天最像的那些日子，之后实际怎么走）\n"
                    + "\n".join(mir))
 
-    sd = shadow_data if isinstance(shadow_data, dict) else shadow_replay()
+    sd = shadow_data if isinstance(shadow_data, dict) else market_shadow_replay.shadow_replay()
     sh_now = rec.get("shadow") or {}
     _rule_cn = {"ma20": "沪深300 收盘站上自己的 20 日均线就满仓",
                 "breadth50": "全市场有一半以上股票站上 20 日均线就满仓",
@@ -279,7 +276,7 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
     else:
         sd_lines.append(
             f"**下面这段在算什么**: 假设从 {sd.get('start')} 到 {sd.get('end')}"
-            f"（{_num(sd.get('years'), 1)} 年）一直照某一条规则做，事后算账会是多少。"
+            f"（{mpio._num(sd.get('years'), 1)} 年）一直照某一条规则做，事后算账会是多少。"
             "**毛** = 不算交易费用；**净** = 按项目默认费用扣掉。费用只算了佣金和印花税，"
             "**没算滑点**，所以真实的净结果只会更差。")
         sd_lines += ["",
@@ -292,10 +289,10 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             net = r.get("net") or {}
             sd_lines.append(
                 f"| {_rule_cn.get(r.get('rule'), r.get('rule'))} | "
-                f"{_pct(r.get('annualized_pct'))} | {_pct(net.get('annualized_pct'))} | "
-                f"{_pct(net.get('ci_low_pct'))} ~ {_pct(net.get('ci_high_pct'))} | "
-                f"{_pct(net.get('max_drawdown_pct'))} | {_num(net.get('sharpe'), 2)} | "
-                f"{r.get('round_trips')} 次 | {_rat(r.get('exposure_pct'))} |")
+                f"{mpio._pct(r.get('annualized_pct'))} | {mpio._pct(net.get('annualized_pct'))} | "
+                f"{mpio._pct(net.get('ci_low_pct'))} ~ {mpio._pct(net.get('ci_high_pct'))} | "
+                f"{mpio._pct(net.get('max_drawdown_pct'))} | {mpio._num(net.get('sharpe'), 2)} | "
+                f"{r.get('round_trips')} 次 | {mpio._rat(r.get('exposure_pct'))} |")
         sd_lines += ["", f"回放口径: {sd.get('caliber')}", "",
                      "**怎么读这张表**:\n"
                      "- **t 值** = 这个结果离「纯属碰运气」有多远，**越大越不像碰运气**"
@@ -315,9 +312,9 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             net = r.get("net") or {}
             lo, hi = net.get("ci_low_pct"), net.get("ci_high_pct")
             seg = r.get("segments") or {}
-            dtxt = (f"{_num(net.get('t'), 2)}（按天算的有效独立样本约 "
-                    f"{_num(net.get('n_eff'), 0)} 天；但**真正独立的下注只有 "
-                    f"{_num(seg.get('n'), 0)} 次**（= 建仓次数），"
+            dtxt = (f"{mpio._num(net.get('t'), 2)}（按天算的有效独立样本约 "
+                    f"{mpio._num(net.get('n_eff'), 0)} 天；但**真正独立的下注只有 "
+                    f"{mpio._num(seg.get('n'), 0)} 次**（= 建仓次数），"
                     f"**以少的那个为准**）" if net.get("t") is not None else "【缺】")
             if lo is None or hi is None:
                 verdict = "数据不足，判不了"
@@ -329,15 +326,15 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                 verdict = "明显比一直拿着好（整个区间都在 0 以上）"
             sd_lines.append(
                 f"- **{_rule_cn.get(r.get('rule'), r.get('rule'))}**："
-                f"这 {_num(sd.get('years'), 1)} 年里一共建仓 {r.get('round_trips')} 次，"
-                f"每次持仓中位 {_num(seg.get('median_days'), 0)} 个交易日"
+                f"这 {mpio._num(sd.get('years'), 1)} 年里一共建仓 {r.get('round_trips')} 次，"
+                f"每次持仓中位 {mpio._num(seg.get('median_days'), 0)} 个交易日"
                 f"（最短 {seg.get('min_days')} 天、最长 {seg.get('max_days')} 天），"
-                f"在场时间占 {_rat(r.get('exposure_pct'))}。"
-                f"按**每一笔**算（扣费后）：平均 {_pct(seg.get('mean_return_pct'))}、"
-                f"中位 {_pct(seg.get('median_return_pct'))}、"
-                f"赚钱的只占 {_rat(seg.get('win_ratio_pct'))}"
+                f"在场时间占 {mpio._rat(r.get('exposure_pct'))}。"
+                f"按**每一笔**算（扣费后）：平均 {mpio._pct(seg.get('mean_return_pct'))}、"
+                f"中位 {mpio._pct(seg.get('median_return_pct'))}、"
+                f"赚钱的只占 {mpio._rat(seg.get('win_ratio_pct'))}"
                 f"（多数小亏、少数大赚，是趋势类规则的典型长相）；"
-                f"每笔口径 t 值 {_num(seg.get('t'), 2)}。"
+                f"每笔口径 t 值 {mpio._num(seg.get('t'), 2)}。"
                 f"整段的净口径 t 值 {dtxt}；结论：**{verdict}**。"
                 + (f"（{seg.get('note')}）" if seg.get("note") else ""))
         # 双窗口一致性 (复用《公式因子体检方法论》纪律 2)
@@ -360,10 +357,10 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
                 verdict = "⚠ 不一致，待复核"
             sd_lines.append(
                 f"| {_rule_cn.get(r.get('rule'), r.get('rule'))} | "
-                f"{_pct(wi.get('annualized_pct'))}（{wi.get('start')} 起） | "
-                f"{_pct(wo.get('annualized_pct'))}（{wo.get('start')} 起） | "
-                f"{_num(wi.get('round_trips'), 0)} 段 | "
-                f"{_num(wo.get('round_trips'), 0)} 段 | {verdict} |")
+                f"{mpio._pct(wi.get('annualized_pct'))}（{wi.get('start')} 起） | "
+                f"{mpio._pct(wo.get('annualized_pct'))}（{wo.get('start')} 起） | "
+                f"{mpio._num(wi.get('round_trips'), 0)} 段 | "
+                f"{mpio._num(wo.get('round_trips'), 0)} 段 | {verdict} |")
         _wnote = next((w.get("note") for w in
                        [(r.get("windows") or {}) for r in
                         (sd.get("rows") or []) + [sd.get("buy_hold") or {}]] if w.get("note")),
@@ -378,14 +375,14 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
         if c:
             sd_lines += [
                 "",
-                f"成本口径: 单次往返 {_num(c.get('round_trip_pct'), 2)}%"
+                f"成本口径: 单次往返 {mpio._num(c.get('round_trip_pct'), 2)}%"
                 f"（佣金+印花税）；若再按项目默认滑点 0.1%/边 加 0.2%，"
-                f"单次往返就是 {_num(c.get('round_trip_with_slippage_pct'), 2)}% —— "
+                f"单次往返就是 {mpio._num(c.get('round_trip_with_slippage_pct'), 2)}% —— "
                 "**上表的净口径是乐观下限**。"]
     out.append("## 候选择时规则影子回放（只记录不交易）\n" + "\n".join(sd_lines))
 
     # 维度体检 (§14.7): 上面那些指标到底有没有用 —— 用数据说话, 不靠"看起来有道理"。
-    vd = validity_data if isinstance(validity_data, dict) else _dimension_validity()
+    vd = validity_data if isinstance(validity_data, dict) else market_validity._dimension_validity()
     vd_lines = [
         "**为什么要有这一节**：上面的指标**全是价格算出来的**（位置/宽度/量能/波动）。"
         "一条外部研究给了句很扎心的批评：「**该有效的没被重用，不该用的占了 85% 权重**」——"
@@ -426,8 +423,8 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             q = (h.get(252) or {}).get("quintile_spread_pct")
             vd_lines.append(
                 f"| {s['name']} | {s['family']} | {_cell(h.get(21))} | {_cell(h.get(63))} | "
-                f"{_cell(h.get(126))} | {_cell(h.get(252))} | {_pct(q)} | "
-                f"{_num((h.get(252) or {}).get('n_eff'), 1)} 份 | {s['label']} |")
+                f"{_cell(h.get(126))} | {_cell(h.get(252))} | {mpio._pct(q)} | "
+                f"{mpio._num((h.get(252) or {}).get('n_eff'), 1)} 份 | {s['label']} |")
         if warn_cells:
             vd_lines.append(
                 f"\n**本次共 {len(warn_cells)} 处标了 ⚠**（两半方向打架 → 一律待复核）："
@@ -470,9 +467,9 @@ def thermometer_md(rec: dict | None = None, mirror_data: dict | None = None,
             q = s.get("spread")
             if q is None:
                 return "五分位差算不出来（月频样本不足）"
-            return (f"五分位差 **{_pct(q)}**（把历史日子按这个指标从低到高分成五组，"
+            return (f"五分位差 **{mpio._pct(q)}**（把历史日子按这个指标从低到高分成五组，"
                     f"最高那组之后比最低那组**{'多' if q > 0 else '少'}赚 "
-                    f"{_num(abs(q), 1)} 个百分点**）")
+                    f"{mpio._num(abs(q), 1)} 个百分点**）")
 
         if _pos:
             _erp_note = ("—— **独立复现了外部研究的结果**（他们 +0.48 / +26.7 个百分点）。"
@@ -526,7 +523,7 @@ def _width_plain(w) -> str:
         feel = "只剩不到三分之一的股票还在往上走，**个股层面已经明显失血**"
     else:
         feel = "还在往上走的股票不到六分之一，**绝大多数个股已经跌破**"
-    return f"换句话说 **{_rat(below)} 的股票已经跌到 20 日均线下方**，{feel}。"
+    return f"换句话说 **{mpio._rat(below)} 的股票已经跌到 20 日均线下方**，{feel}。"
 
 def _hl_plain(hi, lo) -> str:
     """创新高/新低家数 → 一句人话(强弱对比)。"""
@@ -560,7 +557,7 @@ def _amount_plain(apct) -> str:
     elif a >= 20:
         feel = "成交偏冷"
     else:
-        feel = (f"**成交冷到了地板上**，过去一年里 {_rat(100 - a)} 的交易日"
+        feel = (f"**成交冷到了地板上**，过去一年里 {mpio._rat(100 - a)} 的交易日"
                 "都比今天热闹")
     return (f"{feel}（量能是行情的燃料：燃料少的时候，"
             "涨也涨不远、跌也跌不深）。")
@@ -616,7 +613,7 @@ def push_thermometer(rec: dict | None = None, title: str | None = None,
     永远 fail-soft: webhook 未配置 / 推送失败都只返 {"ok": False, "reason": ...},
     绝不抛 —— 调度器 job 与页面按钮都不该因为推送失败而中断。
     """
-    rec = rec or latest()
+    rec = rec or mpio.latest()
     if not rec:
         return {"ok": False, "reason": "还没有连续录像"}
     md = thermometer_md(rec, mirror_data=mirror_data, shadow_data=shadow_data)

@@ -132,3 +132,115 @@ def test_pump_drains_within_budget_not_longer():
     finally:
         eng.stop()
     assert 0.15 <= box["elapsed"] < 0.55, f"窗口应约 0.2s, 实际 {box['elapsed']:.2f}s"
+
+
+def test_pump_does_not_dispatch_after_deadline(monkeypatch):
+    """2026-09-20 审计 P2-2: 截止时间必须在**循环入口**判。
+
+    窗口语义是"至少 duration"(handler 不可打断), 但**过了截止不许再起一个新
+    的 dispatch**。突变验证: 去掉入口判定 → 队列里 5 条全被消费 (红)。
+    """
+    eng = EventEngine(handlers={})
+    slow_calls: list = []
+
+    def _slow(e):
+        slow_calls.append(e)
+        time.sleep(0.25)          # 单个 handler 比窗口长得多
+    eng._handlers[EVENT_TICK] = _slow
+    # 伪装成本线程是消费者 (can_pump 的唯一判据), 免起线程做确定性断言
+    eng._consumer_ident = threading.get_ident()
+    assert eng.can_pump() is True
+    for _ in range(5):
+        eng.put(Event(type=EVENT_TICK))
+
+    t0 = time.monotonic()
+    consumed = eng.pump({EVENT_TICK}, 0.05)
+    elapsed = time.monotonic() - t0
+
+    assert consumed == 1, (
+        f"过了截止点还在继续分发: 消费 {consumed} 条 (窗口 0.05s, handler 0.25s)")
+    assert len(slow_calls) == 1
+    assert elapsed < 0.25 + 0.15, f"窗口不该被拖长: {elapsed:.2f}s"
+    # 没被消费的 4 条仍在队列里 (不许丢)
+    left = 0
+    while True:
+        try:
+            eng._queue.get_nowait()
+            left += 1
+        except Exception:
+            break
+    assert left == 4, f"未消费事件被丢了: 队列剩 {left} 条 (应 4)"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-20 审计 P2-3: 等待方**是否真的接了 pump** 没人测 —— 把 executor/
+# rotation 的等待实现改回 time.sleep, 原套件 104/33 条全绿。下面两条直接对着
+# "接线"下断言 (spy engine: 记录 pump 调用, 并让 sleep 变成硬失败)。
+# ---------------------------------------------------------------------------
+
+class _SpyEngine:
+    """假引擎: can_pump 可控, pump 记账。"""
+
+    def __init__(self, pumpable=True):
+        self._pumpable = pumpable
+        self.pumps: list = []
+
+    def can_pump(self):
+        return self._pumpable
+
+    def pump(self, types, window):
+        self.pumps.append((types, window))
+        return 0
+
+
+def _no_sleep(monkeypatch):
+    """把 time.sleep 换成硬失败 —— 等待方若退回 sleep 就地红。"""
+    def _boom(sec, *a, **kw):
+        if sec and sec > 0:
+            raise AssertionError(f"等待方退回 time.sleep({sec}) —— pump 接线断了")
+    monkeypatch.setattr(time, "sleep", _boom)
+
+
+def test_executor_wait_terminal_uses_pump(monkeypatch):
+    """executor 等撤单 ack: must 走 engine.pump, 不许退回 sleep。"""
+    from trade.executor import Executor
+
+    _no_sleep(monkeypatch)
+    spy = _SpyEngine(pumpable=True)
+
+    class _FakeSelf:
+        _ack_timeout = 0.3
+        _engine = spy
+
+        def _order_status(self, order_id):
+            return None       # 永不终态 → 一直等到 deadline
+    assert Executor._wait_terminal(_FakeSelf(), "O1") is False
+    assert spy.pumps, "executor._wait_terminal 没有调用 engine.pump (接线断了)"
+    assert all(types == PUMPABLE_WAIT_TYPES for types, _ in spy.pumps)
+    assert all(w <= 0.1 + 1e-9 for _, w in spy.pumps), \
+        f"窗口应 ≤ _CANCEL_ACK_POLL_SEC(0.1): {[w for _, w in spy.pumps]}"
+
+
+def test_rotation_wait_orders_uses_pump(monkeypatch):
+    """rotation 等成交: must 走 engine.pump; 非消费者线程退回 sleep (老行为)。"""
+    import types as _types
+    from trade.rotation import RotationFeature
+
+    spy = _SpyEngine(pumpable=True)
+
+    class _FakeGw:
+        def query_orders(self):
+            return [{"order_id": "O1", "status": 50}]   # 50 非终态
+    fake = _types.SimpleNamespace(_wait_timeout=0.3, _wait_interval=0.05,
+                                  _gateway=_FakeGw(), _engine=spy)
+    RotationFeature._wait_fills(fake, ["O1"])
+    assert spy.pumps, "rotation._wait_fills 没有调用 engine.pump (接线断了)"
+    assert all(types == PUMPABLE_WAIT_TYPES for types, _ in spy.pumps)
+
+    # 非消费者线程 (单测/工具场景): 退回 sleep, 不抛错 —— 老行为不许变
+    spy2 = _SpyEngine(pumpable=False)
+    fake2 = _types.SimpleNamespace(_wait_timeout=0.05, _wait_interval=0.02,
+                                   _gateway=_FakeGw(), _engine=spy2)
+    RotationFeature._wait_fills(fake2, ["O1"])
+    assert not spy2.pumps
+

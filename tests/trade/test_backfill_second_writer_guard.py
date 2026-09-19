@@ -99,3 +99,42 @@ def test_cli_dry_run_not_blocked(monkeypatch, tmp_path, live_api):
     db.write_bytes(b"")
     rc = bd.main(["--db", str(db), "--api-base", live_api, "--dry-run"])
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-20 审计 P3-4: 探活端口曾写死 8081 —— `trade_main --api-port 8099`
+# 之后守卫捅一个没人监听的端口, 判"进程已死" → **fail-open** 直接并发写
+# trade.db (第二写者铁律破口)。地址现在按 显式 > 环境 > .env > 8081 解析。
+# ---------------------------------------------------------------------------
+
+def test_api_base_follows_env_port(monkeypatch):
+    monkeypatch.delenv("VERA_TRADE_API_BASE", raising=False)
+    monkeypatch.setenv("VERA_TRADE_API_PORT", "8099")
+    assert bd._resolve_api_base(None) == "http://127.0.0.1:8099"
+
+
+def test_api_base_env_wins_and_cli_wins_over_env(monkeypatch):
+    monkeypatch.setenv("VERA_TRADE_API_PORT", "8099")
+    monkeypatch.setenv("VERA_TRADE_API_BASE", "http://127.0.0.1:7777")
+    assert bd._resolve_api_base(None) == "http://127.0.0.1:7777"
+    assert bd._resolve_api_base("http://127.0.0.1:1234") == "http://127.0.0.1:1234"
+
+
+def test_api_base_falls_back_to_default(monkeypatch):
+    for k in ("VERA_TRADE_API_BASE", "VERA_TRADE_API_PORT", "TRADE_API_PORT"):
+        monkeypatch.delenv(k, raising=False)
+    assert bd._resolve_api_base(None) == bd._DEFAULT_API
+
+
+def test_guard_uses_resolved_base_not_hardcoded(monkeypatch, tmp_path, live_api):
+    """端到端: 交易进程在**非 8081** 端口时守卫也必须拒写。
+
+    突变验证记录: 把 `_resolve_api_base(args.api_base)` 改回常量 `_DEFAULT_API`,
+    本测试立刻红 (那正是 P3-4 的 fail-open)。
+    """
+    port = live_api.rsplit(":", 1)[1]
+    monkeypatch.setenv("VERA_TRADE_API_PORT", port)
+    monkeypatch.delenv("VERA_TRADE_API_BASE", raising=False)
+    monkeypatch.setattr(bd, "run", lambda *a, **k: pytest.fail("不该走到写库"))
+    rc = bd.main(["--db", str(tmp_path / "nope.db")])
+    assert rc == 3, "非默认端口上的活进程必须被判为活着 (否则 fail-open 写库)"

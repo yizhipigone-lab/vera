@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 #: 生产代码目录 (引用 = "被当库用/被程序拉起")
+#: 2026-09-20 审计 P2-9: 补 `tools` 自身 —— 工具链互相拉起 (或经 .bat 批量调度)
+#: 也是生产引用, 原判据把它们误判成孤儿。
 PROD_DIRS = ("backtest", "brain", "core", "evolution", "llm", "notes_gen",
              "pipeline", "policy_pipeline", "qmt", "report", "scheduler",
-             "selection", "trade", "utils", "tests")
+             "selection", "trade", "utils", "tests", "tools")
 
 #: 文档目录 (引用 = 研究证据链)
 DOC_DIRS = ("docs", "research", "notes")
@@ -34,10 +35,24 @@ DOC_DIRS = ("docs", "research", "notes")
 SKIP_PARTS = {".git", "__pycache__", "node_modules", "data", "output",
               "logs", "scratch", ".venv", "vera_obs_vault", "obsidian"}
 
+#: 引用来源文件的扩展名 (生产侧: 代码/脚本/配置)
+PROD_PATTERNS = ("*.py", "*.md", "*.bat", "*.js", "*.mjs", "*.html", "*.yaml",
+                 "*.yml", "*.json", "*.txt")
 
-def _iter_ref_texts(root: Path, dirs, patterns=("*.py", "*.md", "*.bat", "*.js",
-                                                "*.mjs", "*.html", "*.yaml",
-                                                "*.yml", "*.json", "*.txt")):
+#: 根级散文件的归属: **生产**引用只认代码/脚本/配置, **根级 .md 一律只算文档**
+#: (2026-09-20 审计 P2-9: 原先根级 .md 混进生产侧, 于是 CHANGELOG 里提一句就把
+#: 脚本"洗白"成生产引用 —— quantqq_5m_sweep_2010 就是这么被抬进去的)。
+PROD_ROOT_SUFFIXES = (".bat", ".py", ".yaml", ".yml")
+DOC_ROOT_SUFFIXES = (".md",)
+
+#: `.bat` 递归扫描专用的排除集: **只排真正的环境目录** —— .bat 是启动器
+#: (不是运行时数据), 所以 `data/` 不在排除之列 (2026-09-20 审计 P2-9:
+#: data/formula_farm/runs/*.bat 是批量调 tools/ 脚本的真引用来源)。
+BAT_SKIP_PARTS = {".git", "__pycache__", "node_modules", ".venv"}
+
+
+def _iter_ref_texts(root: Path, dirs, patterns=PROD_PATTERNS,
+                    root_suffixes=PROD_ROOT_SUFFIXES, recursive_bat=True):
     """产出 (文件路径, 文本) —— 只扫给定顶层目录, 跳过运行时产物。"""
     for d in dirs:
         base = root / d
@@ -51,13 +66,26 @@ def _iter_ref_texts(root: Path, dirs, patterns=("*.py", "*.md", "*.bat", "*.js",
                     yield f, f.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
-    # 顶层散文件 (.bat/.md/.py)
+    # 顶层散文件
     for f in root.iterdir():
-        if f.is_file() and f.suffix in (".bat", ".md", ".py", ".yaml", ".yml"):
+        if f.is_file() and f.suffix in root_suffixes:
             try:
                 yield f, f.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
+    # 2026-09-20 审计 P2-9: `.bat` 要**递归**扫 —— 原先只扫仓库顶层, 于是
+    # "被启动器拉起"的脚本全被误判成孤儿。
+    if not recursive_bat:
+        return
+    for f in root.rglob("*.bat"):
+        if any(p in BAT_SKIP_PARTS for p in f.parts):
+            continue
+        if f.parent == root:
+            continue        # 顶层已在上面扫过
+        try:
+            yield f, f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
 
 
 def classify(root: Path) -> dict:
@@ -67,7 +95,9 @@ def classify(root: Path) -> dict:
                      if p.name != "__init__.py")
 
     prod_texts = list(_iter_ref_texts(root, PROD_DIRS))
-    doc_texts = list(_iter_ref_texts(root, DOC_DIRS))
+    doc_texts = list(_iter_ref_texts(root, DOC_DIRS,
+                                     root_suffixes=DOC_ROOT_SUFFIXES,
+                                     recursive_bat=False))
 
     levels: dict[str, list[str]] = {"production": [], "docs_only": [], "orphan": []}
     for s in scripts:

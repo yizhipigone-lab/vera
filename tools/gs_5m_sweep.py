@@ -51,6 +51,9 @@ DEFAULT_MAX_BUY = 20_000.0
 # 此前本文件硬编码 0.30/0.15/1000, 与 09-09 批农场粗扫实际在用的 15% 冲突 —— 两套口径
 # 并存是 2026-09-11 审计认定的缺陷 (详见 docs/plan/2026-09-11_公式农场粗扫报告修复_计划书.md)。
 from core import farm_rules  # noqa: E402
+# 2026-09-20 审计: 这两个名字在 _load_cache (模块级函数) 里用, 必须模块级导入 ——
+# 原先只在 do_prep 内局部导入 → _load_cache 调用即 NameError (实现搬了、消费点没搬)。
+from backtest.engine import PREP_SEAM, check_prep_caliber  # noqa: E402
 
 TARGET_ANN = farm_rules.TARGET_ANN
 TARGET_MAXDD = farm_rules.TARGET_MAXDD
@@ -83,10 +86,7 @@ def _cache_dir(formula: str, window_td: int) -> str:
 
 def do_prep(args):
     """选股(formula) + 5m 窗口取数 + 矩阵落盘. 幂等: 有缓存则跳过."""
-    from backtest.engine import (
-        ENGINE_VERSION,
-        BacktestEngine,
-    )
+    from backtest.engine import ENGINE_VERSION, BacktestEngine
     from selection.selector import StockSelector
 
     formula = args.formula
@@ -172,7 +172,7 @@ def do_prep(args):
         "start": args.start, "end": args.end, "formula": formula,
         "window_td": win_td, "capital": capital, "max_buy": max_buy,
         "engine_version": ENGINE_VERSION,
-        "prep_seam": "engine_prepare_matrices@2026-09-19",
+        "prep_seam": PREP_SEAM,
         "n_signals": int(entries.values.sum()), "shape": [int(len(idx)), int(len(cols))],
     }
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -192,6 +192,7 @@ def _load_cache(formula, window_td=WINDOW_TD):
     cache_dir = _cache_dir(formula, window_td)
     with open(os.path.join(cache_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
+    check_prep_caliber(meta, where="gs_5m_sweep")
     idx = pd.DatetimeIndex(pd.to_datetime(meta["index"]))
     cols = meta["columns"]
     ld = lambda n, mmap=None: np.load(os.path.join(cache_dir, n), mmap_mode=mmap)
@@ -218,11 +219,6 @@ def do_run(args):
     if meta.get("engine_version") and meta["engine_version"] != ENGINE_VERSION:
         logger.warning("[%s] 引擎版本漂移: prep=%s 现在=%s, Top 组合须 run() 复跑核对",
                        formula, meta["engine_version"], ENGINE_VERSION)
-    # 2026-09-19 批次 3.1: 旧缓存是"手工复刻配方"产物 (窗口不截断到 end),
-    # 接缝口径是截断的 —— 缺标记的旧缓存告警, 提示重 prep
-    if meta.get("prep_seam") != "engine_prepare_matrices@2026-09-19":
-        logger.warning("[%s] 缓存为旧复刻配方产物 (窗口口径不同), 建议重跑 prep",
-                       formula)
     sel_path = os.path.join(_cache_dir(formula, args.window_td), "selections.csv")
     selections = pd.read_csv(sel_path, dtype={"stock_code": str})
 

@@ -42,6 +42,34 @@ logger = get_logger(__name__)
 
 ENGINE_VERSION = "v3.7-entry-t1-open-20260820"
 
+#: 准备段口径标签 (2026-09-19 批次 3.1: 准备段统一走 `prepare_matrices`)。
+#: tools/ 的 sweep 把矩阵缓存落盘时写进 meta.json; 加载时必须校验 ——
+#: 旧缓存是"手工复刻配方"产物 (**不把窗口终点截断到 end_time**, 与接缝口径
+#: 相差可达约 60 个交易日), 静默复用会让参数扫描与引擎口径分叉且不报错。
+#: 2026-09-20 审计 P1-4: 原先只有 gs_5m_sweep 一家校验, 口径真变的 quantqq
+#: 5m/1m 反而没校验 —— 校验收进本模块, 四个 sweep + research 脚本统一调用。
+PREP_SEAM = "engine_prepare_matrices@2026-09-19"
+
+
+def check_prep_caliber(meta: dict, where: str = "") -> None:
+    """加载 sweep 矩阵缓存前校验准备段口径 (fail-closed)。
+
+    缺标记 / 标记不符 → **拒绝加载** (抛 RuntimeError), 除非显式设环境变量
+    `VERA_SWEEP_ALLOW_OLD_PREP=1` (此时只告警, 供"就是要看旧结果"的场合)。
+    理由见 PREP_SEAM 注释: 旧口径的窗口多出一截尾巴, 混用即静默改变结论。
+    """
+    import os as _os
+    got = str((meta or {}).get("prep_seam") or "")
+    if got == PREP_SEAM:
+        return
+    msg = (f"{where}矩阵缓存口径不符: prep_seam={got!r}, 期望 {PREP_SEAM!r} "
+           f"(旧缓存是手工复刻配方产物, 窗口不截断到 end_time, 与引擎口径不同)。"
+           f"请重跑 prep 生成缓存。")
+    if _os.environ.get("VERA_SWEEP_ALLOW_OLD_PREP") == "1":
+        logger.warning("%s [VERA_SWEEP_ALLOW_OLD_PREP=1, 放行]", msg)
+        return
+    raise RuntimeError(msg + " (确实要用旧缓存: 设 VERA_SWEEP_ALLOW_OLD_PREP=1)")
+
 # 2026-09-16 P2: 硬止损阈值缺省值单一真相源 (原 -0.12 在 build 调用与
 # degrade 报告两处各自硬编码)。与 config/default.yaml cost_stop.threshold 对齐。
 _DEFAULT_COST_STOP_THRESHOLD = -0.12
@@ -872,7 +900,7 @@ class BacktestEngine:
 
     def run_cached(self, prepared, stop_config,
                    ladder_profits, ladder_ratios, n_ladder, *,
-                   filter_limit_up=True,
+                   filter_limit_up=None,
                    formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
                    close_raw=None,
                    return_raw=False):
@@ -882,13 +910,18 @@ class BacktestEngine:
         PreparedMatrix (消除位置顺序陷阱 + 配对不变量构造期 fail-fast); 删除了
         死参数 selections。
 
-        - filter_limit_up: 默认 True; 收编脚本传 False 复现旧直调核心循环口径。
+        - filter_limit_up: 缺省 None = **跟随构造期配置 `self.filter_limit_up`**
+          (2026-09-20 审计 P1-5: 原先关键字默认 True 会**静默盖掉**
+          `BacktestEngine({"filter_limit_up": False})`, 同名双开关);
+          显式传 True/False 仍可逐次覆盖 (收编脚本传 False 复现旧口径)。
         - formula_exit_np/close_raw: 可选能力数据, None=off。
         - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np。
         - return_raw: True 时 result dict 加 raw_equity/raw_trades。
 
         ⚠️ degrade_5m (5m 数据层降级) 仅 run() 路径支持, run_cached 不做降级。
         """
+        if filter_limit_up is None:
+            filter_limit_up = self.filter_limit_up
         stop = stop_config or {}
         close = prepared.close
         entries = prepared.entries

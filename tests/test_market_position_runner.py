@@ -551,16 +551,19 @@ class TestWarmup:
         """
         _write_cache(n_days=900, wavy_amount=True)
         got = {}
+        from core import market_position_io as mpio
 
         def run(w):
-            orig = mpr._upsert
+            # 2026-09-20 审计 P2-6: 落盘实现在基座 mpio —— patch 点必须跟着实现走
+            # (patch mpr._upsert 从"唯一实现"改成"静默 no-op"了)
+            orig = mpio._upsert
             mpr.WARMUP_BARS = w
-            mpr._upsert = lambda records, path=None: got.update(
+            mpio._upsert = lambda records, path=None: got.update(
                 {r["date"]: _amount_pct(r) for r in records}) or len(records)
             try:
                 mpr.collect(bars=mpr.DEFAULT_BARS, write=True)
             finally:
-                mpr._upsert = orig
+                mpio._upsert = orig
             return dict(got)
 
         base = run(900)
@@ -863,15 +866,12 @@ class TestCrossProcessWriteLock:
         _write_cache()
         from core import market_position_io as mpio
         monkeypatch.setattr(mpio, "_UPSERT_LOCK_TIMEOUT", 0.3)
-        real_upsert = mpr._upsert
 
         def _conflicted(records, path=None):
             raise TimeoutError("跨进程写锁超时 (0s): daily.jsonl.lock 被另一个进程持有")
-        monkeypatch.setattr(mpr, "_upsert", _conflicted)
-        try:
-            r = mpr.collect(bars=60, write=True)
-        finally:
-            monkeypatch.setattr(mpr, "_upsert", real_upsert)
+        # 2026-09-20 审计 P2-6: 落盘实现在基座, patch 点跟着实现走
+        monkeypatch.setattr(mpio, "_upsert", _conflicted)
+        r = mpr.collect(bars=60, write=True)
         assert r["ok"] is False
         assert "另一个进程正在采集" in r["reason"]
 
@@ -886,11 +886,22 @@ class TestIsolationGuard:
     """
 
     def test_paths_are_isolated_into_tmp(self):
+        """2026-09-20 审计 P2-8: 五条落盘路径全都要在 tmp 里。
+
+        原先只查三条 (daily/kline/erp), 漏了**同目录**的 dashboard.jsonl 与
+        events.jsonl —— 仪表盘刷新与事件录入在测试里真跑就会写生产文件
+        (latent 投毒面: 当时用例恰好不写, 所以一直没爆)。新增落盘路径必须
+        一并进全局隔离。
+        """
+        from core import market_dashboard_runner as mdbr
+        from core import market_events as mev
         from core import market_position_io as mpio
         prod = Path(__file__).resolve().parents[1] / "data"
         for name, val in (("mpio.DAILY_PATH", mpio.DAILY_PATH),
                           ("mpio.KLINE_1D_DIR", mpio.KLINE_1D_DIR),
-                          ("mpr.ERP_PATH", mpr.ERP_PATH)):
+                          ("mpr.ERP_PATH", mpr.ERP_PATH),
+                          ("mev.EVENTS_PATH", mev.EVENTS_PATH),
+                          ("mdbr.DASHBOARD_PATH", mdbr.DASHBOARD_PATH)):
             p = Path(val).resolve()
             assert prod not in p.parents and p != prod, (
                 f"{name} 指向生产目录 ({p}) —— conftest 的隔离没生效, "
@@ -930,3 +941,87 @@ class TestIsolationGuard:
         finally:
             Path(mpio.DAILY_PATH).unlink(missing_ok=True)
             mpio.DAILY_PATH = orig
+
+
+class TestOwnershipRoster:
+    """归属名册守卫 (2026-09-20 审计 P2-5/P2-6/P2-7)。
+
+    病类: 拆包后 6 个块模块 + runner 各自 `from core.market_position_io import
+    _f, history, _upsert` —— 拿到的是 import 时刻的**值副本**。于是 patch 基座
+    (conftest 隔离 / 参数扫描) 对这些模块是**静默 no-op**, 而 patch 块模块又只
+    影响它自己: 两种都静默 (审计变异实验 E4a/E4d 绿、E4b 红)。
+
+    现在的契约:**跨模块一律走属主模块的调用期属性** (`mpio._f` / `market_erp.X`),
+    本文件四条断言把它变成会响的铃。
+    """
+
+    SPLIT_MODULES = ("market_erp", "market_regime", "market_validity",
+                     "market_shadow_replay", "market_thermometer",
+                     "market_mirror")
+
+    def test_roster_names_all_resolve_on_their_owner(self):
+        """名册里的每个名字都必须在属主模块上真的存在 (防名册陈旧/写错归属)。"""
+        missing = []
+        for owner, names in mpr._FORWARD_TABLE:
+            for n in names:
+                if not hasattr(owner, n):
+                    missing.append(f"{owner.__name__}.{n}")
+        assert not missing, f"归属名册里有解析不到的名字: {missing}"
+
+    def test_no_forwarded_name_is_materialized_for_real(self):
+        """名册里的名字一个都不许在 runner 上留实体 (含函数对象/常量)。
+
+        P2-7 原口径只守 5 个路径常量, 于是 `INDEX_SPECS` / `ERP_MIN_OBS` /
+        `SHADOW_RULES` 这些按值 import 的副本不在守卫视野里 —— rebind `mpr.X`
+        静默分流且守卫不响。现在全部纳入。
+        """
+        roster = {n for _owner, names in mpr._FORWARD_TABLE for n in names}
+        materialized = sorted(roster & set(vars(mpr)))
+        assert not materialized, (
+            f"runner 上出现了转发名的实体副本 {materialized} —— "
+            "patch 属主模块时这副本不会跟着变 (静默分流)")
+        # 高风险可变状态清单必须是名册子集 (防手写漂移)
+        assert set(mpr._IO_STATE_NAMES) <= roster
+
+    def test_no_module_binds_base_primitives_by_value(self):
+        """六个块模块 + runner 都不许 `from core.market_position_io import X`。
+
+        AST 断言 (不是子串): 这类 import 一旦回来, patch 基座就是静默 no-op。
+        """
+        import ast
+        root = Path(__file__).resolve().parents[1] / "core"
+        files = [root / f"{m}.py" for m in self.SPLIT_MODULES]
+        files.append(root / "market_position_runner.py")
+        offenders = []
+        for f in files:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.ImportFrom)
+                        and node.module == "core.market_position_io"):
+                    offenders.append(f"{f.name}:{node.lineno} "
+                                     f"{[a.name for a in node.names]}")
+        assert not offenders, (
+            "以下位置按值绑定了基座原语 (patch 基座对它无效): " + "; ".join(offenders))
+
+    def test_no_split_module_binds_sibling_constants_by_value(self):
+        """块模块之间也不许按值 import 常量/原语 (同名病类)。
+
+        允许: 纯数学层 `core.market_position` 的公开函数 (无状态、且它是规则
+        单一来源, 不参与 patch 面); 禁止: 任何 `core.market_*` 拆分包成员。
+        """
+        import ast
+        root = Path(__file__).resolve().parents[1] / "core"
+        allow = {"core.market_position", "core.market_position_io"}
+        offenders = []
+        for m in self.SPLIT_MODULES:
+            f = root / f"{m}.py"
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom) or not node.module:
+                    continue
+                mod = node.module
+                if (mod.startswith("core.market_") and mod not in allow):
+                    offenders.append(f"{f.name}:{node.lineno} ← {mod} "
+                                     f"{[a.name for a in node.names]}")
+        assert not offenders, (
+            "块模块间按值 import (patch 属主模块会静默分流): " + "; ".join(offenders))

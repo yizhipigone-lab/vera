@@ -40,6 +40,47 @@ _DEFAULT_DB = "data/trade/trade.db"
 _DEFAULT_API = "http://127.0.0.1:8081"
 
 
+def _resolve_api_base(cli_value: str | None) -> str:
+    """探活地址的解析顺序 (2026-09-20 审计 P3-4)。
+
+    病根: 地址原先只有"命令行缺省 8081"一条来源 —— 谁把 `trade_main --api-port`
+    改了, 探针照旧捅 8081, 那里没人 listen → 判"进程已死" → **fail-open** 直接
+    并发写 trade.db (第二写者铁律破口)。现在按"显式 > 环境 > trade 配置 > 默认"
+    解析, 配置改了它跟着改:
+      ① `--api-base` 显式给 → 用它 (最高优先);
+      ② 环境变量 `VERA_TRADE_API_BASE` (部署脚本可注入);
+      ③ `.env` 的 `VERA_TRADE_API_PORT` / `TRADE_API_PORT` (纯 stdlib 读取, 不拉
+         trade 包依赖 —— 本工具是离线 CLI, 不该为读一个端口 import 交易栈);
+      ④ 兜底 8081 (`trade_main` 的 argparse 缺省值)。
+    """
+    import os
+    if cli_value:
+        return cli_value
+    env_base = os.environ.get("VERA_TRADE_API_BASE")
+    if env_base:
+        return env_base
+    for key in ("VERA_TRADE_API_PORT", "TRADE_API_PORT"):
+        port = (os.environ.get(key) or "").strip()
+        if port.isdigit():
+            return f"http://127.0.0.1:{port}"
+    env_file = Path(__file__).resolve().parents[1] / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k == "VERA_TRADE_API_BASE" and v:
+                    return v
+                if k in ("VERA_TRADE_API_PORT", "TRADE_API_PORT") and v.isdigit():
+                    return f"http://127.0.0.1:{v}"
+        except OSError:
+            pass
+    return _DEFAULT_API
+
+
 def _trade_api_alive(base: str = _DEFAULT_API, timeout: float = 1.5) -> bool:
     """交易进程 (8081) 是否活着 —— 2026-09-19 批次 4.3 的并发守卫探针。
 
@@ -51,6 +92,9 @@ def _trade_api_alive(base: str = _DEFAULT_API, timeout: float = 1.5) -> bool:
       ① 本函数只回答"进程在不在", 更简单的判据更可靠;
       ② tests/conftest.py 会 session 级焊死 urllib.request.urlopen (假 200),
          走 HTTP 的话测试根本测不出真实行为 (实测踩坑: 死端口被判成 True)。
+
+    2026-09-20 审计 P3-4: 地址不再写死 —— 由 `_resolve_api_base()` 解析
+    (显式 → 环境 → trade 配置 → 8081), 端口改了守卫跟着改, 不 fail-open。
     """
     u = urlparse(base if "://" in base else "http://" + base)
     host = u.hostname or "127.0.0.1"
@@ -91,17 +135,19 @@ def main(argv: list[str] | None = None) -> int:
                          "当场记录的行永远不删）")
     ap.add_argument("--overwrite-live", action="store_true",
                     help="连当场记录的行也覆盖（修数据用，平时别开）")
-    ap.add_argument("--api-base", default=_DEFAULT_API,
-                    help=f"交易进程地址（探活用，缺省 {_DEFAULT_API}）")
+    ap.add_argument("--api-base", default=None,
+                    help="交易进程地址（探活用；缺省按 VERA_TRADE_API_BASE / "
+                         "VERA_TRADE_API_PORT / .env / 8081 依次解析）")
     ap.add_argument("--force", action="store_true",
                     help="交易进程在跑也照样写（危险：绕过第二写者守卫，"
                          "仅在你确信当前无委托/无成交时用）")
     args = ap.parse_args(argv)
+    api_base = _resolve_api_base(args.api_base)
 
     # 2026-09-19 批次 4.3: 活进程守卫 —— daily_decision 直写是 trade.db 的
     # 第二写者, 与 trade_main (唯一写者) 并发有风险。dry-run 只读, 不拦。
-    if not args.dry_run and not args.force and _trade_api_alive(args.api_base):
-        print(f"[!] 交易进程活着 ({args.api_base} 有响应), 拒绝直写 trade.db:"
+    if not args.dry_run and not args.force and _trade_api_alive(api_base):
+        print(f"[!] 交易进程活着 ({api_base} 有响应), 拒绝直写 trade.db:"
               "\n    它是「QMT/账本唯一写者」铁律下的另一个进程, 并发写有风险。"
               "\n    做法二选一: ①收盘后停掉 trade_main 再跑本命令;"
               "\n                ②--dry-run 先看结果 (只读不写)。"

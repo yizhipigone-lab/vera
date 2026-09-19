@@ -3,6 +3,12 @@
 
 2026-09-19 架构修订批次 5.1 第二刀: 自 core/market_position_runner.py 端出。
 依赖只有共享底座 core/market_position_io (路径/原语) (路径走 mpio.ERP_PATH 调用期取值)。
+
+**为什么这一维必须存在** (2026-09-20 审计 P3-2: 立项理由原写在 runner 的孤儿横幅里,
+随实现搬来这里): 位置指标全是**价格衍生量**(百分位/宽度/新高低/成交额/波动),
+没有一维回答「贵不贵」; 而外部独立研究(邮件《单因子独立回测》)实测 ERP 是唯一强有效
+的长周期因子: rho=+0.481 (p<0.001)、五等分价差 +26.7pp。
+**价格分位 ≠ 估值分位** —— 指数可以在价格高位而估值不高(盈利涨得比价格快)。
 """
 from __future__ import annotations
 
@@ -14,11 +20,6 @@ import numpy as np
 import pandas as pd
 
 from core import market_position_io as mpio
-from core.market_position_io import (  # 共享底座原语 (批次 5.1)
-    _expected_trading_day,
-    _f,
-    _upsert,
-)
 from core.market_position import PCT_WINDOW_BARS
 from utils.logger import get_logger
 
@@ -78,9 +79,7 @@ def _read_erp() -> pd.Series:
     return s[~s.index.duplicated(keep="last")].sort_index()
 
 def _refresh_erp() -> dict:
-    """联网拉 ERP 历史并 upsert 到 `data/market_position/erp.jsonl`。
-
-    **fail-soft, 绝不抛**: 网络不通 / akshare 没装 / 端点改版, 都只是保持旧缓存
+    """联网拉 ERP 历史并 upsert 到 `data/market_position/erp.jsonl`。**fail-soft, 绝不抛**: 网络不通 / akshare 没装 / 端点改版, 都只是保持旧缓存
     并把结果标成不可用 —— 估值这一维缺了, 体温表其余部分照常出。
     已覆盖到"应有交易日"时不重复拉 (一天最多一次联网)。
     """
@@ -88,7 +87,7 @@ def _refresh_erp() -> dict:
         return {"ok": False, "reason": f"已用 {ERP_FETCH_ENV} 关闭联网取数"}
     have = _read_erp()
     try:
-        want = pd.Timestamp(_expected_trading_day())
+        want = pd.Timestamp(mpio._expected_trading_day())
     except Exception:
         want = pd.Timestamp(dt.date.today())
     if len(have) and have.index[-1] >= want:
@@ -109,7 +108,7 @@ def _refresh_erp() -> dict:
                 rows.append({"date": d.date().isoformat(), "erp": round(v, 6)})
         if not rows:
             return {"ok": False, "reason": "端点返回空表", "rows": len(have)}
-        n = _upsert(rows, path=mpio.ERP_PATH)
+        n = mpio._upsert(rows, path=mpio.ERP_PATH)
         return {"ok": True, "rows": n, "added": len(rows),
                 "last": rows[-1]["date"]}
     except Exception as e:
@@ -158,13 +157,24 @@ def _erp_snapshot(table: pd.DataFrame, asof) -> dict | None:
     row = table.iloc[i]
     if row["pct_10y"] != row["pct_10y"]:        # NaN → 历史不足
         return None
-    return {"erp_pct": _f(row["erp"], 2),
-            "erp_pct_10y": _f(row["pct_10y"], 1),
-            "erp_median_10y_pct": _f(row["median_10y"], 2),
-            "erp_min_10y_pct": _f(row["min_10y"], 2),
-            "erp_max_10y_pct": _f(row["max_10y"], 2),
+    return {"erp_pct": mpio._f(row["erp"], 2),
+            "erp_pct_10y": mpio._f(row["pct_10y"], 1),
+            "erp_median_10y_pct": mpio._f(row["median_10y"], 2),
+            "erp_min_10y_pct": mpio._f(row["min_10y"], 2),
+            "erp_max_10y_pct": mpio._f(row["max_10y"], 2),
             "n_obs": int(row["n_obs"]),
             "asof": table.index[i].date().isoformat(),
             "source": ERP_SOURCE, "source_plain": ERP_SOURCE_PLAIN,
             "caliber": ERP_CALIBER}
+
+
+def read_series() -> list[list]:
+    """ERP 全历史序列 [[date, erp_pct], ...] (2005 至今, 按日期升序)。
+
+    2026-09-20 审计 F-01 迁址: 原公开读口住在 market_dashboard_runner.erp_series
+    且自带第二个 jsonl 解析器; ERP 的所有权在本模块 —— 公开读口归位,
+    且**复用本模块的 `_read_erp` 正典解析器**(不再两份解析)。纯读本地文件, fail-soft。
+    """
+    s = _read_erp()
+    return [[d.date().isoformat(), round(float(v) * 100, 2)] for d, v in s.items()]
 

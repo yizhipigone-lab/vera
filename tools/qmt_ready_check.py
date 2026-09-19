@@ -17,6 +17,7 @@ bat 顶部设了 PYTHONIOENCODING=utf-8, 打中文会乱码; 中文提示由 bat
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="QMT readiness probe (exit 0 = ready)")
     ap.add_argument("--config", default="config/trade.yaml",
                     help="与 trade_main 同一份配置文件")
+    # 2026-09-20 审计 P3-5: trade_main 的 fake 判定有三条来源, 探针要一一对齐,
+    # 否则"走 FakeGateway 却死等 QMT"("--fake" 这条原先探针不知道)。
+    ap.add_argument("--fake", action="store_true",
+                    help="与 trade_main --fake 对齐: 直连 FakeGateway, 无需 QMT")
     args = ap.parse_args()
 
     from trade.config import load_trade_config
@@ -37,9 +42,14 @@ def main() -> int:
         return 2
 
     channel = getattr(cfg, "channel", "qmt")
-    if channel != "qmt":
-        # fake/ths 通道没有"等 QMT 登录"这回事, 探针不适用, 直接放行
-        print(f"NOT-QMT channel={channel}, probe skipped")
+    # 2026-09-20 审计 P3-5: fake 通道也要跳过 —— trade_main 的 fake 判定是
+    # "--fake 参数 or 环境变量 VERA_TRADE_FAKE=1 or config.fake_sdk",
+    # 而 config.channel 可能仍是 qmt (fake_sdk 不联动 channel) → 否则会
+    # "走 FakeGateway 却死等 QMT", 交易进程根本起不来 (与 bat 注释矛盾)。
+    if args.fake or channel != "qmt" or os.environ.get("VERA_TRADE_FAKE") == "1" \
+            or getattr(cfg, "fake_sdk", False):
+        print(f"NOT-QMT channel={channel} fake={bool(args.fake or getattr(cfg, 'fake_sdk', False))}"
+              ", probe skipped")
         return 0
     if not cfg.account_id or not cfg.qmt_path:
         print("CONFIG-ERROR: account_id/qmt_path missing")
@@ -49,6 +59,18 @@ def main() -> int:
     gw = RealGateway(account_id=cfg.account_id, mini_qmt_path=cfg.qmt_path)
     try:
         ok = gw.connect()
+        if not ok:
+            print("NOT-READY: connect returned falsy")
+            return 1
+        # 2026-09-20 审计 P3-5: connect rc==0 只证明"连上了", 不证明"已登录/已订阅"
+        # (gateway.connect 里 subscribe() 的返回值原本被丢弃)。加一步只读查询当
+        # 就绪判据: 能读到资产 = 登录+订阅真的可用; 读不到 → 视为未就绪。
+        asset = gw.query_asset()
+        if not isinstance(asset, dict) or not asset:
+            print(f"NOT-READY: connected but query_asset unusable ({asset!r})")
+            return 1
+        print(f"READY (asset keys={len(asset)})")
+        return 0
     except Exception as e:
         print(f"NOT-READY: {type(e).__name__}: {e}")
         return 1
@@ -57,8 +79,6 @@ def main() -> int:
             gw.disconnect()
         except Exception:
             pass
-    print("READY" if ok else "NOT-READY: connect returned falsy")
-    return 0 if ok else 1
 
 
 if __name__ == "__main__":

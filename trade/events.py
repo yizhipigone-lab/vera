@@ -50,7 +50,9 @@ _CRITICAL_TYPES = frozenset({
     EVENT_RECONCILE, EVENT_SYNC_REPORTS, EVENT_TIMER_SCAN,
     EVENT_COMMAND, EVENT_SIGNALS, EVENT_ROTATION, EVENT_CONNECTION_LOST,
     EVENT_EOD, EVENT_ORDER_ERROR, EVENT_CANCEL_ERROR,
-    # 只读查询也按关键处理: 被丢弃会让 HTTP 线程白等到超时 (有 caller 在等)
+    # 只读查询也按关键处理: 被丢弃会让 HTTP 线程白等到超时 (有 caller 在等)。
+    # 2026-09-20 审计 P2-1: read_via_consumer 现在自己带预算 (put 传显式
+    # timeout), 这里只影响"丢弃时按关键留痕", 不再决定等待时长。
     EVENT_READ_QUERY,
 })
 
@@ -103,18 +105,26 @@ class EventEngine:
         #: 错线程调用会让"唯一写者"变成两个线程同时跑 handler (铁律 3 破口)
         self._consumer_ident: int | None = None
 
-    def put(self, event: Event) -> None:
+    def put(self, event: Event, timeout: float | None = None) -> bool:
         """生产侧唯一入口。回调线程里只许调这个 (铁律 2)。
 
         2026-08-01 M1: 关键事件 (对账/同步/扫描/命令/信号/断线/EOD)
         用更长超时 (5s), 宁可回调线程多等, 不可丢对账/同步/扫描事件
         (07-31 实测: reconcile 1 + sync_reports 31 + timer_scan 548 被丢);
         tick/快照/委托/成交仍用短超时 —— 量大可丢弃, 对账兜底补。
+
+        2026-09-20 审计 P2-1: 加 `timeout` 显式覆盖 + 返回是否入队成功。
+        只读查询 (TradeApp.read_via_consumer) 的等待方有自己的一整个超时
+        预算, 不能被 put 的关键事件 5s 超时吃掉 (5s + Future 2s = HTTP 线程
+        实测卡 ~7s, 远超它对调用方承诺的 timeout)。返回 False = 已丢弃
+        (照旧告警 + audit 留痕), 调用方据此立刻失败, 而不是白等到超时。
         """
         is_critical = event.type in _CRITICAL_TYPES
-        timeout = 5.0 if is_critical else self._put_timeout
+        if timeout is None:
+            timeout = 5.0 if is_critical else self._put_timeout
         try:
             self._queue.put(event, timeout=timeout)
+            return True
         except queue.Full:
             _logger.error("事件队列满 (%d), 丢弃%s事件: %s",
                           self._queue.maxsize,
@@ -127,6 +137,7 @@ class EventEngine:
                                      {"type": event.type, "critical": is_critical})
                 except Exception:
                     pass  # audit 也失败不能再炸回调线程
+            return False
 
     def start(self) -> None:
         """启动消费者线程。重复调用是 no-op, 防止起出第二个写者。"""
@@ -165,6 +176,12 @@ class EventEngine:
           - 被放回的事件会排到队尾 (相对顺序在它们彼此之间保持): 这不改变
             语义 —— tick 后到的覆盖先到的, 定时扫描/对账与回报无先后依赖。
 
+        **窗口语义 (2026-09-20 审计 P2-2): duration 是"至少"不是"至多" ——
+        实际耗时 ≤ duration + 单个 handler 的执行时间。** 截止时间只在循环入口
+        判 (handler 一旦开始就不能被打断), 所以别拿它当硬实时期限用; 拿它当
+        "等待期间顺手消费"即可。此前只在 dispatch 之后判截止, 一个 1s 的慢
+        handler 会把 0.2s 的窗口拖成 1.06s 并再多消费一个事件。
+
         返回就地消费的事件条数。
         """
         if not self.can_pump():
@@ -177,11 +194,14 @@ class EventEngine:
         held: list[Event] = []
         try:
             while consumed < max_events:
+                # 2026-09-20 审计 P2-2: 截止时间在**循环入口**判 (这是唯一的
+                # 截止判定点) —— 唯一判定+入口判定, 保证"过了截止不再起新的
+                # dispatch"且空队列时不会无限自旋。
+                if _t.monotonic() >= deadline:
+                    break
                 try:
                     ev = self._queue.get_nowait()
                 except queue.Empty:
-                    if _t.monotonic() >= deadline:
-                        break
                     _t.sleep(0.005)     # 短睡让出 CPU, 不是原来那种整段死等
                     continue
                 if ev.type in types:
@@ -189,8 +209,6 @@ class EventEngine:
                     consumed += 1
                 else:
                     held.append(ev)
-                if _t.monotonic() >= deadline:
-                    break
         finally:
             # 放回: 队列在等待期间可能被生产者填满 → 与 put() 同纪律 (告警留痕)
             for ev in held:

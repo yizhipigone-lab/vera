@@ -297,8 +297,27 @@ export function fetchJson(fetchImpl, base, path) {
   }
   const url = String(base || '') + String(path || '');
   return Promise.resolve(fetchImpl(url)).then(function (r) {
-    if (!r || r.ok !== true) throw new Error('HTTP ' + ((r && r.status) || '?') + ' ' + url);
-    return r.json();
+    if (r && r.ok === true) return r.json();
+    // 2026-09-20 审计 P2-10: 失败时**先读响应体再抛** —— 两句人话里的
+    // 「服务端报错: xxx」才有 xxx。服务端两种许可形状都认:
+    //   传输/意外错误 → {"detail": ...}; 业务软失败 → {"success":false,"error":...}
+    // (不改这句的话, 用户只能看到 "HTTP 409", "管线正在运行中" 被丢掉。)
+    const status = (r && r.status) || '?';
+    return Promise.resolve(r && typeof r.json === 'function'
+      ? r.json().catch(function () { return null; })
+      : null).then(function (body) {
+      let msg = 'HTTP ' + status + ' ' + url;
+      if (body) {
+        const d = body.detail !== undefined ? body.detail : body.error;
+        if (d) {
+          msg = (typeof d === 'string') ? d
+            : (Array.isArray(d) ? d.map(function (e) {
+                return (e && e.loc ? e.loc.join('.') + ': ' : '') + (e && e.msg);
+              }).join('; ') : JSON.stringify(d));
+        }
+      }
+      throw new Error(msg);
+    });
   });
 }
 

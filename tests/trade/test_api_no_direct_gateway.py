@@ -85,3 +85,56 @@ def test_read_via_consumer_propagates_query_error(app_client):
     app.gateway.query_asset = _boom
     with pytest.raises(RuntimeError, match="柜台查询炸了"):
         app.read_asset(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-20 审计 P2-1: timeout 曾经只是 Future 的等待时间 —— 入队走
+# EVENT_READ_QUERY 的"关键事件"5s 超时, 于是 HTTP 线程最坏卡 5+2 = 7s,
+# 且超时后队列里那次查询照样执行 (结果已无人要)。下面两条分别锁这两点。
+# ---------------------------------------------------------------------------
+
+def test_read_via_consumer_put_budget_is_bounded(app_client, monkeypatch):
+    """入队必须吃同一个 timeout 预算 (而不是走关键事件 5s), 失败即立刻返回。"""
+    app, _client = app_client
+    seen: dict = {}
+
+    def _full_put(event, timeout=None):
+        seen["timeout"] = timeout
+        return False              # 队列满 / 丢弃
+    monkeypatch.setattr(app._engine, "put", _full_put)
+
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match="入队"):
+        app.read_via_consumer(lambda: 1, timeout=0.25)
+    elapsed = time.monotonic() - t0
+
+    assert seen["timeout"] is not None, \
+        "put 必须带显式预算 —— 否则 EVENT_READ_QUERY 走关键事件 5s 超时"
+    assert 0 <= seen["timeout"] <= 0.25 + 1e-6
+    assert elapsed < 0.2, f"入队失败必须立刻失败, 实际等了 {elapsed:.2f}s"
+
+
+def test_read_via_consumer_cancels_and_skips_fn_after_timeout(app_client,
+                                                              monkeypatch):
+    """超时后 cancel future, 消费者线程据此**不再执行**那次查询。"""
+    app, _client = app_client
+    captured: dict = {}
+
+    def _capture_put(event, timeout=None):
+        captured["event"] = event
+        captured["timeout"] = timeout
+        return True
+    monkeypatch.setattr(app._engine, "put", _capture_put)
+
+    def _never():
+        raise AssertionError("等待方已放弃, 这次查询不该被执行")
+    with pytest.raises(TimeoutError):
+        app.read_via_consumer(_never, timeout=0.05)
+
+    fut = captured["event"].data["future"]
+    assert fut.cancelled(), "超时后必须 cancel —— 否则消费者线程不知道没人等了"
+
+    called: list = []
+    app._on_read_query({"fn": lambda: called.append(1), "future": fut})
+    assert called == [], "future 已取消, _on_read_query 必须跳过 fn() (不打柜台)"
+

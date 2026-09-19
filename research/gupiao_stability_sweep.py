@@ -119,10 +119,8 @@ def mode_run_kwargs(mode: str) -> dict:
 
 def do_prep(args):
     from backtest.engine import (
-        ENGINE_VERSION, BacktestEngine, _build_tradable_from_raw,
-        recompute_last_tradable_idx,
+        ENGINE_VERSION, BacktestEngine, check_prep_caliber, PREP_SEAM,
     )
-    from core.data_fetcher import DataFetcher
     from selection.selector import StockSelector
 
     formula, window = args.formula, args.window
@@ -162,38 +160,28 @@ def do_prep(args):
         "use_kline_cache": True,
     })
 
+    # 2026-09-20 审计 P1-4: 本段原是 engine.run() 准备段的第 5 份手工复刻
+    # (架构审查 P1-7 只收编了 tools/ 下 4 个, 漏了本文件) → 改调公开接缝
+    # prepare_matrices。口径变化提示: 接缝把窗口终点截断到 end (2026-07-21
+    # 引擎口径) 且走 _drop_nonstandard_intraday_bars, 旧复刻段都不做 → meta
+    # 落 prep_seam 标记, _load_cache 加载旧缓存时 fail-closed 拒绝。
     t0 = time.time()
-    kline, window_mask = DataFetcher.get_kline_windowed(
-        selections, period="5m", window_trading_days=WINDOW_TD,
-        dividend_type="front", fill_data=False, use_cache=True)
-    logger.info("[prep:%s/%s] 窗口取数 %.1fs", formula, window, time.time() - t0)
+    prep = engine.prepare_matrices(selections, start, end, WINDOW_TD)
+    if prep is None:
+        print(json.dumps({"status": "no_kline", "formula": formula,
+                          "window": window, "start": start, "end": end}))
+        return
+    logger.info("[prep:%s/%s] 窗口取数+矩阵准备完成 %.1fs",
+                formula, window, time.time() - t0)
 
-    close = engine._ensure_index(kline["Close"])
-    high_df = engine._ensure_index(kline["High"])
-    low_df = engine._ensure_index(kline["Low"])
-    open_df = engine._ensure_index(kline["Open"])
-    close, high_df, low_df, open_df = BacktestEngine._drop_nonstandard_5m_bars(
-        close, high_df, low_df, open_df)
-
-    entries = engine._build_entry_signals(selections, close)
-    cols = sorted(close.columns.intersection(entries.columns))
-    cols = sorted(set(cols) & set(high_df.columns) & set(low_df.columns))
-
-    close_raw = close.reindex(index=close.index, columns=cols)
-    close = close_raw.ffill()
-    # 口径无关: 保存 RAW 入场信号 (不做涨停过滤)。close_t 的 T 日涨停过滤 /
-    # open_t1 的 T+1 一字板判定都在 run 阶段按 entry_price_mode 应用, 防两口径串味。
-    entries = entries.reindex(index=close.index, columns=cols, fill_value=False)
-    idx = close.index
-
-    high_np = high_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    low_np = low_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64)
-
-    tradable_np, _ = _build_tradable_from_raw(close_raw, close)
-    wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
-    tradable_np = tradable_np & wm
-    last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+    close = prep["close"]
+    entries = prep["entries"]
+    idx, cols = prep["idx"], prep["cols"]
+    high_np, low_np, open_np = prep["high"], prep["low"], prep["open"]
+    tradable_np, last_tradable_idx = prep["tradable"], prep["last_tradable_idx"]
+    # 口径无关: 落盘的入场信号保持 RAW (不做涨停过滤) —— close_t 的 T 日涨停
+    # 过滤 / open_t1 的 T+1 一字板判定都在 run 阶段按 entry_price_mode 应用,
+    # 防两口径串味 (本文件与 tools/ 四个 sweep 的唯一有意差异)。
 
     np.save(os.path.join(cache_dir, "close.npy"), close.values.astype(np.float64))
     np.save(os.path.join(cache_dir, "high.npy"), high_np)
@@ -208,6 +196,7 @@ def do_prep(args):
         "start": start, "end": end, "formula": formula, "window": window,
         "window_td": WINDOW_TD, "capital": CAPITAL, "max_buy": MAX_BUY,
         "engine_version": ENGINE_VERSION, "priority": PRIORITY, "confirm": CONFIRM,
+        "prep_seam": PREP_SEAM,
         "n_signals": int(entries.values.sum()), "shape": [int(len(idx)), int(len(cols))],
     }
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -221,9 +210,13 @@ def do_prep(args):
 # ---------------------------------------------------------------- run
 
 def _load_cache(formula, window):
+    # 局部导入: 本函数是模块级, 不能靠 do_prep 内的函数级 import (2026-09-20 审计)。
+    from backtest.engine import check_prep_caliber
+
     cache_dir = _cache_dir(formula, window)
     with open(os.path.join(cache_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
+    check_prep_caliber(meta, where="gupiao_stability_sweep")
     idx = pd.DatetimeIndex(pd.to_datetime(meta["index"]))
     cols = meta["columns"]
     ld = lambda n, mmap=None: np.load(os.path.join(cache_dir, n), mmap_mode=mmap)

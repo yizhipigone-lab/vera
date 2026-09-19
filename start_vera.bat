@@ -8,6 +8,13 @@ rem ============================================================
 set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
+rem ---- 2026-09-20: 清除"人工停止"标记 ----------------------------------
+rem  与 stop_vera.bat 配对: 那边写标记, 这边清标记。
+rem  8080 页面据此区分「你主动停的」与「疑似死了」——不区分就会误报。
+rem  注意: 文件路径必须与 scheduler/health.py 的 STOP_MARKER_PATH 一致,
+rem  由 tests/test_scheduler_health.py 锁死, 改一处必须改两处。
+del "data\.vera_stopped" >nul 2>&1
+
 rem ---- Python 定位(2026-09-16 修)------------------------------------------
 rem 本机 python.exe 没进系统 PATH, 直接敲 python 会命中微软商店的 0 字节占位符
 rem (报 "Python was not found"), 真实解释器在 D:\Program Files\Python313。
@@ -43,22 +50,43 @@ rem 同一份 config)每 20 秒试一次, 最多 10 次; 仍不就绪则跳过交易进程
 rem (fail-closed: 回测/调度照起, 交易不起), 绝不带病启动。
 rem 测试模式(不下单,用 FakeGateway): 把下行 start 行改为 python trade_main.py --fake
 set "QMT_OK=0"
+rem 2026-09-20 审计 P3-5: 测试模式直接跳过等待 —— trade_main 的 fake 判定
+rem 有三条来源, 探针已全对齐; 这里再挡一道, 免得测试时白等 200 秒。
+rem 坑: 块内 echo 不许出现任何括号 (P0-1: cmd 解析期会提前闭合 for 块)。
+if "%VERA_TRADE_FAKE%"=="1" (
+  echo       VERA_TRADE_FAKE=1: 测试模式, 跳过 QMT 就绪等待。
+  set "QMT_OK=1"
+  goto :qmt_ready
+)
+rem 2026-09-20 审计 P0-1 修复: 原块内 echo 带未转义的圆括号, cmd 在解析期
+rem 就于第一个右括号处提前闭合 for 块, 报 "... was unexpected at this time."
+rem 并中止整个脚本 (交易与调度都不起)。修法: 提示语不用括号也不用中文
+rem 全角括号, 并整行移出块外 (块内只留命令与 goto)。
+rem 退出码语义: 0=就绪 / 1=未就绪(值得重试) / 2=配置错误(重试无意义, 立即失败)。
 for /l %%i in (1,1,10) do (
   "%PYDIR%\python.exe" tools\qmt_ready_check.py --config config\trade.yaml 2>nul
   if not errorlevel 1 (
     set "QMT_OK=1"
     goto :qmt_ready
   )
-  echo       QMT 未就绪, 20 秒后重试 (第 %%i/10 次) ...
+  if errorlevel 2 goto :qmt_config_error
+  echo       QMT not ready, retry %%i of 10 after 20s ...
   timeout /t 20 /nobreak >nul
 )
 :qmt_ready
-if "%QMT_OK%"=="1" (
-  start "VERA-Trade-8081" cmd /k "chcp 65001 >nul && python trade_main.py --config config/trade.yaml"
-) else (
-  echo [警告] QMT 等待 10 次仍未就绪, 本次不启动交易进程(回测/调度不受影响)。
-  echo        请先登录 miniQMT, 再手工运行: python trade_main.py --config config/trade.yaml
-)
+goto :qmt_wait_done
+:qmt_config_error
+echo [错误] QMT 探针报 CONFIG-ERROR: account_id/qmt_path 缺失或配置读不到。
+echo        请修好 config\trade.yaml 后重新启动; 本次不启动交易进程。
+goto :qmt_after_trade
+:qmt_wait_done
+if "%QMT_OK%"=="1" goto :qmt_start_trade
+echo [警告] QMT 未就绪或配置有误, 本次不启动交易进程 —— 回测/调度不受影响。
+echo        请确认 miniQMT 已登录, 再手工运行: python trade_main.py --config config/trade.yaml
+goto :qmt_after_trade
+:qmt_start_trade
+start "VERA-Trade-8081" cmd /k "chcp 65001 >nul && python trade_main.py --config config/trade.yaml"
+:qmt_after_trade
 
 echo [3/3] 启动定时调度 (舆情扫描/舆情日报/月度笔记/周度进化) ...
 rem 舆情扫描+日报挂在 scheduler 进程, 不拉它就没有飞书推送 (2026-08-14 修复)

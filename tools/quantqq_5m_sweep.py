@@ -35,6 +35,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.config_loader import ConfigLoader
 from utils.logger import get_logger
 from core.farm_rules import TARGET_ANN, TARGET_MAXDD
+# 2026-09-20 审计: _load_cache (模块级函数) 要用这两个名字, 必须模块级导入 ——
+# 原先只在 do_prep 内局部导入 → 调用即 NameError。
+from backtest.engine import PREP_SEAM, check_prep_caliber
 
 logger = get_logger(__name__)
 
@@ -130,10 +133,7 @@ def combo_stop_config(c, priority="trailing_first"):
 
 def do_prep(args):
     """选股 + 5m 窗口取数 + 矩阵落盘。幂等: 有缓存则跳过。"""
-    from backtest.engine import (
-        ENGINE_VERSION,
-        BacktestEngine,
-    )
+    from backtest.engine import ENGINE_VERSION, BacktestEngine
     from selection.selector import StockSelector
 
     win_td = args.window_td
@@ -206,7 +206,7 @@ def do_prep(args):
         "start": START, "end": END, "formula": FORMULA,
         "window_td": win_td, "capital": CAPITAL, "max_buy": MAX_BUY,
         "engine_version": ENGINE_VERSION,
-        "prep_seam": "engine_prepare_matrices@2026-09-19",
+        "prep_seam": PREP_SEAM,
         "n_signals": int(entries.values.sum()),
         "shape": [int(len(idx)), int(len(cols))],
     }
@@ -224,6 +224,7 @@ def _load_cache(window_td=WINDOW_TD):
     cache_dir = _cache_dir(window_td)
     with open(os.path.join(cache_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
+    check_prep_caliber(meta, where="quantqq_5m_sweep")
     idx = pd.DatetimeIndex(pd.to_datetime(meta["index"]))
     cols = meta["columns"]
     ld = lambda n, mmap=None: np.load(os.path.join(cache_dir, n), mmap_mode=mmap)

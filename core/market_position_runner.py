@@ -24,36 +24,31 @@
 """
 from __future__ import annotations
 
-import contextlib
 import datetime as dt
-import json
-import os
 import re
-import sys
 import threading
-import time
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from core.kline_cache import STUB_TRADED_RATIO
 from core.limit_ratio import limit_ratio
-from core.market_position import (PCT_WINDOW_BARS, POSITION_COLUMNS,
-                                  RECENT_EXCLUDE_BARS, RET_1Y_BARS,
-                                  SIMILAR_FEATURES, breadth_frame,
-                                  forward_return, index_position_series,
-                                  last_valid_date, limit_counts_series,
-                                  similar_days)
+# 2026-09-20 审计 P3-2/P3-3: 纯数学层也**只绑模块对象**, 名字全走 `mpp.X`
+# 调用期取值并入 _FORWARD_TABLE 归属名册 —— 旧入口 `mpr.similar_days` 这类
+# 兼容名不再依赖「碰巧还有一条显式 import 活着」(F401 清理会静默打断它们)。
 # 私有接缝 (有意为之): 纯数学层公开函数已顶到铁律 8 上限, 分桶统计以私有名
 # 引入, 本模块是它唯一生产消费者 (其余只许是测试)。
-from core.market_position import _momentum_bucket_stats
+from core import market_position as mpp  # noqa: E402
 # 2026-09-19 批次 5.1: 共享底座端出 core/market_position_io.py。
 # 路径常量/落盘原语/读取原语都在那边, 这里**不再留副本** ——
 # 本模块函数一律用 `mpio.X` 调用期取值 (测试隔离只 patch 基座一处即全局生效),
 # 旧入口 `mpr.DAILY_PATH` / `mpr.KLINE_1D_DIR` 由文件末尾的模块级 __getattr__ 转发。
 from core import market_position_io as mpio  # noqa: E402
-# 模块对象本身也要绑定 (文件末尾的 _FORWARD_TABLE 按归属转发旧入口)
+# 2026-09-20 审计 P2-5/P2-6/P2-7: 五个块模块也只**绑定模块对象** —— 不再
+# `from core.market_mirror import mirror` 那样按值 import 原语/常量。
+# 按值 import = import 时刻的值副本: 之后 patch 属主模块 (含基座 mpio) 对
+# 本模块是**静默 no-op**, 而 patch 本模块又只影响它自己 (两种都静默)。
+# 现在一律 `market_xxx.Y` 调用期取值: 属主模块是唯一 patch 点。
+# 旧入口 `mpr.mirror` / `mpr.SHADOW_RULES` 等仍由 _FORWARD_TABLE 按归属转发。
 from core import (  # noqa: E402
     market_erp,
     market_mirror,
@@ -61,65 +56,6 @@ from core import (  # noqa: E402
     market_shadow_replay,
     market_thermometer,
     market_validity,
-)
-# 2026-09-19 批次 5.1 第二刀: 三块分析逻辑端出 (regime/体检/ERP),
-# 均为**函数对象**显式 import (合法: 模块内裸全局名不走 __getattr__)。
-# 2026-09-19 批次 5.1 第三刀: 影子回放端出 (函数对象显式 import)
-# 2026-09-19 批次 5.1 第四/五刀: 照镜子 + 体温表文案端出
-from core.market_mirror import MIRROR_WARNING, YEAR_DOMINANCE_WARNING, mirror  # noqa: E402,F401
-from core.market_thermometer import thermometer_md, push_thermometer  # noqa: E402,F401
-
-from core.market_shadow_replay import (  # noqa: E402,F401
-    MIN_SEGMENTS_FOR_T,
-    SHADOW_RULES,
-    WINDOW_SPLIT,
-    shadow_replay,
-)
-from core.market_position_io import _year_breakdown  # noqa: E402,F401  (照镜子用它)
-
-from core.market_erp import (  # noqa: E402,F401
-    ERP_CALIBER,
-    ERP_FETCH_ENV,
-    ERP_MIN_OBS,
-    ERP_SOURCE,
-    ERP_SOURCE_PLAIN,
-    _erp_fetch_enabled,
-    _erp_snapshot,
-    _erp_table,
-    _read_erp,
-    _refresh_erp,
-)
-from core.market_regime import (  # noqa: E402,F401
-    _regime_all,
-    _regime_episodes,
-    _regime_summary,
-)
-from core.market_validity import (  # noqa: E402,F401
-    BARS_PER_MONTH,
-    VALIDITY_FIELDS,
-    VALIDITY_HORIZONS,
-    VALIDITY_MIN_MONTHS,
-    _dimension_validity,
-    _quintile_spread,
-    _spearman,
-)
-from core.market_position_io import (  # noqa: E402,F401
-    _features_frame,
-    _num,
-    _pct,
-    _rat,
-    _yi,
-)
-
-from core.market_position_io import (  # noqa: E402,F401  (re-export: 旧 mpr.X 入口不变)
-    INDEX_SPECS,
-    _expected_trading_day,
-    _f,
-    _index_series,
-    _upsert,          # 本模块内部也用 (collect 落盘 / ERP 落盘); 注意模块级
-    #                   __getattr__ 只管"外部属性访问", 模块内裸全局名必须显式 import
-    history,
-    latest,
 )
 
 #: `POSITION_COLUMNS` 里**是文本**的列（牛熊标签）。
@@ -187,7 +123,6 @@ MOMENTUM_BUCKET_WARNING = (
 _COLLECT_LOCK = threading.Lock()
 
 
-
 # ───────────────────── 内部: 取数 ─────────────────────
 
 
@@ -218,12 +153,6 @@ def _load_matrices(bars: int):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     return (pd.DataFrame(cs).sort_index(), pd.DataFrame(vs).sort_index(),
             pd.DataFrame(ams).sort_index())
-
-
-
-
-
-
 
 
 # ───────────────────── 内部: 记录组装 ─────────────────────
@@ -265,21 +194,21 @@ def _build_record(d, bf_row, idx_hist: dict, hs_raw, hs_ma20, total_amt,
     分钟级会变小时级 (2026-09-17 首跑实测踩到)。
     """
     indices = {}
-    for key, name, code in INDEX_SPECS:
+    for key, name, code in mpio.INDEX_SPECS:
         h = idx_hist.get(key)
         if h is None or d not in h.index:
             indices[key] = {"name": name, "code": code, "close": None}
             continue
         r = h.loc[d]
         item = {"name": name, "code": code}
-        for col in POSITION_COLUMNS:
+        for col in mpp.POSITION_COLUMNS:
             # **文本列 vs 数值列必须分开**（2026-09-17 M7 自查抓到的真 bug）:
             # 原判断写的是 `col != "regime"`, 于是新加的 `regime_20` 走了 `_f()`
             # → `float("bull")` 抛 TypeError → `_f` 吞掉并返回 None
             # → **5501 条记录里 regime_20 全是 None, 静默丢了这一维**(实测 0/5501 非空)。
             # 同类坑: 以后再加文本列, 必须一并列进 TEXT_COLS。
             item[col] = (None if r[col] is None or r[col] != r[col] else str(r[col])) \
-                if col in TEXT_COLS else _f(r[col])
+                if col in TEXT_COLS else mpio._f(r[col])
         indices[key] = item
 
     traded = bf_row.get("traded")
@@ -292,15 +221,15 @@ def _build_record(d, bf_row, idx_hist: dict, hs_raw, hs_ma20, total_amt,
         "indices": indices,
         "breadth": {
             "traded": traded,
-            "above_ma20_pct": _f(bf_row.get("above_ma20_pct")),
-            "above_ma60_pct": _f(bf_row.get("above_ma60_pct")),
+            "above_ma20_pct": mpio._f(bf_row.get("above_ma20_pct")),
+            "above_ma60_pct": mpio._f(bf_row.get("above_ma60_pct")),
             "new_high_60": int(bf_row.get("new_high") or 0),
             "new_low_60": int(bf_row.get("new_low") or 0),
             "hl_spread": int(bf_row.get("hl_spread") or 0),
         },
         "turnover": {
             "amount_yi": None if amt != amt else round(float(amt) / AMOUNT_WAN_PER_YI, 1),
-            "amount_pct_1y": _f(amt_rank.get(d)),
+            "amount_pct_1y": mpio._f(amt_rank.get(d)),
         },
         "limit": limit_map.get(pd.Timestamp(d),
                                {"up": 0, "down": 0, "traded": 0,
@@ -314,64 +243,7 @@ def _build_record(d, bf_row, idx_hist: dict, hs_raw, hs_ma20, total_amt,
     return rec
 
 
-# ───────────────── 内部: 估值维度 (ERP 股债性价比) ─────────────────
-#
-# 计划书 §14.4「估值维度」+ §14.7「维度体检」。**先说清楚它为什么必须存在**:
-# 现在的位置指标全是**价格衍生量**(百分位/宽度/新高低/成交额/波动), 没有一维回答
-# 「贵不贵」。而外部的独立研究 (邮件《单因子独立回测》) 实测 ERP 是唯一强有效的
-# 长周期因子: rho=+0.481 (p<0.001)、五等分价差 +26.7pp。
-# **价格分位 ≠ 估值分位** —— 指数可以在价格高位而估值不高 (盈利涨得比价格快)。
-
-
-
-
-
-
-
-
-
-
-
-
-# ───────────────── 内部: 牛熊区间与时长 (§14.5/§14.6) ─────────────────
-
-
-
-
-
-
-
-
-# ───────────────── 内部: 维度体检 (§14.7 + §16.1/§16.3/§16.5) ─────────────────
-#
-# **验证纪律以 `docs/公式因子体检方法论.md` 为准, 这里不另立**(§16.3):
-#   - 纪律 2「双窗口一致才算数」→ 本体检也把月频样本对半切开, 两半同号才算数;
-#   - 纪律 3「数族不数因子」→ 同族的指标只算 1 份独立证据, 防多重检验挖矿;
-#   - 纪律 5「报告必带可信度警告」→ 幸存者偏差等限制写进输出文案。
-# **不做 DSR/PBO**(2026-07-26 用户已拍板), 只如实披露"共检验了多少个组合"。
-
-
-
-
-
-
-
-
-
-# ───────────────────── 内部: JSONL 读写 ─────────────────────
-
-
-
-
-
-
-
-
-
-
-# ───────────────────── 公开接口 ─────────────────────
-
-
+# (2026-09-20 审计 P3-2: 「估值维度」横幅随实现搬进 market_erp.py。)
 def collect(*, bars: int = DEFAULT_BARS, write: bool = True,
             expected: dt.date | None = None) -> dict:
     """采集一批日记录 (窗口内**所有**有效交易日) 并 upsert 落盘。
@@ -401,12 +273,12 @@ def _collect_locked(*, bars: int, write: bool,
     close_df, vol_df, amt_df = _load_matrices(bars + WARMUP_BARS if bars else 0)
     if close_df.empty:
         return {"ok": False, "reason": f"本地日线缓存为空 ({mpio.KLINE_1D_DIR})"}
-    asof = last_valid_date(vol_df, min_ratio=MIN_TRADED_RATIO)
+    asof = mpp.last_valid_date(vol_df, min_ratio=MIN_TRADED_RATIO)
     if asof is None:
         return {"ok": False, "reason": "没有一天满足有效成交判据 (全是空壳 bar?)"}
 
-    bf = breadth_frame(close_df, vol_df)
-    exp_ts = pd.Timestamp(expected or _expected_trading_day())
+    bf = mpp.breadth_frame(close_df, vol_df)
+    exp_ts = pd.Timestamp(expected or mpio._expected_trading_day())
     stale = pd.Timestamp(asof) < exp_ts
     if stale:
         _logger.warning("大盘位置: 日线缓存最新有效交易日 %s 落后应有交易日 %s "
@@ -414,15 +286,15 @@ def _collect_locked(*, bars: int, write: bool,
 
     # 指数: 全序列指标一次算完, 再对齐到宽度表的交易日 (两边日期集合可能不同)
     idx_hist, idx_raw = {}, {}
-    for key, _name, code in INDEX_SPECS:
-        s = _index_series(code)
+    for key, _name, code in mpio.INDEX_SPECS:
+        s = mpio._index_series(code)
         if s is None:
             idx_hist[key] = None
             idx_raw[key] = None
             continue
         s = s[s.index <= asof]          # 截到 asof: 指数文件自己也可能带空壳 bar
         idx_raw[key] = s
-        idx_hist[key] = index_position_series(s).reindex(bf.index)
+        idx_hist[key] = mpp.index_position_series(s).reindex(bf.index)
 
     # 全市场成交额 (空壳 bar 的 0 不算) + 一年百分位
     total_amt = amt_df.where(vol_df > 0).sum(axis=1)
@@ -443,51 +315,28 @@ def _collect_locked(*, bars: int, write: bool,
         valid = valid[-bars:]
 
     # 涨停/跌停: 掩码与昨收在 limit_counts_series 内部只算一次, 逐日只做轻量比较
-    limit_map = limit_counts_series(close_df, vol_df, ratios, valid)
+    limit_map = mpp.limit_counts_series(close_df, vol_df, ratios, valid)
 
     # 估值维度 (§14.4): 先保证本地 ERP 缓存覆盖到 asof (一天最多联网一次),
     # 再把当日的 ERP 与百分位附到**每条**记录上 —— 与日线无关, 缺了就是缺了。
     if write:
-        _refresh_erp()
-    erp_table = _erp_table()
+        market_erp._refresh_erp()
+    erp_table = market_erp._erp_table()
 
     records = [_build_record(d, bf.loc[d], idx_hist, hs_raw, hs_ma20, total_amt,
                              amt_rank, limit_map, exp_ts)
                for d in valid]
     for rec in records:
-        rec["valuation"] = _erp_snapshot(erp_table, rec["date"])
-    lines = _upsert(records) if write else 0
+        rec["valuation"] = market_erp._erp_snapshot(erp_table, rec["date"])
+    lines = mpio._upsert(records) if write else 0
     return {"ok": True, "asof": pd.Timestamp(asof).date().isoformat(),
             "expected": exp_ts.date().isoformat(), "stale": bool(stale),
             "records": len(records), "lines": lines,
             "snapshot": records[-1] if records else None}
 
 
-
-
-
-
-# ───────────────── 内部: 统计 (成本 / HAC / 持有段 / 双窗口) ─────────────────
-#
-# 这些不是"大盘位置指标", 而是**评估一套择时规则好不好**要用的统计工具,
-# 所以放在 IO 层的私有接缝里, 不占 core/market_position.py 的公开名额 (§8.1)。
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# (2026-09-20 审计 P3-2: 成本/HAC/持有段/双窗口随实现搬进 market_shadow_replay.py;
+#  下面分桶统计仍在 runner —— 它是纯数学层私有接缝的唯一生产消费者。)
 def momentum_buckets() -> dict:
     """前期12个月涨跌幅 → 未来12个月收益 的分桶统计 (三指数并排, 各算各的)。
 
@@ -501,14 +350,14 @@ def momentum_buckets() -> dict:
     诚实边界写在 MOMENTUM_BUCKET_WARNING, 调用方必须原样展示。
     """
     out = {"ok": True, "indices": [], "warning": MOMENTUM_BUCKET_WARNING}
-    for key, name, code in INDEX_SPECS:
-        s = _index_series(code)
+    for key, name, code in mpio.INDEX_SPECS:
+        s = mpio._index_series(code)
         if s is None:
             out["indices"].append(
                 {"key": key, "name": name, "code": code, "ok": False,
                  "reason": "本地没有该指数的日线缓存"})
             continue
-        st = _momentum_bucket_stats(s)
+        st = mpp._momentum_bucket_stats(s)
         st["key"], st["name"], st["code"] = key, name, code
         out["indices"].append(st)
     if not any(i.get("ok") for i in out["indices"]):
@@ -518,44 +367,14 @@ def momentum_buckets() -> dict:
     return out
 
 
-
-
-
-
-# ───────── 内部: 把数字翻译成人话 (模板, 不靠每次自觉; §16.9 第 10 条) ─────────
-#
-# **为什么必须是函数而不是写死的句子**: 写"八成个股已经跌破 20 日均线"很顺口,
-# 但明天宽度涨到 80% 那句话就成了假话。解释必须**由数字生成**。
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ───────────────── 模块级转发 (2026-09-19 批次 5.1) ─────────────────
-#: 旧入口 → 新归处的**归属表**。PEP 562 模块级 __getattr__ **动态**转发 ——
-#: 不做 `X = mod.X` 快照: 快照会在基座被 patch (测试隔离) 后变陈旧, 谁读它谁写
-#: 生产路径。按表转发是确定性的: 不会把某个模块的 import (如 pd/dt) 也漏出去,
-#: 也不会因为"多个模块恰好同名"而转发到错的那家。
+# (2026-09-20 审计 P3-2: 人话模板随实现搬进 market_thermometer.py。)
 _FORWARD_TABLE = (
+    (mpp, (
+        "PCT_WINDOW_BARS", "POSITION_COLUMNS", "RECENT_EXCLUDE_BARS",
+        "RET_1Y_BARS", "SIMILAR_FEATURES", "breadth_frame", "forward_return",
+        "index_position_series", "last_valid_date", "limit_counts_series",
+        "similar_days", "_momentum_bucket_stats",
+    )),
     (mpio, (
         "_ROOT", "KLINE_1D_DIR", "DAILY_PATH", "INDEX_SPECS", "ERP_PATH",
         "_UPSERT_LOCK_TIMEOUT", "_index_series", "_f", "_expected_trading_day",
@@ -589,12 +408,17 @@ _FORWARD_TABLE = (
     )),
 )
 
-#: 归属表里的**可变状态** (路径/阈值) —— 这几个绝不许在本模块留下实体副本:
-#: 副本是 import 时快照, 基座被 patch (测试隔离) 后会指向生产路径。
-#: 其余名字是**函数对象**, 显式 import 是合法且必要的 (模块内裸全局名不走
-#: __getattr__; 函数对象也不承载可变状态)。测试 `TestIsolationGuard` 用它守门。
+#: 归属表里的**可变状态** (路径/阈值/配置常量) —— 这几个绝不许在本模块或任何
+#: 拆分块模块留下实体副本: 副本是 import 时快照, 属主被 patch (测试隔离/参数扫描)
+#: 后本模块照旧读旧值, 是**静默**的错。
+#: 2026-09-20 审计 P2-7: 原先只列 5 个路径/超时, 漏了 `INDEX_SPECS`; 且当时
+#: "函数对象显式 import 合法"的口径已随 P2-5/P2-6 收紧 —— 现在**一个都不许留**,
+#: 全部走调用期 `模块名.X`。本集合保留为"高风险可变状态"的显式清单 (测试守门),
+#: 集合外的名字同样受 `TestIsolationGuard::test_no_forwarded_name_is_materialized`
+#: 与 `test_no_module_binds_base_primitives_by_value` 的通用断言保护。
 _IO_STATE_NAMES = frozenset({
     "_ROOT", "KLINE_1D_DIR", "DAILY_PATH", "ERP_PATH", "_UPSERT_LOCK_TIMEOUT",
+    "INDEX_SPECS",
 })
 
 

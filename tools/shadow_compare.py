@@ -30,8 +30,11 @@ FEE = 0.001          # 换腿成本双边合计 0.1% (ETF 免印花税, 与回�
 def fetch_closes(code: str, days: int) -> dict:
     """日线 {YYYY-MM-DD: close}: TDX 前复权 (主) → 新浪 ETF (备, 通达信未开时)。
 
-    降级语义照 rotation._fetch_closes 的 QMT→TDX→腾讯链: 主源挂了用备源,
-    同腿内口径一致即可 (规则重放只用自己的相对序列)。"""
+    降级语义照 `trade.rotation_feed.IndexFeed.closes` 的 QMT→TDX→腾讯链: 主源挂了用备源,
+    同腿内口径一致即可 (规则重放只用自己的相对序列)。
+
+    (2026-09-20 审计 P3-8: 原文指 `rotation._fetch_closes` —— 那是 2026-09-19 批次 4.5
+    端出前的旧名, 取数降级链现在住在 `trade/rotation_feed.py`。)"""
     try:
         from core.data_fetcher import DataFetcher
         end = date.today().strftime("%Y%m%d")

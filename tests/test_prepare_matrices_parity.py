@@ -172,3 +172,96 @@ def test_filter_limit_up_config_off_is_identity(monkeypatch):
         prep["open"], prep["tradable"])
     assert bp is None and info is None
     pd.testing.assert_frame_equal(out_entries, prep["entries"])
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-20 审计 P2-4: 上面的 parity 测试对四个改动**全绿** (fake 数据太干净)
+#   (a) 接缝把 end_time 传成 None      → fake fetcher 忽略 end_time
+#   (b) 去掉 close 的 ffill            → 合成数据无停牌 NaN
+#   (c) 去掉 low 的列交集              → 三只股都在 low 里
+#   (d) 跳过非标准 bar 过滤            → 合成数据全是标准时刻
+# 下面这条用"脏数据"把四点逐条锁死 (每条都有对应的突变验证记录)。
+# ---------------------------------------------------------------------------
+
+DIRTY_CODES = ["000001.SZ", "600519.SH", "300750.SZ"]   # 300750 不在 Low 里
+
+
+def _dirty_kline():
+    """脏 5m 数据: 停牌 NaN + 非标准时刻 bar + 缺 Low 列的股。"""
+    bars = list(STD_BAR_TIMES["5m"])
+    days = pd.bdate_range("2026-08-03", periods=N_DAYS)
+    idx = pd.DatetimeIndex(
+        [pd.Timestamp(f"{d.date()} {t}") for d in days for t in bars]
+        + [pd.Timestamp(f"{days[2].date()} 13:00:00")])   # 非标准 bar
+    idx = idx.sort_values()
+    data = {}
+    for f in ("Open", "High", "Low", "Close"):
+        data[f] = pd.DataFrame(index=idx, columns=DIRTY_CODES, dtype=float)
+    for c in DIRTY_CODES:
+        data["Close"][c] = np.linspace(10.0, 12.0, len(idx))
+        data["Open"][c] = data["Close"][c] * 0.999
+        data["High"][c] = data["Close"][c] * 1.002
+        data["Low"][c] = data["Close"][c] * 0.998
+    # 停牌: 000001.SZ 第 4 天整日无成交 (Close/High/Low/Open 全 NaN)
+    day4 = [t for t in idx if t.date() == days[3].date()]
+    for f in ("Open", "High", "Low", "Close"):
+        data[f].loc[day4, "000001.SZ"] = np.nan
+    # 缺 Low 列: 300750.SZ 从 Low 里整个消失 (真实场景 = 该股无 low 字段)
+    data["Low"] = data["Low"].drop(columns=["300750.SZ"])
+    data["Volume"] = pd.DataFrame(10000.0, index=idx, columns=DIRTY_CODES)
+    mask = pd.DataFrame(True, index=idx, columns=DIRTY_CODES)
+    return data, mask
+
+
+def test_seam_end_time_intraday_filter_ffill_and_col_intersection(monkeypatch):
+    """脏数据逐条锁死审计 P2-4 的四个突变点。"""
+    kline, mask = _dirty_kline()
+    seen = {}
+    from core.data_fetcher import DataFetcher
+
+    def _fake(cls, selections, period, window_trading_days=45,
+              dividend_type="front", fill_data=False, *,
+              use_cache=False, end_time=None):
+        seen.update(period=period, window_trading_days=window_trading_days,
+                    use_cache=use_cache, end_time=end_time)
+        return kline, mask
+    monkeypatch.setattr(DataFetcher, "get_kline_windowed", classmethod(_fake))
+    monkeypatch.setattr("backtest.engine.get_cached_info",
+                        lambda code: {"IsSTGP": "0"})
+
+    engine = BacktestEngine({"period": "5m", "use_kline_cache": True,
+                             "degrade_5m": False})
+    sel = pd.DataFrame({
+        "stock_code": DIRTY_CODES,
+        "select_date": [pd.bdate_range("2026-08-03", periods=N_DAYS)[1]
+                        .strftime("%Y%m%d")] * len(DIRTY_CODES),
+    })
+    prep = engine.prepare_matrices(sel, "20260803", "20260817", WIN_TD)
+    assert prep is not None
+
+    # (a) 窗口终点截断口径: end_time 必须原样透传 (传 None 曾让测试全绿)
+    assert seen["end_time"] == "20260817", "接缝必须把 end_time 透传给取数层"
+    assert seen["period"] == "5m" and seen["use_cache"] is True
+
+    # (d) 非标准时刻 bar (13:00 临停复牌竞价) 必须被过滤掉: 每天恰好 48 根
+    per_day = pd.Series(1, index=prep["idx"]).groupby(prep["idx"].date).sum()
+    assert set(per_day.unique()) == {48}, f"非标准 bar 未过滤: {per_day.unique()}"
+
+    # (c) 列交集必须含 low: 只在 Close 里有的 300750.SZ 不许进矩阵
+    assert "300750.SZ" not in prep["cols"], "列交集漏了 low_df (缺 low 的股混入)"
+    assert set(prep["cols"]) == {"000001.SZ", "600519.SH"}
+
+    # (b) close 必须 ffill: 停牌日 (第 4 天) 的值 = 前一根 bar 的值, 不许是 NaN
+    day4 = [t for t in prep["idx"] if t.date() == pd.bdate_range(
+        "2026-08-03", periods=N_DAYS)[3].date()]
+    prev_bar = prep["close"].loc[:day4[0]].iloc[-2]["000001.SZ"]
+    assert not np.isnan(prep["close"].loc[day4, "000001.SZ"]).any(), \
+        "停牌日 close 出现 NaN (ffill 被去掉)"
+    assert (prep["close"].loc[day4, "000001.SZ"] == prev_bar).all(), \
+        "停牌日 close 未沿用前值 (ffill 口径不符)"
+    # 原始价 (含停牌 NaN) 必须在 tradable 里体现: 停牌日该股不可交易
+    day4_pos = [prep["idx"].get_loc(t) for t in day4]
+    col_pos = prep["cols"].index("000001.SZ")
+    assert not prep["tradable"][day4_pos, col_pos].any(), \
+        "停牌日应判不可交易 (close_raw 的 NaN 被 ffill 吃掉了)"
+

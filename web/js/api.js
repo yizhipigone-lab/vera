@@ -24,12 +24,16 @@ function request(method, u, body, extra, timeout = DEFAULT_TIMEOUT_MS) {
     r.json().catch(() => { throw new Error('HTTP ' + r.status + ' (响应非 JSON)'); })
       .then(d => {
         if (!r.ok) {
+          // 2026-09-20 审计 P2-10: 服务端两种许可形状都认 ——
+          // 传输/意外错误是 {detail}; 业务软失败是 400/409 + {success:false,error}
+          // (后者原先被丢掉, 用户只看到 "HTTP 409", 看不到"管线正在运行中")。
           let msg = 'HTTP ' + r.status;
-          if (d && d.detail) {
-            msg = (typeof d.detail === 'string') ? d.detail
-              : (Array.isArray(d.detail)
-                ? d.detail.map(e => (e.loc ? e.loc.join('.') + ': ' : '') + e.msg).join('; ')
-                : JSON.stringify(d.detail));
+          const d1 = (d && d.detail) || (d && d.error);
+          if (d1) {
+            msg = (typeof d1 === 'string') ? d1
+              : (Array.isArray(d1)
+                ? d1.map(e => (e.loc ? e.loc.join('.') + ': ' : '') + e.msg).join('; ')
+                : JSON.stringify(d1));
           }
           throw new Error(msg);
         }
