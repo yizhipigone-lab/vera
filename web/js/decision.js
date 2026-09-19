@@ -16,7 +16,10 @@
 import {
   actionBadge, calCellLabel, describeTradeError, dominantTone, evidenceRows,
   fetchJson, parseIso, SOURCE_LABELS, statusLine, TONE_VAR, tradeApiBase,
-} from './decision_util.mjs';
+} from './decision_util.mjs?v=20260919a';
+// ↑ import 也带版本号 (2026-09-19 补): 否则浏览器缓存旧 mjs, 新版 decision.js
+//   import 到不存在的导出 → 整个模块加载失败 → 页面永远是占位文案。
+//   注意: 改 decision_util.mjs 时必须同步改这里 + index.html 里的 ?v=。
 
 const WEEK_HEADS = ['一', '二', '三', '四', '五', '六', '日'];
 

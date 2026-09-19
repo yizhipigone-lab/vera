@@ -104,7 +104,9 @@ async function loadDecision(hostname, opts) {
   const tmp = path.join(dir, 'decision_under_test_'
     + Math.random().toString(36).slice(2) + '.mjs');
   const src = fs.readFileSync(DECISION_SRC, 'utf8')
-    .replace("'./decision_util.mjs'", JSON.stringify(UTIL_URL));
+    .replace(/'\.\/decision_util\.mjs[^']*'/, JSON.stringify(UTIL_URL));
+  //            ↑ 正则匹配带版本号的 import 路径 ('./decision_util.mjs?v=…'),
+  //              不能只写死 './decision_util.mjs' —— 2026-09-19 给 import 加了 ?v=
   fs.writeFileSync(tmp, src, 'utf8');
   await import(pathToFileURL(tmp).href);
   return { calls, dom, win };
