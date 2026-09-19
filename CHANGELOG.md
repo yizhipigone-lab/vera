@@ -5,6 +5,42 @@
 
 ---
 
+## 2026-09-19 — 架构审查修订批次 4（后半）：等成交不再死等 + rotation 拆两块
+
+**一句话（大白话）**：交易线程"等成交/等撤单回执"的那几秒原来是真的干等 ——
+整个事件队列跟着停摆；现在等待窗口里顺手把回报和行情处理掉（队列继续流动）。
+另外把 89KB 的轮动主文件拆掉了两块自包含的东西：取数降级链与在途台账。
+
+- **4.2 消费者线程墙钟阻塞（审查 P0-4）**：新增 `EventEngine.pump(types, duration)`
+  —— 在 handler 内部就地消费**叶子类**事件（回报类 + 行情类：`PUMPABLE_WAIT_TYPES`），
+  其余（命令/信号/轮动/扫描/对账/EOD）原样放回队列（它们会重入特性层，等待中间
+  插进来会打断状态机）。`rotation._wait_fills` 与 `executor._wait_terminal` 的
+  `sleep` 改为 pump（窗口时长不变，判据仍是查网关真相源）。
+  三个安全阀：**只许消费者线程调用**（`can_pump()` 先问，错线程 pump 直接抛
+  RuntimeError —— 防"两个写者"）；types 白名单由调用方给；`engine=None`/非消费者
+  线程（单测直构）自动退回纯 sleep，零行为变化。
+  **专项测试** `tests/trade/test_events_pump.py` 5 例直接证明：等待期间到达的
+  委托回报与 tick **在等待结束前**就被处理（顺序断言），非回报事件留队列但一条不丢，
+  错线程被拒，窗口时长有上限。
+- **4.5 rotation.py 拆两块（审查 P1-9）**：
+  ① **取数降级链** → 新模块 `trade/rotation_feed.py`（`IndexFeed.closes()`；
+  QMT→TDX→腾讯 三级降级 + 陈旧标记 + fail-closed 全挂返 `([], "none")`），
+  调用点改 `self._feed.closes(...)`；独立测试 6 例（含 min_bars 阈值与全挂）。
+  ② **在途买卖台账** → 新模块 `trade/rotation_ledger.py`（`RotationLedgerMixin`
+  + 7 个方法：`_clear_open_ledgers`/`_settle_open_sells`/`_reduce_lot`/
+  `_save_open_ledger`/`_read_open_ledger`/`_ledger_corrupt`/`_settle_open_buys`），
+  `RotationFeature` 改为继承它。**为什么用 mixin**：这些方法读写的全是特性内部
+  状态，抽独立类要先定义 8+ 个接口 —— 那是在实盘台账逻辑上做手术（台账有
+  "恰好一次扣减""失败方向=账本偏多"两条硬不变量）；mixin 让方法体**逐字不动**
+  达成"端出文件"的目标，风险面为零。
+- **实测体积**：`rotation.py` 89KB → **73.5KB**（另两块 4.5KB + 16.5KB）；
+  剪裁脚本带断言（剪掉的必须正好是那 7 个方法）。
+- **测试**：新增 11 例（pump 5 + feed 6）；trade 全域 **983 例绿**；全量
+  **3025 例绿 / 7 skip**。
+- **上线约束**：动 trade 包 → **trade_main 需重启生效，且必须 ≥15:05 窗口**。
+
+---
+
 ## 2026-09-19 — 架构审查修订批次 4（前半）：HTTP 线程零接触 QMT + 第二写者守卫 + 跨进程写锁
 
 **一句话（大白话）**：把三条"两个线程/两个进程抢同一份数据"的路给堵了 ——

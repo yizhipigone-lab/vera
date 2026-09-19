@@ -54,6 +54,21 @@ _CRITICAL_TYPES = frozenset({
     EVENT_READ_QUERY,
 })
 
+#: 2026-09-19 批次 4.2: "等待回报期间可就地消费"的事件类型。
+#: rotation 等成交 / executor 等撤单 ack 原先在消费者线程里 sleep 轮询 (最长
+#: 3 秒/笔), 阻塞期间队列里的回报与行情全排队。现在等待期间就地分发这两类
+#: **叶子 handler**:
+#:   - 回报类 (委托回报/成交/报错): 等待的目标本身, 就地应用才不用干等;
+#:   - 行情类 (tick/快照): monitor.on_quote 只更新报价缓存与心跳, 不下单、
+#:     不重入任何特性层 —— 就地处理让"等 3 秒"期间报价保持新鲜。
+#: **明确排除** 命令/信号/轮动/扫描/对账/EOD: 它们会重入特性层 (可能下单),
+#: 在等待中间插进来会把状态机打断 —— 那些留待正常轮次。
+PUMPABLE_WAIT_TYPES = frozenset({
+    EVENT_ORDER_UPDATE, EVENT_TRADE_FILL,
+    EVENT_ORDER_ERROR, EVENT_CANCEL_ERROR,
+    EVENT_TICK, EVENT_QUOTE_SNAPSHOT,
+})
+
 
 @dataclass(frozen=True)
 class Event:
@@ -84,6 +99,9 @@ class EventEngine:
         self._audit_sink = audit_sink
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        #: 消费者线程 ident (2026-09-19 批次 4.2): pump() 只许消费者线程调,
+        #: 错线程调用会让"唯一写者"变成两个线程同时跑 handler (铁律 3 破口)
+        self._consumer_ident: int | None = None
 
     def put(self, event: Event) -> None:
         """生产侧唯一入口。回调线程里只许调这个 (铁律 2)。
@@ -120,6 +138,87 @@ class EventEngine:
         )
         self._thread.start()
 
+    def can_pump(self) -> bool:
+        """当前线程能不能调 pump() (2026-09-19 批次 4.2)。
+
+        调用方 (rotation 等成交 / executor 等 ack) 用它决定"就地消费回报"
+        还是"退回纯 sleep": 生产走消费者线程 → True; 单测直接构造特性、在
+        测试线程里跑 → False, 行为与改造前一致 (不抛错, 不假装能 pump)。
+        """
+        return (self._consumer_ident is not None
+                and threading.get_ident() == self._consumer_ident)
+
+    def pump(self, types: frozenset[str], duration: float,
+             max_events: int = 200) -> int:
+        """在 handler 内部"顺手消费"指定类型的事件 (2026-09-19 批次 4.2)。
+
+        用途: rotation 等成交 / executor 等撤单 ack 期间, 不再是"死等" ——
+        等待窗口内到达的**回报类**事件就地分发 (回调线程 put 进来的正是它们),
+        其余事件原样放回队列尾, 留待正常轮次。
+
+        约束 (都是安全阀, 不是装饰):
+          - **只许消费者线程调用**: 错线程调用 = 两个线程同时跑 handler,
+            破"唯一写者"铁律 → 直接抛 RuntimeError;
+          - **types 白名单由调用方给**: 只该放叶子 handler 类 (见
+            PUMPABLE_WAIT_TYPES: 回报 + 行情),
+            放进命令/信号类会让特性层在等待中间被重入;
+          - 被放回的事件会排到队尾 (相对顺序在它们彼此之间保持): 这不改变
+            语义 —— tick 后到的覆盖先到的, 定时扫描/对账与回报无先后依赖。
+
+        返回就地消费的事件条数。
+        """
+        if not self.can_pump():
+            raise RuntimeError(
+                "pump() 只许消费者线程调用 (错线程会破'唯一写者'铁律); "
+                "调用前先问 can_pump()")
+        import time as _t
+        deadline = _t.monotonic() + max(0.0, duration)
+        consumed = 0
+        held: list[Event] = []
+        try:
+            while consumed < max_events:
+                try:
+                    ev = self._queue.get_nowait()
+                except queue.Empty:
+                    if _t.monotonic() >= deadline:
+                        break
+                    _t.sleep(0.005)     # 短睡让出 CPU, 不是原来那种整段死等
+                    continue
+                if ev.type in types:
+                    self._dispatch(ev)
+                    consumed += 1
+                else:
+                    held.append(ev)
+                if _t.monotonic() >= deadline:
+                    break
+        finally:
+            # 放回: 队列在等待期间可能被生产者填满 → 与 put() 同纪律 (告警留痕)
+            for ev in held:
+                try:
+                    self._queue.put_nowait(ev)
+                except queue.Full:
+                    _logger.error("pump 放回事件失败 (队列满), 丢弃: %s", ev.type)
+                    if self._audit_sink:
+                        try:
+                            self._audit_sink("event_dropped",
+                                             f"pump 放回失败, 丢弃 {ev.type}",
+                                             {"type": ev.type})
+                        except Exception:
+                            pass
+        return consumed
+
+    def _dispatch(self, event: Event) -> None:
+        """分发一个事件 (pump 与消费循环共用, 保证异常语义一致)。"""
+        handler = self._handlers.get(event.type)
+        if handler is None:
+            # 无订阅者的事件 = 接线错误, 必须留痕而不是静默吞掉
+            _logger.warning("事件无订阅者, 已丢弃: %s", event.type)
+            return
+        try:
+            handler(event)
+        except Exception:
+            _logger.exception("事件处理异常 (引擎继续运行): %s", event.type)
+
     def stop(self, drain_timeout_sec: float = 2.0,
              join_timeout_sec: float = 5.0) -> None:
         """审计L1/L2修复:
@@ -145,17 +244,13 @@ class EventEngine:
 
     def _run(self) -> None:
         """消费循环: handler 异常必须捕获, 绝不让唯一写者死掉。"""
-        while not self._stop.is_set():
-            try:
-                event = self._queue.get(timeout=0.05)
-            except queue.Empty:
-                continue
-            handler = self._handlers.get(event.type)
-            if handler is None:
-                # 无订阅者的事件 = 接线错误, 必须留痕而不是静默吞掉
-                _logger.warning("事件无订阅者, 已丢弃: %s", event.type)
-                continue
-            try:
-                handler(event)
-            except Exception:
-                _logger.exception("事件处理异常 (引擎继续运行): %s", event.type)
+        self._consumer_ident = threading.get_ident()
+        try:
+            while not self._stop.is_set():
+                try:
+                    event = self._queue.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                self._dispatch(event)
+        finally:
+            self._consumer_ident = None

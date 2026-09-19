@@ -370,6 +370,8 @@ class TradeApp:
             get_prev_close=self._prev_close,
             st_checker=_st_checker,
             clock=clock,
+            # 2026-09-19 批次 4.2: 等撤单 ack 期间就地消费回报类事件
+            engine=self._engine,
         )
         # 2026-08-01 P0-1: hold_days 接线 —— 从 trades 表取首笔买入时间,
         # 经交易日历算持仓天数, 救活 Monitor 的三条时间类卖出规则

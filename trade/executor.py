@@ -30,6 +30,7 @@ from trade.book import (
 )
 from trade.quote_stale import is_quote_stale
 from trade.closing_auction import auction_sell_price  # 收盘竞价限价单一实现 (2026-09-15)
+from trade.events import PUMPABLE_WAIT_TYPES  # 2026-09-19 批次 4.2 等待期就地消费
 from trade.risk import OrderIntent
 from utils.logger import get_logger
 
@@ -230,12 +231,16 @@ class Executor:
         # 2026-08-01 P0-3: pending 终态为废单/已撤且持仓仍在时回调,
         # Monitor 注入 _triggered.discard 解除当日触发标记
         on_pending_died: Callable[[str], None] | None = None,
+        # 2026-09-19 批次 4.2: 事件引擎句柄 —— 等撤单 ack 期间用它的
+        # pump() 就地消费回报类事件 (不再死等); None = 退回纯 sleep (单测直构)
+        engine=None,
     ):
         self._gw = gateway
         self._book = book
         self._store = store
         self._risk = risk_gate
         self._cfg = config
+        self._engine = engine
         # 风控上下文由 root 组装 (总资产/基准权益等实时值 executor 不该知道来源)
         self._build_ctx = build_risk_ctx
         self._get_quote = get_quote or (lambda code: None)
@@ -680,13 +685,26 @@ class Executor:
         """轮询订单终态 (查网关 = 真相源, 不赌本地事件流快慢)。
         deadline 用墙钟 (time.monotonic) 不用注入的业务时钟 —— 等 ack
         是真实世界等待; 用业务时钟在假时钟测试里会死循环 (审计M8
-        修复过程中实测踩中)。超时阈值构造注入, 测试可缩短。"""
+        修复过程中实测踩中)。超时阈值构造注入, 测试可缩短。
+
+        2026-09-19 批次 4.2 (架构审查 P0-4): 等待窗口交给
+        `engine.pump(PUMPABLE_WAIT_TYPES, …)` —— 回报类事件就地分发,
+        不再让整个事件队列停摆 (撤销时的 ack 本身就是委托回报)。
+        engine 未注入 (单测直接构造 Executor) 时退回纯 sleep, 行为不变。
+        """
         deadline = time.monotonic() + self._ack_timeout
         while time.monotonic() < deadline:
             status = self._order_status(order_id)
             if status is not None and status in TERMINAL_STATUSES:
                 return True
-            time.sleep(_CANCEL_ACK_POLL_SEC)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            window = min(_CANCEL_ACK_POLL_SEC, remaining)
+            if self._engine is not None and self._engine.can_pump():
+                self._engine.pump(PUMPABLE_WAIT_TYPES, window)
+            else:
+                time.sleep(window)   # 无引擎/非消费者线程 (单测直构): 原行为
         return False
 
     def _order_status(self, order_id: str) -> int | None:
