@@ -259,6 +259,24 @@ def _pct_txt(v):
     return s + "%"
 
 
+def _combo_plain(p: dict) -> str:
+    """最优组合参数 → 人话文案 (唯一实现, 2026-09-18 用户拍板"卡片不许说黑话")。
+
+    达标榜卡片与回填横幅共用这一个生成器 —— 同一条翻译规则手写两份必然漂移
+    (教训: AI 设置三档合并)。原始 key (c-0.2_a0.08...) 仍随行下发, 前端放
+    鼠标悬停提示里供排查。
+    """
+    parts = ["硬止损%s" % _pct_txt(abs(p["cost"])),
+             "移动止盈激活%s/回撤%s" % (_pct_txt(p["act"]), _pct_txt(p["dd"])),
+             "时间止损%d天" % (p.get("time_days") or 0)]
+    if (p.get("cond_days") or 0) > 0:
+        parts.append("条件时间止盈%d天/盈利%s"
+                     % (p["cond_days"], _pct_txt(p.get("cond_profit") or 0)))
+    if (p.get("ladder") or "off") != "off":
+        parts.append("阶梯止盈(%s, 档位未存)" % p["ladder"])
+    return " + ".join(parts)
+
+
 def _money_txt(v) -> str:
     """金额带单位: 2000 → 「2000元」, 20000 → 「2万」, 3000000 → 「300万」。"""
     return "%g万" % (v / 10000) if v >= 10000 else "%g元" % v
@@ -318,12 +336,8 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
                          "(python tools/formula_farm/farm_backtest.py "
                          "--max-formulas 0 --rebuild-archive --no-push)"
                          % ("(缺 %s)" % "/".join(need) if need else ""))
-    parts = ["硬止损%s" % _pct_txt(abs(p["cost"])),
-             "移动止盈激活%s/回撤%s" % (_pct_txt(p["act"]), _pct_txt(p["dd"])),
-             "时间止损%d天" % (p.get("time_days") or 0)]
-    if (p.get("cond_days") or 0) > 0:
-        parts.append("条件时间止盈%d天/盈利%s"
-                     % (p["cond_days"], _pct_txt(p.get("cond_profit") or 0)))
+    combo_text = _combo_plain(p)
+    # 阶梯止盈档位粗扫没存明细, 回填按关闭处理 → 单独警示, 不混进文案
     ladder_note = ""
     if (p.get("ladder") or "off") != "off":
         ladder_note = ("原组合含阶梯止盈(%s, 档位未存入粗扫明细), "
@@ -339,7 +353,7 @@ def backtest_prefill(data_root: str, gs: str) -> dict:
                         "min_buy": c["min_buy"],
                         "priority_value": c["priority_value"],
                         "priority": c["priority"]},
-            "combo_text": " + ".join(parts), "ladder_note": ladder_note,
+            "combo_text": combo_text, "ladder_note": ladder_note,
             "caliber_text": _caliber_text(c)}
 
 
@@ -350,12 +364,37 @@ def _reason_category(reason: str) -> str:
     return (reason or "").split(":")[0].split("(")[0] or "其它"
 
 
+def _board_caliber_text() -> str:
+    """达标榜抬头的粗扫口径一行话 — 后端唯一生成 (前端不得手写第二份, LOW-8)。
+
+    2026-09-18 用户要求: 卡片上必须写清「用什么股票池、回测哪段时间、
+    多少钱怎么买」—— 池/周期/本金全榜统一, 抬头说一次; 区间逐行不同,
+    在表格里单列。数字一律现读 farm_rules 单一真相源, 不在这里抄死。
+    """
+    c = farm_rules.SWEEP_CALIBER
+    period = {"5m": "5分线", "1m": "1分线", "1d": "日线"}.get(
+        c["period"], c["period"])
+    entry = {"close_t": "信号日收盘买入", "open_t1": "次日开盘买入"}.get(
+        c["entry_price_mode"], c["entry_price_mode"])
+    return ("粗扫口径: 股票池=%s · %s · %s · %s · %s本金 · 单票上限%s"
+            "(轻仓, 年化别当满仓收益看) · %s · %s"
+            % (c["universe"].split(" ")[0], period, c["dividend"], entry,
+               _money_txt(c["capital"]), _money_txt(c["max_buy"]),
+               c["priority"], farm_rules.describe()))
+
+
 def _board_row(gs, e):
     best = e.get("best") or {}
     v = e.get("verdict") or {}
+    p = best.get("params") or {}
+    # 2026-09-18: 最优组合只摆人话 (原始 key 留 tooltip); 老档案无 params
+    # 时 combo_text 留空, 前端回落显示 key —— 不在这里编文案
+    combo_text = _combo_plain(p) if p.get("cost") is not None else ""
     return {"gs": gs, "file": e.get("file", ""), "url": e.get("url", ""),
             "onboard_date": e.get("onboard_date", ""),
-            "key": best.get("key", ""), "annret": best.get("annret"),
+            "key": best.get("key", ""), "combo_text": combo_text,
+            "window": e.get("window"),
+            "annret": best.get("annret"),
             "maxdd": best.get("maxdd"), "calmar": best.get("calmar"),
             "winrate": best.get("winrate"), "trades": best.get("trades"),
             "verdict_code": v.get("code", ""), "verdict_label": v.get("label", ""),
@@ -445,4 +484,5 @@ def overview(data_root: str) -> dict:
         "board": capped,
         "board_totals": totals,
         "board_total": len(rows),
+        "caliber_text": _board_caliber_text(),
     }

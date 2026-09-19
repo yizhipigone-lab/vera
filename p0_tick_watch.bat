@@ -1,17 +1,18 @@
 @echo off
-chcp 65001 >nul
 rem ============================================================
-rem  P0 è®¢é˜…è…¿éªŒè¯(ç›˜ä¸­è¿è¡Œ, åªè¯»ä¸ä¸‹å•)
-rem  å‰æ: miniQMT å·²ç™»å½•, å½“å‰åœ¨äº¤æ˜“æ—¶æ®µ(9:30-11:30 / 13:00-15:00)
-rem  è§‚å¯Ÿ 60 ç§’è¡Œæƒ…æŽ¨é€, éªŒè¯è®¢é˜…é€šé“æ˜¯å¦é€š
+rem  P0 ¶©ÔÄÍÈÑéÖ¤(ÅÌÖÐÔËÐÐ, Ö»¶Á²»ÏÂµ¥)
+rem  Ç°Ìá: miniQMT ÒÑµÇÂ¼, µ±Ç°ÔÚ½»Ò×Ê±¶Î(9:30-11:30 / 13:00-15:00)
+rem  ¹Û²ì 60 ÃëÐÐÇéÍÆËÍ, ÑéÖ¤¶©ÔÄÍ¨µÀÊÇ·ñÍ¨
+rem  ±àÂë:±¾ÎÄ¼þ GBK + CRLF(2026-09-16 ¸Ä, Ô­ÒòÍ¬ start_vera.bat);
+rem  PYTHONIOENCODING=gbk Óë¿ØÖÆÌ¨±àÂëÒ»ÖÂ, Python ÖÐÎÄÈÕÖ¾²»ÂÒÂë
 rem ============================================================
-set PYTHONIOENCODING=utf-8
+set PYTHONIOENCODING=gbk
 cd /d %~dp0
 
-rem ---- Python å®šä½(2026-09-16 ä¿®): è¯¦è§ start_vera.bat é¡¶éƒ¨è¯´æ˜Ž ----------
+rem ---- Python ¶¨Î»(2026-09-16 ÐÞ): Ïê¼û start_vera.bat ¶¥²¿ËµÃ÷ ----------
 set "PYDIR=D:\Program Files\Python313"
 if not exist "%PYDIR%\python.exe" (
-  echo [é”™è¯¯] æ‰¾ä¸åˆ° Python: "%PYDIR%\python.exe"
+  echo [´íÎó] ÕÒ²»µ½ Python: "%PYDIR%\python.exe"
   pause
   exit /b 1
 )
@@ -20,11 +21,11 @@ set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
 set VERA_QMT_ACCOUNT=180056133
 set VERA_QMT_PATH=D:\Program Files\XCXT\userdata_mini
 
-echo å¼€å§‹è§‚å¯Ÿè¡Œæƒ…æŽ¨é€(60 ç§’, åªè¯»)...
+echo ¿ªÊ¼¹Û²ìÐÐÇéÍÆËÍ(60 Ãë, Ö»¶Á)...
 python tools/p0_tick_watch.py 60
 
 echo.
-echo åˆ¤è¯»æ–¹æ³•:
-echo   äº‹ä»¶æ•° ^> 0 ä¸”å­—æ®µé½å…¨ = è®¢é˜…è…¿æ­£å¸¸
-echo   äº‹ä»¶æ•° = 0 = è®¢é˜…ä¸é€š(ç³»ç»Ÿä¼šé è½®è¯¢å…œåº•, æ­¢æŸå»¶è¿Ÿçº¦ 60s)
+echo ÅÐ¶Á·½·¨:
+echo   ÊÂ¼þÊý ^> 0 ÇÒ×Ö¶ÎÆëÈ« = ¶©ÔÄÍÈÕý³£
+echo   ÊÂ¼þÊý = 0 = ¶©ÔÄ²»Í¨(ÏµÍ³»á¿¿ÂÖÑ¯¶µµ×, Ö¹ËðÑÓ³ÙÔ¼ 60s)
 pause

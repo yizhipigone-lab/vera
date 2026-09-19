@@ -102,7 +102,13 @@ def main() -> int:
     state_path = Path(cache.cache_dir) / f"backfill_state_{args.period}_{args.start}.json"
     state = {"no_data": []}
     if state_path.exists():
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        # 容错: 进度文件可能被强杀/断电写坏 (实测 2026-09-18 全 NUL 字节残留),
+        # 坏文件按空进度处理并重记, 不该让整段补拉直接崩掉。
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            print(f"[回填] 进度文件已损坏, 按空进度重跑: {state_path}", flush=True)
+            state = {"no_data": []}
     no_data = set(state.get("no_data", []))
     stalled: dict[str, dict] = dict(state.get("stalled", {}))
 
@@ -125,10 +131,14 @@ def main() -> int:
         t0 = time.time()
 
         def _persist() -> None:
-            state_path.write_text(
+            # 原子写: 先写临时文件再替换, 避免强杀/断电留下半截或全零文件
+            # (2026-09-18 事故: backfill_state_1m_20260126.json 全 NUL 崩溃)。
+            tmp = state_path.with_suffix(".tmp")
+            tmp.write_text(
                 json.dumps({"no_data": sorted(no_data),
                             "stalled": dict(stalled)}, ensure_ascii=False),
                 encoding="utf-8")
+            os.replace(tmp, state_path)
 
         for i, code in enumerate(stocks, 1):
             if code in no_data and not args.retry_no_data:

@@ -284,6 +284,41 @@ def test_backtest_prefill_cond_days_appends_text(root):
     assert "条件时间止盈7天/盈利3%" in d["combo_text"]
 
 
+# ── 2026-09-18 用户拍板: 榜单卡片不许说黑话 ──
+
+def test_board_row_plain_combo_and_window_and_caliber(root):
+    """最优组合列必须是人话 (与回填横幅同一生成器), 区间逐行下发,
+    总览抬头带粗扫口径 (池/周期/本金/达标线, 数字现读 farm_rules)。"""
+    _archive_with_params(root)
+    ov = fs.overview(str(root))
+    row = ov["board"]["pass"][0]
+    assert row["combo_text"] == "硬止损20% + 移动止盈激活8%/回撤0.5% + 时间止损20天"
+    assert row["key"] == "c-0.2_a0.08"          # 原始 key 保留 (tooltip 用)
+    assert row["window"] == ["2024-09-11", "2026-09-16"]
+    ct = ov["caliber_text"]
+    assert "沪深300" in ct and "5分线" in ct
+    assert "300万" in ct and "单票上限2万" in ct and "达标线" in ct
+
+
+def test_board_combo_plain_mentions_ladder_when_on(root):
+    """阶梯止盈开启时必须出现在人话文案里 —— 漏掉=卡片少报一条真实规则。"""
+    _archive_with_params(root, ladder="l2")
+    row = fs.overview(str(root))["board"]["pass"][0]
+    assert "阶梯止盈" in row["combo_text"]
+
+
+def test_board_row_without_params_falls_back_to_key(root):
+    """老档案 best 无 params: combo_text 留空, 前端回落显示原始 key,
+    后端绝不编文案。"""
+    _wj(root / "archive.json", {
+        "GS0001": {"file": "a.md", "url": "", "onboard_date": "2026-09-06",
+                   "best": {"key": "c-0.2_a0.08", "annret": 0.2, "trades": 30},
+                   "verdict": {"code": "pass", "label": "达标", "reason": "ok"},
+                   "window": ["2024-09-11", "2026-09-16"]}})
+    row = fs.overview(str(root))["board"]["pass"][0]
+    assert row["combo_text"] == "" and row["key"] == "c-0.2_a0.08"
+
+
 def test_backtest_prefill_ladder_note_when_not_off(root):
     _archive_with_params(root, ladder="l2")
     d = fs.backtest_prefill(str(root), "GS0607")
