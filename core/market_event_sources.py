@@ -41,7 +41,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
-import akshare as ak
+
+def _ak():
+    """懒加载 akshare (可选依赖)。**不许顶层 import**: 没装它的环境 (CI)
+    会在 pytest 收集期就炸成 ModuleNotFoundError —— 2026-09-20 CI 的 Test
+    步骤史上首跑即因此 8 秒 exit 2 (实测定位)。
+    (tests/test_market_event_sources.py 有子进程屏蔽 akshare 的回归锁)"""
+    import akshare as ak
+    return ak
 
 #: 北京时间固定偏移（不用 ZoneInfo：Windows 缺 tzdata 包时 ZoneInfo 直接抛）
 _CST = dt.timezone(dt.timedelta(hours=8))
@@ -158,15 +165,15 @@ def _norm_sina(df) -> list[dict]:
 
 
 def _fetch_akshare_cls() -> list[dict]:
-    return _norm_cls(_safe_df(ak.stock_info_global_cls))
+    return _norm_cls(_safe_df(_ak().stock_info_global_cls))
 
 
 def _fetch_akshare_ths() -> list[dict]:
-    return _norm_ths(_safe_df(ak.stock_info_global_ths))
+    return _norm_ths(_safe_df(_ak().stock_info_global_ths))
 
 
 def _fetch_akshare_sina() -> list[dict]:
-    return _norm_sina(_safe_df(ak.stock_info_global_sina))
+    return _norm_sina(_safe_df(_ak().stock_info_global_sina))
 
 
 def fetch_akshare_2y_rows() -> list[tuple[dt.date, float]] | None:
@@ -175,7 +182,7 @@ def fetch_akshare_2y_rows() -> list[tuple[dt.date, float]] | None:
     fed_rate 跟踪器的兜底源（主源 = 美财政部 CSV，见 fetch_treasury_2y_rows）。
     放在取数层而不是 scan 层：取数全归本层，scan 只做主备选择与交叉校验。
     """
-    df = _safe_df(ak.bond_zh_us_rate)
+    df = _safe_df(_ak().bond_zh_us_rate)
     col = "美国国债收益率2年"
     if df is None or col not in df.columns:
         return None

@@ -200,3 +200,22 @@ def test_no_import_trade():
             elif isinstance(node, ast.ImportFrom):
                 assert node.module is None or node.module.split(".")[0] != "trade", \
                     f"{mod.__name__} from trade import ..."
+
+# ── 可选依赖懒加载 (2026-09-20 CI 史上首跑修复) ─────────────────────────────
+
+def test_顶层import不依赖akshare():
+    """akshare 是可选依赖, 顶层 import 必须懒加载。
+
+    实证: 2026-09-20 CI 的 Test 步骤史上首跑 (此前全被 lint 短路 skipped),
+    8 秒即 exit 2 —— pytest 收集期 import 本文件 → core.market_event_sources
+    顶层 `import akshare` → CI 不装 akshare → ModuleNotFoundError 收集中断。
+    本用例在子进程里屏蔽 akshare 后 import 该模块, 锁住"顶层不炸"。
+    """
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['akshare'] = None; "
+            "import core.market_event_sources")
+    r = subprocess.run([sys.executable, "-c", code],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"屏蔽 akshare 后 import 失败: {r.stderr[-400:]}"
+
