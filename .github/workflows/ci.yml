@@ -16,8 +16,10 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: |
+          # scipy: pandas spearman (IC) 需要; httpx2: 新版 starlette 的
+          # TestClient 强制依赖 (2026-09-20 CI Test 首跑 17 个文件收集期炸的元凶)
           pip install ruff pytest pandas numpy fastapi uvicorn pydantic pyyaml \
-            pyarrow requests python-dotenv matplotlib plotly scipy
+            pyarrow requests python-dotenv matplotlib plotly scipy httpx2
       # 审计 2026-08-19 Q2: lint 只拦正确性级错误 (未定义名/重复定义),
       # 当前 F821/F822/F823 = 0 违规 —— 不设虚门, 也不被 2383 个存量风格违规
       # (E402/E702/I001/E401/F401...) 堵死。风格债清理见审计报告 P1。
