@@ -85,7 +85,10 @@ async def _unhandled_exc(request, exc):
                         content={"detail": f"服务器内部错误: {exc}"})
 
 # 静态文件
-app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
+# check_dir=False (2026-09-20 CI 修红): output/ 被 gitignore, CI checkout 后
+# 目录不存在, starlette 默认 check_dir=True 会在 import 期直接 RuntimeError
+# (收集期炸 exit 2)。目录不存在时请求才 404, 生产行为不变。
+app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output"), check_dir=False), name="output")
 app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")
 
 # ====== 数据模型 ======
