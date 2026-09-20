@@ -17,6 +17,13 @@ sys.path.insert(0, os.path.join(ROOT, "research"))
 OUT_HTML = os.path.join(ROOT, "output", "quantqq_2014_5m_pct2", "analysis_dashboard.html")
 PCT2_DIR = os.path.join(ROOT, "output", "quantqq_2014_5m_pct2")
 
+# 2026-09-20 CI 修红: 本文件验收的是本地产物 (output/quantqq_2014_5m_pct2/,
+# 由 research/viz_quantqq_5m_pct_dashboard.py 生成, output/ 被 gitignore),
+# CI checkout 永远没有 → 产物不存在即整文件跳过 (有产物的机器照常验收)。
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(OUT_HTML),
+    reason="仪表盘产物不存在 (本地产物, 不入库) —— 先运行 research/viz_quantqq_5m_pct_dashboard.py")
+
 
 # ---------------------------------------------------------------- 产物存在性
 def test_dashboard_html_exists():

@@ -9,6 +9,15 @@ sys.path.insert(0, str(ROOT))
 
 from core.lab_runner import FORMULA_RE, LabQueue  # noqa: E402
 
+import pytest  # noqa: E402
+
+# 2026-09-20 CI 修红: "基线已在不重复补"用例依赖本地产物
+# data/baseline/QUANTQQ_selections_20250719_20260718.parquet (gitignore)。
+_REQUIRES_QUANTQQ_BASELINE = pytest.mark.skipif(
+    not (ROOT / "data" / "baseline"
+         / "QUANTQQ_selections_20250719_20260718.parquet").exists(),
+    reason="无 QUANTQQ baseline parquet (本地产物, 不入库)")
+
 
 def _wait(task_id, q, timeout=5):
     t0 = time.time()
@@ -71,6 +80,7 @@ def test_baseline_chained_when_missing_then_lab():
         assert "--universe-type" in c and "50" in c
 
 
+@_REQUIRES_QUANTQQ_BASELINE
 def test_baseline_skipped_when_present():
     calls = []
     q = LabQueue(runner=_fake_runner_ok(calls))

@@ -12,6 +12,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from server import app, lab_status  # noqa: E402
 
+# 2026-09-20 CI 修红: 两个用例断言"QUANTQQ 已体检过", 依赖本地产物
+# output/reports/QUANTQQ_filter_rules.json (gitignore)。CI checkout 没有 →
+# 无产物即跳过 (有产物的机器照常验)。
+_REQUIRES_QUANTQQ_REPORT = pytest.mark.skipif(
+    not (ROOT / "output" / "reports" / "QUANTQQ_filter_rules.json").exists(),
+    reason="无 QUANTQQ 体检产物 (本地产物, 不入库)")
+
 
 @pytest.fixture
 def client():
@@ -46,6 +53,7 @@ def test_lab_run_accepts_and_defaults_tags(client):
             t.status = "failed"
 
 
+@_REQUIRES_QUANTQQ_REPORT
 def test_lab_run_empty_tag2_means_single_window(client):
     """冒烟回归(2026-07-20): tag2="" 显式单窗口; 缺省才是近3年。"""
     r = client.post("/api/lab/run", json={"formulas": ["TESTFX_TAG2"], "tag": "20250719_20260718", "tag2": ""})
@@ -72,6 +80,7 @@ def test_lab_report_endpoint(client):
     assert r2.json()["success"] is False
 
 
+@_REQUIRES_QUANTQQ_REPORT
 def test_factor_rules_rejects_bad_formula(client):
     """审计 H2/L5: /api/factor-rules 公式名白名单(防穿越+反射 XSS)。"""
     r = client.get("/api/factor-rules", params={"formula": "../../etc"})

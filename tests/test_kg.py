@@ -18,7 +18,13 @@ from kg.schema import get_db_path
 # 用真实 graph.db (P0 已导入 17 万边) 测命中; 临时空 db 测松耦合
 @pytest.fixture(scope="module")
 def real_db():
-    return get_db_path()
+    p = get_db_path()
+    # 2026-09-20 CI 修红: graph.db 被 gitignore (由 chainkg_loader 重建),
+    # CI checkout 永远没有 → 命中类用例在无库环境 skip (空 db 松耦合用例照常跑)
+    from pathlib import Path
+    if not Path(p).exists():
+        pytest.skip(f"知识图谱库不存在 ({p}), 命中类用例跳过 —— CI/新机器上没有")
+    return p
 
 
 # ── get_company: 命中 / 归一化 / miss ──
