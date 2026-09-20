@@ -113,6 +113,8 @@ def create_api_app(trade_app, allowed_origins: list[str] | None = None) -> FastA
             "kill_active": trade_app.kill.is_active(),
             "reconciled": trade_app.reconciled,
             "monitor_healthy": trade_app.monitor.is_healthy(),
+            # 2026-09-20 item 4b: 行情新鲜度 (看门狗用; None=从未收到 tick)
+            "last_tick_age_s": trade_app.last_tick_age_s,
             # 2026-07-27 裁决②: 时段 + 人话原因, 前端不再笼统红色"降级"
             "session": trade_app.session,
             "monitor_reason": trade_app.monitor_reason,

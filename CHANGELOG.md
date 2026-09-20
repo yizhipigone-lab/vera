@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-09-20 — 脆弱期 P0 修复五项：门禁转绿 + raw 底账去 tick + 看门狗 + 交易文件日志 + 部署快照
+
+**一句话（大白话）**：唯一门禁红了半个多月没人看（里面还藏着一个真 bug）；行情 tick 把审计底账淹到 99.99%；交易进程死了没人知道、也没日志文件。这次把五件事修掉，全部先红后绿。
+
+计划书 `docs/plan/2026-09-20_脆弱期P0修复_计划书.md`（含 item 6「成交先落库再改内存」复核推翻记录：现有"先 book 后 DB + reconciler A3 补写网"已自愈，倒置反而开一个不自愈的洞 → 撤销）；逐行审查 `docs/audit/2026-09-20_脆弱期P0修复计划书_逐行审查.md`（41/41 断言属实，4 条 P1 已补入计划书）。
+
+- **item 7 门禁转绿**：`trade_main.py:906` F821 真 bug（`logger`→`_logger`，0561824 引入——降级路径的诊断日志会自炸成 NameError 被事件引擎吞掉）；`core/market_position_runner.py` 的 10 条 F822 是 `__getattr__` 动态转发的静态误报（逐名运行时验证可取），加 noqa 并写明"不许改回按值 import"。新增 `tests/test_lint_gate.py` 把 CI 门禁命令原样搬进 pytest（ruff 缺失则 skip）——门禁再红会拉着全量测试一起红。**注意**：CI 的 Test 步骤历史上从未执行（历次红全是 lint 短路 skipped，GitHub API job 步骤实测），修绿后它是史上首跑，ubuntu 侧大概率有新红要修。
+- **item 1 raw 底账去 tick**：`_wire` 加 keyword-only `raw`（trade_main.py），tick 接线传 `raw=False`——实测 8 月归档 3,740,113 行里 tick 占 99.99%，真实回报仅 482 行。tick 仍照常入引擎（monitor 心跳/止损靠它），只是不落盘。测试锁"tick 不落 raw + 仍到引擎"（tests/trade/test_raw_log_no_tick.py）。历史文件不删。
+- **item 5 交易进程文件日志**：`main()` 里 `attach_file_logger(output/logs/trade_main.log, max_mb=50)`。**必须只在 main()**——模块级挂 = 测试 import trade_main 就污染生产 output/logs/（2026-07-27 投毒事故同类；tests/trade/test_trade_main_logging.py 锁）。
+- **item 4 看门狗**：scheduler 增 1 分钟 interval job（仅交易日+交易时段，复用 `TRADING_HOURS`），探 8081/8080（强制 3s 超时），连续 2 次失败推飞书（红）/恢复推绿。判定是纯函数 `scheduler/health.py::evaluate_watchdog`（`monitor_healthy` 三态 None 不误报；`last_tick_age_s` 缺失走回退）；状态存模块级 dict；人工停机（`.vera_stopped` 标记）整轮跳过。配套 **4b**：`TradeApp.last_tick_age_s` property + `/api/trade/status` 增同名字段（手机契约快照已按流程同步，diff 只此一个字段）。
+- **item 9 部署快照**：`tools/deploy_snapshot.py`——`output/deploy_snapshots/<ts>/` 存 changes.patch（git diff HEAD）+ new_files/（未跟踪文件，>10MB 只记哈希）+ manifest.txt（HEAD/分支/status 全文/全源文件 sha256），自带四项链式自验；`--tag` 打 `deploy-<ts>` 附注 tag（message 写明 dirty 状态）。上线三步：跑快照 → 重启 → --tag。
+
+**生效条件**：item 1/4b/5/7a 需重启 trade_main（≥15:05，且农场闸门空闲）；item 4a 需重启 scheduler；item 7b 需重启 server.py；item 9 立即生效。**本次实施未代重启任何进程。**
+
+---
+
 ## 2026-09-20 — 审计十条全修（P0-1…P3-8）+ 文档数字勘误
 
 **一句话（大白话）**：把 2026-09-20 质量审计报告里 P0/P1/P2/P3 **全部 23 条**都处置了

@@ -52,6 +52,7 @@
     "connected": "bool",
     "kill_active": "bool",
     "last_probe": "null",
+    "last_tick_age_s": "null",
     "monitor_healthy": "bool",
     "monitor_reason": "str",
     "reconciled": "bool",

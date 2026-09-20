@@ -76,7 +76,7 @@ from trade.reconciler import Reconciler  # noqa: E402
 from trade.risk import KillSwitch, RiskContext, RiskGate  # noqa: E402
 from trade.rotation import RotationFeature  # noqa: E402
 from trade.store import TradeStore  # noqa: E402
-from utils.logger import get_logger  # noqa: E402
+from utils.logger import attach_file_logger, get_logger  # noqa: E402
 
 _logger = get_logger("trade.main")
 
@@ -253,11 +253,16 @@ class TradeApp:
         # 审计M10修复(定位改写): JSONL 是审计/复盘留痕, 不是崩溃重放
         # 机制 —— 恢复走 QMT 全量对账 + 当日成交回填幂等集合。
         # 回调线程只许做这两件事 (铁律 2), 不接 xtquant 同步调用。
-        def _wire(sink, event_type):
+        # 2026-09-20 item 1: raw 底账不记 tick —— 实测 2026-08 归档
+        # 3,740,113 行里 tick 3,739,631 (99.99%), 真实回报仅 482 行,
+        # 审计留痕被行情淹没; tick 仍照常入引擎 (monitor 心跳/止损靠它),
+        # 只是不落盘 (测试锁: tests/trade/test_raw_log_no_tick.py)。
+        def _wire(sink, event_type, *, raw=True):
             def _cb(*args):
                 payload = args[0] if len(args) == 1 else args
-                self.store.append_raw({"kind": event_type, "data": payload,
-                                       "ts": self._clock()})
+                if raw:
+                    self.store.append_raw({"kind": event_type, "data": payload,
+                                           "ts": self._clock()})
                 # 事件 ts 用注入时钟而非 time.time(): 生产无差别,
                 # 测试里与 monitor/executor 时钟同源 (2026-07-27 时段
                 # 感知后 e2e 锚定工作日盘中, 两处时钟必须一致)
@@ -314,7 +319,7 @@ class TradeApp:
             gw_kwargs = {"account_id": config.account_id,
                          "mini_qmt_path": config.qmt_path}
         # tick 闭包先建一次复用 —— on_quote 每 tick 都调, 不再每次重建 _wire
-        tick_wire = _wire(self._engine, EVENT_TICK)
+        tick_wire = _wire(self._engine, EVENT_TICK, raw=False)
         self.gateway = gw_cls(
             on_order=_wire(self._engine, EVENT_ORDER_UPDATE),
             on_trade=_wire(self._engine, EVENT_TRADE_FILL),
@@ -903,7 +908,7 @@ class TradeApp:
             if fut is not None and not fut.done():
                 fut.set_exception(e)
             else:
-                logger.warning("只读查询异常 (无等待方): %s", e, exc_info=True)
+                _logger.warning("只读查询异常 (无等待方): %s", e, exc_info=True)
 
     def read_via_consumer(self, fn, timeout: float = 2.0):
         """把只读查询丢给消费者线程执行, 本线程只等结果 (批次 4.1)。
@@ -1601,6 +1606,23 @@ class TradeApp:
         return "盘中·订阅正常" if self.monitor.is_healthy() else "盘中·轮询兜底"
 
     @property
+    def last_tick_age_s(self) -> float | None:
+        """距最近一根行情 tick 的秒数 (2026-09-20 item 4b)。
+
+        用途: 看门狗从 HTTP 线程判断行情是否真在流 —— monitor.is_healthy()
+        的判定跑在被监控的消费者线程里, 线程卡死时冻结在 True (假死不可检测);
+        tick 年龄是外部可见的活证据。从未收到 tick → None (调用方按"不适用"
+        处理, 不误报)。
+        只读出口: 直接读 monitor._last_tick_ts —— 跨类读私有成员是有意的:
+        monitor 已超铁律 8 公开面上限 (裁决: 新代码不得再增公开方法),
+        组合根 TradeApp 才是 API 契约的出口。
+        """
+        ts = self.monitor._last_tick_ts
+        if ts is None:
+            return None
+        return self._clock() - ts
+
+    @property
     def auto_buy_last(self) -> dict | None:
         """最近一次尾盘自动买入运行结果 (批次4: 委托 AutoBuyFeature.last)。"""
         return self._auto_buy.last
@@ -1621,6 +1643,16 @@ def main() -> None:
     parser.add_argument("--page-port", type=int, default=8080,
                         help="交易页所在回测服务器端口 (CORS 放行 origin 按它推导)")
     args = parser.parse_args()
+
+    # 2026-09-20 item 5: 交易进程文件日志 —— 此前只挂控制台 (模块级 :81),
+    # 关窗即丢, 进程中途死掉无现场可查 (实测 logs/trade_main_console.log
+    # 停在 2026-09-16 而进程 09-20 在跑)。**必须只在 main() 里挂**:
+    # 模块级挂 = 测试 import trade_main 就污染生产 output/logs/
+    # (2026-07-27 投毒事故同类; tests/trade/test_trade_main_logging.py 锁)。
+    # max_mb=50 不同于 scheduler 默认 100: trade 日志密度更高, 小容量早轮转。
+    attach_file_logger(
+        str(_PROJECT_ROOT / "output" / "logs" / "trade_main.log"),
+        max_mb=50, backup_count=5)
 
     config = (load_trade_config(args.config) if Path(args.config).exists()
               else TradeConfig())

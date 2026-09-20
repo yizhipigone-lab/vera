@@ -71,9 +71,14 @@ except Exception:  # pragma: no cover
     import logging
     _logger = logging.getLogger(__name__)
 
-__all__ = ["collect", "latest", "history", "mirror", "shadow_replay",
-           "momentum_buckets", "thermometer_md", "push_thermometer",
-           "INDEX_SPECS", "SHADOW_RULES", "DAILY_PATH", "MIRROR_WARNING",
+# F822 误报说明 (2026-09-20 脆弱期 P0 修复 item 7b): 下列名字里有一部分不在
+# 本文件直接定义, 而是经文件末尾模块级 __getattr__ + _FORWARD_TABLE 按归属
+# 转发 (2026-09-20 审计 P2-5/P2-6/P2-7 有意为之 —— 按值 import 会变成
+# "patch 静默 no-op" 的坑)。ruff 静态分析看不见动态转发, 报 F822。
+# 已逐名运行时验证全部可取。不许改回按值 import, 只许 noqa。
+__all__ = ["collect", "latest", "history", "mirror", "shadow_replay",  # noqa: F822
+           "momentum_buckets", "thermometer_md", "push_thermometer",  # noqa: F822
+           "INDEX_SPECS", "SHADOW_RULES", "DAILY_PATH", "MIRROR_WARNING",  # noqa: F822
            "MOMENTUM_BUCKET_WARNING"]
 
 
