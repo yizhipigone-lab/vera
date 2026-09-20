@@ -27,4 +27,11 @@ jobs:
       - name: Lint (correctness gate)
         run: ruff check . --select F821,F822,F823
       - name: Test
-        run: pytest tests/ -q --tb=short
+        # 2026-09-20: 失败尾部写进 step summary —— check-run API 的 output.text
+        # 就是它, 公共仓库日志下载要权限(403), 摘要不要。诊断通道即救火通道。
+        run: |
+          set -o pipefail
+          pytest tests/ -q --tb=short 2>&1 | tee /tmp/test_out.txt || true
+          EXIT=${PIPESTATUS[0]}
+          tail -60 /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY"
+          exit $EXIT
