@@ -26,6 +26,15 @@ from core.data_fetcher import DataFetcher
 from core.formula_runner import FormulaRunner
 from utils.config_loader import ConfigLoader
 
+# 2026-09-20 CI 修红: 本文件是**真实 TDX 数据链**端到端测试 (见 docstring),
+# 无 TDX 客户端的环境 (CI/ubuntu) 上必炸 (RuntimeError: 无法连接到 TDX)。
+# 模块级守卫: 插件目录不存在即整文件跳过。本地装有通达信 → 照常真跑。
+from core.tdx_path import tdx_plugins_user  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    not os.path.isdir(tdx_plugins_user()),
+    reason="无 TDX 环境 (真实数据链测试只在装有通达信的机器上跑)")
+
 # === Fixtures ===
 
 @pytest.fixture(scope="module")

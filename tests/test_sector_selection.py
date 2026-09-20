@@ -200,6 +200,11 @@ def test_resolve_universe_exclude_st_enabled(monkeypatch):
 
     monkeypatch.setattr(data_fetcher.DataFetcher, "get_stock_universe",
                         classmethod(fake_universe))
+    # 2026-09-20 CI 修红: filter_stocks 内部走 TdxConnector 真连 TDX
+    # (core/stock_filter.py:19) —— 本文件 docstring 声称"不依赖 TDX"却漏
+    # mock 这一层, 本地能绿纯因 TDX 开着; CI 上必炸。补 mock 收口。
+    monkeypatch.setattr("selection.selector.filter_stocks",
+                        lambda codes, **kw: (list(codes), []))
 
     sel = StockSelector({
         "formula_name": "UPN",
