@@ -49,7 +49,12 @@ def test_factory_非Windows回退平台默认():
     loop = factory()
     try:
         assert isinstance(loop, asyncio.AbstractEventLoop)
-        assert not isinstance(loop, asyncio.ProactorEventLoop)
+        # 2026-09-20 CI 修红: 非 Windows 上 asyncio 没有 ProactorEventLoop
+        # 这个类, 直接引用即 AttributeError。该类不存在时"不是它的实例"
+        # 自动成立, 跳过断言即可。
+        proactor = getattr(asyncio, "ProactorEventLoop", None)
+        if proactor is not None:
+            assert not isinstance(loop, proactor)
     finally:
         loop.close()
 

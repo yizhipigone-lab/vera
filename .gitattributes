@@ -1,0 +1,7 @@
+# 行尾规则 (2026-09-20 CI 修红)
+# .bat 必须 CRLF —— cmd 对纯 LF 批处理会解析错乱 (项目既有铁律,
+# 见 CLAUDE.md「本机 Python 不在系统 PATH」节)。git blob 存 LF (规范化),
+# checkout 时强制转 CRLF: Windows 本机与 ubuntu CI 行为一致。
+# 背景: tests/test_start_vera_bat.py::test_byte_invariants 在 CI 红, 根因 =
+# blob 是 LF 而 CI 无转换规则 → checkout 出来裸 LF。
+*.bat text eol=crlf
