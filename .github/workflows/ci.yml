@@ -27,15 +27,16 @@ jobs:
       - name: Lint (correctness gate)
         run: ruff check . --select F821,F822,F823
       - name: Test
-        # 2026-09-20: 失败尾部写进 step summary —— check-run API 的 output.text
-        # 就是它, 公共仓库日志下载要权限(403), 摘要不要。诊断通道即救火通道。
-        # 教训(同日踩坑): 别用 `|| true` —— 它会把 pytest 退出码吞掉, Test 变
-        # 永远绿 (假绿比红更糟)。正确做法: set +e 关掉 GitHub 默认的 -e,
-        # 拿真实退出码, 恢复 -e, 再按真实退出码退出。
+        # 2026-09-20: 失败时把关键行转成 ::error:: workflow command ——
+        # annotations API 匿名可读 (公共仓库日志下载要权限 403)。
+        # 教训(同日踩坑): 别用 `|| true` —— 会吞 pytest 退出码让 Test 永远绿。
         run: |
           set +e
           pytest tests/ -q --tb=short 2>&1 | tee /tmp/test_out.txt
           EXIT=${PIPESTATUS[0]}
           set -e
-          tail -60 /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY"
+          if [ $EXIT -ne 0 ]; then
+            tail -40 /tmp/test_out.txt | sed -e 's/%/%25/g' -e 's/\r/%0D/g' \
+              | while IFS= read -r l; do echo "::error::$l"; done
+          fi
           exit $EXIT
