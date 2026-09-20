@@ -136,6 +136,9 @@ app.include_router(ai_router)
 # 2026-09-17: 大盘位置 TAB (十年百分位/市场宽度/照镜子/择时影子; 只读参考不联仓位)
 from market_position_api import router as market_position_router  # noqa: E402
 app.include_router(market_position_router)
+# 2026-09-20: 舆情 TAB (异动台账回溯 + 机构研究雷达; 只读, 守铁律 1 不联仓位调度)
+from sentiment_api import router as sentiment_router  # noqa: E402
+app.include_router(sentiment_router)
 
 
 # ====== 配置端点 ======
@@ -260,6 +263,14 @@ async def get_status():
             step = _progress.STAGE_NAMES.get(snap["stage"], step)
     prog = max(prog, _last_served_pct)
     _last_served_pct = prog
+    # 2026-09-20: 调度器存活 (三态: running/stopped/down)。
+    # additive 字段, 旧前端不读不受影响。fail-soft: 判读本身挂了不许拖垮 /api/status。
+    try:
+        from scheduler.health import status as _sched_status
+        sched = _sched_status()
+    except Exception as _e:
+        sched = {"state": "unknown", "age_s": None, "heartbeat": None,
+                 "note": f"调度器状态判读不可用: {_e}"}
     return {
         "running": pipeline_status.running,
         "progress": prog,
@@ -268,6 +279,7 @@ async def get_status():
         "eta_s": round(eta, 1),
         "error": pipeline_status.error,
         "has_result": pipeline_status.result is not None,
+        "scheduler": sched,
     }
 
 

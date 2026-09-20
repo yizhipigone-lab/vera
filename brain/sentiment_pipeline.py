@@ -67,17 +67,22 @@ def _fetch_watch_news(cfg: dict) -> list[dict]:
                           "source": "caixin"})
     except Exception as e:
         logger.warning("财新要闻源失败 (跳过): %s", e)
-    # 源2: 关键词搜索 (ddgs, 实时性更强; rate_limit 2s/次, 限 3 个关键词≈6s)
+    # 源2: 关键词检索 —— 2026-09-20 换源为东财个股/概念新闻 (akshare)。
+    # 原用 `brain.search_web` (ddgs)，其三个 backend 全部失效：baidu 的 snippet 硬编码
+    # 为空、过不了"必须有摘要"的判据；bing 已从 ddgs 9.16 移除（调用时静默回退去打被墙的
+    # google）；且全程无代理。这条腿等于瘸的 —— 153 次 tick 里 new=0 占 130 次。
+    # 用户 2026-09-20 拍板**接受降级**：不引入 SearXNG / 不修 ddgs，改用已在用的 akshare。
+    # `fetch_news(kw)` 关键词非空时优先走东财按词搜，失败自动回退老源（fail-open）。
     for kw in keywords[:3]:
         try:
-            from brain.search_web import search_web
-            for r in search_web(kw, max_results=5, days=1):
-                txt = (str(r.get("title", "")) + " " + str(r.get("snippet", ""))).strip()
+            from policy_pipeline.sources.news_search import fetch_news
+            for r in fetch_news(kw, limit=5):
+                txt = (str(r.get("title", "")) + " " + str(r.get("text", ""))).strip()
                 if txt:
                     items.append({"text": txt, "url": r.get("url", ""),
-                                  "source": r.get("source", "search")})
+                                  "source": "em_news"})
         except Exception as e:
-            logger.warning("search_web[%s] 失败 (跳过): %s", kw, e)
+            logger.warning("关键词新闻[%s] 失败 (跳过): %s", kw, e)
     return items
 
 
@@ -140,16 +145,31 @@ def run_sentiment_tick(cfg: dict | None = None, *, dedup: NewsDedup | None = Non
         except Exception as e:
             logger.exception("LLM 打分异常 (本轮无打分): %s", e)
             results = []
-        for n, r in zip(fresh[:max_n], results):
+        # 2026-09-20 修（生产静默失效 5 周）：`judge_batch` 返回的是**嵌套**结构
+        #     {"id":…, "sentiment":{polarity,strength,confidence,evidence_quote,hit_pool}}
+        # （其 docstring 即如此），而这里原来按**扁平**读 `r.get("polarity")`、
+        # 并在**顶层**判 `"error" not in r` —— 两处都错一层，于是分数恒为 None/0：
+        #   · 规则1/2 因 `abs(0.0) < polarity_min` 而**从未触发过一次**
+        #     （实证：news_seen 360 条全 polarity=NULL；179 条异动 100% 是 index_move）
+        #   · 打分失败项被当成成功（日志里 scored 恒等于 new 就是这个原因）
+        # 现按契约拆包，并把 text/ts 补进分数字典 —— 规则函数会读它们构造 Alert，
+        # 缺 ts 会得到 epoch 0（卡片与日报的时间字段会印成 1970）。
+        # 契约由 tests/brain/test_sentiment_shape_contract.py 锁（用真实的 judge_batch，
+        # 只桩 LLM IO —— 原来那个测试手写了扁平 mock，所以 5 周没抓到）。
+        for n, b, r in zip(fresh[:max_n], batch, results):
             chash = n.get("_hash") or content_hash(n.get("text", ""), n.get("url"))
-            pol = r.get("polarity") if isinstance(r, dict) and "error" not in r else None
+            sent = r.get("sentiment") if isinstance(r, dict) else None
+            ok = isinstance(sent, dict) and "error" not in sent
             try:
-                dedup.mark_news_seen(chash, polarity=pol, url=n.get("url"))
+                dedup.mark_news_seen(
+                    chash, polarity=sent.get("polarity") if ok else None,
+                    url=n.get("url"))
             except Exception:
                 pass
-            if isinstance(r, dict) and "error" not in r:
-                r.setdefault("text", n.get("text", ""))
-                scored.append(r)
+            if ok:
+                sent.setdefault("text", b.get("text", ""))
+                sent.setdefault("ts", b.get("ts") or now)
+                scored.append(sent)
     stats["scored"] = len(scored)
 
     # 5. 行情快照 (双保险: _fetch_snapshot 内部已 fail-soft, 此处兜底防未知异常穿透)

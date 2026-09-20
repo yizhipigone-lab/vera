@@ -17,15 +17,20 @@
 - 财务指标：新浪（按报告期）；最新价：腾讯主源、新浪兜底；
 - 涨停池、南向资金：akshare 1.18.64 里只有东财源（hsgt/zt_pool 实测可用，
   与限连的 hist/individual_info/news_em 是不同主机，不砍）；
-- 舆情三层（2026-08-13 换源）：公告=巨潮资讯（tushare anns_d 无权限已砍）；
-  互动易问答=巨潮（东财个股新闻 stock_news_em 接口崩溃已砍）；
-  快讯=新浪/同花顺（财联社 stock_info_global_cls 超时已砍；雪球/腾讯无可用
-  新闻接口，实测全挂）。
+- 舆情三层：公告=巨潮资讯（tushare anns_d 无权限已砍）；
+  互动易问答=巨潮；
+  快讯=新浪/同花顺（雪球/腾讯无可用新闻接口，实测全挂）。
+  **2026-09-20 更正两处过期结论**：原注释记着"东财个股新闻 stock_news_em 接口崩溃
+  ArrowInvalid 已砍"与"财联社 stock_info_global_cls 超时已砍"—— 那是 2026-08-13 在
+  akshare 1.18.64 下的观察，**1.18.94 实测两者都完全可用**，且 stock_news_em **能吃概念词**
+  （算力租赁/CPO/半导体 各返 10 行），已接入 `news_search` 作关键词检索主源
+  （`stock_news(keyword=...)`）。教训与 "ddgs 9.16 拿掉 bing" 同源：
+  **版本漂移会让旧结论过期，写进注释就被当成永久决定**。
 
 用法：
     python -m brain.data_tools market_snapshot [YYYYMMDD] [--fresh]  # 指数+南向资金+涨停池+市场体检（缓存 2h）
     python -m brain.data_tools market_health                        # 市场体检表（4指数×4窗口，TDX）
-    python -m brain.data_tools stock_news [N]                        # 财新要闻 N 条（默认 15）
+    python -m brain.data_tools stock_news [N] [关键词]              # 无词=财新要闻 N 条；有词=东财按词搜
     python -m brain.data_tools zt_pool [YYYYMMDD]                    # 涨停池（非交易日自动回退）
     python -m brain.data_tools stock_technicals <代码>               # 个股 MA/MACD/RSI/BOLL
     python -m brain.data_tools stock_fundamentals <代码>             # 个股 PE/PB/PS/股息率/行业
@@ -189,8 +194,25 @@ def _norm_code(code: str) -> str:
     return c.split(".")[0]
 
 
-def stock_news(n: int = 15) -> str:
-    """财新要闻 → Markdown 段（政策/公告/宏观线索的主要来源）。"""
+def stock_news(n: int = 15, keyword: str = "") -> str:
+    """财经新闻 → Markdown 段。
+
+    无 keyword: 财新要闻（政策/公告/宏观线索的主要来源）。
+    有 keyword: **按词搜**（东财个股/概念新闻，akshare `stock_news_em`）——
+      个股名或概念词均可（实测 "算力租赁"/"CPO" 都能返），带发布时间与来源。
+      这是 `brain/search_web` 失效后（2026-09-20 用户拍板接受降级）的软舆情替代腿。
+    """
+    if keyword:
+        from policy_pipeline.sources.news_search import fetch_news
+        items = fetch_news(keyword, limit=n)
+        if not items:
+            return _section(f"关键词新闻（{keyword}）",
+                            "【缺】东财个股/概念新闻无结果或不可用")
+        rows = [f"- {it.get('date', '')} {it.get('title', '')}"
+                f"（{it.get('url', '')}）\n  {it.get('text', '')[:200]}"
+                for it in items]
+        return _section(f"关键词新闻（{keyword}，东财，最近 {len(rows)} 条）",
+                        "\n".join(rows))
     if not _HAS_AK:
         return _section("财新要闻", _no_ak())
     ak = _ak()
@@ -461,8 +483,10 @@ def stock_notices(code: str, days: int = 90) -> str:
     三层信息源（2026-08-13 用户拍板换源，旧三源两轮实测全挂，砍掉省 token）：
     - 公告：巨潮资讯 stock_zh_a_disclosure_report_cninfo（官方披露，最硬；
       旧源 tushare anns_d 无接口权限，砍）；
-    - 互动易问答：巨潮 stock_irm_cninfo（投资者提问+公司回复，个股特有舆情；
-      旧源东财 stock_news_em 接口崩溃 ArrowInvalid，砍）；
+    - 互动易问答：巨潮 stock_irm_cninfo（投资者提问+公司回复，个股特有舆情）；
+      （旧注释称"旧源东财 stock_news_em 接口崩溃 ArrowInvalid，砍"—— **2026-09-20
+      已在 akshare 1.18.94 复测通过**，该接口现由 `stock_news(keyword=...)` 使用，
+      见模块顶部"两处过期结论"说明。）
     - 快讯按公司名过滤：新浪 stock_info_global_sina → 同花顺 stock_info_global_ths
       （旧源财联社 stock_info_global_cls 超时两轮复测均挂，砍；
       雪球/腾讯无可用新闻接口，2026-08-13 实测全挂）。
@@ -615,10 +639,12 @@ def main(argv: list[str] | None = None) -> int:
                                     "stock_technicals", "stock_fundamentals",
                                     "stock_notices", "stock_diagnosis"])
     ap.add_argument("arg", nargs="?", default=None,
-                    help="stock_news=条数；zt_pool=YYYYMMDD；"
+                    help="stock_news=条数或关键词；zt_pool=YYYYMMDD；"
                          "stock_technicals/stock_fundamentals/stock_notices/"
                          "stock_diagnosis=股票代码；"
                          "market_snapshot=YYYYMMDD（缺省今天）")
+    ap.add_argument("arg2", nargs="?", default=None,
+                    help="stock_news 第二参=条数（第一参为关键词时用）")
     ap.add_argument("--fresh", action="store_true",
                     help="market_snapshot 绕过 2 小时缓存强制重取")
     args = ap.parse_args(argv)
@@ -629,7 +655,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "market_health":
         print(market_health())
     elif args.cmd == "stock_news":
-        print(stock_news(int(args.arg) if args.arg else 15))
+        # 2026-09-20: `stock_news [N] [关键词]` 三态，给大脑一条命令覆盖两种用法：
+        #   无参            → 财新要闻 15
+        #   N               → 财新要闻 N
+        #   非数字 / N 关键词 → 东财按词搜（关键词在前时 N 取默认 10）
+        a1, a2 = args.arg, args.arg2
+        if a1 and not a1.isdigit():
+            n = int(a2) if (a2 and a2.isdigit()) else 10
+            print(stock_news(n, a1))
+        else:
+            print(stock_news(int(a1) if a1 else 15, a2 or ""))
     elif args.cmd == "zt_pool":
         print(zt_pool(args.arg))
     elif args.cmd == "stock_diagnosis":

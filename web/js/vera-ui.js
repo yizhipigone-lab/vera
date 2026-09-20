@@ -375,7 +375,13 @@ function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade',
   if (isMarket && window.marketPageEnter) window.marketPageEnter();
   // 2026-09-19 UIUX: 补离场钩子 (倒计时 1s 定时器原来切走后空跑+到点后台白刷新)
   if (!isMarket && window.marketPageLeave) window.marketPageLeave();
-  document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis||isMarket)?'none':'';
+  // 2026-09-20: 舆情 TAB (固定浮层; 异动台账 + 机构研究雷达; 切入加载一次, 无轮询)
+  var isSentiment = name==='sentiment';
+  var _tabSt = document.getElementById('tabBtnSentiment'); if (_tabSt) _tabSt.classList.toggle('active', isSentiment);
+  var _pSt = document.getElementById('pageSentiment'); if (_pSt) _pSt.classList.toggle('active', isSentiment);
+  if (isSentiment && window.sentimentPageEnter) window.sentimentPageEnter();
+  if (!isSentiment && window.sentimentPageLeave) window.sentimentPageLeave();
+  document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis||isMarket||isSentiment)?'none':'';
   document.getElementById('pageLab').classList.toggle('active', isLab);
   document.getElementById('pageTrade').classList.toggle('active', isTrade);
   var _pa = document.getElementById('pageAnalysis'); if (_pa) _pa.classList.toggle('active', isAnalysis);
@@ -500,6 +506,7 @@ document.getElementById('tabBtnAi')?.addEventListener('click', () => switchTab('
 // 前端 Node 单测测的是纯函数，**DOM 接线没人测** ——
 // 现在有 `tests/js/test_tab_wiring.js` 逐一对账（每个 tabBtn 必须有点击监听）。
 document.getElementById('tabBtnMarket')?.addEventListener('click', () => switchTab('market'));
+document.getElementById('tabBtnSentiment')?.addEventListener('click', () => switchTab('sentiment'));
 document.getElementById('btnFarmCheck')?.addEventListener('click', () => farmGate(farmCheck, '检查增量'));
 document.getElementById('btnFarmOnboard')?.addEventListener('click', () => farmGate(farmOnboard, '一键入库'));
 document.getElementById('btnFarmVerify')?.addEventListener('click', () => farmGate(farmVerify, '定量复核'));
@@ -521,15 +528,57 @@ function _farmStatusMark(status, withWord) {
   return withWord ? '❌ 失败 ' : '❌';
 }
 
+// ── farm 进度文案(纯函数; tests/js/test_farm_progress.js 按标记抠出来真跑) ──
+// 2026-09-20 用户报「明明说运行中, 却没有体现进度」: 页面只显示**最后一行原始
+// stdout**, 而粗扫一个公式要跑十几分钟 (中间层把它吞了), 那行字就冻在上一阶段的
+// 诊断行「TQ数据连接已关闭」上 —— 看着像报错。现在改成「进度 13/94 · GS1369 ·
+// 已 44 分钟」, 实时输出贴在**正在跑的那张卡**里。
+function _farmElapsedTxt(sec) {
+  if (sec == null || !isFinite(sec)) return '';       // 后端老版本没这字段 → 不显示
+  const mins = Math.floor(sec / 60);
+  if (mins < 1) return '不到 1 分钟';
+  if (mins < 60) return '已 ' + mins + ' 分钟';
+  return '已 ' + Math.floor(mins / 60) + ' 小时 ' + (mins % 60) + ' 分钟';
+}
+
+function _farmRunningText(cur) {
+  cur = cur || {};
+  const p = cur.progress || {};                       // 后端解析阶段行 [i/N] 得来
+  const parts = [];
+  if (p.total) {
+    const gs = String(p.text || '').match(/GS\d{4}/);
+    parts.push('进度 ' + p.done + '/' + p.total + (gs ? ' · ' + gs[0] : ''));
+  }
+  const el = _farmElapsedTxt(cur.elapsed_s);
+  if (el) parts.push(el);
+  let s = '运行中' + (parts.length ? ' · ' + parts.join(' · ') : '');
+  const stage = String(cur.stage || '').trim();
+  // stage 就是那条进度行时不再重复一遍
+  if (stage && stage !== String(p.text || '').trim()) s += ' · ' + stage;
+  return s;
+}
+// ── /farm 进度文案 ──────────────────────────────────────────────
+
+function _farmTailHtml(tail) {
+  const lines = (tail || []).slice(-30);
+  if (!lines.length) return '';
+  return '<div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:2px">实时输出 (最近 '
+    + lines.length + ' 行)</div>'
+    + '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);'
+    + 'padding:var(--sp-2);border-radius:6px;margin:0;white-space:pre-wrap">'
+    + esc(lines.join('\n')) + '</pre>';
+}
+
 function refreshFarmStatus() {
   fetchFarmStatus().then(d => {
     const cur = d.current, last = d.last || {};
+    const isRunning = !!(cur && cur.status === 'running');
     const setS = (id, gate) => { const el = document.getElementById(id); if (!el) return;
-      if (cur && cur.gate === gate && cur.status === 'running') {
+      if (isRunning && cur.gate === gate) {
         // 2026-09-19 UIUX: 四道闸门运行中都给停止入口 (原来只有闸门②有) ——
         // /api/farm/stop 作用于整个串行 runner, 不分闸门 (core/farm_api.py)
         el.innerHTML = '';
-        el.appendChild(document.createTextNode('⏳ 运行中: ' + (cur.stage || '') + ' '));
+        el.appendChild(document.createTextNode('⏳ ' + _farmRunningText(cur) + ' '));
         const stopBtn = document.createElement('button');
         stopBtn.className = 'btn btn-danger btn-xs';
         stopBtn.textContent = '■ 停止';
@@ -548,12 +597,19 @@ function refreshFarmStatus() {
       a.onclick = has ? () => showFarmLog(gate, (d.gates || {})[gate] || gate) : null; };
     setLog('farmLogCheck', 'check'); setLog('farmLogOnboard', 'onboard');
     setLog('farmLogVerify', 'verify'); setLog('farmLogBacktest', 'backtest');
+    // 2026-09-20: 实时输出画在**正在跑的那张卡**里。旧版固定写死闸门①的
+    // farmNewList —— 用户在④卡片盯着「运行中」, 那段日志却在页面另一头, 等于没有。
+    _FARM_GATES.forEach(function (g) {
+      const box = document.getElementById('farmTail' + g[0]); if (!box) return;
+      const live = isRunning && cur.gate === g[1];
+      box.style.display = live ? '' : 'none';
+      if (!live) return;
+      box.innerHTML = _farmTailHtml(cur.log_tail);
+      // 30 行塞不进 200px 的框 —— 每次重绘都滚到底, 保证眼睛落在**最新**那几行上
+      const pre = box.querySelector('pre');
+      if (pre) pre.scrollTop = pre.scrollHeight;
+    });
     renderFarmSummary(d); renderFarmOverview(d);
-    const box = document.getElementById('farmNewList');
-    if (box && cur && cur.status === 'running') {
-      box.innerHTML = '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);padding:var(--sp-2);border-radius:6px;margin-top:var(--sp-2)">'
-        + esc((cur.log_tail || []).slice(-30).join('\n')) + '</pre>';
-    }
   }).catch(() => {});
 }
 
@@ -582,7 +638,9 @@ function renderFarmSummary(d) {
     const suffix = g[0], gate = g[1], btnId = g[2];
     const info = sum[gate] || {};
     const sumEl = document.getElementById('farmSum' + suffix);
-    if (sumEl) sumEl.textContent = info.text || '';
+    // 成绩单是**上一轮跑完**的结果 (archive/报告口径), 与上面那行「运行中」不是一回事 ——
+    // 不加这个前缀时, "运行中 + 9月16日 达标 0" 看着像本轮跑完的结论 (2026-09-20 用户报)
+    if (sumEl) sumEl.textContent = info.text ? '上次成绩: ' + info.text : '';
     const btn = document.getElementById(btnId);
     if (btn) { btn.disabled = info.ready === false; btn.title = info.ready === false ? (info.hint || '') : ''; }
     const noteEl = document.getElementById('farmNote' + suffix);
@@ -924,9 +982,41 @@ fetchResults().then(list => { if (list&&list.length>0) { document.getElementById
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200); });
 
 // W1-4: 初始 hash 恢复页签 + 浏览器前进后退联动 (白名单与 switchTab 实际入参一致)
-const _validTabs = ['backtest','lab','trade','analysis','research','records','data','farm','ai','market'];
+const _validTabs = ['backtest','lab','trade','analysis','research','records','data','farm','ai','market','sentiment'];
 function _applyHashTab() { const h = location.hash.slice(1); if (_validTabs.includes(h)) switchTab(h); }
 _applyHashTab();
 window.addEventListener('hashchange', _applyHashTab);
 
 // Test exports are in recover.js (loadable by Node without ES module support)
+
+// ── 2026-09-20: 调度器存活常驻指示 ──────────────────────────────────
+// 为什么单开一个轮询: 上面 run 内那个 setInterval 只在**回测运行时**存在，
+// 空闲时页面什么都不显示 —— 而调度器停机恰恰发生在空闲时（实测两个停机
+// 窗口 09-11~09-14 / 09-19 至今，都是"没人发现"）。
+// 三态由后端 scheduler/health.py 判读：running / stopped（人工停的，不报警）
+// / down（这才是要你看一眼的）。**区分 stopped 与 down 是关键** ——
+// 否则你每次正常 stop_vera.bat 停机，页面都喊"死了"，假警报多了就没人看了。
+async function refreshSchedulerStatus() {
+  const el = document.getElementById('schedStatus');
+  if (!el) return;
+  try {
+    const s = await fetchStatus();
+    const sc = s && s.scheduler;
+    if (!sc) { el.textContent = ''; return; }
+    const map = {
+      running: ['运行中', 'ok'],
+      stopped: ['已人工停止', 'muted'],
+      down: ['疑似停机 ⚠', 'bad'],
+      unknown: ['状态未知', 'muted']
+    };
+    const m = map[sc.state] || map.unknown;
+    const age = (sc.age_s === null || sc.age_s === undefined)
+      ? '' : (' · 心跳 ' + Math.round(sc.age_s) + 's 前');
+    el.className = 'sched-status sched-' + m[1];
+    el.textContent = '调度器：' + m[0] + age;
+    el.title = (sc.note || '')
+      + '\n停机时先看 output/logs/scheduler.log；重启用 start_vera.bat。';
+  } catch (e) { el.textContent = ''; }
+}
+setInterval(refreshSchedulerStatus, 60000);
+refreshSchedulerStatus();

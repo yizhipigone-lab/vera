@@ -26,6 +26,12 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":8081 .*LISTENING"') d
     call :KillIfPython %%a
 )
 
+rem ---- 2026-09-20: 写"人工停止"标记 ----
+rem  没有它, 8080 页面在你每次正常停机时都会喊"调度器疑似停机"(假警报)。
+rem  路径须与 scheduler/health.py 的 STOP_MARKER_PATH 一致(有测试锁)。
+if not exist "%~dp0data" mkdir "%~dp0data" >nul 2>&1
+> "%~dp0data\.vera_stopped" echo 停止于 %date% %time%
+
 echo.
 echo 已停止。注意:本脚本不碰 miniQMT 客户端本身。
 pause

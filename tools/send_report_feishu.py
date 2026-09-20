@@ -76,15 +76,41 @@ def send_card(webhook: str, title: str, body: str, idx: int, total: int):
         raise RuntimeError(f"飞书返回异常: {r}")
     return r
 
+def push_markdown(md_text: str, title: str) -> dict:
+    """MD 文本 → 飞书卡片（自动分片）。**fail-soft，永不抛**。
+
+    2026-09-20 收口：此前「取 webhook → md_to_lark → chunk → 逐卡 send_card」
+    这段编排在 4 处逐字重复（notes_gen/daily.push_review、notes_gen/morning.push_brief、
+    core/market_thermometer.push_thermometer、本文件 main）。本函数是**唯一实现**，
+    行为与原四处逐条一致（含两种失败 reason 文案）。
+    调度器 job 不该因为推送失败而中断，故此处绝不抛。
+
+    返 {"ok": True, "cards": n, "codes": [...]}
+    或 {"ok": False, "reason": "..."}。
+    """
+    try:
+        try:
+            webhook = load_webhook()
+        except SystemExit:
+            # load_webhook 未配 webhook 时 sys.exit —— 文案与既有调用方一致
+            return {"ok": False, "reason": "未配置 FEISHU_WEBHOOK_URL (.env)"}
+        chunks = chunk_sections(md_to_lark(md_text))
+        codes = []
+        for i, c in enumerate(chunks, 1):
+            rr = send_card(webhook, title, c, i, len(chunks))
+            codes.append(rr.get("code", rr.get("StatusCode")))
+        return {"ok": True, "cards": len(chunks), "codes": codes}
+    except Exception as e:
+        return {"ok": False, "reason": f"飞书推送器不可用: {e}"}
+
+
 def main():
     md_path = sys.argv[1]
     title = sys.argv[2] if len(sys.argv) > 2 else os.path.basename(md_path)
-    webhook = load_webhook()
-    body = md_to_lark(open(md_path, encoding="utf-8").read())
-    chunks = chunk_sections(body)
-    for i, c in enumerate(chunks, 1):
-        r = send_card(webhook, title, c, i, len(chunks))
-        print(f"卡片 {i}/{len(chunks)} 已发送 ({len(c.encode('utf-8'))}B) code={r.get('code', r.get('StatusCode'))}")
+    r = push_markdown(open(md_path, encoding="utf-8").read(), title)
+    if not r.get("ok"):
+        sys.exit(f"推送失败: {r.get('reason')}")
+    print(f"已发送 {r['cards']} 张卡片, code={r['codes']}")
     print("全部发送完成")
 
 if __name__ == "__main__":

@@ -44,14 +44,25 @@ def test_no_trade_import():
 
 # ── 端到端 (mock 外部) ─────────────────────────────────────────────
 
+def _batch(*sents):
+    """真实 `judge_batch` 的返回形状：`{"id":…, "sentiment":{…}}`（2026-09-20）。
+
+    本文件原来三处 mock 都手写成**扁平** `{"polarity": …}` —— 锁的是"假设"而非
+    **契约**，于是规则 1/2 在生产静默失效 5 周，而这里全程绿灯。现统一按真实形状；
+    分数层的形状契约另由 `test_sentiment_shape_contract.py` 用**真实的 judge_batch**
+    （只桩 LLM IO）独立锁死。
+    """
+    return [{"id": None, "sentiment": s} for s in sents]
+
+
 def test_run_tick_end_to_end_mocked(monkeypatch, tmp_path):
     monkeypatch.setattr(sp, "_fetch_watch_news", lambda cfg: [
         {"text": "半导体大爆发", "url": "http://a"},
     ])
-    monkeypatch.setattr(sp, "judge_batch", lambda items: [
+    monkeypatch.setattr(sp, "judge_batch", lambda items: _batch(
         {"polarity": 0.8, "strength": 2, "confidence": 0.9,
          "evidence_quote": "爆发", "hit_pool": [{"value": "300687"}]},
-    ])
+    ))
     _mock_empty_snapshot(monkeypatch)
     dedup = NewsDedup(tmp_path / "t.db")
     notifier = FakeNotifier()
@@ -136,10 +147,10 @@ def test_run_tick_push_suppression(monkeypatch, tmp_path):
     monkeypatch.setattr(sp, "_fetch_watch_news", lambda cfg: [
         {"text": "利空", "url": "http://a"},
     ])
-    monkeypatch.setattr(sp, "judge_batch", lambda items: [
+    monkeypatch.setattr(sp, "judge_batch", lambda items: _batch(
         {"polarity": -0.9, "strength": 2, "confidence": 0.9,
          "evidence_quote": "崩", "hit_pool": [{"value": "300687"}]},
-    ])
+    ))
     _mock_empty_snapshot(monkeypatch)
     dedup = NewsDedup(tmp_path / "t.db")
     notifier = FakeNotifier()
@@ -159,10 +170,10 @@ def test_tick_logs_alert_to_db(monkeypatch, tmp_path):
     monkeypatch.setattr(sp, "_fetch_watch_news", lambda cfg: [
         {"text": "半导体大爆发", "url": "http://a"},
     ])
-    monkeypatch.setattr(sp, "judge_batch", lambda items: [
+    monkeypatch.setattr(sp, "judge_batch", lambda items: _batch(
         {"polarity": 0.8, "strength": 2, "confidence": 0.9,
          "evidence_quote": "爆发", "hit_pool": [{"value": "300687"}]},
-    ])
+    ))
     _mock_empty_snapshot(monkeypatch)
     dedup = NewsDedup(tmp_path / "t.db")
     try:

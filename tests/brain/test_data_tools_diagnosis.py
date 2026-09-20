@@ -82,8 +82,13 @@ class TestPromptPointsToDiagnosis:
         assert "stock_diagnosis" in SYSTEM_PROMPT
 
     def test_软舆情纪律未丢(self):
-        """search_web 这条腿不可省的纪律仍在。"""
-        assert "search_web" in SYSTEM_PROMPT
+        """「这条腿不可省」的纪律仍在 —— 2026-09-20 换源后指向 akshare 按词搜。
+
+        旧断言是 `"search_web" in SYSTEM_PROMPT`；换源后它仍会**偶然通过**
+        （正文抓取那句还留着 search_web fetch），但测的已不是本意 —— 故改为
+        重新钉在新源上，避免"通过了但通过的理由是错的"。
+        """
+        assert "stock_news" in SYSTEM_PROMPT
         assert "不可省" in SYSTEM_PROMPT
 
     def test_红线和A股纪律逐字保留(self):

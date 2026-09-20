@@ -3,7 +3,7 @@
 动机（2026-08-13 提速二期）：研究 TAB 个股诊断类问题原来走 claude agent loop，
 LLM 分 4~6 轮调工具（每轮 = 1 次 LLM 往返 + 1 次子进程冷启动），端到端几十秒。
 学 tools/daily_brief.py 的日报模式：Python 侧一次性把数取全（stock_diagnosis
-一站式 + search_web 软舆情，并发），LLM 只调一次按数据包末尾的模板成文。
+一站式 + 东财个股新闻软舆情，并发），LLM 只调一次按数据包末尾的模板成文。
 
 设计（深模块）：调用方只问一句 try_stock_diagnosis()——
 返 None = 意图不匹配 / 取数异常，调用方回落原 agent loop（松耦合）；
@@ -86,12 +86,16 @@ def match_market_brief(question: str) -> bool:
 
 
 def _fmt_hits(hits: list[dict]) -> str:
-    """联网搜索结果 → 软舆情摘要文本（无结果时按纪律明说待核实）。"""
+    """软舆情新闻 → 摘要文本（无结果时按纪律明说待核实）。
+
+    2026-09-20 换源：原来是 ddgs 联网搜索，现走东财个股新闻（akshare）。
+    字段从 {title,url,snippet} 改为 {title,url,date,text}（`fetch_news` 的契约）。
+    """
     if not hits:
-        return "（联网搜索无结果/不可用——软舆情缺失，成文时如实标注「待核实」）"
+        return "（软舆情新闻源无结果/不可用——软舆情缺失，成文时如实标注「待核实」）"
     return "\n".join(
-        f"- {h.get('title', '')}：{h.get('snippet', '')[:150]}"
-        f"（{h.get('url', '')}）"
+        f"- {h.get('title', '')}：{h.get('text', '')[:150]}"
+        f"（{h.get('date', '')} {h.get('url', '')}）"
         for h in hits[:5])
 
 
@@ -99,7 +103,7 @@ async def try_stock_diagnosis(question: str, channel: str = "default",
                               on_line=None, timeout: int = 300) -> dict | None:
     """个股诊断快路径。返 None = 不适用（调用方回落 agent loop）。
 
-    数据获取与成文分离：stock_diagnosis（结构化三包+模板）与 search_web
+    数据获取与成文分离：stock_diagnosis（结构化三包+模板）与东财个股新闻
     （软舆情，固定打法里"不可省"的那条腿）并发跑，都进 prompt；
     LLM 单次调用成文（max_turns=4 只是防呆上限，prompt 已明令不再调工具）。
     """
@@ -108,22 +112,21 @@ async def try_stock_diagnosis(question: str, channel: str = "default",
         return None
     try:
         from brain import data_tools
-        from brain.search_web import search_web
+        from policy_pipeline.sources.news_search import fetch_news
         name = data_tools._kg_company_name(code)  # 同包私有复用：kg 官方名防记错
         pack, hits = await asyncio.gather(
             asyncio.to_thread(data_tools.stock_diagnosis, code),
-            asyncio.to_thread(search_web, f"{name or code} 最新消息",
-                              5, "auto", 14))
+            asyncio.to_thread(fetch_news, name or code, 5))
     except Exception as e:  # 松耦合：取数挂了不挡路，回落 agent loop
         logger.warning(f"快路径取数异常，回落 agent loop: {e}", exc_info=True)
         return None
     prompt = (
         f"以下是 {code}（{name or '名称未知'}）的个股诊断数据包，"
-        "Python 已取好（含成文模板），外加联网搜索的软舆情摘要。\n"
+        "Python 已取好（含成文模板），外加东财个股新闻的软舆情。\n"
         "请直接按数据包末尾的模板成文：不要再调用任何工具搜数据；"
         "术语首次出现配大白话；标【缺】的部分如实写数据缺失；"
         "末尾必须输出 <counter_evidence> 段。\n\n"
-        "# 软舆情（联网搜索摘要，可信度和日期需自行判断）\n\n"
+        "# 软舆情（东财个股新闻，可信度和日期需自行判断）\n\n"
         + _fmt_hits(hits)
         + "\n\n---\n\n" + pack)
     from brain import prompts

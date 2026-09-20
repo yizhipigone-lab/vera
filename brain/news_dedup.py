@@ -210,6 +210,47 @@ class NewsDedup:
         return {"alerts": alerts, "bullish": bullish,
                 "bearish": bearish, "total": len(alerts)}
 
+    def alerts_between(self, start_ts: float, end_ts: float, *,
+                       rule: str | None = None, code: str | None = None,
+                       limit: int = 500) -> list[dict]:
+        """区间内异动台账（舆情页历史回溯用）。按 ts **倒序**。fail-soft 返 []。
+
+        与 daily_alert_summary 的分工（**不是第二份实现**）：
+        - `daily_alert_summary(since)` 只取下界、不带 ts —— 盘后日报聚合专用，链路不动；
+        - 本方法带 ts、支持任意区间与 (rule, code) 筛选 —— 页面回溯专用。
+        两者读同一张 `alert_log`，只是投影与筛选不同。
+
+        返 [{ts, code, name, polarity, strength, rule, evidence}]。
+        ts 是 Unix 秒（int）；日期格式化留给调用方，store 不掺展示逻辑。
+
+        2026-09-20 铁律 8 说明：`news_dedup` 是**持久化契约**(store)，按 2026-09-19
+        架构审查批次 5.3 的豁免口径可在 store 内按表域加查询方法；但"新代码不得再增
+        公开方法"仍守 —— 本批次**只加这一个**，后续统计一律在上层算。
+        """
+        sql = ("SELECT ts,code,name,polarity,strength,rule,evidence FROM alert_log "
+               "WHERE ts>=? AND ts<=?")
+        params: list = [int(start_ts), int(end_ts)]
+        if rule:
+            sql += " AND rule=?"
+            params.append(rule)
+        if code:
+            sql += " AND code=?"
+            params.append(code)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(int(limit))
+        try:
+            with self._lock:
+                rows = self._conn.execute(sql, params).fetchall()
+        except Exception as e:
+            # 收 sqlite3.Error 之外还要收 AttributeError：连接已被 close 时
+            # `self._conn` 是 None → `None.execute` 抛的是 AttributeError 不是
+            # sqlite3.Error（2026-09-20 由 test_库不可用时降级空不抛 抓到）。
+            # 本方法的契约是"fail-soft 返 []"，展示层不该因为库的形态而崩。
+            logger.warning(f"alerts_between DB 异常 (降级空): {e}")
+            return []
+        return [{"ts": r[0], "code": r[1], "name": r[2], "polarity": r[3],
+                 "strength": r[4], "rule": r[5], "evidence": r[6]} for r in rows]
+
     def close(self):
         if self._conn:
             self._conn.close()

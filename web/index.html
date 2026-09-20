@@ -285,8 +285,32 @@ input.invalid~.input-error{display:block}
 .cal-trades{font-size:var(--fs-xs);color:var(--text2);margin-top:2px}
 /* 2026-09-19 UIUX: top 不再写死 41px 魔法数 —— --tabbar-h 由 vera-ui.js 用页签栏
    实测高度回写 (tokens.css 有 53px 兜底) */
-#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData,#pageFarm,#pageAi,#pageMarket{display:none;position:fixed;top:var(--tabbar-h,53px);left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:var(--sp-5) var(--sp-6)}
-#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active,#pageFarm.active,#pageAi.active,#pageMarket.active{display:block}
+#pageLab,#pageTrade,#pageResearch,#pageRecords,#pageAnalysis,#pageData,#pageFarm,#pageAi,#pageMarket,#pageSentiment{display:none;position:fixed;top:var(--tabbar-h,53px);left:0;right:0;bottom:0;overflow-y:auto;background:var(--bg);z-index:50;padding:var(--sp-5) var(--sp-6)}
+#pageLab.active,#pageTrade.active,#pageResearch.active,#pageRecords.active,#pageAnalysis.active,#pageData.active,#pageFarm.active,#pageAi.active,#pageMarket.active,#pageSentiment.active{display:block}
+/* 2026-09-20: 舆情页签。行式台账布局 —— 只做记录展示, 不含任何评分控件。 */
+.st-table{margin-top:10px;border-top:1px solid var(--border)}
+.st-row{display:flex;gap:var(--sp-2);align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border);font-size:var(--fs-xs)}
+.st-time{flex:0 0 62px;color:var(--text2);font-variant-numeric:tabular-nums}
+.st-rule{flex:0 0 96px;color:var(--accent)}
+.st-who{flex:0 0 190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-pol{flex:0 0 52px;font-variant-numeric:tabular-nums}
+.st-str{flex:0 0 96px;color:var(--text2)}
+.st-evi{flex:1 1 auto;color:var(--text2)}
+.st-up{color:var(--up)} .st-down{color:var(--down)}
+.st-row-sg{flex-wrap:wrap} .st-row-sg .st-who{flex:1 1 320px}
+.st-weekly{margin:0 4px 4px 0}
+.st-cols{display:flex;gap:var(--sp-5);flex-wrap:wrap;margin-top:6px}
+.st-cols>div{flex:1 1 220px;min-width:200px}
+.st-cols h4{margin:0 0 6px;font-size:var(--fs-xs);color:var(--text2);font-weight:600}
+.st-bar-row{display:flex;gap:6px;align-items:center;font-size:var(--fs-xs);padding:1px 0}
+.st-bar-date{flex:0 0 92px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-bar{height:8px;background:var(--accent);border-radius:2px;display:inline-block;min-width:2px}
+.st-bar-n{color:var(--text);font-variant-numeric:tabular-nums}
+/* 2026-09-20: 调度器存活指示（首页状态栏常驻） */
+.sched-status{font-size:var(--fs-xs);margin-left:var(--sp-3);color:var(--text2)}
+.sched-ok{color:var(--ok-text)}
+.sched-bad{color:var(--danger-text);font-weight:600}
+.sched-muted{color:var(--text2)}
 .lab-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-4) var(--sp-5);margin-bottom:var(--sp-4);box-shadow:var(--shadow-sm)}
 .lab-card h2{margin:0 0 var(--sp-3);font-size:var(--fs-md);color:var(--text2);letter-spacing:.5px}
 .lab-row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border-bottom:1px dashed var(--border);font-size:var(--fs-sm)}
@@ -498,6 +522,28 @@ input:focus-visible,select:focus-visible{outline:none}
 .md-risk{font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-3);padding-top:var(--sp-3);
   border-top:1px solid var(--border);line-height:1.8}
 .md-hist-on{font-weight:600;border-color:var(--accent)}
+/* 「合起来读」综合解读卡 (2026-09-19 用户拍板, 总览页第一张卡) */
+.md-reading{margin-top:var(--sp-3);border:1px solid color-mix(in srgb,var(--accent) 40%,var(--border));
+  border-radius:var(--radius-md);padding:var(--sp-3) var(--sp-4);
+  background:linear-gradient(135deg, color-mix(in srgb,var(--accent) 7%,var(--card)), var(--card))}
+.md-reading-title{font-size:var(--fs-sm);font-weight:700;color:var(--text);margin-bottom:var(--sp-2)}
+.md-reading-line{font-size:var(--fs-sm);color:var(--text);line-height:1.8}
+.md-reading-verdict{font-size:var(--fs-sm);font-weight:600;line-height:1.8;margin-top:var(--sp-2);
+  padding-top:var(--sp-2);border-top:1px dashed var(--border)}
+.md-reading-verdict.warn{color:var(--warn-text)}
+.md-reading-verdict.ok{color:var(--ok-text)}
+.md-reading-verdict.muted{color:var(--text2)}
+.md-reading-foot{font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-2);opacity:.9}
+/* AI 叙事解读 (2026-09-19 用户拍板): 与模板卡视觉区分 (边框走 --accent2 青),
+   徽章写清"大模型生成·非投资建议·模型·生成时间"; 未生成也显示一行不静默 */
+.md-ai{margin-top:var(--sp-3);border:1px solid color-mix(in srgb,var(--accent2) 40%,var(--border));
+  border-radius:var(--radius-md);padding:var(--sp-3) var(--sp-4)}
+.md-ai-title{font-size:var(--fs-sm);font-weight:700;color:var(--text);margin-bottom:var(--sp-2)}
+.md-ai-badge{display:inline-block;font-size:var(--fs-xs);font-weight:400;color:var(--accent2);
+  border:1px solid color-mix(in srgb,var(--accent2) 45%,transparent);border-radius:10px;
+  padding:1px var(--sp-2);margin-left:var(--sp-2);vertical-align:2px}
+.md-ai-body{font-size:var(--fs-sm);color:var(--text);line-height:1.85;white-space:pre-line}
+.md-ai-note{font-size:var(--fs-sm);color:var(--warn-text);line-height:1.8}
 /* 2026-09-19 多维图表 (计划书 docs/plan/2026-09-19_大盘仪表盘多维图表_计划书.md):
    图表高度三档例外在此集中登记 (高度令牌化是上一轮延期项), 其余全走令牌 */
 .md-chart-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3);margin-top:var(--sp-3)}
@@ -534,6 +580,7 @@ input:focus-visible,select:focus-visible{outline:none}
   <button class="tab-btn" id="tabBtnData">数据准备</button>
   <button class="tab-btn" id="tabBtnAi" title="对话大脑三档(快速/标准/深度)的 API Key 与模型配置">AI 设置</button>
   <button class="tab-btn" id="tabBtnMarket" title="大盘环境仪表盘: 温度分总览/指标明细/事件跟踪/历史走势(只读参照)">大盘位置</button>
+  <button class="tab-btn" id="tabBtnSentiment" title="舆情台账: 异动历史回溯 + 机构研究雷达(只读参考, 不联仓位)">舆情</button>
   <!-- 2026-09-16: 手机版直达入口 (手机浏览器访问 http://<本机IP 或 tailnet-IP>:8080/m) -->
   <a class="tab-btn" href="/m" target="_blank" rel="noopener"
      style="margin-left:auto;text-decoration:none"
@@ -591,6 +638,11 @@ input:focus-visible,select:focus-visible{outline:none}
       <div class="status-bar">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText" aria-live="polite">就绪</span>
+        <!-- 2026-09-20: 调度器存活常驻指示。与上面 run 内轮询独立 ——
+             那个只在回测运行时跑，而停机恰恰发生在空闲时。
+             三态: 运行中 / 已人工停止 / 疑似停机(即 stop_vera.bat 强杀不留痕那种)。 -->
+        <span id="schedStatus" class="sched-status"
+              title="调度器（舆情扫描 / 复盘推送 / sgpjbg 周报）的存活状态"></span>
       </div>
     </div>
 
@@ -1053,7 +1105,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <div id="farmCheckStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
     <div class="farm-sum" id="farmSumCheck"></div>
     <a href="javascript:void(0)" id="farmLogCheck" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
-    <div id="farmNewList" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
+    <div class="farm-tail" id="farmTailCheck" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
   </div>
   <div class="farm-arrow">↓</div>
   <div class="lab-card">
@@ -1061,6 +1113,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <div id="farmOnboardStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
     <div class="farm-sum" id="farmSumOnboard"></div>
     <a href="javascript:void(0)" id="farmLogOnboard" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
+    <div class="farm-tail" id="farmTailOnboard" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">默认本轮全部入完; 已入库/编译失败的自动跳过, 中途断了再点接着来。每入一条立即记账, 点停止不丢账。</div>
   </div>
   <div class="farm-arrow">↓</div>
@@ -1069,6 +1122,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <div id="farmVerifyStatus" style="font-size:var(--fs-sm);color:var(--text2)">未运行</div>
     <div class="farm-sum" id="farmSumVerify"></div>
     <a href="javascript:void(0)" id="farmLogVerify" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
+    <div class="farm-tail" id="farmTailVerify" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">重画检测 + 未来函数甄别(需通达信在运行, 全A选股较慢); 「复核不通过」与「跑失败」分开写, 解析不到一律标「无法判定」不当通过。</div>
   </div>
   <div class="farm-arrow">↓</div>
@@ -1078,6 +1132,7 @@ input:focus-visible,select:focus-visible{outline:none}
     <div class="farm-sum" id="farmSumBacktest"></div>
     <div class="farm-note" id="farmNoteBacktest"></div>
     <a href="javascript:void(0)" id="farmLogBacktest" style="display:none;font-size:var(--fs-xs);color:var(--link)">查看完整日志</a>
+    <div class="farm-tail" id="farmTailBacktest" style="font-size:var(--fs-sm);margin-top:var(--sp-2)"></div>
     <div style="font-size:var(--fs-xs);color:var(--text2);margin-top:var(--sp-1)">36 代表组合 5m 粗扫, 达标线 年化≥15% 且 |回撤|≤15% 且 笔数≥20; 未扫完的公式下轮自动补扫, 不会被新批次饿死。</div>
   </div>
   <div class="lab-card" id="farmLogCard" style="display:none">
@@ -1651,6 +1706,8 @@ input:focus-visible,select:focus-visible{outline:none}
         这是一个<b>温度计</b>：把"现在市场热不热"打成一个 0~10 的分。
         它<b>只描述现状</b>，<b>不预测明天涨跌</b>，也<b>不联动任何实盘仓位</b>（只读参照）。
       </div>
+      <div id="mdReading"></div>
+      <div id="mdAiNarrative"></div>
       <div id="mdOverviewCards"></div>
       <div id="mdOverviewCompare"></div>
       <div id="mdOverviewDrivers"></div>
@@ -1759,6 +1816,48 @@ input:focus-visible,select:focus-visible{outline:none}
   </div>
 </div>
 
+<!-- 2026-09-20: 舆情 TAB — 块一 = 舆情异动台账（历史回溯），块二 = 机构研究雷达。
+     数据: data/sentiment/news_seen.db 的 alert_log + data/sgpjbg_radar.db。
+     后端 sentiment_api.py（只读），JS web/js/sentiment.js。
+     口径纪律: 本页是**台账**（当时发生了什么），不是**指标**（接下来会怎样）——
+     只给计数与原始记录，不给评分/权重/总分（market_validity 已证伪宽度类预测力，舆情同族）。
+     业务铁律 1: 只报告显示，绝不联入仓位调度。 -->
+<div id="pageSentiment">
+  <div class="lab-card">
+    <h2>舆情异动台账
+      <button class="btn btn-xs" id="stRefreshBtn" style="margin-left:var(--sp-2)">刷新</button>
+      <span class="trade-hint" id="stHint"></span></h2>
+    <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:var(--sp-3)">
+      盘中每 10 分钟扫一轮新闻 → LLM 打分 → 4 条规则判定 → 飞书推送。此处是可回看的历史台账。
+      <b>只描述"当时发生了什么"，不作预测依据。</b>
+    </div>
+    <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center;margin-bottom:var(--sp-3)">
+      <label style="font-size:var(--fs-xs);color:var(--text2)">日期
+        <input type="date" id="stDate"></label>
+      <button class="btn btn-xs" data-st-range="today">今天</button>
+      <button class="btn btn-xs" data-st-range="yesterday">昨天</button>
+      <button class="btn btn-xs" data-st-range="7">近 7 天</button>
+      <button class="btn btn-xs" data-st-range="30">近 30 天</button>
+      <label style="font-size:var(--fs-xs);color:var(--text2)">规则
+        <select id="stRule"><option value="">全部</option></select></label>
+      <label style="font-size:var(--fs-xs);color:var(--text2)">标的
+        <input type="text" id="stCode" placeholder="如 sh000688" size="12"></label>
+      <button class="btn btn-xs" id="stQueryBtn">查询</button>
+    </div>
+    <div id="stSummary" class="md-note"></div>
+    <div id="stList"></div>
+  </div>
+
+  <div class="lab-card" style="margin-top:var(--sp-4)">
+    <h2>机构研究雷达
+      <span class="trade-hint">研究员/机构在扎堆研究什么 —— 与上面"记者在喊什么"互补</span></h2>
+    <div id="stSgpjbgReports" style="margin-bottom:var(--sp-3)"></div>
+    <div id="stSgpjbgBody" class="lab-md"></div>
+    <h3 style="margin-top:var(--sp-4);font-size:var(--fs-sm)">近 7 天入库报告（按热度排序）</h3>
+    <div id="stSgpjbgRecent"></div>
+  </div>
+</div>
+
 <!-- 2026-09-06: AI 设置 TAB — 对话大脑三档 (快速/标准/深度) 接入配置。
      快速档 (OpenAI 兼容, 走 llm.providers, 影响对话大脑+政策提取+交易复盘);
      标准档 (Anthropic 兼容, claude CLI, 不碰 ~/.claude 原文件);
@@ -1852,7 +1951,8 @@ input:focus-visible,select:focus-visible{outline:none}
 <script src="/web/js/data_cache.js?v=20260919b"></script>
 <script src="/web/js/ai_settings.js?v=20260906a"></script>
 <script type="module" src="/web/js/market_dashboard.js?v=20260919b"></script>
+<script type="module" src="/web/js/sentiment.js?v=20260920a"></script>
 <script type="module" src="/web/js/analysis.js?v=20260919b"></script>
-<script type="module" src="/web/js/vera-ui.js?v=20260919b"></script>
+<script type="module" src="/web/js/vera-ui.js?v=20260920a"></script>
 </body>
 </html>

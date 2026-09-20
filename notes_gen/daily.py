@@ -686,10 +686,27 @@ def build_review(*, asof: str | None = None, with_market: bool = True) -> dict:
                 "`python tools/market_position_collect.py --backfill`。")
         except Exception as e:
             notes.append(f"盘面段生成失败（跳过）: {e}")
+    # AI 叙事解读 (2026-09-19 用户拍板): 大盘仪表盘快照里烤好的 LLM 叙事, 顺手带上;
+    # 未生成/未过机检也显示一行说明 (不静默), 老快照没有该字段则整节不出现
+    ai_narrative = None
+    if with_market:
+        try:
+            from core import market_dashboard_runner as mdr
+            snap = mdr.latest()
+            ai_narrative = (snap or {}).get("ai_narrative")
+            # 审计 M1 (2026-09-20): 复盘 job 15:55 跑、仪表盘 16:30 才刷新 ——
+            # 快照是上一交易日的叙事, 不许冒充今天的嵌进报告 (如实记 note)
+            if snap and ai_narrative and snap.get("date") != asof:
+                notes.append(f"AI 叙事解读的快照是 {snap.get('date')}（上一交易日）生成的，"
+                             "今天的要 16:30 刷新后才有，本次不嵌入。")
+                ai_narrative = None
+        except Exception as e:
+            notes.append(f"AI 叙事读取失败（跳过）: {e}")
     if con:
         con.close()
     return {
         "ok": True, "asof": asof, "market_md": market_md,
+        "ai_narrative": ai_narrative,
         "account": _account_md(payload, asof, trades),
         "did_well": _did_well_md(trades, ohlc, asof=asof),
         "behavior": _behavior_md(payload, trades, ohlc, pcts),
@@ -714,6 +731,17 @@ def review_md(review: dict, *, written: str | None = None) -> str:
         out += ["【本次有几处没取到数，如实列出】"] + [f"- {n}" for n in r["notes"]] + [""]
     if r.get("market_md"):
         out += [r["market_md"], ""]
+    # AI 叙事解读 (2026-09-19 用户拍板): ok 出正文, 非 ok 显示一行原因 (不静默)
+    an = r.get("ai_narrative")
+    if an:
+        if an.get("status") == "ok" and an.get("text"):
+            # 审计 L3 (2026-09-20): LLM 文本逐行加引用前缀 —— 防文本里的 "## " 破坏报告结构
+            quoted = ["> " + line for line in str(an["text"]).splitlines()]
+            out += ["## AI 叙事解读（大模型生成 · 非投资建议）", ""] + quoted + ["",
+                    f"（模型 {an.get('model', '?')} · 生成于 {an.get('generated_at', '?')}）", ""]
+        else:
+            out += ["## AI 叙事解读", "",
+                    f"本次未生成：{an.get('reason') or '未知原因'}（上方模板与盘面数据不受影响）", ""]
     out += ["## 我的账户", ""] + list(r.get("account") or []) + [""]
     out += ["## 今天做对的", ""] + list(r.get("did_well") or []) + [""]
     out += ["## 我的交易行为（只陈述事实，不评价；评判权在你）", ""] \
@@ -749,23 +777,12 @@ def push_review(review: dict, *, also_email: bool = False,
     result: dict = {"ok": False, "feishu": None, "email": None}
     if feishu:
         try:
-            from tools.send_report_feishu import (chunk_sections, load_webhook,
-                                                 md_to_lark, send_card)
-            try:
-                webhook = load_webhook()
-            except SystemExit:
-                result["feishu"] = {"ok": False,
-                                    "reason": "未配置 FEISHU_WEBHOOK_URL (.env)"}
-                webhook = None
-            if webhook:
-                chunks = chunk_sections(md_to_lark(md))
-                codes = []
-                for i, c in enumerate(chunks, 1):
-                    rr = send_card(webhook, f"盘后复盘 {asof}", c, i, len(chunks))
-                    codes.append(rr.get("code", rr.get("StatusCode")))
-                result["feishu"] = {"ok": True, "cards": len(chunks), "codes": codes}
-                result["ok"] = True
-        except Exception as e:
+            # 2026-09-20: 编排收口到 send_report_feishu.push_markdown（唯一实现），
+            # 本处不再自持「取 webhook → 转 lark → 分片 → 逐卡发送」那一套。
+            from tools.send_report_feishu import push_markdown
+            result["feishu"] = push_markdown(md, f"盘后复盘 {asof}")
+            result["ok"] = bool(result["feishu"].get("ok"))
+        except Exception as e:      # 只剩 import 失败一类；push_markdown 自身 fail-soft
             result["feishu"] = {"ok": False, "reason": f"飞书推送器不可用: {e}"}
     if also_email:
         try:

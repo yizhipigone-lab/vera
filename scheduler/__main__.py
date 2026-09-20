@@ -24,6 +24,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import time
+import urllib.request
 
 from dotenv import load_dotenv
 
@@ -106,13 +110,34 @@ def _job_sgpjbg_fetch() -> None:
 
 
 def _job_sgpjbg_weekly() -> None:
-    """机构研究动向周报 job: 每周日 18:30 由 weekly 调度触发 (独立周报)。"""
+    """机构研究动向周报 job: 每周日 18:30 由 weekly 调度触发 (独立周报)。
+
+    2026-09-20: 补出口。此前只落盘 + log, 数据躺了 16 天没人见过
+    （job 自 09-05 建成起**从未触发过** —— 原用 add_daily 受交易日门控，
+    周日不可达, 体检 P0-2 于 09-06 改成 add_weekly, 但随后调度器停机）。
+    现在落盘后推飞书（复用 push_markdown，不写第二份推送器）；推送失败
+    **绝不影响周报落盘**，也绝不抛给调度器（串行 job，抛了拖垮其他 job）。
+    """
+    import datetime as dt
+    from pathlib import Path
+
     from brain.sgpjbg_radar import weekly_report
     path = weekly_report()
     if path is None:
         _logger.warning("sgpjbg 周报生成跳过 (近 7 天无数据)")
-    else:
-        _logger.info("sgpjbg 周报已生成: %s", path)
+        return
+    _logger.info("sgpjbg 周报已生成: %s", path)
+    try:
+        from tools.send_report_feishu import push_markdown
+        md = Path(path).read_text(encoding="utf-8")
+        r = push_markdown(md, f"机构研究雷达周报 {dt.date.today().isoformat()}")
+        if r.get("ok"):
+            _logger.info("sgpjbg 周报已推飞书: %s 张卡 code=%s",
+                         r.get("cards"), r.get("codes"))
+        else:
+            _logger.warning("sgpjbg 周报推送未成功 (周报已落盘): %s", r.get("reason"))
+    except Exception as e:
+        _logger.warning("sgpjbg 周报推送异常 (周报已落盘, 忽略): %s", e)
 
 
 # ── 大盘位置连续录像 (2026-09-17) ─────────────────────────────
@@ -321,6 +346,91 @@ def _register_market_dashboard(sched: VeraScheduler) -> None:
                      weekday=5, hhmm="18:00")
 
 
+# ── 交易进程看门狗 (2026-09-20 脆弱期 P0 修复 item 4) ────────────────────
+#
+# 背景: 调度器至少两个静默停机窗口无人知 (09-11~09-14, 09-19~09-20,
+# scheduler/health.py:17-20 自记); 交易进程死了/行情断了同样无人知。
+# 本 job 盘中每 1 分钟探 8081(交易)+8080(web), 连续 2 次失败推飞书。
+# 判定逻辑在 scheduler/health.py 的 evaluate_watchdog (纯函数, 可单测);
+# 状态存模块级 _WATCHDOG_STATE (进程重启重新计数, 首次失败重新起算,
+# 行为可接受 —— 逐行审查 P1-3)。
+_WATCHDOG_STATE = {"fails": 0, "last_alert_key": "", "last_alert_ts": 0.0,
+                   "was_down": False}
+
+
+def _probe_watchdog() -> dict:
+    """探测 8081/8080。任何异常只反映到返回 dict, **绝不抛** —— 调度器
+    单线程串行跑 job 且无超时 (vera_scheduler.py:263-289), 看门狗自己
+    绝不能成为新的单点。两个请求都强制 timeout=3。"""
+    snap = {"trade_ok": False, "web_ok": False,
+            "monitor_healthy": None, "last_tick_age_s": None}
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8081/api/trade/status")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            st = json.loads(r.read().decode("utf-8"))
+        snap["trade_ok"] = True
+        snap["monitor_healthy"] = st.get("monitor_healthy")
+        snap["last_tick_age_s"] = st.get("last_tick_age_s")
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8080/api/status")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            snap["web_ok"] = (r.status == 200)
+    except Exception:
+        pass
+    return snap
+
+
+def _send_watchdog_alert(title: str, text: str, level: str = "red") -> None:
+    """看门狗飞书推送。无 webhook 只记日志, 绝不抛。"""
+    webhook = os.environ.get("FEISHU_WEBHOOK_URL")
+    if not webhook:
+        _logger.warning("看门狗消息未推送 (无 FEISHU_WEBHOOK_URL): %s | %s",
+                        title, text)
+        return
+    from utils.feishu_webhook import post_webhook
+    body = {"msg_type": "interactive",
+            "card": {"config": {"wide_screen_mode": True},
+                     "header": {"title": {"tag": "plain_text",
+                                          "content": title},
+                                "template": level},
+                     "elements": [{"tag": "div",
+                                   "text": {"tag": "lark_md",
+                                            "content": text}}]}}
+    post_webhook(webhook, body, context="看门狗")
+
+
+def _job_trade_watchdog() -> None:
+    """看门狗本轮: 人工停机整轮跳过 (防误报训练) → 探测 → 判定 → 推送。"""
+    from scheduler import health as H
+    try:
+        if H.stopped_on_purpose():
+            return
+        snap = _probe_watchdog()
+        d = H.evaluate_watchdog(snap, _WATCHDOG_STATE, now=time.time())
+        if d["action"] == "alert":
+            _logger.warning("看门狗告警: %s", d["reason"])
+            _send_watchdog_alert("VERA 看门狗告警", d["reason"], level="red")
+        elif d["action"] == "recover":
+            _logger.info("看门狗: %s", d["reason"])
+            _send_watchdog_alert("VERA 看门狗恢复", d["reason"], level="green")
+    except Exception:
+        _logger.exception("看门狗本轮异常 (不影响调度器)")
+
+
+def _register_watchdog(sched: VeraScheduler) -> None:
+    """注册看门狗 interval job。trading_hours 与舆情扫描同一真相源
+    (TRADING_HOURS); 注册失败不影响其他 job (fail-soft 分级)。"""
+    try:
+        from brain.sentiment_pipeline import TRADING_HOURS
+        sched.add_interval("trade_watchdog", _job_trade_watchdog,
+                           interval_min=1.0, trading_hours=TRADING_HOURS)
+        _logger.info("看门狗已注册: 盘中每 1 分钟探 8081/8080")
+    except Exception as e:
+        _logger.warning("看门狗注册失败 (跳过, 不影响其他 job): %s", e)
+
+
 def _register_sentiment(sched: VeraScheduler) -> None:
     """注册盘中舆情扫描 interval job。
 
@@ -364,8 +474,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 触发记录持久化 (2026-08-27 双发事件修复): 重启记得"今天发过了",
     # 过了点的 daily job 真没发过才补发, 发过不重发。
+    # 2026-09-20: 心跳落盘 (供 8080 判活)。路径常量与判读逻辑同源 scheduler/health.py
+    from scheduler.health import HEARTBEAT_PATH
     sched = VeraScheduler(
-        state_path=str(project_root() / "data" / "scheduler_state.json"))
+        state_path=str(project_root() / "data" / "scheduler_state.json"),
+        heartbeat_path=str(HEARTBEAT_PATH))
     # 月度笔记: 触发日(9/1)错过会因断档永久丢失 (体检 P2-2 教训) →
     # 触发日起 7 天内补发一次; 已发/超窗不补。
     sched.add_monthly("monthly_note", _job_monthly_note, day=1, hhmm="08:30",
@@ -383,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     _register_market_position(sched)
     _register_market_dashboard(sched)
     _register_sentiment(sched)
+    _register_watchdog(sched)
     sched.start(block=False)
 
     _logger.info("scheduler 独立进程运行中, 等待退出信号 (Ctrl+C / SIGTERM)...")

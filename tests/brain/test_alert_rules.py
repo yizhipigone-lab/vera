@@ -109,9 +109,27 @@ def test_rule_stock_sentiment_below_threshold():
 
 
 def test_rule_stock_sentiment_weak_strength():
-    news = [{"text": "利好", "polarity": 0.8, "strength": 1,   # strength 1 < 2
+    """强度不够 → 不触发。
+
+    2026-09-20: `strength_min` 由 2 降到 1（真实分布实测 strength 从没到过 2），
+    故"不够"的样本从 `strength=1` 改为 `strength=0`。**测的是"低于阈值即不触发"
+    这条规则本身，不是某个具体阈值** —— 阈值改了这里要跟着改样本，别改断言。
+    """
+    news = [{"text": "利好", "polarity": 0.8, "strength": 0,   # strength 0 < 1
              "hit_pool": [{"value": "300687"}]}]
     assert rule_stock_sentiment(news, DEFAULT_CONFIG) == []
+
+
+def test_rule_stock_sentiment_强度达阈值即触发():
+    """反向锁：`strength` 恰好等于 `strength_min` 时必须触发（不是"大于"才算）。
+
+    上一条测"不够不触发"，这条测"刚好够就触发" —— 两条一起才钉死边界语义，
+    防将来有人把 `>=` 写成 `>` 而没人发现。
+    """
+    smin = DEFAULT_CONFIG["rules"]["stock_sentiment"]["strength_min"]
+    news = [{"text": "利好", "polarity": 0.8, "strength": smin,
+             "hit_pool": [{"value": "300687"}]}]
+    assert len(rule_stock_sentiment(news, DEFAULT_CONFIG)) == 1
 
 
 def test_rule_stock_sentiment_disabled():
@@ -219,6 +237,28 @@ def test_load_config_override(tmp_path):
                  encoding="utf-8")
     cfg = load_config(p)
     assert cfg["rules"]["stock_sentiment"]["polarity_min"] == 0.8
-    # 未覆盖的字段保留默认
-    assert cfg["rules"]["stock_sentiment"]["strength_min"] == 2
+    # 未覆盖的字段保留默认（2026-09-20: strength_min 由 2 降到 1，见下方漂移守卫）
+    assert cfg["rules"]["stock_sentiment"]["strength_min"] == 1
     assert cfg["suppression"]["max_per_tick"] == 3
+
+
+def test_出厂配置与_default_config_不许漂移():
+    """`config/sentiment.yaml` 的规则阈值必须与 `DEFAULT_CONFIG` 一致。
+
+    为什么要有这条：`DEFAULT_CONFIG` 是"配置文件缺失/解析失败时兜底"
+    （见 `load_config` 的 `p.exists()` / `yaml.safe_load` 异常分支）。
+    两处一旦漂移，**配置一丢就静默回落到旧值** —— 而 2026-09-20 刚刚因为
+    `strength_min: 2` 在实践中不可达（真实分布里 strength 从没到过 2）把规则 1
+    焊死了 5 周。兜底回 2 = 把这个 bug 藏回来。
+
+    改阈值时**必须同时改两处**，这条会立刻告诉你漏了哪边。
+    """
+    from pathlib import Path
+    shipped = load_config(
+        Path(__file__).resolve().parent.parent.parent / "config" / "sentiment.yaml")
+    for rule, fields in DEFAULT_CONFIG["rules"].items():
+        for k, v in fields.items():
+            assert shipped["rules"][rule][k] == v, (
+                f"规则阈值漂移: {rule}.{k} —— "
+                f"DEFAULT_CONFIG={v!r} 但 config/sentiment.yaml="
+                f"{shipped['rules'][rule][k]!r}（两处必须同步，改一处即失守）")

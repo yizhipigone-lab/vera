@@ -27,6 +27,18 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+# ── 规则展示名（唯一真相源, 2026-09-20）──────────────────────────
+# 舆情页要显示"哪条规则触发的"。中文名此前只活在模块 docstring 里, 前端若自己
+# 硬编码一份就会与规则函数漂移 —— 故收口到这里, 由 sentiment_api.py 读它下发。
+# tests/test_sentiment_api.py 锁死键全集与 RULE_FUNCS 一致。
+RULE_NAMES: dict[str, str] = {
+    "stock_sentiment": "个股情绪突变",
+    "sector_cluster": "板块新闻密集",
+    "index_move": "大盘指数异动",
+    "volume_anomaly": "量能异常",
+}
+
+
 # ── 默认配置 (config/sentiment.yaml 缺失时兜底) ────────────────────
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -36,7 +48,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "rules": {
         "stock_sentiment": {
-            "enabled": True, "polarity_min": 0.6, "strength_min": 2,
+            # strength_min 2026-09-20 由 2 降到 1, 与 config/sentiment.yaml 同步。
+            # 依据: 真实分布实测 strength 从未到过 2 (10 条里最高 1) → s>=2 不可达,
+            # 规则1 被焊死。此值与出厂配置**必须一致** —— 否则配置一丢就静默回落到
+            # 那个不可达的旧值(兜底把 bug 藏回来), 由 test_alert_rules 的漂移守卫锁。
+            "enabled": True, "polarity_min": 0.6, "strength_min": 1,
         },
         "sector_cluster": {
             "enabled": True, "min_hits": 3, "polarity_min": 0.4,

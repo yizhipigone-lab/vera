@@ -66,9 +66,14 @@ class TestTryStockDiagnosis:
     def _mock_sources(self, monkeypatch, hits=None):
         monkeypatch.setattr(data_tools, "stock_diagnosis", lambda c: "PACK")
         monkeypatch.setattr(data_tools, "_kg_company_name", lambda c: "宁德时代")
-        monkeypatch.setattr("brain.search_web.search_web",
-                            lambda *a, **kw: hits if hits is not None else [
-                                {"title": "t", "snippet": "s", "url": "u"}])
+        # 2026-09-20 换源：软舆情腿由 brain.search_web 改为
+        # policy_pipeline.sources.news_search.fetch_news（东财个股新闻，akshare）。
+        # 桩点必须跟着搬 —— fastpath 是在函数内 `from ... import fetch_news`，
+        # 故 patch 模块属性即可生效。
+        monkeypatch.setattr(
+            "policy_pipeline.sources.news_search.fetch_news",
+            lambda *a, **kw: hits if hits is not None else [
+                {"title": "t", "text": "s", "url": "u", "date": "2026-09-19"}])
 
     def _mock_brain(self, monkeypatch, capture):
         async def fake_ask(question, **kw):

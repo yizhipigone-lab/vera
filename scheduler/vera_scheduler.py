@@ -29,6 +29,10 @@ from utils.logger import get_logger
 
 _logger = get_logger("scheduler.vera_scheduler")
 
+# 心跳最小写入间隔(秒)。默认 tick=1s, 不节流会一天写 8.6 万次盘;
+# "停机 5 分钟内被看见"已足够, HTTP 侧的判活阈值应显著大于它(见 SERVER 侧常量)。
+_HEARTBEAT_MIN_INTERVAL_S = 30.0
+
 
 @dataclass
 class _Job:
@@ -136,16 +140,24 @@ class VeraScheduler:
     路径。给了 → 重启不重复补发; 不给 → 纯内存 (旧行为, 测试用)。
     状态文件损坏/读取失败 → 当作没发过 (宁可补发不可漏发); 写入失败只记
     warning, 不影响调度循环。
+
+    heartbeat_path: 可选 (2026-09-20)。给了 → 每轮询周期覆写一个心跳文件,
+    供 HTTP 侧回答"调度器还活着吗"。**为什么不拿 state_path 的 mtime 当心跳**:
+    那个只在 job 真触发时才写, 而 daily job 一天可能只触发一两次 —— 拿它当
+    心跳会把"正常空闲"误报成"已停机"。不给 → 不写 (测试与旧行为不变)。
     """
 
     def __init__(self, tick_seconds: float = 1.0,
-                 state_path: str | None = None):
+                 state_path: str | None = None,
+                 heartbeat_path: str | None = None):
         self._jobs: list[_Job] = []
         self._tick = tick_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._state_path = state_path
+        self._heartbeat_path = heartbeat_path
+        self._hb_last_ts = 0.0
         self._persisted: dict[str, str] = self._load_state()
 
     # ── 触发记录持久化 ──────────────────────────────────────
@@ -298,6 +310,36 @@ class VeraScheduler:
             self._thread.join(timeout=timeout)
             self._thread = None
 
+    def _write_heartbeat(self) -> None:
+        """覆写心跳文件 (供 HTTP 侧判活)。fail-soft: 写失败只记 warning。
+
+        节流到 `_HEARTBEAT_MIN_INTERVAL_S`: 默认 tick=1s, 不节流就是一天
+        8.6 万次写盘 —— 心跳不需要秒级精度, "停机 5 分钟内被看见"就够。
+        写采用 tmp + replace **原子替换**, 读侧永远看不到半个 JSON。
+        """
+        if not self._heartbeat_path:
+            return
+        now_ts = dt.datetime.now().timestamp()
+        if now_ts - self._hb_last_ts < _HEARTBEAT_MIN_INTERVAL_S:
+            return
+        self._hb_last_ts = now_ts
+        try:
+            now = dt.datetime.fromtimestamp(now_ts)
+            payload = {
+                "ts": now_ts,
+                "iso": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "pid": os.getpid(),
+                "jobs": len(self._jobs),
+                "tick_s": self._tick,
+            }
+            p = Path(self._heartbeat_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(p)
+        except Exception as e:
+            _logger.warning("心跳写入失败 (忽略): %s", e)
+
     def _loop(self) -> None:
         _logger.info("scheduler 启动, 已注册 %d 个 job", len(self._jobs))
         while not self._stop.is_set():
@@ -305,5 +347,6 @@ class VeraScheduler:
                 self.run_pending()
             except Exception as e:  # 双保险: run_pending 内部已逐 job 兜底
                 _logger.exception("scheduler 轮询异常 (继续跑): %s", e)
+            self._write_heartbeat()
             self._stop.wait(self._tick)
         _logger.info("scheduler 停止")

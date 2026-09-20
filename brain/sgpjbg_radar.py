@@ -290,6 +290,31 @@ def weekly_report(days: int = 7) -> str | None:
     return str(path)
 
 
+def recent_reports(days: int = 7, limit: int = 50) -> list[dict]:
+    """近 days 天入库的报告元数据，按热度降序（舆情页「机构研究雷达」块用）。
+
+    2026-09-20 新增：周报只给 Top10 摘要，页面要能直接翻原始元数据。SQL 留在本模块
+    （属主），sentiment_api 不碰 schema。fail-soft：任何异常返 []。
+    """
+    cols = ("id", "title", "org", "pages", "pub_date", "category", "heat", "url")
+    try:
+        conn = _db()
+        try:
+            end = dt.date.today()
+            start = end - dt.timedelta(days=days)
+            rows = conn.execute(
+                "SELECT id,title,org,pages,pub_date,category,heat,url FROM reports "
+                "WHERE pub_date>=? AND pub_date<=? "
+                "ORDER BY heat DESC, pub_date DESC LIMIT ?",
+                (start.isoformat(), end.isoformat(), int(limit))).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("sgpjbg 近期报告查询失败 (降级空): %s", e)
+        return []
+    return [dict(zip(cols, r)) for r in rows]
+
+
 def main(argv: list[str] | None = None) -> int:
     ensure_utf8_stdout()
     ap = argparse.ArgumentParser(prog="python -m brain.sgpjbg_radar",

@@ -1,7 +1,7 @@
 """tests/brain/test_sentiment_acceptance.py — v1 验收: 业务铁律 1 的硬证明。
 
 情绪/舆情**只报告显示, 绝不影响任何买卖决策**。本文件用三道独立证据锁死这条铁律:
-  1. AST 静态扫描: 4 个舆情模块源码无任何 import trade / from trade。
+  1. AST 静态扫描: 舆情模块源码无任何 import trade / from trade。
   2. 结构扫描: trade_main.py (实盘入口) 不引用任何舆情模块 (未嵌入)。
   3. 运行时文件证据: 跑一轮真实 tick (mock 外部), data/trade/ 下文件清单不变。
 另加规则集成测试: 一轮 tick 同时命中规则 1/2/3 (规则 4 v1 默认关)。
@@ -20,9 +20,12 @@ import brain.alert_rules as ar
 import brain.news_dedup as nd
 import brain.sentiment_pipeline as sp
 import research.sentiment_notifier as sn
+import sentiment_api as sa
 
-# 4 个舆情模块 (全量物理隔离对象)
-_SENTIMENT_MODULES = [ar, nd, sp, sn]
+# 舆情模块 (全量物理隔离对象)
+# 2026-09-20: 增补 sentiment_api（舆情页只读路由）—— 它是铁律 1 的**新增暴露面**，
+# 页面能力上线后必须同样被"零 import trade"锁住。
+_SENTIMENT_MODULES = [ar, nd, sp, sn, sa]
 
 
 class FakeNotifier:
@@ -44,7 +47,7 @@ def _mock_empty_snapshot(monkeypatch):
 # ── 证据 1: AST 静态扫描 4 模块无 import trade ──────────────────────
 
 def test_ast_no_trade_import_all_sentiment_modules():
-    """4 个舆情模块源码均无 import trade / from trade (集中断言)。"""
+    """舆情模块源码均无 import trade / from trade (集中断言)。"""
     for mod in _SENTIMENT_MODULES:
         with open(mod.__file__, encoding="utf-8") as f:
             tree = ast.parse(f.read())
@@ -113,7 +116,16 @@ def test_full_tick_fires_all_enabled_rules(monkeypatch, tmp_path):
         {"text": "半导体产能满载", "url": "http://3"},
         {"text": "半导体需求旺盛", "url": "http://4"},
     ])
-    monkeypatch.setattr(sp, "judge_batch", lambda items: [
+    # 2026-09-20 修：这里原来手写的是**扁平**形状 `{"polarity": …, "strength": …}`，
+    # 而真实 `judge_batch` 返回的是**嵌套** `{"id":…, "sentiment":{…}}`（见其 docstring）。
+    # 测试锁了"我以为的形状"而不是**契约** → 规则 1/2 在生产里静默失效 5 周，
+    # 而这条测试全程绿灯（端到端那条腿被 mock 短路，真实形状差异永远走不到）。
+    # 现按真实形状给；契约另由 tests/brain/test_sentiment_shape_contract.py 用
+    # **真实的 judge_batch**（只桩 LLM IO）独立锁死。
+    def _wrap(*sents):
+        return [{"id": None, "sentiment": s} for s in sents]
+
+    monkeypatch.setattr(sp, "judge_batch", lambda items: _wrap(
         {"polarity": 0.8, "strength": 2, "confidence": 0.9,
          "evidence_quote": "爆发", "hit_pool": [{"value": "300687"}]},
         {"polarity": 0.6, "strength": 2, "confidence": 0.8,
@@ -122,7 +134,7 @@ def test_full_tick_fires_all_enabled_rules(monkeypatch, tmp_path):
          "evidence_quote": "", "hit_pool": []},
         {"polarity": 0.5, "strength": 1, "confidence": 0.7,
          "evidence_quote": "", "hit_pool": []},
-    ])
+    ))
     # 行情快照: 上证 +2.30% → 规则3
     monkeypatch.setattr(sp, "_fetch_snapshot", lambda: _SNAPSHOT_INDEX_UP)
 
