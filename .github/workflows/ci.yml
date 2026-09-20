@@ -36,7 +36,8 @@ jobs:
           EXIT=${PIPESTATUS[0]}
           set -e
           if [ $EXIT -ne 0 ]; then
-            tail -40 /tmp/test_out.txt | sed -e 's/%/%25/g' -e 's/\r/%0D/g' \
+            { grep -E "^(FAILED|ERROR)" /tmp/test_out.txt | head -30
+              tail -15 /tmp/test_out.txt; } | sed -e 's/%/%25/g' -e 's/\r/%0D/g' \
               | while IFS= read -r l; do echo "::error::$l"; done
           fi
           exit $EXIT
