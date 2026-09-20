@@ -16,6 +16,7 @@ from __future__ import annotations
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -92,6 +93,8 @@ def _stub_bat(scenario: str) -> pathlib.Path:
     return bat
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"),
+                    reason="cmd 桩化执行是 Windows 专属 (CI/ubuntu 无 cmd)")
 @pytest.mark.parametrize("scenario,want_trade", [
     ("ready", True), ("retry", True), ("config_error", False)])
 def test_stubbed_execution(scenario, want_trade):
