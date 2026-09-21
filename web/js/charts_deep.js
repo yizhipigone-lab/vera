@@ -39,6 +39,29 @@ function _trimNum(n) {
 }
 
 /**
+ * 双轴图共用: 让 value 轴的 0 恒落在正中 (以 0 为中心对称)。
+ * 为什么需要 (2026-09-22 修复用户报障): 滚动指标图左轴是夏普、右轴是百分比, 两轴都没给
+ *   min/max 时各自按自身数据取"漂亮刻度" —— 实测左轴取 [-6, 4] (0 在图高 40% 处)、
+ *   右轴取 [-100%, 150%] (0 在 60% 处), 两个 0 错开 20% 个图高; 而左轴上那条 yAxis:0 的
+ *   虚线横贯全图, 看着像"整张图的 0 线", 于是 15.2% 的滚动波动率被读成"贴着 0/为负"。
+ *   两轴的 0 之所以必须重合: 夏普 0 与收益 0% 是同一个意思 (不赚不亏), 用户一定会互相参照。
+ * 写法: ECharts 的 min/max 支持传函数, 入参是该轴的 {min, max} 数据范围;
+ *   一处定义两轴共用, 防"同一条规则手写两份"漂移。
+ * 兜底: 该轴"一个数都没有"时 (实测口径: 净值全平 → roll_std 恒 0 → rolling_sharpe 全 None,
+ *   见 backtest/metrics.py:120 的 where(roll_std > 0), 而收益/波动率仍有 0 值, 于是图会照画
+ *   但左轴无数据 → ECharts 给 [Infinity, -Infinity]) 回退成 ±1, 否则轴坐标算成 NaN 会画崩,
+ *   违背本文件"数据异常一律降级不崩"的约定。
+ */
+function _symSpan(v) {
+  const m = Math.max(Math.abs(v.min), Math.abs(v.max));
+  return Number.isFinite(m) && m > 0 ? m : 1;
+}
+const SYM_ZERO_AXIS = {
+  min: v => -_symSpan(v),
+  max: v => _symSpan(v),
+};
+
+/**
  * 净值倍数大白话格式化: 0.50x / 1x / 10x / 100x, ≥1万 用中文大数 (2万x / 1.5亿x)。
  * 用于对数轴刻度与 tooltip —— 复利跑上千笔后倍数可能到几十万, 裸数字没人数得清几个零。
  */
@@ -336,9 +359,10 @@ export function renderRolling(domId, rolling, colors) {
     xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: c.border } }, axisLabel: { color: c.text2, fontSize: 9 } },
     yAxis: [
       // 不放轴名 (说明行已注明左右轴分工), 轴名是压刻度标签的高发区
-      { type: 'value',
+      // 两轴都套 SYM_ZERO_AXIS: 0 恒在正中, 左右零线永远重合 (2026-09-22 修复零点错开)
+      { type: 'value', ...SYM_ZERO_AXIS,
         axisLabel: { color: c.text2, fontSize: 9 }, splitLine: { lineStyle: { color: c.border } } },
-      { type: 'value',
+      { type: 'value', ...SYM_ZERO_AXIS,
         axisLabel: { color: c.text2, fontSize: 9, formatter: '{value}%' }, splitLine: { show: false } },
     ],
     toolbox: { right: 10, top: 0, feature: {

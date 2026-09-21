@@ -1,6 +1,6 @@
 // ====== VERA Analysis Tab — 交易日历 + 实盘图表 ======
 import { getColors, hexToRgba, echartsInit, tweenNumber, renderEquityCurve, esc, chartsShowLoading } from './charts.js?v=20260906d';
-import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260906c';
+import { renderUnderwater, renderRolling, renderAttribution, renderAttributionStocks } from './charts_deep.js?v=20260922a';
 import { bucketReason, isKnownReason } from './reason_util.mjs';
 // 2026-09-05 (治理III W4-e): 同源取数收敛到统一 client
 import { fetchBenchmarkHistory, fetchCalendar } from './api.js?v=20260911a';
