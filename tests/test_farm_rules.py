@@ -3,6 +3,8 @@
 2026-09-11 用户拍板: 达标线统一定为 **年化≥15% 且 |最大回撤|≤15% 且 笔数≥20**;
 笔数<20 记「样本不足」(不判达标、不参与最优评选)。此前 gs 系三份报告各写
 一份 0.30/1000, 与 09-09 批实际在用的 15% 冲突 —— 本模块是唯一真相源。
+
+2026-09-22 用户拍板: 年化下限 15% → **10%** (回撤/笔数两条腿不动)。
 """
 import sys
 from pathlib import Path
@@ -15,22 +17,22 @@ from core import farm_rules  # noqa: E402
 
 
 def test_thresholds_pinned_to_user_decision():
-    assert farm_rules.TARGET_ANN == 0.15
+    assert farm_rules.TARGET_ANN == 0.10        # 2026-09-22 拍板: 15% → 10%
     assert farm_rules.TARGET_MAXDD == 0.15
     assert farm_rules.MIN_TRADES == 20
 
 
 def test_pass_at_exact_threshold():
-    """边界含等号: 年化正好 15%、回撤正好 15%、笔数正好 20 → 达标。"""
-    v = farm_rules.verdict(0.15, -0.15, 20)
+    """边界含等号: 年化正好 10%、回撤正好 15%、笔数正好 20 → 达标。"""
+    v = farm_rules.verdict(0.10, -0.15, 20)
     assert v["code"] == "pass" and v["label"] == "达标"
 
 
 def test_fail_just_below_ann():
-    v = farm_rules.verdict(0.1499, -0.10, 500)
+    v = farm_rules.verdict(0.0999, -0.10, 500)
     assert v["code"] == "fail"
-    assert "年化" in v["reason"] and "15%" in v["reason"]
-    assert v["reason"].count("15%") >= 1
+    assert "年化" in v["reason"] and "10%" in v["reason"]
+    assert v["reason"].count("10%") >= 1
 
 
 def test_fail_just_over_maxdd():
@@ -66,7 +68,7 @@ def test_labels_are_the_four_known_states():
 
 def test_describe_is_human_readable_and_complete():
     s = farm_rules.describe()
-    assert "15%" in s and "20" in s and "回撤" in s and "年化" in s
+    assert "10%" in s and "15%" in s and "20" in s and "回撤" in s and "年化" in s
 
 
 def test_is_pass_helper_matches_verdict():

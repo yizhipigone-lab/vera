@@ -51,7 +51,7 @@ def test_do_report_reports_pass_and_thin(tmp_path, monkeypatch, capsys, sweep_mo
     sweep_mod.do_report(SimpleNamespace(formula="GS9001"))       # 不许抛
     out = capsys.readouterr().out
     assert "达标:1" in out and "样本不足:1" in out
-    assert "达标线" in out and "15%" in out
+    assert "达标线" in out and "10%" in out     # 达标线 2026-09-22 起 10%
     assert "达标 Top" in out                                     # 有达标行才印该段
 
 

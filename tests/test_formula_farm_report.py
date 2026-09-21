@@ -42,7 +42,7 @@ def test_header_carries_full_caliber_and_thresholds():
     md = build_report(_results(), CTX)
     for needle in ("300万", "2万", "5m", "前复权", "沪深300", "移动止盈优先"):
         assert needle in md, needle
-    assert "15%" in md and "20" in md          # 达标线 + 样本门槛
+    assert "10%" in md and "20" in md          # 达标线 (2026-09-22 起 10%) + 样本门槛
     assert "达标线" in md
 
 

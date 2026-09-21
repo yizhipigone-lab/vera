@@ -125,7 +125,7 @@ def build_report(results: list[dict]) -> str:
         w(f"- 夏普均值: {sum(sharpes)/len(sharpes):.2f}")
         w(f"- 胜率均值: {sum(winrates)/len(winrates):.1%}")
         w(f"- 年化 > 20%: {sum(1 for v in annrets if v > 0.20)} 个")
-        w(f"- 年化 > 15%: {sum(1 for v in annrets if v > TARGET_ANN)} 个")
+        w(f"- 年化 > {TARGET_ANN:.0%}: {sum(1 for v in annrets if v > TARGET_ANN)} 个")
         w(f"- 夏普 > 2.0: {sum(1 for v in sharpes if v > 2.0)} 个")
         w(f"- 夏普 > 1.5: {sum(1 for v in sharpes if v > 1.5)} 个")
         w()

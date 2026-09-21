@@ -13,7 +13,7 @@
 - **F3 判定**: 逐行给 达标/未达标/样本不足/无有效组合 + 人话原因; 「最优组合」
   只在笔数 ≥ 20 的行里选 (旧行为: 按年化取最大 → 3 笔 100% 胜率、卡玛 8.23 的
   GS1292 被当成最优)。
-- **口径唯一真相源** = `core/farm_rules` (年化≥15% 且 |回撤|≤15% 且 笔数≥20);
+- **口径唯一真相源** = `core/farm_rules` (2026-09-22 起 年化≥10% 且 |回撤|≤15% 且 笔数≥20);
   本文件不再自己写任何阈值。
 - 飞书推送结果如实记录 (旧代码无论成败都打印"飞书已推送")。
 
@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -147,35 +148,78 @@ def _parked(gs: str) -> bool:
 
 # ────────────────────────── 粗扫 ──────────────────────────
 
+#: 单条公式三个阶段的墙钟上限 (prep+run+report 各自计时)
+SWEEP_TIMEOUT = 5400
+
+
+def _run_stream(cmd, timeout):
+    """跑子进程并**边跑边把输出转出来**, 返回 (rc, 合并输出文本)。
+
+    2026-09-20 用户报「说运行中但看不到进度」: 旧版 capture_output=True 把
+    gs_5m_sweep 每 25 组就 flush 一次的 `[GS1369 shard 0] 25/36 (0.05/s, ETA 7min)`
+    全攒在内存里, 只在**阶段结束时**回放最后 2 行 —— 一个公式要跑十几分钟, 页面
+    这十几分钟一个字都不动, 停在上一阶段的诊断行上 (看着像报错)。
+    改成实时中继后, 这些行会立刻流进 FarmRunner 的 log_tail (页面实时输出) 和
+    runs/<日期>/<闸门>.log。stderr 合流 (no_signals 判定与报错定位都靠这份文本)。
+    超时语义与 subprocess.run 保持一致: 杀掉子进程后抛 TimeoutExpired。
+    """
+    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace")
+    buf = []
+
+    def _pump():
+        for ln in proc.stdout:
+            ln = ln.rstrip("\n")
+            buf.append(ln)
+            if not ln.strip():
+                continue
+            try:
+                log("     %s" % ln.strip()[:200])
+            except Exception:                                 # noqa: BLE001
+                # 中继线程死掉 = 管道没人读 → 子进程写满缓冲区后**永久卡死**。
+                # 打屏失败 (编码等) 绝不许拖垮中继本身。
+                pass
+
+    reader = threading.Thread(target=_pump, daemon=True)
+    reader.start()
+    try:
+        rc = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        reader.join(timeout=5)
+        try:
+            proc.stdout.close()
+        except Exception:                                     # noqa: BLE001
+            pass
+    return rc, "\n".join(buf)
+
+
 def _sweep(gs: str, start: str, end: str) -> str:
     """跑 prep/run/report 三段; 返回错误说明 (空串 = 成功)。
 
     prep 报 `no_signals` (公式不在 TDX 或区间内零信号) → **短路**: 直接停牌返回,
     不再往下跑 run/report (旧代码会拿缺失的 cache 去跑 run, 抛
     `FileNotFoundError: meta.json` → 被记成"闸门失败", 其实公式本身就没信号)。
+    三段的 stdout/stderr 实时中继 (见 _run_stream), 不再只回放尾巴 2 行。
     """
     for cmd, extra in (("prep", []),
                        ("run", ["--stage", "refine", "--combos-file", COMBOS36]),
                        ("report", [])):
-        r = subprocess.run([PY, "-X", "utf8", SWEEP, cmd, gs,
-                            "--start", start, "--end", end] + extra,
-                           cwd=ROOT, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=5400)
-        out = (r.stdout or "") + (r.stderr or "")
+        rc, out = _run_stream([PY, "-X", "utf8", SWEEP, cmd, gs,
+                               "--start", start, "--end", end] + extra,
+                              SWEEP_TIMEOUT)
         if '"status": "no_signals"' in out or '"status":"no_signals"' in out:
             os.makedirs(os.path.dirname(_park_marker(gs)), exist_ok=True)
             with open(_park_marker(gs), "w", encoding="utf-8") as f:
                 f.write("prep 报 no_signals (%s): TDX 无此公式 或 区间 %s~%s 内零信号\n"
                         % (time.strftime("%Y-%m-%d %H:%M"), start, end))
             return "NO_SIGNALS"
-        if r.returncode != 0:
-            return "%s rc=%d %s" % (cmd, r.returncode, out[-160:].replace("\n", " "))
-        # 2026-09-11: 正常 stdout 里有关键诊断 (选股完成 N 信号 / 零信号提示),
-        # 旧代码全丢弃 → 出问题查不到线索。这里留摘要。
-        tail = out.strip().splitlines()
-        for ln in tail[-2:]:
-            if ln.strip():
-                log("     %s" % ln.strip()[:150])
+        if rc != 0:
+            return "%s rc=%d %s" % (cmd, rc, out[-160:].replace("\n", " "))
     return ""
 
 
@@ -340,18 +384,100 @@ def _stats_of(results):
     return stats
 
 
+def _atomic_write(path, text):
+    """tmp+replace 原子写 —— farm_summary 2 秒轮询在读, 不许露出半截文件。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
 def write_backtest_summary(path, ctx, stats):
-    """卡片④成绩单数据源落盘 (md 给人看, json 给程序读)。"""
+    """卡片④成绩单数据源落盘 (md 给人看, json 给程序读)。原子写 (2026-09-20)。"""
     out = {"date": ctx.get("date", ""), "batch_date": ctx.get("batch_date", ""),
            "stats": stats, "remaining": len(ctx.get("remaining") or []),
            "total": ctx.get("total"), "done": ctx.get("done")}
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=1)
+    _atomic_write(path, json.dumps(out, ensure_ascii=False, indent=1))
     return out
 
 
 # ────────────────────────── 主流程 ──────────────────────────
+
+def _assemble_batch(batch_items):
+    """最新批次 → (done, parked, remaining, results)。装配唯一实现 —
+    循环内增量落盘与终点收口共用, 防两套口径漂移 (2026-09-20)。"""
+    done = [g for g in sorted(batch_items) if _rows_of(g)]
+    parked = [g for g in sorted(batch_items) if not _rows_of(g) and _parked(g)]
+    remaining = [g for g in sorted(batch_items)
+                 if not _rows_of(g) and not _parked(g)]
+    results = ([{"gs": g, "file": batch_items[g]["file"], "rows": _rows_of(g)}
+                for g in done]
+               + [{"gs": g, "file": batch_items[g]["file"], "rows": []}
+                  for g in parked])
+    return done, parked, remaining, results
+
+
+def _checkpoint(batch_items, batch_date, run_date, declared, errors, no_signals):
+    """把当前进度落盘: 报告 md + 成绩单 json (每条公式扫完即调, 中断不吞已扫部分)。
+
+    2026-09-20 用户报障: 三样产物原只在终点一次性写, 中途重启 = 已扫部分在
+    报告/成绩单/榜单上全不可见。写失败 fail-soft —— sweep CSV 才是真 payload,
+    落盘故障不许杀掉整轮。
+    """
+    done, parked, remaining, results = _assemble_batch(batch_items)
+    windows = [w for w in (_window_of(g) for g in done) if w]
+    actual = (min(w[0] for w in windows), max(w[1] for w in windows)) if windows else None
+    ctx = {"date": run_date, "batch_date": batch_date, "declared": declared,
+           "actual": actual, "total": len(batch_items), "done": len(done),
+           "parked_n": len(parked), "remaining": remaining,
+           "sweep_errors": list(errors) + ["%s(零信号停牌)" % g for g in no_signals],
+           "universe": CALIBER["universe"], "period": CALIBER["period"],
+           "dividend": CALIBER["dividend"], "capital": CALIBER["capital"],
+           "max_buy": CALIBER["max_buy"], "priority": CALIBER["priority"]}
+    try:
+        _atomic_write(os.path.join(REPORTS, "%s_粗扫报告_公式农场.md" % run_date),
+                      build_report(results, ctx))
+        write_backtest_summary(
+            os.path.join(RUNS, run_date, "backtest_summary.json"),
+            ctx, _stats_of(results))
+    except Exception as e:                                       # noqa: BLE001
+        log("   ! 进度落盘失败 (本轮 sweep 继续, 报告/成绩单暂不更新): %r" % e)
+    return ctx
+
+
+def _archive_one(gs, idx):
+    """单公式入档 (fail-soft: 写失败不杀整轮, 下轮孤儿对账兜底)。"""
+    try:
+        update_archive(ARCHIVE, [gs], idx)
+    except Exception as e:                                       # noqa: BLE001
+        log("   ! %s 入档失败 (本轮继续, 下轮启动时孤儿对账兜底): %r" % (gs, e))
+
+
+def _sync_archive_orphans(idx):
+    """孤儿对账: 有 sweep 结果/停牌标记但不在档案的公式补登 (中断自愈)。
+
+    中断轮扫完的公式已有 CSV → 下轮不在待扫清单 → 旧逻辑 (终点只入档本轮
+    targets) 永远进不了档案: 2026-09-20 实测 ~60 条被吞。每轮启动对一次账,
+    无需人工 --rebuild-archive。
+    """
+    try:
+        with open(ARCHIVE, encoding="utf-8") as f:
+            arch = json.load(f)
+    except Exception:                                            # noqa: BLE001
+        arch = {}
+    orphans = [g for g in idx if g not in arch and (_rows_of(g) or _parked(g))]
+    if orphans:
+        log("孤儿对账: %d 条有结果但不在档案 (中断残留), 补登: %s" % (
+            len(orphans), ",".join(sorted(orphans)[:8])
+            + ("..." if len(orphans) > 8 else "")))
+        try:
+            # 整批一次读写 (增量合并), 逐条写是 O(n²) 磁盘抖动
+            update_archive(ARCHIVE, sorted(orphans), idx)
+        except Exception as e:                                   # noqa: BLE001
+            log("   ! 孤儿补登失败 (本轮继续): %r" % e)
+    return len(orphans)
+
 
 def main():
     ap = argparse.ArgumentParser(description="公式农场粗扫 (闸门④)")
@@ -397,7 +523,13 @@ def main():
     log("本轮待扫 %d 条%s (含跨批次补扫: 旧的优先, 不会被新批次饿死)" % (
         len(targets), "" if targets else " (无)"))
 
+    # 2026-09-20 增量落盘: 日期在开头取一次 (跨午夜长跑不许中途换报告文件名);
+    # 孤儿对账补登中断残留; 循环前先来一次 checkpoint, 页面立即看到「余 N 条待补」。
+    run_date = time.strftime("%Y-%m-%d")
+    declared = (args.start, args.end)
+    _sync_archive_orphans(idx)
     errors, no_signals = [], []
+    _checkpoint(batch_items, batch_date, run_date, declared, errors, no_signals)
     for i, gs in enumerate(targets, 1):
         info = idx.get(gs) or batch_items.get(gs) or {}
         log("[%d/%d] %s <- %s (入库 %s)" % (i, len(targets), gs,
@@ -406,66 +538,46 @@ def main():
         hit = voided_scan.guard(gs, info.get("file", ""), records)
         if hit:
             log("   ⛔ 扫前复检命中黑名单 → 登记作废并跳过: %s" % hit)
-            continue
-        err = _sweep(gs, args.start, args.end)
-        _ROWS_CACHE.pop(gs, None)          # 重扫后清缓存, 报告读新结果
-        rows = _rows_of(gs)
-        if err == "NO_SIGNALS":
-            no_signals.append(gs)
-            log("   · TDX 无此公式 / 区间零信号 → 停牌 (不再重复 prep), 报告记「无有效组合」")
-            continue
-        if err:
-            errors.append("%s: %s" % (gs, err))
-            log("   ✗ %s" % err)
-            continue
-        best = farm_rules.pick_best(rows)
-        if best is None:
-            log("   ! 无有效组合 (36 组全失败)")
-            continue
-        v = farm_rules.verdict(best.get("annret"), best.get("maxdd"), best.get("trades"))
-        log("   %s 年化%.2f%% 回撤%.2f%% %s笔 | %s | %s" % (
-            v["label"], _f(best["annret"]) * 100, _f(best["maxdd"]) * 100,
-            int(_f(best["trades"])), best["key"], v["reason"]))
+        else:
+            err = _sweep(gs, args.start, args.end)
+            _ROWS_CACHE.pop(gs, None)          # 重扫后清缓存, 报告读新结果
+            rows = _rows_of(gs)
+            if err == "NO_SIGNALS":
+                no_signals.append(gs)
+                log("   · TDX 无此公式 / 区间零信号 → 停牌 (不再重复 prep), 报告记「无有效组合」")
+            elif err:
+                errors.append("%s: %s" % (gs, err))
+                log("   ✗ %s" % err)
+            else:
+                best = farm_rules.pick_best(rows)
+                if best is None:
+                    log("   ! 无有效组合 (36 组全失败)")
+                else:
+                    v = farm_rules.verdict(best.get("annret"), best.get("maxdd"),
+                                           best.get("trades"))
+                    log("   %s 年化%.2f%% 回撤%.2f%% %s笔 | %s | %s" % (
+                        v["label"], _f(best["annret"]) * 100,
+                        _f(best["maxdd"]) * 100, int(_f(best["trades"])),
+                        best["key"], v["reason"]))
+        # 扫一条落一条: 四种结局 (达标/未达标/停牌/作废) 同等待遇 ——
+        # 与旧终点「targets 全入档」语义对齐, 只是时机提前到每条扫完
+        _archive_one(gs, idx)
+        _checkpoint(batch_items, batch_date, run_date, declared, errors, no_signals)
 
-    # 报告范围 = 最新批次 20 条: 有结果的照实判, 零信号停牌的记「无有效组合」,
-    # 其余显式列进未扫清单 (F1: 不许静默漏)
-    done = [g for g in sorted(batch_items) if _rows_of(g)]
-    parked = [g for g in sorted(batch_items) if not _rows_of(g) and _parked(g)]
-    remaining = [g for g in sorted(batch_items)
-                 if not _rows_of(g) and not _parked(g)]
-    results = ([{"gs": g, "file": batch_items[g]["file"], "rows": _rows_of(g)}
-                for g in done]
-               + [{"gs": g, "file": batch_items[g]["file"], "rows": []}
-                  for g in parked])
-    windows = [w for w in (_window_of(g) for g in done) if w]
-    actual = (min(w[0] for w in windows), max(w[1] for w in windows)) if windows else None
-    ctx = {"date": time.strftime("%Y-%m-%d"), "declared": (args.start, args.end),
-           "actual": actual, "total": len(batch_items), "done": len(done),
-           "remaining": remaining, "sweep_errors": errors + ["%s(零信号停牌)" % g for g in no_signals],
-           "universe": CALIBER["universe"], "period": CALIBER["period"],
-           "dividend": CALIBER["dividend"], "capital": CALIBER["capital"],
-           "max_buy": CALIBER["max_buy"], "priority": CALIBER["priority"]}
-    md = build_report(results, ctx)
-
-    os.makedirs(REPORTS, exist_ok=True)
-    rpt = os.path.join(REPORTS, "%s_粗扫报告_公式农场.md" % ctx["date"])
-    with open(rpt, "w", encoding="utf-8") as f:
-        f.write(md)
+    # 终点收口: 最后一次 checkpoint (与循环内同一实现, 幂等) + 报告推送
+    ctx = _checkpoint(batch_items, batch_date, run_date, declared, errors, no_signals)
+    rpt = os.path.join(REPORTS, "%s_粗扫报告_公式农场.md" % run_date)
     log("粗扫报告: %s" % rpt)
+    log("粗扫成绩: %s" % os.path.join(RUNS, run_date, "backtest_summary.json"))
     log("本批 %d 条 / 有结果 %d 条 / 零信号停牌 %d 条 / 待扫 %d 条" % (
-        len(batch_items), len(done), len(parked), len(remaining)))
-    # 2026-09-16 看板数据源: 本轮成绩 json + 累计档案增量更新
-    ctx["batch_date"] = batch_date
-    sjson = os.path.join(RUNS, ctx["date"], "backtest_summary.json")
-    write_backtest_summary(sjson, ctx, _stats_of(results))
-    log("粗扫成绩: %s" % sjson)
-    gs_for_archive = sorted(idx) if args.rebuild_archive else list(targets)
-    arch = update_archive(ARCHIVE, gs_for_archive, idx,
-                          rebuild=args.rebuild_archive)
-    log("累计档案: %s (%d 条%s)" % (
-        ARCHIVE, len(arch), ", 全量重建" if args.rebuild_archive else ""))
+        len(batch_items), ctx["done"], ctx["parked_n"], len(ctx["remaining"])))
+    if args.rebuild_archive:
+        arch = update_archive(ARCHIVE, sorted(idx), idx, rebuild=True)
+        log("累计档案: %s (%d 条, 全量重建)" % (ARCHIVE, len(arch)))
+    else:
+        log("累计档案: %s (本轮 %d 条已逐条入档)" % (ARCHIVE, len(targets)))
     if not args.no_push:
-        push_feishu(rpt, "公式农场粗扫 %s" % ctx["date"])
+        push_feishu(rpt, "公式农场粗扫 %s" % run_date)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
   (2026-09-16 F7: 批次目录原硬编码 "2026-09-06", 现按 mtime 取最新批,
   对齐 farm_backtest.py _latest_onboard_items 的做法)
 - 断点续跑: 已有 sweep csv 的跳过;
-- 达标口径唯一真相源 = core/farm_rules.py (年化≥15% 且 |回撤|≤15% 且 笔数≥20;
+- 达标口径唯一真相源 = core/farm_rules.py (2026-09-22 起 年化≥10% 且 |回撤|≤15% 且 笔数≥20;
   笔数不足记「样本不足」, 不判达标也不参与最优评选 —— GS1292 事件教训)。
   达标者写入 data/formula_farm/winners/<GS>_<标题>.md
   (源码+最优组合+四指标+口径) 和 winners/index.md 总榜;
@@ -137,7 +137,7 @@ def emit_winners(items, start, end):
             continue
         rec = code_by_file.get(r["file"], {})
         title = re.sub(r'[\\/:*?"<>|]', "_", os.path.splitext(r["file"])[0])
-        md = ["# %s — 粗扫达标(年化≥15%%)\n" % r["gs"],
+        md = ["# %s — 粗扫达标(年化≥%d%%)\n" % (r["gs"], round(farm_rules.TARGET_ANN * 100)),
               "- 来源: %s" % r["url"],
               "- 区间/口径: %s~%s, 沪深300, 5m, 移动止盈优先, T收盘买入" % (start, end),
               "- 最优组合: `%s`" % r["key"],

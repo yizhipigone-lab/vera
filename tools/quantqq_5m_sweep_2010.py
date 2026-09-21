@@ -57,7 +57,7 @@ WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓�
 CAPITAL = 1_000_000.0     # 与 1m 版一致: 100 万
 MAX_BUY = 50_000.0        # 单票上限 5 万 = 本金 100 万的 5% (用户本次口径; 原 2 万=2%)
 UNIVERSE = {"type": "50", "exclude_st": True, "exclude_new_listings_days": 60}
-TARGET_ANNRET = TARGET_ANN  # 达标口径单一真相源 core/farm_rules.py: 年化≥15% 且 回撤≤15%
+TARGET_ANNRET = TARGET_ANN  # 达标口径单一真相源 core/farm_rules.py (年化线 2026-09-22 起 10%)
 TARGET_MAXDD_LIM = TARGET_MAXDD  # |最大回撤| 上限 (P0-7 补回撤腿)
 MIN_TRADES = int(os.environ.get("SWEEP_MIN_TRADES", "3000"))  # 整段 11.5 年用 3000; 分段(2年)用 300
 

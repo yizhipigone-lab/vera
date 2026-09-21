@@ -47,7 +47,7 @@ FORMULA = "QUANTQQ"
 WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓冲 (engine 铁律)
 CAPITAL = 3_000_000.0     # 用户拍板: 300万
 MAX_BUY = 20_000.0        # 单票上限 2万 (分散口径, v4 报告 Calmar 9.52 最可信档)
-# 达标口径 (P0-8a 收口): 年化/回撤与 core/farm_rules 统一 (15%/15%),
+# 达标口径 (P0-8a 收口): 年化/回撤与 core/farm_rules 统一 (年化线 2026-09-22 起 10%, 回撤 15%),
 # 笔数下限 1000 是本课题 2 年区间统计口径, 属脚本自有
 MIN_TRADES = 1000
 
@@ -369,7 +369,7 @@ def do_report(args):
     df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["key"], keep="last")
     n_err = int(df["error"].fillna("").ne("").sum())
     df = df[df["annret"].notna()]
-    # M2: 达标硬条件 = 年化≥15% 且 回撤≤15% 且 交易≥1000 笔 (统计显著;
+    # M2: 达标硬条件 = 年化≥TARGET_ANN 且 回撤≤15% 且 交易≥1000 笔 (统计显著;
     # 年化/回撤阈值引自 core/farm_rules, 与 1m/2010 版口径统一)
     tgt = df[(df["annret"] >= TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
              & (df["trades"] >= MIN_TRADES)]

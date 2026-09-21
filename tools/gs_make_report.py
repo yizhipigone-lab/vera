@@ -22,7 +22,8 @@ from core.tdx_path import tdx_home
 
 BASE = "output/gs_5m_sweep"
 OUT_MD = os.path.join(BASE, "EVAL_REPORT.md")
-# 2026-09-11: 达标线收口到 core/farm_rules (单一真相源, 年化≥15% 且 |回撤|≤15% 且 笔数≥20)。
+# 2026-09-11: 达标线收口到 core/farm_rules (单一真相源; 2026-09-22 起年化≥10%
+# 且 |回撤|≤15% 且 笔数≥20)。
 # 此前本文件硬编码 0.30/0.15/1000, 与 09-09 批实际在用的 15% 冲突。
 from core import farm_rules  # noqa: E402
 
