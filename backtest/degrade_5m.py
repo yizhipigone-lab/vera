@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from backtest._constants import STD_5M_BAR_TIMES_ORDERED
+from backtest._constants import STD_5M_BAR_TIMES_ORDERED, detect_limit_up
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,7 +65,8 @@ class DegradeResult:
 
 
 def _detect_1d_limit_up(close_1d: pd.DataFrame, limit_ratio_vec: np.ndarray) -> pd.DataFrame:
-    """1d 涨停判定: close >= 前收*(1+ratio)*0.997 (与 engine._filter_limit_up 同口径)。
+    """1d 涨停判定: close >= 前收*(1+ratio)*0.997 (与 engine._filter_limit_up 同口径,
+    2026-09-16 B3 起共用 detect_limit_up 单一实现, 浮点顺序不变)。
 
     在 1d 自身日期轴上算 (前收可能早于网格首日), 首行无前收 → False。
     """
@@ -73,7 +74,7 @@ def _detect_1d_limit_up(close_1d: pd.DataFrame, limit_ratio_vec: np.ndarray) -> 
     prev = np.empty_like(cv)
     prev[0] = np.nan
     prev[1:] = cv[:-1]
-    limit_up = cv >= prev * (1.0 + limit_ratio_vec) * 0.997
+    limit_up = detect_limit_up(cv, prev, limit_ratio_vec)
     return pd.DataFrame(limit_up, index=close_1d.index, columns=close_1d.columns)
 
 

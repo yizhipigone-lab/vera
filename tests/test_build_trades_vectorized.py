@@ -44,7 +44,9 @@ def _old_build_trades(raw, columns, dates, bpday=1):
             "entry_amount": round(ep * sh, 2), "exit_amount": round(xp * sh, 2),
             "pnl": round(float(row[6]), 2), "return": round(float(row[7]), 4),
             "profit_pct": round(float(row[7]), 4),
-            "exit_reason": reason_map.get(row[8], "换股卖出"),
+            # 2026-09-16 P2: 与 engine 同步 — 未知原因码标"未知原因(v)", 不再误标"换股卖出"
+            # (当前 choice 列表全是已知码, default 不触发; 同步防未来加未知码造成假红)
+            "exit_reason": reason_map.get(row[8], f"未知原因({row[8]})"),
             "hold_days": max(1, (xi - ei) // bpday) if bpday > 1 else (xi - ei),
         })
     return pd.DataFrame(records)

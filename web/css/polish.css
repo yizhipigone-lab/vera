@@ -1,0 +1,92 @@
+/* ============================================================
+   web/css/polish.css — 视觉打磨层 (2026-09-02 design-review)
+   ------------------------------------------------------------
+   审计依据: 字号分布实测(9px×3 / 10px×10 / 11px×37) + 暗色对比度
+   原则 (三条, 缺一不可):
+     1. 只用 CSS 变量与 color-mix —— 明/暗双主题零破坏
+        (主题机制: [data-theme="dark"] 令牌整体换血, 本层同模式)
+     2. 只调"看得见的可读性", 不动布局结构/间距/信息架构
+     3. 本文件在 index.html 内联 <style> 之后加载, 同名选择器
+        靠后者胜出 —— 不用 !important, 不加特异性军备
+   修复项: F1 表头10px / F2 9px中文 / F3 按钮10px
+           / F4 暗色text2对比 / F5 斑马纹 / 滚动条
+   ============================================================ */
+
+/* ── F1: 表头强化 (→ --fs-sm 12px, 主色, 加字距) ───────────
+   W4-6: 收作用域 — 原裸 `table thead th` 波及全站所有表格(含 brain-md 表头),
+   与 brain-md.css:59 斑马纹双重叠加; 只留交易/委托两类数据表 */
+.trade-table th,
+.td-table th {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  opacity: 0.88;
+}
+
+/* ── F2: 9px 中文标签 → --fs-xs 11px (中文9px不可读, 地板=11px) ── */
+.concept-tag,
+.sector-item label .code,
+.td-sort-arrow {
+  font-size: var(--fs-xs);
+}
+
+/* ── F3: 工具栏按钮 → --fs-sm 12px + 最小点击高度 ────────── */
+.sector-toolbar button {
+  font-size: var(--fs-sm);
+  min-height: 26px;
+}
+
+/* ── F5: 密集表格斑马纹 (极淡, 令牌派生, 双主题自适应) ────
+   W4-6: 收作用域 — 原裸 `tbody tr` 波及全站(与 brain-md.css:59 各叠一层斑马纹) */
+.trade-table tbody tr:nth-child(even) > td,
+.td-table tbody tr:nth-child(even) > td {
+  background: color-mix(in srgb, var(--text) 2.2%, transparent);
+}
+
+/* ── 滚动条: 细窄 + 主题色 (暗色下不再白条刺眼) ─────────── */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text2) 42%, transparent);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text2) 65%, transparent);
+}
+
+/* ── 数字列等宽渲染 (JetBrains Mono 已在栈里, 补齐表格场景) ── */
+.trade-table td.num,
+.td-table td.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 公式农场看板 (2026-09-16 计划书阶段 3: 流水线卡片 + 总览) ──
+   2026-09-19 UIUX 收编: 本段原来写死 #22c55e/#ef4444/#f59e0b/#3b82f6
+   (与本文件头"只用 CSS 变量"的规矩自相矛盾), 全部改回令牌 */
+.farm-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle; background: var(--text2); opacity: .35; }
+.farm-dot.ok { background: var(--ok); opacity: 1; }
+.farm-dot.bad { background: var(--danger); opacity: 1; }
+.farm-dot.stop { background: var(--warn); opacity: 1; }
+.farm-dot.run { background: var(--info); opacity: 1; animation: farmPulse 1.2s ease-in-out infinite; }
+@keyframes farmPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.35); opacity: .55; } }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.farm-arrow { text-align: center; color: var(--text2); font-size: var(--fs-md); line-height: 1; margin: 2px 0; opacity: .6; }
+.farm-sum { font-size: var(--fs-xs); color: var(--text); margin-top: 4px; }
+.farm-note { font-size: var(--fs-xs); color: var(--warn-text); margin-top: 2px; }
+.farm-funnel-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: var(--fs-sm); }
+.farm-funnel-label { width: 110px; flex: none; color: var(--text2); }
+.farm-funnel-bar { height: 14px; border-radius: 3px; min-width: 2px;
+  background: color-mix(in srgb, var(--link) 70%, transparent); }
+.farm-funnel-num { font-family: var(--mono); color: var(--text); }
+.farm-board table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); margin-top: 6px; }
+.farm-board th, .farm-board td { text-align: left; padding: 3px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text2) 15%, transparent); }
+.farm-board th { color: var(--text2); font-weight: 600; }
+.farm-board td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.farm-group-title { font-size: var(--fs-sm); margin-top: 10px; font-weight: 600; }
+.farm-group-pass { color: var(--ok-text); }
+.farm-group-thin { color: var(--warn-text); }
+.farm-group-fail { color: var(--text2); }

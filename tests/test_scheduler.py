@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from scheduler import trading_calendar as tc
+from utils import trading_calendar as tc
 from scheduler import vera_scheduler as vs
 from scheduler.graceful_shutdown import install
 
@@ -55,9 +55,23 @@ class TestTradingCalendar:
                 raise ImportError("模拟缺失")
             return real_import(name, *a, **kw)
         monkeypatch.setattr(builtins, "__import__", fake_import)
-        with caplog.at_level("WARNING", logger="scheduler.trading_calendar"):
+        with caplog.at_level("WARNING", logger="utils.trading_calendar"):
             assert tc.is_trading_day(dt.date(2026, 1, 5)) is True
         assert "降级" in caplog.text
+
+    def test_precise_calendar_available_reflects_latch(self, monkeypatch):
+        """精确历可用性即 _load_xshg 的闩状态 (失败也置闩 → 装库要重启才生效)。"""
+        monkeypatch.setattr(tc, "_XCAL", None)
+        monkeypatch.setattr(tc, "_XCAL_TRIED", True)
+        assert tc.precise_calendar_available() is False
+
+    def test_calendar_covers_inside_outside_table(self, monkeypatch):
+        """表内可信 (走内置假日表); 表外年份不可信 (2027 年放假安排公告前写不准)。"""
+        monkeypatch.setattr(tc, "_XCAL", None)
+        monkeypatch.setattr(tc, "_XCAL_TRIED", True)
+        assert tc.calendar_covers(dt.date(2026, 1, 5)) is True    # 表首
+        assert tc.calendar_covers(dt.date(2026, 12, 31)) is True  # 表尾
+        assert tc.calendar_covers(dt.date(2027, 1, 4)) is False   # 表外
 
 
 # ── 定时器触发逻辑 (纯函数 + run_pending 注入时间) ───────────
@@ -129,6 +143,81 @@ class TestMonthlyJob:
         with pytest.raises(ValueError):
             sched.add_monthly("m", lambda: None, day=31)
 
+    def test_invalid_catchup_rejected(self, fake_weekday_calendar):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_monthly("m", lambda: None, day=1, catchup_days=-1)
+
+    def test_catchup_fires_after_missed_trigger_day(self,
+                                                    fake_weekday_calendar):
+        """体检 P2-2: 触发日(06-01 周一)错过, 宽限 7 天内补发一次。
+        模拟 09-01 断档后 09-05 才启动: 6/1 后 6/5 启动应补发。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_monthly("m", lambda: calls.append(1), day=1, hhmm="08:30",
+                          catchup_days=7)
+        assert sched.run_pending(_at(2026, 6, 5, 9, 0)) == 1   # 补发
+        assert calls == [1]
+        sched.run_pending(_at(2026, 6, 6, 9, 0))               # 同月不再补
+        sched.run_pending(_at(2026, 6, 28, 9, 0))
+        assert calls == [1]
+        sched.run_pending(_at(2026, 7, 1, 8, 30))              # 次月正常触发
+        assert calls == [1, 1]
+
+    def test_catchup_not_before_or_past_grace(self, fake_weekday_calendar):
+        """宽限窗口外不补: 触发日前不提前, 超 7 天不补 (太旧不自动生成)。"""
+        sched = vs.VeraScheduler()
+        sched.add_monthly("m", lambda: None, day=1, hhmm="08:30",
+                          catchup_days=7)
+        assert sched.run_pending(_at(2026, 5, 31, 9, 0)) == 0   # 触发日前
+        assert sched.run_pending(_at(2026, 6, 9, 9, 0)) == 0    # 超宽限 (6/1+7)
+
+    def test_no_catchup_when_catchup_days_zero(self,
+                                               fake_weekday_calendar):
+        """catchup_days=0 (默认) = 旧行为: 错过触发日即错过, 不补。"""
+        sched = vs.VeraScheduler()
+        sched.add_monthly("m", lambda: None, day=1, hhmm="08:30")
+        assert sched.run_pending(_at(2026, 6, 5, 9, 0)) == 0
+
+
+class TestWeeklyJob:
+    """add_weekly (2026-09-05 体检 P0-2): 每周日触发, 不看交易日。
+
+    背景: 周度进化/sgpjbg 周报原用 daily+内部 weekday 检查 —— daily 要求
+    交易日而周日休市, 周日分支永远不可达。weekly 语义按星期几直接触发。
+    """
+
+    def test_fires_on_sunday_ignoring_trading_day(self, fake_weekday_calendar):
+        """2026-06-07 是周日 (非交易日) → 18:00 仍应触发。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_weekly("w", lambda: calls.append(1), weekday=6, hhmm="18:00")
+        assert sched.run_pending(_at(2026, 6, 7, 17, 59)) == 0
+        assert sched.run_pending(_at(2026, 6, 7, 18, 0)) == 1
+        assert calls == [1]
+
+    def test_not_due_other_weekdays(self, fake_weekday_calendar):
+        sched = vs.VeraScheduler()
+        sched.add_weekly("w", lambda: None, weekday=6, hhmm="18:00")
+        assert sched.run_pending(_at(2026, 6, 6, 18, 30)) == 0  # 周六
+        assert sched.run_pending(_at(2026, 6, 8, 18, 30)) == 0  # 周一
+
+    def test_no_double_fire_same_week_then_next_week(self,
+                                                     fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_weekly("w", lambda: calls.append(1), weekday=6, hhmm="18:00")
+        sched.run_pending(_at(2026, 6, 7, 18, 30))    # 第一个周日
+        sched.run_pending(_at(2026, 6, 7, 23, 0))     # 同日再扫不重复
+        sched.run_pending(_at(2026, 6, 9, 18, 30))    # 周中不触发
+        sched.run_pending(_at(2026, 6, 14, 18, 0))    # 第二个周日再触发
+        assert calls == [1, 1]
+
+    def test_invalid_weekday_rejected(self):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_weekly("w", lambda: None, weekday=7)
+
 
 class TestFaultIsolation:
     def test_one_job_crash_does_not_block_others(self, fake_weekday_calendar):
@@ -163,6 +252,85 @@ class TestStartStop:
         assert sched._thread is None
 
 
+class TestIntervalJob:
+    """add_interval: 盘中按固定间隔触发, 首次立即触发, 仅交易日+交易时段。"""
+
+    _WIN = ("09:30-11:30", "13:00-15:00")  # 与 sentiment_pipeline.TRADING_HOURS 一致
+
+    def test_first_fire_immediate_in_window(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 10:00 在上午窗口内, 首次启动立即触发
+        assert sched.run_pending(_at(2026, 6, 1, 10, 0)) == 1
+        assert calls == [1]
+
+    def test_not_due_before_window(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 09:00 盘前 (窗口外) → 不触发
+        assert sched.run_pending(_at(2026, 6, 1, 9, 0)) == 0
+        assert calls == []
+
+    def test_not_due_in_lunch_break(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 12:00 午间休市 (两窗口之间) → 不触发
+        assert sched.run_pending(_at(2026, 6, 1, 12, 0)) == 0
+
+    def test_afternoon_window_fires(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 14:00 下午窗口 → 首次触发
+        assert sched.run_pending(_at(2026, 6, 1, 14, 0)) == 1
+
+    def test_respects_interval(self, fake_weekday_calendar):
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        assert sched.run_pending(_at(2026, 6, 1, 9, 30)) == 1   # 首次触发
+        assert sched.run_pending(_at(2026, 6, 1, 9, 35)) == 0   # 5min < 10min 间隔
+        assert sched.run_pending(_at(2026, 6, 1, 9, 40)) == 1   # 10min 到点再触发
+        assert len(calls) == 2
+
+    def test_weekend_does_not_fire(self, fake_weekday_calendar):
+        """周末即便时刻在窗口内也不触发 (盘中只在交易日存在)。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=self._WIN)
+        # 2026-06-06 周六 10:00 (窗口内但非交易日)
+        assert sched.run_pending(_at(2026, 6, 6, 10, 0)) == 0
+        assert calls == []
+
+    def test_no_window_all_day(self, fake_weekday_calendar):
+        """trading_hours=() 空 → 不受时段/交易日约束 (每日按间隔)。"""
+        calls = []
+        sched = vs.VeraScheduler()
+        sched.add_interval("tick", lambda: calls.append(1),
+                           interval_min=10, trading_hours=())
+        # 周六 08:00, 无窗口约束 → 首次触发
+        assert sched.run_pending(_at(2026, 6, 6, 8, 0)) == 1
+
+    def test_interval_min_zero_raises(self):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_interval("tick", lambda: None, interval_min=0)
+
+    def test_interval_min_negative_raises(self):
+        sched = vs.VeraScheduler()
+        with pytest.raises(ValueError):
+            sched.add_interval("tick", lambda: None, interval_min=-5)
+
+
 # ── 优雅停机 ─────────────────────────────────────────────────
 
 class TestGracefulShutdown:
@@ -176,3 +344,60 @@ class TestGracefulShutdown:
             assert ev.is_set()
         finally:
             signal.signal(signal.SIGINT, prev)  # 恢复默认, 不污染其他测试
+
+
+# ── 触发记录持久化 (2026-08-27 事件) ─────────────────────────
+# 事件: 22:07 / 22:42 两次启动 VERA, 各补发一条舆情日报。
+# 根因: last_fired 是进程内存态, 重启失忆 → 过了 hhmm 的 daily job 全补触发。
+# 裁决 (用户): "没发要补发, 发过别重发" → state_path 持久化 last_fired。
+
+class TestPersistentFiredState:
+    def test_restart_does_not_refire_daily(self, tmp_path, fake_weekday_calendar):
+        state = str(tmp_path / "scheduler_state.json")
+        fired = []
+        s1 = vs.VeraScheduler(state_path=state)
+        s1.add_daily("sentiment_daily", lambda: fired.append(1), "15:05")
+        # 2026-06-01 周一 22:07 (过了 15:05): 首次启动, 今天没发过 → 补发
+        assert s1.run_pending(_at(2026, 6, 1, 22, 7)) == 1
+        assert fired == [1]
+        # 同进程内不重复
+        assert s1.run_pending(_at(2026, 6, 1, 22, 30)) == 0
+        # 模拟重启: 新实例读同一状态文件 → 今天已发过, 不再补发
+        s2 = vs.VeraScheduler(state_path=state)
+        s2.add_daily("sentiment_daily", lambda: fired.append(1), "15:05")
+        assert s2.run_pending(_at(2026, 6, 1, 22, 42)) == 0
+        assert fired == [1]
+        # 次日 (周二) 重启: 新的一天, 照常触发
+        s3 = vs.VeraScheduler(state_path=state)
+        s3.add_daily("sentiment_daily", lambda: fired.append(1), "15:05")
+        assert s3.run_pending(_at(2026, 6, 2, 22, 42)) == 1
+        assert fired == [1, 1]
+
+    def test_monthly_state_also_persisted(self, tmp_path, fake_weekday_calendar):
+        state = str(tmp_path / "scheduler_state.json")
+        fired = []
+        s1 = vs.VeraScheduler(state_path=state)
+        s1.add_monthly("monthly_note", lambda: fired.append(1), day=1, hhmm="08:30")
+        assert s1.run_pending(_at(2026, 6, 1, 9, 0)) == 1
+        s2 = vs.VeraScheduler(state_path=state)
+        s2.add_monthly("monthly_note", lambda: fired.append(1), day=1, hhmm="08:30")
+        assert s2.run_pending(_at(2026, 6, 1, 12, 0)) == 0  # 重启不补发
+        assert fired == [1]
+
+    def test_corrupt_state_fails_open(self, tmp_path, fake_weekday_calendar):
+        """状态文件损坏 → 当作没发过 (宁可补发不可漏发, 用户裁决)。"""
+        state = tmp_path / "scheduler_state.json"
+        state.write_text("{broken json", encoding="utf-8")
+        fired = []
+        s = vs.VeraScheduler(state_path=str(state))
+        s.add_daily("j", lambda: fired.append(1), "15:05")
+        assert s.run_pending(_at(2026, 6, 1, 22, 7)) == 1
+
+    def test_no_state_path_keeps_memory_only(self, fake_weekday_calendar):
+        """不传 state_path: 行为与旧版完全一致 (纯内存防重)。"""
+        fired = []
+        s = vs.VeraScheduler()
+        s.add_daily("j", lambda: fired.append(1), "15:05")
+        assert s.run_pending(_at(2026, 6, 1, 22, 7)) == 1
+        assert s.run_pending(_at(2026, 6, 1, 22, 42)) == 0
+        assert fired == [1]

@@ -1,25 +1,103 @@
 @echo off
-chcp 65001 >nul
 rem ============================================================
-rem  VERA ä¸€é”®å¯åŠ¨(å›žæµ‹ Web + å®žç›˜äº¤æ˜“ä¸¤ä¸ªè¿›ç¨‹)
-rem  ç¼–ç :æœ¬æ–‡ä»¶ UTF-8 + CRLF,é¦–è¡Œ chcp 65001 åˆ‡æŽ§åˆ¶å°,
-rem  PYTHONIOENCODING ä¿è¯ Python ä¸­æ–‡æ—¥å¿—ä¸ä¹±ç 
+rem  VERA Ò»¼üÆô¶¯(»Ø²â Web + ÊµÅÌ½»Ò× + ¶¨Ê±µ÷¶ÈÈý¸ö½ø³Ì)
+rem  ±àÂë:±¾ÎÄ¼þ GBK + CRLF(2026-09-16 ¸Ä: cmd ¶Ô UTF-8 Åú´¦ÀíÓÐ½âÎö
+rem  bug, »á°ÑÖÐÎÄ×¢ÊÍÀ¹Ñü½Ø¶Ïµ±ÃüÁîÖ´ÐÐ, ±¨"ÕÒ²»µ½ÎÄ¼þ");
+rem  ×Ó´°¿Ú¸÷×Ô chcp 65001 + PYTHONIOENCODING ±£ Python ÖÐÎÄÈÕÖ¾²»ÂÒÂë
 rem ============================================================
 set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
-echo [1/2] å¯åŠ¨å›žæµ‹ Web (8080) ...
-start "VERA-Web-8080" cmd /k python server.py
+rem ---- 2026-09-20: Çå³ý"ÈË¹¤Í£Ö¹"±ê¼Ç ----------------------------------
+rem  Óë stop_vera.bat Åä¶Ô: ÄÇ±ßÐ´±ê¼Ç, Õâ±ßÇå±ê¼Ç¡£
+rem  8080 Ò³Ãæ¾Ý´ËÇø·Ö¡¸ÄãÖ÷¶¯Í£µÄ¡¹Óë¡¸ÒÉËÆËÀÁË¡¹¡ª¡ª²»Çø·Ö¾Í»áÎó±¨¡£
+rem  ×¢Òâ: ÎÄ¼þÂ·¾¶±ØÐëÓë scheduler/health.py µÄ STOP_MARKER_PATH Ò»ÖÂ,
+rem  ÓÉ tests/test_scheduler_health.py ËøËÀ, ¸ÄÒ»´¦±ØÐë¸ÄÁ½´¦¡£
+del "data\.vera_stopped" >nul 2>&1
 
-echo [2/2] å¯åŠ¨å®žç›˜äº¤æ˜“ (8081) ...
-rem æ³¨æ„:äº¤æ˜“è¿›ç¨‹éœ€è¦ miniQMT å·²ç™»å½•è¿è¡Œ
-rem æµ‹è¯•æ¨¡å¼(ä¸ä¸‹å•,ç”¨ FakeGateway): æŠŠä¸‹è¡Œæ”¹ä¸º python trade_main.py --fake
-start "VERA-Trade-8081" cmd /k python trade_main.py --config config/trade.yaml
+rem ---- Python ¶¨Î»(2026-09-16 ÐÞ)------------------------------------------
+rem ±¾»ú python.exe Ã»½øÏµÍ³ PATH, Ö±½ÓÇÃ python »áÃüÖÐÎ¢ÈíÉÌµêµÄ 0 ×Ö½ÚÕ¼Î»·û
+rem (±¨ "Python was not found"), ÕæÊµ½âÊÍÆ÷ÔÚ D:\Program Files\Python313¡£
+rem ÕâÀï°ÑËüÅÅµ½ PATH ×îÇ°Ãæ, ÏÂÃæ 3 ¸ö start ´°¿Ú¼Ì³ÐÍ¬Ò»·Ý PATH, ²»ÔÙ×²Õ¼Î»·û¡£
+set "PYDIR=D:\Program Files\Python313"
+if not exist "%PYDIR%\python.exe" (
+  echo [´íÎó] ÕÒ²»µ½ Python: "%PYDIR%\python.exe"
+  echo        Çë¸Ä±¾ÎÄ¼þ¶¥²¿µÄ PYDIR, »ò°Ñ Python Ä¿Â¼¼Ó½øÏµÍ³ PATH¡£
+  pause
+  exit /b 1
+)
+set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
+rem claude CLI ¶¨Î»(2026-09-16 ÐÞ): ÑÐ¾¿´óÄÔ±ê×¼µµ spawn claude CLI,
+rem Ëü×°ÔÚ D:\Program Files\nodejs µ«²»ÔÚÏµÍ³ PATH ¡ª¡ª ²»¼Ó»á±¨
+rem "claude CLI Î´°²×°, ´óÄÔ²»¿ÉÓÃ"²¢½µ¼¶¿ìËÙµµ¡£Í¬²½ÒÑÐ´ÈëÓÃ»§ PATH¡£
+set "NODEDIR=D:\Program Files\nodejs"
+if exist "%NODEDIR%\claude.cmd" set "PATH=%NODEDIR%;%PATH%"
+rem Í¨´ïÐÅ°²×°Â·¾¶(2026-09-16 ÐÞ): ´úÂëÄ¬ÈÏ E:\NEW_TDX Óë±¾»úÊµ¼Ê²»·û,
+rem ²»Éè»áµ¼ÖÂÂÖ¶¯È¡ÊýµÄµÚ¶þ¼¶¶µµ×(TDX)Óë¼ò³Æ±í TDX Ô´¾²Ä¬Ê§Ð§¡£
+set "TDX_HOME=D:\new_tdx"
+echo [0/3] Python ½âÊÍÆ÷: %PYDIR%\python.exe
+
+echo [1/3] Æô¶¯»Ø²â Web (8080) ...
+rem Ä¬ÈÏÎÈ¶¨Ä£Ê½(2026-09-07 Æð): ´úÂë¸Ä¶¯²»»á×Ô¶¯ÖØÆô, ·À´ò¶Ï³¤»Ø²â/Éî¶ÈË¼¿¼
+rem ¿ª·¢ÒªÈÈ¸üÊ±: °ÑÏÂÐÐ¸ÄÎª python server.py --reload
+start "VERA-Web-8080" cmd /k "chcp 65001 >nul && python server.py"
+
+echo [2/3] Æô¶¯ÊµÅÌ½»Ò× (8081) ...
+rem 2026-09-19 ¼Ü¹¹ÐÞ¶©Åú´Î1.1: ÏÈµÈ QMT ¾ÍÐ÷ÔÙÆô trade_main ¡ª¡ª
+rem 2026-09-02 ÀäÆô¶¯ÊÂ¹Ê: miniQMT µÇÂ¼³õÊ¼»¯Ðè 30s~2min, Ã»¾ÍÐ÷¾ÍÆô»á
+rem connect() ·µ»Ø -1 ±ÀÀ£¡£ÓÃ tools\qmt_ready_check.py Ì½Õë(Óë trade_main
+rem Í¬Ò»·Ý config)Ã¿ 20 ÃëÊÔÒ»´Î, ×î¶à 10 ´Î; ÈÔ²»¾ÍÐ÷ÔòÌø¹ý½»Ò×½ø³Ì
+rem (fail-closed: »Ø²â/µ÷¶ÈÕÕÆð, ½»Ò×²»Æð), ¾ø²»´ø²¡Æô¶¯¡£
+rem ²âÊÔÄ£Ê½(²»ÏÂµ¥,ÓÃ FakeGateway): °ÑÏÂÐÐ start ÐÐ¸ÄÎª python trade_main.py --fake
+set "QMT_OK=0"
+rem 2026-09-20 Éó¼Æ P3-5: ²âÊÔÄ£Ê½Ö±½ÓÌø¹ýµÈ´ý ¡ª¡ª trade_main µÄ fake ÅÐ¶¨
+rem ÓÐÈýÌõÀ´Ô´, Ì½ÕëÒÑÈ«¶ÔÆë; ÕâÀïÔÙµ²Ò»µÀ, ÃâµÃ²âÊÔÊ±°×µÈ 200 Ãë¡£
+rem ¿Ó: ¿éÄÚ echo ²»Ðí³öÏÖÈÎºÎÀ¨ºÅ (P0-1: cmd ½âÎöÆÚ»áÌáÇ°±ÕºÏ for ¿é)¡£
+if "%VERA_TRADE_FAKE%"=="1" (
+  echo       VERA_TRADE_FAKE=1: ²âÊÔÄ£Ê½, Ìø¹ý QMT ¾ÍÐ÷µÈ´ý¡£
+  set "QMT_OK=1"
+  goto :qmt_ready
+)
+rem 2026-09-20 Éó¼Æ P0-1 ÐÞ¸´: Ô­¿éÄÚ echo ´øÎ´×ªÒåµÄÔ²À¨ºÅ, cmd ÔÚ½âÎöÆÚ
+rem ¾ÍÓÚµÚÒ»¸öÓÒÀ¨ºÅ´¦ÌáÇ°±ÕºÏ for ¿é, ±¨ "... was unexpected at this time."
+rem ²¢ÖÐÖ¹Õû¸ö½Å±¾ (½»Ò×Óëµ÷¶È¶¼²»Æð)¡£ÐÞ·¨: ÌáÊ¾Óï²»ÓÃÀ¨ºÅÒ²²»ÓÃÖÐÎÄ
+rem È«½ÇÀ¨ºÅ, ²¢ÕûÐÐÒÆ³ö¿éÍâ (¿éÄÚÖ»ÁôÃüÁîÓë goto)¡£
+rem ÍË³öÂëÓïÒå: 0=¾ÍÐ÷ / 1=Î´¾ÍÐ÷(ÖµµÃÖØÊÔ) / 2=ÅäÖÃ´íÎó(ÖØÊÔÎÞÒâÒå, Á¢¼´Ê§°Ü)¡£
+for /l %%i in (1,1,10) do (
+  "%PYDIR%\python.exe" tools\qmt_ready_check.py --config config\trade.yaml 2>nul
+  if not errorlevel 1 (
+    set "QMT_OK=1"
+    goto :qmt_ready
+  )
+  if errorlevel 2 goto :qmt_config_error
+  echo       QMT not ready, retry %%i of 10 after 20s ...
+  timeout /t 20 /nobreak >nul
+)
+:qmt_ready
+goto :qmt_wait_done
+:qmt_config_error
+echo [´íÎó] QMT Ì½Õë±¨ CONFIG-ERROR: account_id/qmt_path È±Ê§»òÅäÖÃ¶Á²»µ½¡£
+echo        ÇëÐÞºÃ config\trade.yaml ºóÖØÐÂÆô¶¯; ±¾´Î²»Æô¶¯½»Ò×½ø³Ì¡£
+goto :qmt_after_trade
+:qmt_wait_done
+if "%QMT_OK%"=="1" goto :qmt_start_trade
+echo [¾¯¸æ] QMT Î´¾ÍÐ÷»òÅäÖÃÓÐÎó, ±¾´Î²»Æô¶¯½»Ò×½ø³Ì ¡ª¡ª »Ø²â/µ÷¶È²»ÊÜÓ°Ïì¡£
+echo        ÇëÈ·ÈÏ miniQMT ÒÑµÇÂ¼, ÔÙÊÖ¹¤ÔËÐÐ: python trade_main.py --config config/trade.yaml
+goto :qmt_after_trade
+:qmt_start_trade
+start "VERA-Trade-8081" cmd /k "chcp 65001 >nul && python trade_main.py --config config/trade.yaml"
+:qmt_after_trade
+
+echo [3/3] Æô¶¯¶¨Ê±µ÷¶È (ÓßÇéÉ¨Ãè/ÓßÇéÈÕ±¨/ÔÂ¶È±Ê¼Ç/ÖÜ¶È½ø»¯) ...
+rem ÓßÇéÉ¨Ãè+ÈÕ±¨¹ÒÔÚ scheduler ½ø³Ì, ²»À­Ëü¾ÍÃ»ÓÐ·ÉÊéÍÆËÍ (2026-08-14 ÐÞ¸´)
+start "VERA-Scheduler" cmd /k "chcp 65001 >nul && python -m scheduler"
 
 echo.
-echo ä¸¤ä¸ªè¿›ç¨‹å·²åœ¨æ–°çª—å£å¯åŠ¨(çª—å£ä¿ç•™,æŠ¥é”™å¯è§):
-echo   å›žæµ‹/é€‰è‚¡/äº¤æ˜“é¡µ:  http://localhost:8080
-echo   äº¤æ˜“è¿›ç¨‹ API:      http://localhost:8081
+echo Èý¸ö½ø³ÌÒÑÔÚÐÂ´°¿ÚÆô¶¯(´°¿Ú±£Áô,±¨´í¿É¼û):
+echo   »Ø²â/Ñ¡¹É/½»Ò×Ò³:  http://localhost:8080
+echo   ½»Ò×½ø³Ì API:      http://localhost:8081
+echo   ¶¨Ê±µ÷¶È(·ÉÊéÓßÇé): python -m scheduler
 echo.
-echo å…³é—­å¯¹åº”çª—å£å³åœæ­¢å¯¹åº”è¿›ç¨‹ã€‚
+echo ¹Ø±Õ¶ÔÓ¦´°¿Ú¼´Í£Ö¹¶ÔÓ¦½ø³Ì¡£
+if exist "%~dp0dsh-runtime\dsh.cmd" (echo [Ìå¼ì] DSH Éî¶ÈË¼¿¼Í¨µÀ: ÒÑ²¿Êð) else (echo [Ìå¼ì] DSH Éî¶ÈË¼¿¼Í¨µÀ: Î´²¿Êð, ÑÐ¾¿ TAB ¹´Ñ¡¿ò²»¿ÉÓÃ)
 pause

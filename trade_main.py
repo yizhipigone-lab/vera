@@ -20,26 +20,40 @@ import threading
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+load_dotenv(_PROJECT_ROOT / ".env")  # 加载 FEISHU_WEBHOOK_URL 等环境变量
 
 from core.stock_filter import get_cached_info  # noqa: E402
 from trade.auto_buy import AutoBuyFeature  # noqa: E402
 from trade.book import (  # noqa: E402
     DIRECTION_BUY,
-    PRICE_TYPE_LIMIT,
+    OS_JUNK,
     TERMINAL_STATUSES,
     Book,
+    label_of,
 )
 from trade.config import TradeConfig, load_trade_config  # noqa: E402
+from trade.daily_report import (  # noqa: E402 (2026-08-19 深模块治理: 日报计算下沉)
+    build_trade_summary,
+    diff_positions,
+    enrich_sell_quotes,
+)
 from trade.events import (  # noqa: E402
     EVENT_COMMAND,
     EVENT_CONNECTION_LOST,
     EVENT_EOD,
+    EVENT_CANCEL_ERROR,
+    EVENT_ORDER_ERROR,
     EVENT_ORDER_UPDATE,
     EVENT_QUOTE_SNAPSHOT,
+    EVENT_READ_QUERY,
     EVENT_RECONCILE,
+    EVENT_ROTATION,
     EVENT_SIGNALS,
     EVENT_SYNC_REPORTS,
     EVENT_TICK,
@@ -48,14 +62,21 @@ from trade.events import (  # noqa: E402
     Event,
     EventEngine,
 )
-from trade.executor import Executor  # noqa: E402
+from trade.executor import Executor, PlaceRequest  # noqa: E402
 from trade.gateway import FakeGateway, RealGateway  # noqa: E402
+from trade.gateway_ths import ThsGuiGateway  # noqa: E402 (lazy: easytrader 只在方法内 import)
 from trade.monitor import SESSION_NAMES, Monitor, is_trading_day_cached, trading_session  # noqa: E402
 from trade.notifier import FeishuNotifier  # noqa: E402
+from trade.pool_money import (  # noqa: E402 (2026-09-05 治理III W2-1: 资金口径单一真相源)
+    in_flight_sell_returns,
+    stock_budget_cap,
+    stock_pool_value,
+)
 from trade.reconciler import Reconciler  # noqa: E402
-from trade.risk import KillSwitch, OrderIntent, RiskContext, RiskGate  # noqa: E402
+from trade.risk import KillSwitch, RiskContext, RiskGate  # noqa: E402
+from trade.rotation import RotationFeature  # noqa: E402
 from trade.store import TradeStore  # noqa: E402
-from utils.logger import get_logger  # noqa: E402
+from utils.logger import attach_file_logger, get_logger  # noqa: E402
 
 _logger = get_logger("trade.main")
 
@@ -104,6 +125,10 @@ class _DailyTimer:
         self._fired: set[tuple[str, str]] = set()   # (标签, 日期) 当日不重复
         self._last_scan = 0.0
         self._last_sync = 0.0
+
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换配置引用。扫描/同步/执行时刻用时读。"""
+        self._cfg = cfg
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -157,6 +182,10 @@ class _DailyTimer:
             if hhmm == self._cfg.auto_buy.time:
                 self._fire_once("auto_buy", Event(type=EVENT_COMMAND, data={
                     "action": "auto_buy", "source": "scheduled"}))
+            # 2026-08-14: ETF 轮动每日触发 (算信号 + 调仓, 一次做完)
+            if hhmm == self._cfg.rotation.execute_time:
+                self._fire_once("rotation", Event(type=EVENT_COMMAND, data={
+                    "action": "rotation_run", "source": "scheduled"}))
             # 15:05 EOD 归档
             if hhmm == "15:05":
                 self._fire_once("eod", Event(type=EVENT_EOD, data={"hhmm": hhmm}))
@@ -193,6 +222,18 @@ class TradeApp:
             fake = (os.environ.get("VERA_TRADE_FAKE") == "1") or config.fake_sdk
 
         # ── 按依赖顺序构造 ──
+        # 2026-09-19 架构修订批次 1.3: raw 审计日志按月轮转, 必须在 TradeStore
+        # 打开 live 文件**之前**做 (Windows 下被占用文件无法 os.replace,
+        # 且轮转中途的新写入会丢)。非当月行切到 raw_reports_YYYYMM.jsonl
+        # 归档; 当月文件无旧月数据时秒回 no-op。失败不阻断启动。
+        try:
+            from trade.raw_log import rotate_raw_log_monthly
+            _rot = rotate_raw_log_monthly(config.raw_log_path)
+            if _rot.get("archived"):
+                _logger.info("raw 日志轮转: %s", _rot)
+        except Exception:
+            _logger.warning("raw 日志轮转失败 (不阻断启动, 下次启动再试)",
+                            exc_info=True)
         self.store = TradeStore(config.db_path, config.raw_log_path)
         self.book = Book()
         self.kill = KillSwitch(self.store, config.kill_flag_path)
@@ -212,11 +253,16 @@ class TradeApp:
         # 审计M10修复(定位改写): JSONL 是审计/复盘留痕, 不是崩溃重放
         # 机制 —— 恢复走 QMT 全量对账 + 当日成交回填幂等集合。
         # 回调线程只许做这两件事 (铁律 2), 不接 xtquant 同步调用。
-        def _wire(sink, event_type):
+        # 2026-09-20 item 1: raw 底账不记 tick —— 实测 2026-08 归档
+        # 3,740,113 行里 tick 3,739,631 (99.99%), 真实回报仅 482 行,
+        # 审计留痕被行情淹没; tick 仍照常入引擎 (monitor 心跳/止损靠它),
+        # 只是不落盘 (测试锁: tests/trade/test_raw_log_no_tick.py)。
+        def _wire(sink, event_type, *, raw=True):
             def _cb(*args):
                 payload = args[0] if len(args) == 1 else args
-                self.store.append_raw({"kind": event_type, "data": payload,
-                                       "ts": self._clock()})
+                if raw:
+                    self.store.append_raw({"kind": event_type, "data": payload,
+                                           "ts": self._clock()})
                 # 事件 ts 用注入时钟而非 time.time(): 生产无差别,
                 # 测试里与 monitor/executor 时钟同源 (2026-07-27 时段
                 # 感知后 e2e 锚定工作日盘中, 两处时钟必须一致)
@@ -237,14 +283,33 @@ class TradeApp:
                 EVENT_COMMAND: lambda e: self.dispatch_command(e.data or {}),
                 # 批次4 接线①: 选股结果直接转发特性 (不在组合根落地逻辑)
                 EVENT_SIGNALS: lambda e: self._auto_buy.on_signals(e.data or {}),
+                # 2026-08-14 接线: 轮动信号结果转发轮动特性
+                EVENT_ROTATION: lambda e: self._rotation.on_signals(e.data or {}),
                 EVENT_CONNECTION_LOST: lambda e: self._on_connection_lost(e.data),
+                EVENT_ORDER_ERROR: lambda e: self._on_order_error(e.data),
+                EVENT_CANCEL_ERROR: lambda e: self._on_cancel_error(e.data),
+                # 2026-09-19 批次 4.1: HTTP 线程的只读查询 (消费者线程执行)
+                EVENT_READ_QUERY: lambda e: self._on_read_query(e.data or {}),
             },
             audit_sink=self.store.write_audit,  # 审计M4: 队列满丢弃要留痕
         )
-        gw_cls = FakeGateway if fake else RealGateway
+        gw_cls = FakeGateway if fake else (ThsGuiGateway if config.channel == "ths" else RealGateway)
         # FakeGateway 期初持仓/资金可注入 (e2e 测试接缝; 生产真网关不需要)
         if fake:
             gw_kwargs = dict(fake_gateway_kwargs or {})
+            # 2026-08-14: 注入 app 时钟到 FakeGateway, 成交/委托 ts 与 TradeApp
+            # 同源 —— 修掉周末跑测试时真实 time.time() 与注入时钟跨日的误拦
+            gw_kwargs["clock"] = clock
+        elif config.channel == "ths":
+            # 同花顺 GUI 通道 (2026-09-07 T1): easytrader 模拟键鼠操作已登录客户端。
+            # armed 一律 False (启动态) —— 武装由 channel_manager 按探针结果运行时置位。
+            if not config.ths_exe_path or not config.ths_title_re:
+                raise RuntimeError(
+                    "同花顺 GUI 通道需要 ths_exe_path 与 ths_title_re, "
+                    "请在 --config 指定的 yaml 中配置; 或用 --fake 跑测试模式")
+            gw_kwargs = {"exe_path": config.ths_exe_path,
+                         "title_re": config.ths_title_re,
+                         "armed": False, "clock": clock}
         else:
             # 启动预检: 真网关缺账号/路径时给能看懂的报错, 而不是 QMT 的 rc=-1
             if not config.account_id or not config.qmt_path:
@@ -254,66 +319,149 @@ class TradeApp:
             gw_kwargs = {"account_id": config.account_id,
                          "mini_qmt_path": config.qmt_path}
         # tick 闭包先建一次复用 —— on_quote 每 tick 都调, 不再每次重建 _wire
-        tick_wire = _wire(self._engine, EVENT_TICK)
+        tick_wire = _wire(self._engine, EVENT_TICK, raw=False)
         self.gateway = gw_cls(
             on_order=_wire(self._engine, EVENT_ORDER_UPDATE),
             on_trade=_wire(self._engine, EVENT_TRADE_FILL),
             on_quote=lambda code, q: tick_wire({"code": code, **q}),
             on_disconnected=_wire(self._engine, EVENT_CONNECTION_LOST),
+            on_order_error=_wire(self._engine, EVENT_ORDER_ERROR),
+            on_cancel_error=_wire(self._engine, EVENT_CANCEL_ERROR),
             **gw_kwargs,
         )
+
+        # 通道运行时管理器 (2026-09-07 T2/T3, 方案设计书 §5.3): 武装
+        # 双层态 (意图持久 + 探针生效) + 断线哨兵。仅 ths 通道创建
+        # (qmt/fake 无 armed 概念); None 表示通道无管理器。
+        self.channel_mgr = None
+        if config.channel == "ths":
+            from trade.channel_manager import ChannelManager
+            from trade.quote_check_tdx import make_tdx_quote_check
+            self.channel_mgr = ChannelManager(
+                self.gateway,
+                armed_intent=config.ths_armed,
+                retry_sec=config.ths_probe_retry_sec,
+                rounds=config.ths_disconnect_rounds,
+                # T7 方案A (2026-09-07 用户拍板): 验枪走通达信 TQ 单源
+                quote_check=make_tdx_quote_check(),
+                write_audit=self.store.write_audit,
+                clock=clock)
 
         self.reconciler = Reconciler(
             self.gateway, self.book, self.store, self.kill,
             quote_price=lambda code: (q := self.monitor.quote_of(code)) and q["last"],
+            # 2026-08-15 (审计 M4) + 治理III W2-5: 轮动卖单登记已收口进
+            # executor 共享槽 (register_external_sell), in_flight 单源读,
+            # 组合根不再手拼 executor+rotation 两路
             in_flight_sells=lambda: self.executor.in_flight_sells(),
             # 2026-07-31: 回调丢失走补记时同样读 fill ctx 落成交原因 +
             # 飞书通知。peek 不删 (部成多笔共享原因), 终态由
             # on_order_terminal 回收 (lambda 延迟取 self.executor —— 构造序在后)
-            pop_fill_context=lambda oid: self.executor.peek_fill_context(oid) or {},
+            pop_fill_context=lambda oid: self.executor.fill_ctx.peek(oid) or {},
             reason_from_ctx=_reason_from_ctx,
             on_adopted_trade=self._on_adopted_trade,
-            on_order_terminal=lambda oid: self.executor.discard_fill_context(oid),
+            on_order_terminal=lambda oid: self.executor.fill_ctx.discard(oid),
         )
+        # 2026-08-01 A6 收尾: ST 判定接 TDX IsSTGP (与回测同口径,
+        # get_cached_info 进程级缓存; TDX 不可用返回 {} → 非 ST,
+        # 与此前默认行为一致, fail-safe)。2026-09-15: 单点提取,
+        # Executor 与 AutoBuyFeature 共用同一份 (审计修复: 尾盘买入侧漏传 st)。
+        _st_checker = lambda code: str(  # noqa: E731
+            get_cached_info(code).get("IsSTGP", "0")) == "1"
         self.executor = Executor(
             self.gateway, self.book, self.store, self.risk, config,
             build_risk_ctx=self._build_risk_ctx,
             get_quote=lambda code: self.monitor.quote_of(code),
             get_prev_close=self._prev_close,
-            # 2026-08-01 A6 收尾: ST 判定接 TDX IsSTGP (与回测同口径,
-            # get_cached_info 进程级缓存; TDX 不可用返回 {} → 非 ST,
-            # 与此前默认行为一致, fail-safe)
-            st_checker=lambda code: str(
-                get_cached_info(code).get("IsSTGP", "0")) == "1",
+            st_checker=_st_checker,
             clock=clock,
+            # 2026-09-19 批次 4.2: 等撤单 ack 期间就地消费回报类事件
+            engine=self._engine,
         )
-        # 2026-08-01 P0-1: hold_days 接线 —— 从 trades 表取首笔买入时间,
-        # 经交易日历算持仓天数, 救活 Monitor 的三条时间类卖出规则
-        # (time_stop/cond_time/first_day, 此前默认 lambda:0 永不会触发)。
+        # 2026-08-01 P0-1: hold_days 接线 —— 经交易日历算持仓天数,
+        # 救活 Monitor 的三条时间类卖出规则 (此前默认 lambda:0 永不触发)。
+        # 2026-09-25 (518880 事件延伸, 用户拍板): 口径从"有史以来首笔
+        # 买入" MIN(ts) 改为当轮首笔买入 (与移动止盈峰值同一实现) ——
+        # 清仓后重新买入的票按新一轮算天数, 不再被老买入日提前误卖。
+        # 原 2026-08-06 "多算天数只会让时间止损提前, 方向安全, 不动"
+        # 的拍板作废。
         def _hold_days_for_code(code: str) -> int:
             try:
-                ro = self.store.open_readonly()
-                cur = ro.execute(
-                    "SELECT MIN(ts) FROM trades WHERE code=? AND direction=?",
-                    (code, DIRECTION_BUY))
-                row = cur.fetchone()
-                ro.close()
-                if not row or not row[0]:
+                entry_ts = _episode_entry_ts(code)
+                if not entry_ts:
                     return 0
-                from trade.api import _hold_days as _calc_hold_days
-                days = _calc_hold_days(row[0])
+                from trade.analysis import hold_days as _calc_hold_days
+                days = _calc_hold_days(entry_ts)
                 return days if days is not None else 0
             except Exception:
                 return 0
 
+        # 2026-08-06 P2 落地: 移动止盈峰值 = 持仓期最高价 (不再当日重置)。
+        # 首笔买入日 → gateway 拉不复权日线 high 取 max; 按 (code, 当日)
+        # 缓存 (历史日高日内不变, 当日高由 tick 流补充), 失败回退 None。
+        _peak_cache: dict = {}
+
+        def _episode_entry_ts(code: str):
+            """当轮持仓的首笔买入 ts (2026-08-06 审计 P1 修复;
+            2026-09-25 纯计算下沉 trade.analysis.episode_entry_ts,
+            与 hold_days 共用同一口径, 此处只取数 + 装配)。
+
+            旧口径 MIN(ts) 取的是"有史以来"第一笔买入: 同票上一轮清仓后
+            再次买入时, 历史峰值会包含空仓期间的高点, 可能导致买入后
+            立刻误触发移动止盈。现按当前持仓量从最新成交往回推:
+            卖单加回、买单扣减, 持仓量归零处的那笔买入即本轮起点。
+            数据不全 (倒推不完) 时回退最早一笔买入 (保守: 峰值取大不取小,
+            保护更紧)。"""
+            try:
+                ro = self.store.open_readonly()
+                cur = ro.execute(
+                    "SELECT ts, direction, qty FROM trades WHERE code=? "
+                    "ORDER BY ts DESC", (code,))
+                rows = cur.fetchall()
+                ro.close()
+            except Exception:
+                return None
+            pos = self.book.snapshot()["positions"].get(code)
+            remaining = float(pos.volume) if pos is not None else 0.0
+            from trade.analysis import episode_entry_ts as _episode_calc
+            return _episode_calc(rows, remaining)
+
+        def _peak_for_code(code: str):
+            today = time.strftime("%Y%m%d", time.localtime(clock()))
+            key = (code, today)
+            ent = _peak_cache.get(key)
+            if ent is not None:
+                val, fail_ts = ent
+                # 2026-08-06 审计 P2: 失败结果只缓存 60s (防瞬时故障让
+                # 历史峰值保护整天缺席), 成功值按天缓存 (历史日高日内不变)
+                if val is not None or (clock() - fail_ts) < 60.0:
+                    return val
+            val = None
+            try:
+                entry_ts = _episode_entry_ts(code)
+                if entry_ts:
+                    start = time.strftime("%Y%m%d", time.localtime(entry_ts))
+                    highs = self.gateway.query_daily_highs(code, start, today)
+                    if highs:
+                        val = max(highs)
+            except Exception:
+                val = None
+            _peak_cache[key] = (val, None if val is not None else clock())
+            return val
+
         self.monitor = Monitor(
             self.gateway, self.book, self.executor, self.store, config,
             hold_days=_hold_days_for_code,
+            peak_px=_peak_for_code,
             clock=clock,
         )
         # 2026-08-01 P0-3 (H1): executor pending 终态废单/已撤时,
-        # 通知 monitor 解除 _triggered —— 该票下轮扫描重新评估
-        self.executor._on_pending_died = lambda code: self.monitor._triggered.discard(code)
+        # 通知 monitor 解除 _triggered —— 该票下轮扫描重新评估。
+        # (2026-09-05 唯一下单口收口 T6: 公开方法引用替代 lambda 摸私有。
+        # 构造顺序约束: Monitor 构造需要 executor(monitor.py 形参),
+        # 故 Executor 的 on_pending_died 构造器形参在此用不上, 延迟接线;
+        # 测试同款用法见 test_executor.py _make。)
+        self.executor.set_on_pending_died(self.monitor.clear_trigger)
         # 2026-08-01 批次4 瘦身: 尾盘自动买入特性 (实现全在 trade/auto_buy.py)。
         # cfg 传 getter 不传值 —— _apply_config 换 self._cfg 引用即热更穿透
         # (评审 ⚠ 点); build_risk_ctx/get_prev_close 读组合根状态, callable 注入。
@@ -323,7 +471,18 @@ class TradeApp:
             selection_runner=self._selection_runner,
             build_risk_ctx=self._build_risk_ctx,
             get_prev_close=self._prev_close,
+            # 2026-08-14: 双池预算帽 —— 轮动启用时选股系统买入被
+            # 股票池预算 (S_target − 股票市值) 封顶, 不花 ETF 池的钱;
+            # 计算委托 trade/pool_money (治理III W2-1 口径单点)
+            budget_provider=self._stock_budget_cap,
+            st_checker=_st_checker,
             clock=clock)
+        # 2026-08-14: ETF 轮动特性 (双池资金分配)。cfg 传 getter 热更穿透;
+        # 信号在工作线程算, 调仓在消费者线程执行 (与 auto_buy 同纪律)。
+        self._rotation = RotationFeature(
+            self._engine, lambda: self._cfg, self.store, self.gateway,
+            self.book, self.monitor, self.risk, self.executor,
+            build_risk_ctx=self._build_risk_ctx, clock=clock)
         # 飞书通知器 (2026-07-31): 自带 worker 线程, 生产侧只入队裸 dict,
         # 消费者线程零阻塞 (铁律 3); URL 走环境变量, enabled 走 config 热关。
         self._notifier = FeishuNotifier(
@@ -341,6 +500,11 @@ class TradeApp:
         返回启动对账是否通过 (不通过 = 已急停, 调用方应告警人工介入)。"""
         self.gateway.connect()
         self._connected = True
+        # 2026-09-07 T2/T3: ths 通道启动即探针 —— 探针通过且意图开 →
+        # 武装生效; 探针未过 → 悬空 (黄灯), 由 _on_scan 的
+        # probe_retry_due 按 60s 节奏自动补探 (客户端回来自动武装)。
+        if self.channel_mgr is not None:
+            self.channel_mgr.full_probe()
         today = _day_str(self._clock())
         # 冷启动三合一 (审计H4修复: 当日已成交 traded_id 回填幂等集合,
         # 防重启后 QMT 重推当日成交回报双扣持仓):
@@ -348,7 +512,7 @@ class TradeApp:
         # ② 档位标记只恢复当日 (审计C1: 昨日标记留痕不阻碍今日预埋);
         # ③ 当日成交回报幂等集合
         tiers_today = {(code, today): tiers
-                       for code, tiers in self.store.load_tier_states(today).items()}
+                       for code, tiers in self.store.tier_state.load(today).items()}
         self.book.restore(
             positions=self.gateway.query_positions(),
             tiers=tiers_today,
@@ -376,7 +540,7 @@ class TradeApp:
 
         self._engine.start()
         self._notifier.start()
-        report = self.reconciler.reconcile()
+        report = self.reconciler.reconcile(now_ts=self._clock())
         self._reconciled = report.passed
         if not report.passed:
             _logger.critical("启动对账未通过 (%s), 急停已激活, 需人工介入",
@@ -391,15 +555,31 @@ class TradeApp:
         """审计M5修复: 定时任务补偿 —— 定时器精确匹配 hhmm, 进程错过
         时点就全天缺席。启动时对账通过后补一轮:
         - 已过 09:25 且在交易时段、当日未预埋 → 补偿预埋 (audit 留痕);
+        - 已过轮动 execute_time 且当日未跑轮动 → 补偿轮动 (2026-08-15 审计 L4);
         - 15:05 后启动且当日无 EOD 快照 → 补 EOD (对账 C 方次日基准)。
         """
         hhmm = _hhmm(self._clock())
-        tiers_today = self.store.load_tier_states(today)
-        if "09:25" <= hhmm <= "15:00" and not tiers_today:
+        tiers_today = self.store.tier_state.load(today)
+        # 2026-08-10: enabled=false 不补预埋 (与 place_ladder / 盘中兜底同步关);
+        # 时间窗下限 09:25→09:15 —— 覆盖"9:15 后启动错过 09:15 定时器"场景,
+        # 9:15-09:25 挂的限价单参与开盘集合竞价撮合, 无副作用。
+        if ("09:15" <= hhmm <= "15:00"
+                and not tiers_today
+                and self._cfg.stop.ladder_tp.enabled):
             self.store.write_audit(
-                "ladder_catchup", f"启动已过 09:25 ({hhmm}) 且当日未预埋, 补偿预埋",
+                "ladder_catchup", f"启动已过 09:15 ({hhmm}) 且当日未预埋, 补偿预埋",
                 {"hhmm": hhmm})
             self.executor.place_ladder(today)
+        # 2026-08-15 (审计 L4): 已过 execute_time 且当日未跑轮动 → 补一轮。
+        # 2026-08-16 (审计): 补查 enabled —— 轮动关闭时不再写"补偿一轮"的假审计
+        # (start 内部虽会 no-op, 但审计已误报)。
+        if (self._cfg.rotation.enabled
+                and self._cfg.rotation.execute_time <= hhmm <= "15:00"
+                and not self._rotation_ran_today(today)):
+            self.store.write_audit(
+                "rotation_catchup", f"启动已过 {self._cfg.rotation.execute_time} "
+                f"({hhmm}) 且当日未跑轮动, 补偿一轮", {"hhmm": hhmm})
+            self._rotation.start("scheduled")
         if hhmm >= "15:05":
             snap = self.store.load_position_snapshot()
             day_start = time.mktime(time.strptime(today, "%Y%m%d"))
@@ -409,6 +589,22 @@ class TradeApp:
                     "eod_catchup", f"15:05 后启动 ({hhmm}) 且当日无 EOD, 补偿归档",
                     {"hhmm": hhmm})
                 self._on_eod(notify_daily=False)  # M-功1: 补偿路径不发零盈亏日报
+        # 2026-09-10 停机日资产补算: 接在 EOD 补偿之后 —— 今天一旦归档, 之前
+        # 缺的日子就变成"两端都有实测"的可校验缺口, 补算才有尺子 (9/9 事件)。
+        self._run_gapfill()
+
+    def _run_gapfill(self, dry_run: bool = False, source: str = "startup") -> dict:
+        """停机日资产补算 (2026-09-10, 计划书 docs/plan/2026-09-10_停机日资产补算_计划书.md)。
+
+        编排已下沉 trade/asset_gapfill.orchestrate_gapfill (2026-09-15 深模块
+        治理: 组合根只许接线), 此处只做依赖装配。算法/口径见该模块 docstring。
+        """
+        from trade import asset_gapfill as _gf
+        return _gf.orchestrate_gapfill(
+            self.store, self.book, self.gateway,
+            clock=self._clock,
+            is_continuous=lambda: trading_session(self._clock()) == "continuous",
+            dry_run=dry_run, source=source)
 
     def stop(self) -> None:
         """优雅退出: 先停事件源 (定时器), 再停消费者, 最后断网关/关库。"""
@@ -458,8 +654,28 @@ class TradeApp:
         elif action == "auto_buy":
             # 批次4 接线②: 命令直接转发特性
             self._auto_buy.start(cmd.get("source", "manual"))
+        elif action == "rotation_run":
+            # 2026-08-14 接线: 轮动命令转发特性 (算信号 + 调仓)
+            self._rotation.start(cmd.get("source", "manual"))
+        elif action == "gapfill":
+            # 2026-09-10: 停机日资产补算 (人工触发, 先预览 dry_run=1 再写)
+            self._run_gapfill(dry_run=bool(cmd.get("dry_run")),
+                              source=cmd.get("source", "manual_api"))
         elif action == "update_config":
             self._apply_config(cmd["config_obj"], cmd.get("changed", []))
+        elif action in ("ths_probe", "ths_arm", "ths_disarm"):
+            # 2026-09-07 T2/T3: 同花顺通道探针/武装/解除 (武装与解除走
+            # 命令队列 —— 武装前先过探针; 解除零摩擦)。探针是 GUI attach,
+            # 秒级, 偶发人工触发不构成消费者阻塞风险 (与手动 buy 同量级)。
+            if self.channel_mgr is None:
+                self.store.write_audit("ths_cmd_ignored",
+                                       "通道非 ths, 忽略命令", {"action": action})
+            else:
+                fn = {"ths_probe": lambda m: m.full_probe(),
+                      "ths_arm": lambda m: m.arm(),
+                      "ths_disarm": lambda m: m.disarm()}[action]
+                res = fn(self.channel_mgr)
+                self.store.write_audit("ths_cmd", f"{action} 已执行", dict(res))
         else:
             _logger.warning("未知命令已丢弃: %s", cmd)
 
@@ -480,17 +696,22 @@ class TradeApp:
         if self._config_path:
             save_trade_config(new_cfg, self._config_path)
         self._cfg = new_cfg
-        self.monitor._cfg = new_cfg
-        self.executor._cfg = new_cfg
-        self.timer._cfg = new_cfg
-        self.risk._loss_limit = new_cfg.daily_loss_limit
-        self.risk._sizing = new_cfg.position_sizing
+        # 热更契约 (治理III W2-1): 各模块统一 apply(), 不再直改私有字段
+        self.monitor.apply(new_cfg)
+        self.executor.apply(new_cfg)
+        self.timer.apply(new_cfg)
+        self.risk.apply(new_cfg)
+        if self.channel_mgr is not None:
+            self.channel_mgr.apply(armed_intent=new_cfg.ths_armed,
+                                   retry_sec=new_cfg.ths_probe_retry_sec,
+                                   rounds=new_cfg.ths_disconnect_rounds)
         self.store.write_audit(
             "config_update", f"配置已热更新: {', '.join(changed) or '(无差异)'}",
             {"changed": changed,
              "restart_required_for": ["account_id", "qmt_path", "db_path",
                                       "raw_log_path", "kill_flag_path",
-                                      "fake_sdk"]})
+                                      "fake_sdk", "channel", "ths_exe_path",
+                                      "ths_title_re", "ths_armed"]})
 
     # ═══════════════════════════════════════════════════════════
     # 消费者线程 handlers
@@ -508,6 +729,24 @@ class TradeApp:
         # 回收点: _on_trade 订单满量后 + reconciler._sync_orders 同步腿。
 
     def _on_trade(self, rec: dict) -> None:
+        # H2 (2026-08-06 审计 HIGH#1): 跨日成交拦截 — xtquant 断线重连会把
+        # 昨日成交回报重推, traded_id 不在今日幂等集 (store WHERE ts>=day_start)
+        # 会重复入账污染账本 (600127 双记账急停事件同类根因)。与 reconciler
+        # 同口径: ts 非今日 → 记 warning 后 return; ts 缺失(None) 无法验证,
+        # 放行但留 debug 痕 (不沿用 reconciler "if ts and" 隐式放行盲区写法,
+        # 显式分支便于审计追溯)。
+        ts = rec.get("ts")
+        if ts is not None:
+            today = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y%m%d")
+            if _dt.datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
+                _logger.warning(
+                    "跨日成交拦截 (HIGH#1): %s ts=%s 非今日(%s), 疑断线重连重推,"
+                    " 已拦 apply_trade 防重复入账; traded_id=%s",
+                    rec.get("code"), ts, today, rec.get("traded_id"))
+                return
+        else:
+            _logger.debug("成交缺 ts 按无法验证放行 (HIGH#1): traded_id=%s",
+                          rec.get("traded_id"))
         # H1 (2026-07-31 审计): apply_trade 清仓会把 avg_cost 清零,
         # 盈亏% 必须在 apply 前取成本快照, 传给 _notify_fill。
         pre_pos = self.book.snapshot()["positions"].get(rec["code"])
@@ -531,8 +770,15 @@ class TradeApp:
         # peek 不删 —— 部成多笔共享同一份原因, 订单终态才由
         # _on_order/_sync_orders 回收; 组装一次供 save_trade 和
         # _notify_fill 共用 —— 必须在 save_trade 前取。
-        ctx = self.executor.peek_fill_context(rec["order_id"]) or {}
+        ctx = self.executor.fill_ctx.peek(rec["order_id"]) or {}
         rec["reason"] = _reason_from_ctx(ctx)
+        # 2026-08-07: 卖出成交落盈亏金额 (盘后日报 realized_pnl/sell_details
+        # 数据源, book 成本法, 与 _notify_fill 同口径)。买入不塞 (默认 0)。
+        if rec["direction"] != DIRECTION_BUY:
+            _pnl_amt, _pnl_pct = self._sell_pnl(
+                float(rec["price"]), int(rec["qty"]), pre_avg_cost)
+            rec["pnl_amount"] = _pnl_amt if _pnl_amt is not None else 0.0
+            rec["pnl_pct"] = _pnl_pct if _pnl_pct is not None else 0.0
         try:
             self.store.save_trade(rec)
         except Exception as e:
@@ -544,6 +790,11 @@ class TradeApp:
                 self.store.save_trade(rec)
             except Exception:
                 _logger.error("成交落库异常 (重试仍失败, 待 sync_reports 补记): %s", e)
+        # 决策台账 (2026-09-18): 卖出成交当场落一行 —— 原因就用上面刚组装好的
+        # 那份全文 (不是事后推测的)。买入不在这里记: 买入的"为什么"由
+        # ETF 轮动 / 尾盘选股各自在自己那一步说清楚。
+        if rec["direction"] != DIRECTION_BUY:
+            self._log_exit_fill(rec)
         # 2026-07-30 (600808 事件): 成交进度回写订单表 — 原实现只靠
         # QMT 订单状态回调, 回调缺失时页面永远"已报/成交0"。
         try:
@@ -560,7 +811,7 @@ class TradeApp:
         # 回收 fill ctx (peek 语义的配套; 回调全丢时由 _sync_orders 兜底)
         order = self.book.snapshot()["orders"].get(rec["order_id"])
         if order is not None and order.status in TERMINAL_STATUSES:
-            self.executor.discard_fill_context(rec["order_id"])
+            self.executor.fill_ctx.discard(rec["order_id"])
 
     def _notify_fill(self, rec: dict, ctx: dict,
                     avg_cost: float | None = None) -> None:
@@ -587,14 +838,28 @@ class TradeApp:
             # H1: 优先用调用方传的 apply 前成本; 没传才回退 book (清仓时已 0)
             cost = avg_cost if avg_cost is not None else (
                 pos.avg_cost if pos else 0.0)
-            payload["pnl_pct"] = (round((price / cost - 1) * 100, 2)
-                                  if cost > 0 else None)
+            _amt, _pct = self._sell_pnl(price, qty, cost)
+            if _pct is not None:
+                payload["pnl_pct"] = _pct
+                payload["pnl_amount"] = _amt
             payload["tier"] = ctx.get("tier")
             payload["sell_ratio"] = ctx.get("sell_ratio")
             remaining_vol = pos.volume if pos else 0
             payload["remaining_vol"] = remaining_vol
             payload["remaining_value"] = round(price * remaining_vol, 2)
         self._notifier.notify_fill(payload)
+
+    @staticmethod
+    def _sell_pnl(price: float, qty: int,
+                  avg_cost: float) -> tuple[float | None, float | None]:
+        """卖出盈亏 (2026-08-07 抽公共, _notify_fill 与 _on_trade 落库同口径)。
+        返回 (pnl_amount, pnl_pct); avg_cost<=0 → (None, None) (成本无效不算)。
+        口径 = book.apply_trade 前快照成本 (移动加权, 部分卖不清零/清仓清零),
+        与成交通知卡同源; 比 deals 接口旧 SQL 现算 (不扣已卖部分) 更准。"""
+        if avg_cost <= 0:
+            return (None, None)
+        return (round((price - avg_cost) * qty, 2),
+                round((price / avg_cost - 1) * 100, 2))
 
     def _on_adopted_trade(self, trade_dict: dict, ctx: dict,
                           avg_cost: float | None = None) -> None:
@@ -611,6 +876,71 @@ class TradeApp:
         # 不用消费时刻; 过旧 tick 在 monitor 侧丢弃)
         self.monitor.on_quote(data["code"], data, event_ts=event_ts)
 
+    def _on_read_query(self, data: dict) -> None:
+        """消费者线程执行一个只读查询 (2026-09-19 批次 4.1)。
+
+        动机(架构审查 P0-2): HTTP 线程原先直调 `gateway.query_asset()` 等同步
+        接口, 与消费者线程并发打 xtquant (官方死锁坑的擦边)。现在 HTTP 线程
+        只投递任务 + 等 Future, xtquant 调用回到唯一消费者线程。
+        异常原样交给等待方 (HTTP 层转 503), 绝不吞。
+        """
+        fut = data.get("future")
+        fn = data.get("fn")
+        # 2026-09-20 审计 P2-1: 等待方已经放弃 (超时后 fut.cancel() / 已取到结果)
+        # 就别再打柜台 —— 结果已无人要, 而 xtquant 同步查询在唯一消费者线程上
+        # 是实打实的时间 (还会占住别人排队的回报)。
+        if fut is not None and fut.done():
+            return
+        try:
+            result = fn() if callable(fn) else None
+            if fut is not None and not fut.done():
+                fut.set_result(result)
+        except Exception as e:  # noqa: BLE001 —— 原样回传给等待方
+            if fut is not None and not fut.done():
+                fut.set_exception(e)
+            else:
+                _logger.warning("只读查询异常 (无等待方): %s", e, exc_info=True)
+
+    def read_via_consumer(self, fn, timeout: float = 2.0):
+        """把只读查询丢给消费者线程执行, 本线程只等结果 (批次 4.1)。
+
+        这是 HTTP 线程接触 QMT 数据的**唯一合法路径** (铁律 2/3: 回调线程与
+        HTTP 线程都不许直接调 xtquant)。超时抛 TimeoutError, 由调用方转 503
+        —— 宁可让页面看到"繁忙", 也不让 HTTP 线程卡死或并发打柜台。
+
+        2026-09-20 审计 P2-1: `timeout` 是**整件事**的预算 (入队 + 等结果),
+        不再只是 Future 的等待时间。此前 EVENT_READ_QUERY 走 put 的关键事件
+        5s 超时, 加上 fut.result(2s) → HTTP 线程最坏卡 ~7s。现在入队用剩余
+        预算, 拿不到立刻失败; 等待超时后 cancel() 让消费者线程知道没人等了
+        (_on_read_query 据此跳过 fn(), 不再白打一次柜台 —— 已开始执行的那次
+        无法打断, 这是 cancel 的固有边界)。
+        """
+        import time as _t
+        from concurrent.futures import Future
+
+        t0 = _t.monotonic()
+        fut: Future = Future()
+        budget = max(0.0, timeout - (_t.monotonic() - t0))
+        enqueued = self._engine.put(
+            Event(type=EVENT_READ_QUERY, data={"fn": fn, "future": fut}),
+            timeout=budget)
+        if not enqueued:
+            raise TimeoutError(
+                f"只读查询入队超时 (预算 {timeout}s): 消费者线程繁忙")
+        budget = max(0.0, timeout - (_t.monotonic() - t0))
+        try:
+            return fut.result(timeout=budget)
+        except TimeoutError:
+            fut.cancel()
+            raise
+
+    def read_asset(self, timeout: float = 2.0) -> dict:
+        """资产快照 (批次 4.1): QMT 资产查询统一走消费者线程。
+
+        页面 (PC/手机各 5 秒轮询) 只经此口取资产, 不再直接碰 gateway。
+        """
+        return self.read_via_consumer(self.gateway.query_asset, timeout=timeout)
+
     def _on_scan(self, data: dict) -> None:
         # 2026-07-31 方案C: 断线重连挪出 _on_connection_lost 的阻塞循环,
         # 由 timer_scan 离散驱动 _try_reconnect (单次 connect ≤5s, 不死锁
@@ -618,6 +948,10 @@ class TradeApp:
         if self._reconnect_pending and not self._connected:
             self._try_reconnect()
             return
+        # 2026-09-07 T2/T3: ths 武装悬空态自动补探 (方案设计书 §4.2:
+        # 每 60s 一次; 客户端中途退出/掉登录后回来, 探针过即自动恢复)
+        if self.channel_mgr is not None and self.channel_mgr.probe_retry_due():
+            self.channel_mgr.full_probe()
         # 2026-07-27 ETF 误卖事件裁决②: 心跳/断线检测只在连续竞价
         # 时段进行 —— 午休/收盘后无 tick 是常态, 此前误报断连
         if trading_session(self._clock()) != "continuous":
@@ -640,7 +974,7 @@ class TradeApp:
             self._unhealthy_scans = 0
 
     def _on_reconcile(self) -> None:
-        report = self.reconciler.reconcile()
+        report = self.reconciler.reconcile(now_ts=self._clock())
         # P0-③: UNKNOWN = 查询不可用 (疑似断线), 维持 reconciled 现状 —
         # 既不是"通过"也不是"不通过", 等下轮心跳/重连后再判
         if report.level == "UNKNOWN":
@@ -658,9 +992,16 @@ class TradeApp:
             return
         if trading_session(self._clock()) not in ("auction", "continuous", "lunch"):
             return
-        self.reconciler.sync_reports()
+        self.reconciler.sync_reports(now=self._clock())
 
     def _on_eod(self, notify_daily: bool = True) -> None:
+        # 2026-08-08: 非交易日(周末/节假日)不做 EOD —— 此前周六 15:05 也归档
+        # daily_asset + 推日报, 非交易日快照混进权益曲线/日历 (用户发现)
+        # 2026-08-14: 用注入时钟的日期判交易日 (原 is_trading_day_cached() 走
+        # 真实 date.today(), 测试注入周五时钟、真实周六跑会误判非交易日)
+        if not is_trading_day_cached(_dt.date.fromtimestamp(self._clock())):
+            self.store.write_audit("eod_skip", "非交易日, 跳过 EOD 归档与日报", {})
+            return
         # 持仓快照归档 = 对账 C 方的明日基准; tier_state 在乐观标记时
         # 已逐笔落库 (executor.place_ladder), 此处无需重复归档
         # 2026-08-01 P0-4 (H4): query_positions 空列表 = 查询不可用
@@ -668,6 +1009,14 @@ class TradeApp:
         # 不把"空"当成"零持仓"写入 C 方基准。
         # 飞书盘后日报独立: 它查的是 asset (与持仓查询不同 API),
         # 持仓查不到不意味着资产查不到 —— 照常推送。
+        # 2026-08-07 盘后日报全明细: 覆盖前读昨仓 (CRITICAL: 覆盖后 load 返
+        # 今仓, 仓位变动恒空) + sync_reports 补齐当日成交 (绕过 _on_sync_reports
+        # 时段守卫, 15:05 后非盘中会被守卫拦) 供日报 realized_pnl/sell_details 读。fail-soft。
+        prev_snapshot = self.store.load_position_snapshot()
+        try:
+            self.reconciler.sync_reports(now=self._clock())
+        except Exception:
+            _logger.debug("EOD sync_reports 失败 (日报用本地已有成交)")
         positions = self.gateway.query_positions()
         if positions:
             self.store.save_position_snapshot(positions)
@@ -675,38 +1024,352 @@ class TradeApp:
         else:
             self.store.write_audit(
                 "eod_skip", "query_positions 返回空, 跳过 EOD 归档 (查询不可用)", {})
+        # 分析 Tab 数据源: 每日资产快照 (2026-08-03)
+        try:
+            asset = self.gateway.query_asset()
+            total_asset = float(asset.get("total_asset", 0.0) or 0.0)
+            # 2026-08-13 修复: 键名是 cash 不是 available —— 原写法恒读到默认 0,
+            # daily_asset.available 全表为 0 (当日排查总资产异常时抓出)
+            available = float(asset.get("cash", 0.0) or 0.0)
+            market_value = float(asset.get("market_value", 0.0) or 0.0)
+            if total_asset > 0:
+                # 2026-09-16 P2-5: 用注入时钟 _clock() 替代 datetime.now()
+                # 真实时钟, 对齐同文件盈亏基准口径 (顶部已有 import datetime
+                # as _dt, 函数内重复 import 一并删除)。
+                date_str = _dt.datetime.fromtimestamp(
+                    self._clock()).strftime("%Y-%m-%d")
+                self.store.daily_asset.save(date_str, total_asset, available, market_value)
+        except Exception:
+            _logger.debug("EOD 资产快照写入失败 (分析 Tab 不受影响)")
+        # 决策台账 (2026-09-18): 逐票的「今天为什么没卖」+ 预埋单当日汇总。
+        # 放在归档之后、日报之前; fail-soft —— 台账出错绝不阻断归档与推送。
+        try:
+            self._capture_decision_digest()
+        except Exception:
+            _logger.debug("决策台账收盘汇总异常 (不影响归档与日报)")
         # 飞书盘后日报 (2026-07-31): 搭 15:05 EOD 的车; 查不到资产 fail-soft 不推。
         # notify_daily=False: 启动补偿路径 (15:05 后重启) 不发日报 —— baseline
         # 刚用当前 total_asset 设, 差值≈0, 是启动噪声非当日真实表现 (M-功1)。
         if not notify_daily:
             return
         try:
-            self._notify_daily()
+            self._notify_daily(prev_snapshot=prev_snapshot)
         except Exception:
             _logger.debug("盘后日报组装异常 (不影响交易)")
 
-    def _notify_daily(self) -> None:
-        """盘后日报: QMT 资产 + 盘前基准算当日盈亏。查不到资产不推。"""
+    # ═══════════════════════════════════════════════════════════
+    # 决策台账 (2026-09-18): 「今天为什么动 / 为什么没动」的写入
+    # ═══════════════════════════════════════════════════════════
+
+    # 当天「想卖没卖成」的审计类型 (计划书 §3.5C 第 2 条 + executor 的五处出口)
+    _EXIT_FAIL_KINDS = ("exit_arm_fail", "exit_skip", "exit_risk_reject",
+                        "exit_fail_closed", "exit_lock_fail")
+
+    def _log_exit_fill(self, rec: dict) -> None:
+        """卖出成交 → 台账落一行 SELL (只记卖出, 买入由各自策略说清)。
+
+        原因直接用 ``rec["reason"]`` —— 那是下单时写进 fill context 的原文,
+        不是事后推测的。
+        """
+        try:
+            day = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+            code = str(rec["code"])
+            reason = str(rec.get("reason") or "卖出")
+            self.store.decision.log([{
+                "trade_date": day, "strategy": "exit", "subject": code,
+                "action": "SELL", "reason_code": "EXIT_TRIGGERED",
+                "reason_text": f"卖出 {label_of(code)}：{reason}",
+                "evidence": {"code": code, "price": rec.get("price"),
+                             "qty": rec.get("qty"),
+                             "pnl_amount": rec.get("pnl_amount"),
+                             "pnl_pct": rec.get("pnl_pct"), "reason": reason},
+                "trade_ids": rec.get("traded_id", ""), "source": "live"}])
+        except Exception:
+            _logger.debug("卖出决策台账落库异常 (不影响交易)")
+
+    def _capture_decision_digest(self) -> None:
+        """收盘汇总: 每个持仓一行「今天为什么没卖」+ 预埋单当日汇总。
+
+        只在交易日 EOD 调用一次 (调用方 ``_on_eod`` 已在最前面判掉非交易日)。
+
+        **「没卖」有三种性质完全不同的情况, 必须分开** (2026-09-18 用户需求):
+
+        1. 当天真有卖出成交 → 台账里已经有 live 的 SELL 行, 这里**不覆盖**;
+        2. 当天有"想卖没卖成"的失败事件 → FAIL + 那条审计原文 (当场记的, 最可信);
+        3. 以上都没有 → 用 ``monitor.daily_digest`` 算出的"离各条线还差多少"。
+
+        第 3 种是绝大多数日子的情况 —— 也就是用户最想知道的「为什么今天没卖」。
+        """
+        day = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
+        sold = self._sold_codes_today(day)
+        failed = self._exit_failed_today(day)
+        rows: list[dict] = []
+        for d in self.monitor.daily_digest(self.book.snapshot()["positions"]):
+            code = d["code"]
+            if code in sold:
+                continue                    # ① 已经有 live 的 SELL 行
+            if code in failed:              # ② 当时就记下了"想卖没卖成"
+                rows.append({
+                    "trade_date": day, "strategy": "exit", "subject": code,
+                    "action": "FAIL", "reason_code": "EXIT_ARM_FAIL",
+                    "reason_text": f"想卖 {label_of(code)} 但没卖成：{failed[code]}",
+                    "evidence": {"code": code, "audit_message": failed[code]},
+                    "trade_ids": "", "source": "live"})
+                continue
+            rows.append({                   # ③ 没到任何一条卖出线 (带距离)
+                "trade_date": day, "strategy": "exit", "subject": code,
+                "action": d["action"], "reason_code": d["reason_code"],
+                "reason_text": d["reason_text"], "evidence": d["evidence"],
+                "trade_ids": "", "source": "live"})
+        rows += self._ladder_rows_today(day)
+        if rows:
+            self.store.decision.log(rows)
+
+    def _sold_codes_today(self, day: str) -> set[str]:
+        """当天真有卖出成交的代码集合。查不到 → 空集合 (宁可多算"没卖")。"""
+        try:
+            rows = self.store.load_today_trades_detail(day)
+        except Exception:
+            return set()
+        return {str(r["code"]) for r in rows if r["direction"] != DIRECTION_BUY}
+
+    def _exit_failed_today(self, day: str) -> dict[str, str]:
+        """当天"想卖没卖成"的事件 → ``{代码: 审计原文}``。
+
+        审计明细里没带代码的行直接跳过 (不硬猜是哪个票 —— 猜错比缺一行更糟)。
+        """
+        import json as _json
+        start = _dt.datetime.strptime(day, "%Y-%m-%d").timestamp()
+        marks = ",".join("?" * len(self._EXIT_FAIL_KINDS))
+        try:
+            ro = self.store.open_readonly()
+            try:
+                rows = ro.execute(
+                    f"SELECT message, detail_json FROM audit WHERE ts >= ? "
+                    f"AND ts < ? AND kind IN ({marks})",
+                    (start, start + 86400, *self._EXIT_FAIL_KINDS)).fetchall()
+            finally:
+                ro.close()
+        except Exception:
+            _logger.debug("读当天卖出失败事件异常 (按没有处理)")
+            return {}
+        out: dict[str, str] = {}
+        for message, detail_json in rows:
+            try:
+                code = str(_json.loads(detail_json or "{}").get("code") or "")
+            except Exception:
+                code = ""
+            if code:
+                out.setdefault(code, str(message))
+        return out
+
+    def _ladder_rows_today(self, day: str) -> list[dict]:
+        """预埋单当日汇总 (计划书 §3.5D): 挂成的按票一行, 没挂成的说明原因。
+
+        「阶梯止盈开关关着」这一条几乎每天都会出现 —— 它正是用户最常看到的那个
+        "为什么没动作", 所以必须写清楚是**关着**, 而不是"跑了但没挂成"。
+        """
+        import json as _json
+        start = _dt.datetime.strptime(day, "%Y-%m-%d").timestamp()
+        try:
+            ro = self.store.open_readonly()
+            try:
+                raw = ro.execute(
+                    "SELECT kind, message, detail_json FROM audit WHERE ts >= ? "
+                    "AND ts < ? AND kind LIKE 'ladder%'",
+                    (start, start + 86400)).fetchall()
+            finally:
+                ro.close()
+        except Exception:
+            _logger.debug("读当天预埋单审计异常 (按没有处理)")
+            return []
+        placed: dict[str, list] = {}      # code → [tier, ...]
+        order_ids: dict[str, list] = {}   # code → [order_id, ...]
+        skipped: dict[str, str] = {}
+        disabled = False
+        for kind, message, detail_json in raw:
+            try:
+                detail = _json.loads(detail_json or "{}")
+            except Exception:
+                detail = {}
+            code = str(detail.get("code") or "")
+            if kind == "ladder_place" and code:
+                placed.setdefault(code, []).append(detail.get("tier"))
+                oid = detail.get("order_id")
+                if oid:
+                    order_ids.setdefault(code, []).append(oid)
+            elif kind == "ladder_skip_disabled":
+                disabled = True
+            elif kind in ("ladder_skip", "ladder_skip_etf") and code:
+                skipped.setdefault(code, str(message))
+        out: list[dict] = []
+        for code, tiers in sorted(placed.items()):
+            ttxt = "、".join(f"第 {int(t) + 1} 档" for t in tiers
+                             if isinstance(t, int))
+            out.append({
+                "trade_date": day, "strategy": "ladder", "subject": code,
+                "action": "INFO", "reason_code": "LADDER_PLACED",
+                "reason_text": (f"{label_of(code)} 的阶梯止盈预埋单已挂出"
+                                f"（{ttxt or '档位未记录'}）"),
+                "evidence": {"code": code, "tiers": tiers},
+                "trade_ids": order_ids.get(code, []), "source": "live"})
+        for code, message in sorted(skipped.items()):
+            out.append({
+                "trade_date": day, "strategy": "ladder", "subject": code,
+                "action": "HOLD", "reason_code": "LADDER_SKIP",
+                "reason_text": f"{label_of(code)} 今天没挂成预埋单：{message}",
+                "evidence": {"code": code}, "trade_ids": "", "source": "live"})
+        if not placed and disabled:
+            out.append({
+                "trade_date": day, "strategy": "ladder", "subject": "pool",
+                "action": "HOLD", "reason_code": "LADDER_DISABLED",
+                "reason_text": ("阶梯止盈开关关着，今天没挂预埋单"
+                                "（不是没跑，是这个开关关着）"),
+                "evidence": {}, "trade_ids": "", "source": "live"})
+        return out
+
+    def _notify_daily(self, prev_snapshot: dict | None = None) -> None:
+        """盘后日报 (2026-08-07 全明细增强): 资产 + 盘前基准盈亏 + 当日交易摘要
+        + 仓位变动 + 浮盈 + 卖出明细。查不到资产不推 (fail-soft)。
+        prev_snapshot: _on_eod 在覆盖 position_snapshot 前读的昨仓 (CRITICAL:
+        覆盖后 load 返今仓, 仓位变动恒空); None 时不出仓位变动。payload 同时落
+        daily_report 表 (web 回看同源)。name 不入 payload —— 展示层 (飞书/web) 自解析。"""
         try:
             asset = self.gateway.query_asset()
         except Exception:
             return
         total_asset = float(asset.get("total_asset", 0.0) or 0.0)
+        if total_asset <= 0:
+            return
         cash = float(asset.get("cash", 0.0) or 0.0)
         market_value = float(asset.get("market_value", 0.0) or 0.0)
+        # 当日盈亏基准 = 昨日日终资产 (2026-08-13 修复: 原用 _day_baseline 即
+        # 进程启动快照, 盘中/午后重启过一次基准就含当日涨跌 → 差值≈0,
+        # 08-11/12/13 三天日报当日盈亏全错)。昨日日终缺行 (首日运行) 才回落
+        # 启动快照; 两者都无 → None (卡片显示 "—")。查询 fail-soft 同样回落。
+        date_str = _dt.datetime.fromtimestamp(self._clock()).strftime("%Y-%m-%d")
         day_pnl = None
         day_pnl_pct = None
-        if self._day_baseline:
-            day_pnl = round(total_asset - self._day_baseline, 2)
-            day_pnl_pct = round((total_asset / self._day_baseline - 1) * 100, 2)
-        pos_count = sum(1 for p in self.book.snapshot()["positions"].values()
-                        if p.volume > 0)
-        self._notifier.notify_daily({
+        baseline = None
+        try:
+            prev = self.store.daily_asset.load_prev(date_str)
+            if prev:
+                baseline = float(prev["total_asset"])
+        except Exception:
+            _logger.debug("昨日日终资产读取异常 (回落启动快照)")
+        if baseline is None and self._day_baseline:
+            baseline = float(self._day_baseline)
+        if baseline:
+            day_pnl = round(total_asset - baseline, 2)
+            day_pnl_pct = round((total_asset / baseline - 1) * 100, 2)
+        positions = self.book.snapshot()["positions"]
+        pos_count = sum(1 for p in positions.values() if p.volume > 0)
+        payload: dict = {
             "total_asset": total_asset, "cash": cash,
             "market_value": market_value,
             "day_pnl": day_pnl, "day_pnl_pct": day_pnl_pct,
             "position_count": pos_count, "ts": self._clock(),
-        })
+        }
+        # 当日交易摘要 + 卖出明细 (数据源 trades 表, 已含 pnl_amount)
+        try:
+            trades_detail = self.store.load_today_trades_detail(date_str)
+        except Exception:
+            trades_detail = []
+            _logger.debug("load_today_trades_detail 异常 (日报交易段留空)")
+        payload.update(build_trade_summary(
+            trades_detail, self.store.load_all_trades()))
+        # 卖飞信号: 取 quotes -> 纯函数补字段 (查询失败 fail-soft 留空, 不影响日报)
+        details = payload.get('trade_details') or []
+        sells = [t for t in details
+                 if t.get('direction') != DIRECTION_BUY and t.get('price')]
+        if sells:
+            try:
+                quotes = self.gateway.query_quotes(sorted({t['code'] for t in sells})) or {}
+            except Exception:
+                quotes = {}
+                _logger.debug('卖飞信号行情查询异常 (日报照常)')
+            enrich_sell_quotes(details, quotes)
+        # 浮盈 = 市值 − 持仓成本 (不含税费/已实现盈亏, 与 realized_pnl 分开)
+        cost_basis = sum(p.volume * p.avg_cost for p in positions.values()
+                         if p.volume > 0)
+        payload["floating_pnl"] = round(market_value - cost_basis, 2)
+        # 仓位变动 (仅当有昨仓基准且有变化)
+        # 2026-08-07 审计 MEDIUM#1: truthy 检查 — 空 dict {} 也跳过 (load_position_snapshot
+        # 表空时返 {},is not None 会误进 diff → 首次 EOD 把全部既有持仓报成"新进")
+        if prev_snapshot:
+            changes = diff_positions(prev_snapshot, positions)
+            if any(changes.values()):
+                payload["position_changes"] = changes
+        # 2026-08-15: 轮动信号进日报 (飞书 AI 复盘 + web 回看用)。只读 last 里的
+        # signal dict (target/momentum/entry_high), 不下单; 取不到 (轮动未跑) 就缺省。
+        # 2026-09-16 三份错峰: last 带 tranches → 逐份信号列表进 payload
+        # (单份时仍为单个 dict, llm_review 两种形态都认)。
+        try:
+            rot_last = self._rotation.last
+            if rot_last:
+                sigs = [t.get("signal")
+                        for t in (rot_last.get("tranches") or [])
+                        if t.get("signal")]
+                if sigs:
+                    payload["rotation"] = sigs[0] if len(sigs) == 1 else sigs
+                elif rot_last.get("signal"):
+                    payload["rotation"] = rot_last["signal"]
+        except Exception:
+            pass
+        # 飞书 + 落库 (两路 fail-soft 互不影响, 不影响交易)
+        level = getattr(self._cfg.feishu, "daily_report_level", "full")
+        try:
+            self._notifier.notify_daily(
+                payload, level=level,
+                ai_review=getattr(self._cfg.feishu, "ai_review", False))
+        except Exception:
+            _logger.debug("盘后日报推送异常 (不影响交易)")
+        try:
+            self.store.daily_report.save(date_str, payload)
+        except Exception:
+            _logger.debug("盘后日报落库异常 (web 回看该日将缺, 不影响交易)")
+
+    def _on_order_error(self, rec: dict) -> None:
+        """下单失败回报 (2026-08-07 接线, 0807 事件): xtquant order_stock
+        只回本地请求序号, 不代表券商柜台受理; 未送达/被拒的真实原因
+        (无权限/流量控制/参数错误) 只经 on_order_error 下发 —— 原文落
+        audit, 不再黑盒 (10 笔限价单"查无此单"事件的教训)。
+
+        2026-08-10 (0810 事件): 拒单回报同时把订单推进废单终态并回写
+        orders 表 —— 此前只落 audit 不改状态, 未达柜台的单页面永远停
+        "已报" (收盘后 15 笔买入 QMT 查无此单, 前端却全显示已报,
+        废单原因只能翻 audit)。拒单原因原文进 status_msg, 页面
+        "状态说明"列直接可见。"""
+        self.store.write_audit(
+            "order_error",
+            f"下单失败: {rec.get('error_msg', '')} "
+            f"(order_id={rec.get('order_id')}, error_id={rec.get('error_id')})",
+            dict(rec))
+        oid = str(rec.get("order_id") or "")
+        if not oid:
+            return
+        old = self.book.snapshot()["orders"].get(oid)
+        if old is None:
+            return  # 非本系统订单的拒单回报 (如券商端手工单), 只留 audit
+        if old.status in TERMINAL_STATUSES:
+            return  # 终态不可逆 (状态回报已先到的竞态), 不盖棺
+        ok = self.book.apply_order_update(oid, OS_JUNK)
+        if ok:
+            self.store.save_order({
+                "order_id": oid, "remark": old.remark, "code": old.code,
+                "direction": old.direction, "price": old.price,
+                "qty": old.qty, "filled_qty": old.filled_qty,
+                "status": OS_JUNK,
+                "status_msg": str(rec.get("error_msg", "") or "")})
+
+    def _on_cancel_error(self, rec: dict) -> None:
+        """撤单失败回报 (2026-08-07 接线): 撤单流水线 "锁→撤→ack" 的
+        失败分支原文落 audit (受理≠撤成, 失败原因不再黑盒)。"""
+        self.store.write_audit(
+            "cancel_error",
+            f"撤单失败: {rec.get('error_msg', '')} "
+            f"(order_id={rec.get('order_id')}, error_id={rec.get('error_id')})",
+            dict(rec))
 
     def _on_connection_lost(self, reason) -> None:
         """断线守护 (2026-07-31 方案C 重构): 不再 while True 阻塞消费者线程。
@@ -756,32 +1419,90 @@ class TradeApp:
     # ═══════════════════════════════════════════════════════════
 
     def _cmd_buy(self, cmd: dict) -> None:
-        """人工确认买入: 过风控闸门才下单 (MVP 买入的唯一入口)。"""
+        """人工确认买入: 过风控闸门才下单 (MVP 买入的唯一入口)。
+
+        2026-08-25 人工买入 ETF 支持: 行情订阅只按持仓建 (启动时 +
+        成交后补订), 人工买**未持仓**代码 (典型如 ETF, 永不在订阅
+        名单) 缓存必无价, 限价留空必被"无行情"fail-closed 拦死。
+        现先走轮询兜底一次性取价 (回填缓存 + 顺带订阅), 仍取不到
+        才拒单。"""
         code, qty = cmd["code"], int(cmd["qty"])
         price = cmd.get("price")
         if not price:
             quote = self.monitor.quote_of(code)
             if not quote or not quote.get("last"):
+                quote = self._fetch_quote_once(code)
+            if not quote or not quote.get("last"):
                 self.store.write_audit(
                     "buy_fail_closed", f"{code} 无行情, 人工买入被拒", cmd)
                 return
             price = quote["last"]
-        intent = OrderIntent(code=code, direction=DIRECTION_BUY,
-                             price=float(price), qty=qty)
-        ok, reason = self.risk.check(intent, self._build_risk_ctx())
-        if not ok:
+        # 唯一下单口 (计划书 T5): 人工买 = manual 风控标记 + 不立即入账。
+        # 审计M1修复: remark 走 executor 单调发号器 (随 place_order 脊柱),
+        # 不再自造 V{mmdd}-B{qty} (同量两笔必重号, 破坏对账唯一性)。
+        # audit extra 的 "price" 保持原始值 (可能为字符串, 审计 P11)。
+        order_id, reason = self.executor.place_order(PlaceRequest(
+            code=code, direction=DIRECTION_BUY, price=float(price), qty=qty,
+            intent_flags={"manual": True}, account_immediately=False,
+            remark_prefix="B", fill_payload={"label": "人工买入"},
+            audit_kind="manual_buy",
+            audit_message=f"人工买入 {code} {qty}@{price}",
+            audit_extra={"code": code, "qty": qty, "price": price,
+                         "order_id": None}),
+            risk_ctx=self._build_risk_ctx())
+        if order_id is None:
             _logger.warning("人工买入被风控拒绝: %s %s", code, reason)
             return  # 拒绝审计 risk 层已写
-        # 审计M1修复: 人工买入 remark 也走 executor 的单调发号器,
-        # 不再自造 V{mmdd}-B{qty} (同量两笔必重号, 破坏对账唯一性)
-        remark = self.executor.next_remark("B")
-        order_id = self.gateway.order(code, DIRECTION_BUY, float(price), qty,
-                                      PRICE_TYPE_LIMIT, remark)
-        self.executor.register_fill_context(order_id, {"label": "人工买入"})
-        self.store.write_audit(
-            "manual_buy", f"人工买入 {code} {qty}@{price}",
-            {"code": code, "qty": qty, "price": price, "order_id": order_id})
-        # 回报会经事件链自然入账, 这里只留人工动作痕迹
+        # 回报会经事件链自然入账, 这里只留人工动作痕迹。
+        # 与四路"立即入账"的分叉已登记 CHANGELOG, 待单独立项 (计划书 §二.1)。
+
+    def _fetch_quote_once(self, code: str) -> dict | None:
+        """一次性取价兜底 (消费者线程, 2026-08-25 人工买入 ETF 支持)。
+
+        轮询接口拉快照 → 回填 monitor 缓存 → 顺带订阅该代码 (成交前
+        监控/卖出链就有价可用; 成交后 _on_trade 还会补订, 重复订阅
+        无害)。取价或订阅失败只记日志不抛 —— 无价的最终裁决在
+        调用方 (fail-closed 拒单)。"""
+        try:
+            snaps = self.gateway.query_quotes([code])
+        except Exception as e:
+            _logger.warning("人工买入一次性取价失败 %s: %s", code, e)
+            return None
+        q = (snaps or {}).get(code)
+        if not q or not q.get("last"):
+            return None
+        self.monitor.on_quote(code, q)
+        try:
+            self.gateway.subscribe_quotes([code])
+        except Exception as e:
+            _logger.warning("人工买入订阅行情失败 %s (监控将无价跳过): %s",
+                            code, e)
+        return self.monitor.quote_of(code)
+
+    def _stock_budget_cap(self) -> float | None:
+        """股票池买入预算帽 (计算委托 trade/pool_money, 治理III W2-1 口径单点)。
+
+        None 语义 (轮动关闭 / 查资产失败) = auto_buy fail-open 走原口径,
+        预算帽是软隔离非安全闸 (2026-08-14 手册), 与 pool_money.stock_budget_cap
+        一致。股票市值口径 = pool_money.stock_pool_value (最新价优先, 无价回退成本)。"""
+        cfg = self._cfg.rotation
+        if not cfg.enabled:
+            return None
+        try:
+            total = float(self.gateway.query_asset().get("total_asset", 0.0) or 0.0)
+        except Exception:
+            return None
+        return stock_budget_cap(
+            cfg, total,
+            stock_pool_value(cfg, self.book.snapshot()["positions"],
+                             self.monitor.quote_of))
+
+    def _rotation_ran_today(self, today: str) -> bool:
+        """当日是否已跑过轮动 (启动补偿 L4 判重: 读 rotation.last 的 ts)。"""
+        last = self._rotation.last
+        if not last or not last.get("ts"):
+            return False
+        return _day_str(float(last["ts"])) == today
 
     def _build_risk_ctx(self) -> RiskContext:
         try:
@@ -794,12 +1515,32 @@ class TradeApp:
             total_asset=total_asset,
             positions=self.book.snapshot()["positions"],
             day_baseline_equity=self._day_baseline,
-            current_equity=total_asset,
+            # 2026-08-21 修复 (卖出回款在途): QMT 卖出成交后 cash 未及时
+            # +回款 (T+1 结算延迟) 而 market_value 已扣持仓 → total_asset 低估
+            # 当日卖出额 → 日亏闸误判"当日大亏"误拒买单 (实盘: 尾盘卖创业板
+            # +黄金后买纳指被误拒, 53.5万 < 基准103万显示亏48%)。容错:
+            # current_equity 补回当日卖出成交额, 仅日亏闸用, 不写账不改账。
+            current_equity=total_asset + self._in_flight_returns(),
             # D5: 接节假日日历; 日期取 app 注入时钟 (而非真实今日),
             # 保测试可注入与跨日语义一致
             is_trading_day=is_trading_day_cached(
                 _dt.date.fromtimestamp(self._clock())),
         )
+
+    def _in_flight_returns(self) -> float:
+        """今日在途回款 (计算委托 trade/pool_money.in_flight_sell_returns, 治理III W2-1)。
+
+        只读查询 gateway 两路回报后交纯函数; max 语义与 8-21/8-24 现场修复
+        详述见 trade/pool_money.py 模块卡。查询失败返回 0 (方向安全: 宁可
+        少拦不可多拦, 误拒打断换腿)。"""
+        try:
+            trades = self.gateway.query_trades()
+            orders = self.gateway.query_orders()
+        except Exception:
+            return 0.0
+        today = _day_str(self._clock())
+        day_start = time.mktime(time.strptime(today, "%Y%m%d"))
+        return in_flight_sell_returns(trades, orders, day_start)
 
     def _prev_close(self, code: str) -> float | None:
         """昨收来源: 优先行情快照 prev_close 字段, 无则查网关快照。
@@ -823,6 +1564,21 @@ class TradeApp:
         return self._reconciled
 
     @property
+    def channel(self) -> str:
+        return self._cfg.channel
+
+    @property
+    def channel_mgr_state(self) -> dict | None:
+        if self.channel_mgr is None:
+            return None
+        return {
+            "armed_intent": self.channel_mgr.armed_intent,
+            "armed_effective": self.channel_mgr.armed_effective,
+            "last_probe": self.channel_mgr.last_probe,
+            "channel_down": self.channel_mgr.channel_down,
+        }
+
+    @property
     def config(self) -> TradeConfig:
         """当前生效配置 (api GET 序列化用; 只读, 改写走 update_config 命令)。"""
         return self._cfg
@@ -841,9 +1597,31 @@ class TradeApp:
         return "盘中·订阅正常" if self.monitor.is_healthy() else "盘中·轮询兜底"
 
     @property
+    def last_tick_age_s(self) -> float | None:
+        """距最近一根行情 tick 的秒数 (2026-09-20 item 4b)。
+
+        用途: 看门狗从 HTTP 线程判断行情是否真在流 —— monitor.is_healthy()
+        的判定跑在被监控的消费者线程里, 线程卡死时冻结在 True (假死不可检测);
+        tick 年龄是外部可见的活证据。从未收到 tick → None (调用方按"不适用"
+        处理, 不误报)。
+        只读出口: 直接读 monitor._last_tick_ts —— 跨类读私有成员是有意的:
+        monitor 已超铁律 8 公开面上限 (裁决: 新代码不得再增公开方法),
+        组合根 TradeApp 才是 API 契约的出口。
+        """
+        ts = self.monitor._last_tick_ts
+        if ts is None:
+            return None
+        return self._clock() - ts
+
+    @property
     def auto_buy_last(self) -> dict | None:
         """最近一次尾盘自动买入运行结果 (批次4: 委托 AutoBuyFeature.last)。"""
         return self._auto_buy.last
+
+    @property
+    def rotation_last(self) -> dict | None:
+        """最近一次 ETF 轮动信号+调仓结果 (2026-08-14)。"""
+        return self._rotation.last
 
 
 def main() -> None:
@@ -856,6 +1634,16 @@ def main() -> None:
     parser.add_argument("--page-port", type=int, default=8080,
                         help="交易页所在回测服务器端口 (CORS 放行 origin 按它推导)")
     args = parser.parse_args()
+
+    # 2026-09-20 item 5: 交易进程文件日志 —— 此前只挂控制台 (模块级 :81),
+    # 关窗即丢, 进程中途死掉无现场可查 (实测 logs/trade_main_console.log
+    # 停在 2026-09-16 而进程 09-20 在跑)。**必须只在 main() 里挂**:
+    # 模块级挂 = 测试 import trade_main 就污染生产 output/logs/
+    # (2026-07-27 投毒事故同类; tests/trade/test_trade_main_logging.py 锁)。
+    # max_mb=50 不同于 scheduler 默认 100: trade 日志密度更高, 小容量早轮转。
+    attach_file_logger(
+        str(_PROJECT_ROOT / "output" / "logs" / "trade_main.log"),
+        max_mb=50, backup_count=5)
 
     config = (load_trade_config(args.config) if Path(args.config).exists()
               else TradeConfig())
@@ -870,10 +1658,11 @@ def main() -> None:
     from trade.api import create_api_app
     try:
         # CORS 放行页面服务器 (回测服务器) 的 origin, 随 --page-port 推导
-        origins = [f"http://127.0.0.1:{args.page_port}",
-                   f"http://localhost:{args.page_port}"]
+        # 2026-08-18: 局域网手机访问 —— 放行所有 origin (个人局域网工具, 页面从
+        # http://<lan-ip>:8080 跨端口调 8081, 动态 IP 无法枚举, 用 * 兜底)。
+        origins = ["*"]
         uvicorn.run(create_api_app(app, allowed_origins=origins),
-                    host="127.0.0.1", port=args.api_port, access_log=False)
+                    host="0.0.0.0", port=args.api_port, access_log=False)
     except KeyboardInterrupt:
         pass
     finally:

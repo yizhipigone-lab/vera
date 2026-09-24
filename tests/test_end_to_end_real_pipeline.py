@@ -26,13 +26,26 @@ from core.data_fetcher import DataFetcher
 from core.formula_runner import FormulaRunner
 from utils.config_loader import ConfigLoader
 
+# 2026-09-20 CI 修红: 本文件是**真实 TDX 数据链**端到端测试 (见 docstring),
+# 无 TDX 客户端的环境 (CI/ubuntu) 上必炸 (RuntimeError: 无法连接到 TDX)。
+# 模块级守卫: 插件目录不存在即整文件跳过。本地装有通达信 → 照常真跑。
+from core.tdx_path import tdx_plugins_user  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    not os.path.isdir(tdx_plugins_user()),
+    reason="无 TDX 环境 (真实数据链测试只在装有通达信的机器上跑)")
+
 # === Fixtures ===
 
 @pytest.fixture(scope="module")
 def cfg():
     """读 default.yaml 配置 (止损止盈 + 回测资金)."""
+    bt = dict(ConfigLoader.load_defaults().get("backtest", {}))
+    # E2 (2026-09-16 审计): 真实引擎测试显式关 kline 缓存,
+    # 防止 engine 默认 use_kline_cache=True 把数据写进生产 data/kline_cache
+    bt["use_kline_cache"] = False
     return {
-        "bt": ConfigLoader.load_defaults().get("backtest", {}),
+        "bt": bt,
         "stop": ConfigLoader.load_defaults().get("stop_loss", {}),
     }
 

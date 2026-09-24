@@ -16,7 +16,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from .state import Bar, Context, Position
+from .state import Bar, Context, Position, PrefilterInputs
 from .strategies.base import TriggerResult
 
 
@@ -30,6 +30,16 @@ class FormulaSellStrategy:
         self.signal = formula_exit_np   # (n_dates, n_stocks) bool ndarray, 可为 None
         self.ratio = float(ratio)
         self.lag_bars = int(lag_bars)
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛: 公式信号在 (i-lag_bars, ci) 命中即触发 (条件即触发本身)。"""
+        if self.signal is None:
+            return False
+        if x.i < self.lag_bars:
+            return False
+        if not (0 <= x.ci < self.signal.shape[1]):
+            return False
+        return bool(self.signal[x.i - self.lag_bars, x.ci])
 
     def check(self, pos: Position, bar: Bar,
               ctx: Context) -> List[TriggerResult]:

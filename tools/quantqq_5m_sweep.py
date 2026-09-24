@@ -34,6 +34,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.config_loader import ConfigLoader
 from utils.logger import get_logger
+from core.farm_rules import TARGET_ANN, TARGET_MAXDD
+# 2026-09-20 审计: _load_cache (模块级函数) 要用这两个名字, 必须模块级导入 ——
+# 原先只在 do_prep 内局部导入 → 调用即 NameError。
+from backtest.engine import PREP_SEAM, check_prep_caliber
 
 logger = get_logger(__name__)
 
@@ -43,6 +47,9 @@ FORMULA = "QUANTQQ"
 WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓冲 (engine 铁律)
 CAPITAL = 3_000_000.0     # 用户拍板: 300万
 MAX_BUY = 20_000.0        # 单票上限 2万 (分散口径, v4 报告 Calmar 9.52 最可信档)
+# 达标口径 (P0-8a 收口): 年化/回撤与 core/farm_rules 统一 (年化线 2026-09-22 起 10%, 回撤 15%),
+# 笔数下限 1000 是本课题 2 年区间统计口径, 属脚本自有
+MIN_TRADES = 1000
 
 def _cache_dir(window_td: int) -> str:
     """窗口长度决定缓存目录 (60=默认; 80 用于 time_stop 50/60 探边)。"""
@@ -126,13 +133,7 @@ def combo_stop_config(c, priority="trailing_first"):
 
 def do_prep(args):
     """选股 + 5m 窗口取数 + 矩阵落盘。幂等: 有缓存则跳过。"""
-    from backtest.engine import (
-        ENGINE_VERSION,
-        BacktestEngine,
-        _build_tradable_from_raw,
-        recompute_last_tradable_idx,
-    )
-    from core.data_fetcher import DataFetcher
+    from backtest.engine import ENGINE_VERSION, BacktestEngine
     from selection.selector import StockSelector
 
     win_td = args.window_td
@@ -173,44 +174,22 @@ def do_prep(args):
     }
     engine = BacktestEngine(bt_cfg)
 
-    # 3. 5m 稀疏窗口取数 (复刻 engine.run() line 776-855 的数据准备, 一次做完)
+    # 3. 矩阵准备 (2026-09-19 架构修订批次 3.1: 收编到 engine 公开接缝
+    #    prepare_matrices —— 本段原是 engine.run() 准备段的手工复刻,
+    #    引擎一改即静默漂移, 详见架构审查 P1-7。口径变化: 接缝会把窗口
+    #    终点截断到 END (2026-07-21 引擎口径), 旧复刻段不截断)
     t0 = time.time()
-    kline, window_mask = DataFetcher.get_kline_windowed(
-        selections, period="5m", window_trading_days=win_td,
-        dividend_type="front", fill_data=False, use_cache=True,
-    )
-    logger.info("[prep] 窗口取数完成 %.1fs", time.time() - t0)
+    prep = engine.prepare_matrices(selections, START, END, win_td)
+    if prep is None:
+        raise RuntimeError("QUANTQQ 窗口取数为空, 无法继续")
+    logger.info("[prep] 窗口取数+矩阵准备完成 %.1fs", time.time() - t0)
 
-    close = engine._ensure_index(kline["Close"])
-    high_df = engine._ensure_index(kline["High"])
-    low_df = engine._ensure_index(kline["Low"])
-    open_df = engine._ensure_index(kline["Open"])
-
-    # 5m 非标准时刻 bar 过滤 (审计 C1 修复): 盘中临停股复牌竞价 bar 会破坏
-    # 48 根/天不变量, loop 的 i//bpday 日界错位。必须与 engine.run() 同步
-    # (engine.py:814-816, 001399/300227 实盘事件)。引擎是 5m(48) 故直接调。
-    close, high_df, low_df, open_df = BacktestEngine._drop_nonstandard_5m_bars(
-        close, high_df, low_df, open_df)
-
-    entries = engine._build_entry_signals(selections, close)
-    cols = sorted(close.columns.intersection(entries.columns))
-    cols = sorted(set(cols) & set(high_df.columns) & set(low_df.columns))
-
-    close_raw = close.reindex(index=close.index, columns=cols)
-    close = close_raw.ffill()
-    entries = entries.reindex(index=close.index, columns=cols, fill_value=False)
-    entries = engine._filter_limit_up(entries, close)  # stop 无关, 预过滤一次
-    idx = close.index
-
-    high_np = high_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    low_np = low_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    # Open 不 ffill (停牌 NaN 保留, P1-1/P1-2)
-    open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64)
-
-    tradable_np, _ = _build_tradable_from_raw(close_raw, close)
-    wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
-    tradable_np = tradable_np & wm
-    last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+    close = prep["close"]
+    idx, cols = prep["idx"], prep["cols"]
+    high_np, low_np, open_np = prep["high"], prep["low"], prep["open"]
+    tradable_np, last_tradable_idx = prep["tradable"], prep["last_tradable_idx"]
+    # 涨停预过滤是 sweep 特有步骤 (stop 无关, 只滤一次), 不在接缝内
+    entries = engine._filter_limit_up(prep["entries"], close)
 
     # 4. 落盘 (float64 mmap; bool/int 小数组同目录)
     np.save(os.path.join(cache_dir, "close.npy"), close.values.astype(np.float64))
@@ -227,6 +206,7 @@ def do_prep(args):
         "start": START, "end": END, "formula": FORMULA,
         "window_td": win_td, "capital": CAPITAL, "max_buy": MAX_BUY,
         "engine_version": ENGINE_VERSION,
+        "prep_seam": PREP_SEAM,
         "n_signals": int(entries.values.sum()),
         "shape": [int(len(idx)), int(len(cols))],
     }
@@ -244,6 +224,7 @@ def _load_cache(window_td=WINDOW_TD):
     cache_dir = _cache_dir(window_td)
     with open(os.path.join(cache_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
+    check_prep_caliber(meta, where="quantqq_5m_sweep")
     idx = pd.DatetimeIndex(pd.to_datetime(meta["index"]))
     cols = meta["columns"]
     ld = lambda n, mmap=None: np.load(os.path.join(cache_dir, n), mmap_mode=mmap)
@@ -271,6 +252,7 @@ def do_run(args):
     import logging
     logging.getLogger().setLevel(logging.WARNING)  # 引擎每组合 INFO 刷屏, 扫描期压掉
     from backtest.engine import ENGINE_VERSION, BacktestEngine
+    from backtest.prepared import PreparedMatrix
 
     meta, mats = _load_cache(args.window_td)
     if meta.get("engine_version") and meta["engine_version"] != ENGINE_VERSION:
@@ -325,16 +307,15 @@ def do_run(args):
             ladder_ratios = np.array([r for _, r in levels], dtype=np.float64)
             t0 = time.time()
             try:
+                prepared = PreparedMatrix(
+                    close=mats["close_df"], entries=mats["entries_df"],
+                    high_np=mats["high_np"], low_np=mats["low_np"],
+                    open_np=mats["open_np"], tradable_np=mats["tradable_np"],
+                    last_tradable_idx=mats["last_tradable_idx"])
                 res = engine.run_cached(
-                    mats["close_df"], mats["entries_df"],
-                    mats["high_np"], mats["low_np"],
-                    combo_stop_config(c), selections,
+                    prepared, combo_stop_config(c),
                     ladder_profits, ladder_ratios, len(levels),
-                    filter_limit_up=False,   # prep 已预过滤
-                    open_np=mats["open_np"],
-                    tradable_np=mats["tradable_np"],
-                    last_tradable_idx=mats["last_tradable_idx"],
-                )
+                    filter_limit_up=False)   # prep 已预过滤
                 m = res["metrics"]
                 row = {
                     "key": key, "cost": c["cost"], "act": c["act"], "dd": c["dd"],
@@ -388,10 +369,13 @@ def do_report(args):
     df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["key"], keep="last")
     n_err = int(df["error"].fillna("").ne("").sum())
     df = df[df["annret"].notna()]
-    # M2: 达标硬条件 = 年化>23% 且 回撤≤15% 且 交易≥1000 笔 (统计显著)
-    tgt = df[(df["annret"] > 0.23) & (df["maxdd"].abs() <= 0.15) & (df["trades"] >= 1000)]
+    # M2: 达标硬条件 = 年化≥TARGET_ANN 且 回撤≤15% 且 交易≥1000 笔 (统计显著;
+    # 年化/回撤阈值引自 core/farm_rules, 与 1m/2010 版口径统一)
+    tgt = df[(df["annret"] >= TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
+             & (df["trades"] >= MIN_TRADES)]
     print(f"总组合: {len(df)}  失败: {n_err}  "
-          f"达标(年化>23% 且 回撤≤15% 且 交易≥1000): {len(tgt)}")
+          f"达标(年化≥{TARGET_ANN:.0%} 且 回撤≤{TARGET_MAXDD:.0%} "
+          f"且 交易≥{MIN_TRADES}): {len(tgt)}")
     cols = ["cost", "act", "dd", "ladder", "time_days", "cond_days", "cond_profit",
             "annret", "maxdd", "calmar", "sharpe", "winrate", "trades"]
     print("\n=== 达标 Top 20 (按 Calmar) ===")

@@ -87,51 +87,16 @@ class Pipeline:
         start = time_cfg.get("start", "")
         end = time_cfg.get("end", "")
 
-        # 2026-07-24: 选股结果缓存 (计划书 docs/plan/2026-07-24_选股结果缓存_计划书.md)。
-        # 实测选股占全流程 92% (5m 全A 32.8s/35.5s), 改止盈止损重跑同公式命中即省满。
-        # 按日失效 (key 含 today_str); 任何缓存异常回退直跑, 不中断管线, 不动选股口径。
-        # 2026-08-01 (批次6 D4): L0 收缩为 period≠1d — 1d 由 L2 按日信号缓存
-        # (selector.run 内接缝, 键更精确含 pool_hash、支持子区间命中) 接管,
-        # 此前 1d 场景 L0/L2 双写同一份 selections (磁盘 472K+11M 并存)。
-        # 例外: L2 被配置关闭时 1d 仍走 L0, 不留无缓存空档。
+        # L0 整段选股缓存收编进 StockSelector.run_cached (接缝内聚), pipeline
+        # 只传 selection_cache 开关, 不再拼 key / 注入 today_str / load / save。
         sc_cfg = self.config.get("selection_cache", {})
-        period = sel_cfg.get("period", "1d")
-        l2_on = sc_cfg.get("enabled", True) and sc_cfg.get("l2_enabled", True)
-        use_sel_cache = sc_cfg.get("enabled", True) and (period != "1d" or not l2_on)
-        force_refresh = sc_cfg.get("force_refresh", False)
-        key = None
-        picks = None
-        if use_sel_cache:
-            try:
-                from selection import selection_cache as sc
-                key = sc.build_key(
-                    formula_name=sel_cfg.get("formula_name", ""),
-                    formula_arg=sel_cfg.get("formula_arg", ""),
-                    universe_cfg=sel_cfg.get("universe", {}),
-                    start_time=start, end_time=end,
-                    period=period,
-                    dividend_type=sel_cfg.get("dividend_type", 1),
-                    today_str=datetime.now().strftime("%Y%m%d"),
-                )
-                if not force_refresh:
-                    picks = sc.load(sc.default_cache_root(), key)
-                else:
-                    logger.info("选股缓存 force_refresh: 跳过查找, 强制重跑")
-            except Exception as e:
-                logger.warning("选股缓存读取异常 (回退直跑): %s", e)
-                picks = None
-
-        if picks is None:
-            # 旧路径 (直跑, 不动 selector.run)
-            self.selector = StockSelector(sel_cfg)
-            stocks = self.selector.resolve_universe()
-            picks = self.selector.run(start_time=start, end_time=end, stock_list=stocks)
-            if use_sel_cache and key is not None and not picks.empty:
-                try:
-                    from selection import selection_cache as sc
-                    sc.save(sc.default_cache_root(), key, picks)
-                except Exception as e:
-                    logger.warning("选股缓存保存失败 (不中断管线): %s", e)
+        self.selector = StockSelector(sel_cfg)
+        picks = self.selector.run_cached(
+            start_time=start, end_time=end,
+            cache_enabled=sc_cfg.get("enabled", True),
+            l2_enabled=sc_cfg.get("l2_enabled", True),
+            force_refresh=sc_cfg.get("force_refresh", False),
+        )
 
         # 保存原始选股结果
         if not picks.empty:
@@ -174,26 +139,16 @@ class Pipeline:
         time_cfg = self.config.get("time_range", {})
         self.stop_config = self.config.get("stop_loss", {})
 
-        # P1-7: 校验选股/回测复权口径一致（engine 硬编码 "front"）
-        from core.dividend_type import assert_consistent
+        # 2026-09-19 架构修订批次 3.2: 复权一致性 / period 一致性校验**下沉到
+        # engine.run(selection_caliber=…)** —— 原来只有本方法校验, 直调
+        # engine.run() 的脚本全部静默绕过 (engine.py 旧 docstring 自己承认)。
+        # 现在口径校验只有一份实现 (engine._validate_caliber), 本方法只负责
+        # 把选股口径如实传下去, 不再各写一份 (幂等复用)。
         sel_cfg = self.config.get("selection", {})
-        sel_adj = sel_cfg.get("dividend_type", 1)
-        assert_consistent(sel_adj, "front")
-
-        # P1-8: 选股/回测 period 一致性告警 (2026-07-17, 002008 bug)
-        # 不一致时 (如 selection=1d, backtest=5m) 选股与回测看到的数据覆盖不同,
-        # 5m 数据缺口会让选股信号在回测价格 index 中缺失, 信号被 _build_entry_signals 丢弃。
-        # 不中断 (1d 选股 + 5m 回测是合法组合), 仅告警提示。
-        sel_period = sel_cfg.get("period", "1d")
-        bt_period = bt_cfg.get("period", "1d")
-        if sel_period != bt_period:
-            logger.warning(
-                "period_mismatch: 选股 period=%s 与 回测 period=%s 不一致, "
-                "若回测 period 数据有缺口, 选股信号会被丢弃 (不顺延)。"
-                "1d 选股 + 5m 回测为合法组合, 数据完整时可忽略; "
-                "若非有意, 请统一 period 或补全回测 period 的盘后数据。",
-                sel_period, bt_period,
-            )
+        selection_caliber = {
+            "dividend_type": sel_cfg.get("dividend_type", 1),
+            "period": sel_cfg.get("period", "1d"),
+        }
 
         # 2026-07-18: 矩阵级缓存 server 路径默认开 (bt_cfg 显式 matrix_cache:false 可关)。
         # 止盈止损参数不影响准备段产物, 命中时改参数重跑只剩核心循环。
@@ -208,6 +163,7 @@ class Pipeline:
             start_time=start,
             end_time=end,
             stop_config=self.stop_config,
+            selection_caliber=selection_caliber,
         )
 
         return result

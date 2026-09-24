@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from trade.api import create_api_app
 from trade.book import PRICE_TYPE_LIMIT
-from trade.config import TradeConfig, load_trade_config
+from trade.config import AutoBuyConfig, TradeConfig, load_trade_config
 from trade.events import EVENT_TICK, Event
 from trade_main import TradeApp
 
@@ -134,6 +134,47 @@ def test_buy_happy_path_ask1_limit(cfg):
     assert last["dispositions"][0]["action"] == "buy"
 
 
+def test_new_codes_subscribed_before_pricing(cfg):
+    """2026-08-07 (实盘 0807 废单事件): 信号票定价前先补订阅 ——
+    裸快照缺盘口会走"对手最优"市价兜底, 券商通道拒单 (4/4 全灭)。"""
+    clock = [_ts("14:54")]
+    app = _start(_make_app(cfg, clock))
+    calls = []
+    orig = app.gateway.subscribe_quotes
+
+    def spy(codes):
+        calls.append(list(codes))
+        return orig(codes)
+    app.gateway.subscribe_quotes = spy
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+    _run_signals(app, [{"code": CODE, "select_date": "20260807"}])
+    assert [CODE] in calls
+    assert app._auto_buy.last["bought"] == 1
+
+
+def test_missing_ask1_refetched_before_pricing(cfg):
+    """首轮快照缺 ask1 → 定向补查补上 → 按卖一价限价, 不走对手最优。"""
+    clock = [_ts("14:54")]
+    app = _start(_make_app(cfg, clock))
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+    real_q = app.gateway.query_quotes
+    state = {"n": 0}
+
+    def flaky(codes):
+        state["n"] += 1
+        out = real_q(codes)
+        if state["n"] == 1:               # 首轮掐掉 ask1, 模拟快照缺盘口
+            return {c: dict(q, ask1=0.0) for c, q in out.items()}
+        return out
+    app.gateway.query_quotes = flaky
+    _run_signals(app, [{"code": CODE, "select_date": "20260807"}])
+    assert state["n"] == 2                # 首轮 + 定向补查各一次
+    o = app.gateway.query_orders()[0]
+    assert o["price"] == 25.51            # 卖一价限价, 非市价单 0.0
+    d = app._auto_buy.last["dispositions"][0]
+    assert d["action"] == "buy" and d["reason"] == "卖一价"
+
+
 def test_skip_matrix(cfg):
     """过滤矩阵: 已持仓 / ETF / 涨停 / 现金不足一手 / 达每日上限。"""
     clock = [_ts("14:52")]
@@ -158,6 +199,37 @@ def test_skip_matrix(cfg):
     assert reasons["000003.SZ"] == "现金不足一手"
     # 现金 1000: 000004 (1051/手) 与 CODE (2551/手) 都买不起
     assert last["bought"] == 0
+
+
+def test_budget_cap_insufficient_reason(cfg):
+    """2026-08-17: 双池预算帽把股票池额度压到 0 时, 报"股票池预算不足"
+    而非"现金不足一手" (账户有钱, 只是那钱归 ETF 池)。"""
+    clock = [_ts("14:52")]
+    app = _start(_make_app(cfg, clock, cash=500_000.0))
+    app._auto_buy._budget_provider = lambda: 0.0   # 股票池额度已满
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)
+    _run_signals(app, [{"code": CODE, "select_date": "x"}])
+    last = app._auto_buy.last
+    assert last["bought"] == 0
+    assert last["dispositions"][0]["reason"] == "股票池预算不足"
+
+
+def test_amount_per_stock_below_lot_reason(tmp_path):
+    """2026-08-17: 单票金额上限低于一手价 (高价股) 时, 报"单票上限低于一手",
+    区分于现金不足 (这是配置问题, 调高 amount_per_stock 即可)。"""
+    cfg = TradeConfig(
+        account_id="AB", fake_sdk=True,
+        db_path=str(tmp_path / "t.db"),
+        raw_log_path=str(tmp_path / "r.jsonl"),
+        kill_flag_path=str(tmp_path / "KILL"),
+        auto_buy=AutoBuyConfig(enabled=True, amount_per_stock=1000.0))
+    clock = [_ts("14:52")]
+    app = _start(_make_app(cfg, clock, cash=1_000_000.0))
+    _push(app, CODE, 25.5, 25.51, prev_close=25.0)   # 一手 2551 > 上限 1000
+    _run_signals(app, [{"code": CODE, "select_date": "x"}])
+    last = app._auto_buy.last
+    assert last["bought"] == 0
+    assert last["dispositions"][0]["reason"] == "单票上限低于一手"
 
 
 def test_max_buys_per_day_cap(cfg):
@@ -329,6 +401,52 @@ def test_auto_buy_reentry_guard(cfg):
     gate.set()
     assert rows
     app.stop()
+
+
+def _ts_on_saturday(hhmm):
+    """取最近一个周六的指定时刻 —— 验证"非交易日"守卫用 (2026-09-18 新增)。
+
+    与 _ts 的区别: _ts 会主动避开周末 (它服务的是"盘中定时"语义, 天然在
+    工作日), 本函数反过来**专门挑周六**, 因为要验的正是"周末定时不该跑"。
+    """
+    from datetime import datetime, timedelta
+    d = datetime.now().replace(
+        hour=int(hhmm[:2]), minute=int(hhmm[3:]), second=0, microsecond=0)
+    while d.weekday() != 5:          # 5 = 周六
+        d -= timedelta(days=1)
+    return d.timestamp()
+
+
+def test_auto_buy_scheduled_skipped_on_non_trading_day(cfg):
+    """2026-09-18 修复: scheduled 在非交易日必须静默丢弃。
+
+    此前 start() 对 scheduled 只判"开关开着吗", **没判"今天是交易日吗"** ——
+    周末/节假日 14:54 定时器理论上也会跑一遍选股并走到汇总。现补上守卫
+    (与 rotation.start 同口径 `[trade/rotation.py:280-282]`)。
+    两条不变式: ①manual 不受影响 (人工命令任何时段放行, 2026-07-27 裁决①);
+    ②静默丢弃不写审计 —— 休市日本就不该有"决策", 页面由日历标「休市」。
+    """
+    clock = [_ts_on_saturday("14:54")]
+    ran = []
+
+    def runner(f, a, u):
+        ran.append(1)
+        return []
+
+    app = _start(_make_app(cfg, clock, runner=runner))
+    try:
+        app._auto_buy.start("scheduled")
+        time.sleep(0.15)
+        assert not app._auto_buy.running, "周六定时不该开选股线程"
+        assert ran == [], "周六定时不该调起选股"
+        rows = app.store._conn.execute(
+            "SELECT kind FROM audit WHERE kind='auto_buy_start'").fetchall()
+        assert rows == [], "静默丢弃: 不写 auto_buy_start 审计"
+        # manual 仍放行 (不受时段/交易日约束)
+        app._auto_buy.start("manual")
+        assert _wait(lambda: bool(ran)), "manual 必须照旧放行"
+    finally:
+        app.stop()
 
 
 # ═══════════════════════════════════════════════════════════════

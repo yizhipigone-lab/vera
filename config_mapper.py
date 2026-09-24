@@ -35,6 +35,8 @@ class StrategyConfig(BaseModel):
     start_time: str = "20240101"
     end_time: str = "20250630"
     period: str = "1d"
+    # 2026-08-20: 买入价口径 (close_t=信号日收盘价默认 / open_t1=次日开盘价, 一字涨停才放弃)
+    entry_price_mode: str = "close_t"
     dividend_type: int = 1
     initial_capital: Optional[float] = None
     commission: Optional[float] = None
@@ -49,6 +51,7 @@ class StrategyConfig(BaseModel):
     trailing_enabled: bool = True
     trailing_activation: Optional[float] = None
     trailing_drawdown: Optional[float] = None
+    trailing_confirm: str = "intraday"  # 2026-08-05: 确认方式 (intraday/low/close/simple/real)
     ladder_enabled: bool = True
     ladder_levels: str = "6:30,15:30"
     time_enabled: bool = True
@@ -84,9 +87,18 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
         for item in cfg.ladder_levels.split(","):
             parts = item.strip().split(":")
             if len(parts) == 2:
+                profit = float(parts[0])
+                sell_ratio = float(parts[1])
+                # 2026-08-06 HIGH#5: 容忍百分数/小数两种格式 (UI 默认 "6:30,15:30"
+                # 是百分数, 直调 API/yaml 可能传小数). >1 视为百分数 /100 归一化,
+                # 与 stop_config 期望的小数一致; sell_ratio 同理 (30→0.30)。
+                if profit > 1:
+                    profit /= 100
+                if sell_ratio > 1:
+                    sell_ratio /= 100
                 ladder_levels.append({
-                    "profit": float(parts[0]),
-                    "sell_ratio": float(parts[1]),
+                    "profit": profit,
+                    "sell_ratio": sell_ratio,
                 })
 
     # 选股始终用日线，回测层可用5m/1m
@@ -120,6 +132,8 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
             "commission": cfg.get("commission", 0.0003),
             "slippage": cfg.get("slippage", 0.001),
             "period": bt_period,
+            # 2026-08-20: 买入价口径透传 (close_t/open_t1; 非法值 engine 构造期 fail-fast)
+            "entry_price_mode": str(getattr(cfg, "entry_price_mode", None) or "close_t"),
             # 2026-07-21 用户决策: web 回测默认开启 5m 数据层降级
             # (没有 5M 线的时段降级为日线, 回测区间完整覆盖请求起点)
             "degrade_5m": bool(getattr(cfg, "degrade_5m", True)),
@@ -143,6 +157,8 @@ def _config_to_yaml_dict(cfg: StrategyConfig) -> dict:
                 "drawdown": cfg.get(
                     "trailing_drawdown", DEFAULT_TRAILING_DRAWDOWN
                 ),
+                # 2026-08-05: 确认方式透传 (intraday/low/close/simple/real)
+                "confirm": str(cfg.get("trailing_confirm", "intraday")),
             },
             "ladder_tp": {"enabled": cfg.ladder_enabled, "levels": ladder_levels},
             "time_stop": {"enabled": cfg.time_enabled, "max_hold_days": cfg.get("max_hold_days", 20)},

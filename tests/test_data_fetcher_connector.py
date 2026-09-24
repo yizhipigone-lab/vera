@@ -78,3 +78,56 @@ def test_reset_connector_restores_default():
     assert DataFetcher._connector() is mock
     DataFetcher.reset_connector()
     assert DataFetcher._connector() is TdxConnector
+
+
+def test_get_name_map_includes_etf():
+    """2026-08-15: get_name_map 拉 '31' ETF 基金列表, 场内 ETF 也有名字
+    (修复持仓清单里 159949/518880 无名字)。"""
+    class EtfTq:
+        def __init__(self):
+            self.markets = []
+
+        def get_stock_list(self, market, list_type=1):
+            self.markets.append(market)
+            if market == "31":
+                return [{"Code": "159949.SZ", "Name": "创业板50"}]
+            return [{"Code": "600519.SH", "Name": "贵州茅台"}]
+
+    class EtfConn:
+        def __init__(self):
+            self.tq_obj = EtfTq()
+
+        def ensure_connected(self):
+            pass
+
+        def tq(self):
+            return self.tq_obj
+
+    mock = EtfConn()
+    DataFetcher.set_connector(mock)
+    DataFetcher._cache.clear_name()          # 清缓存, 强制重拉
+    names = DataFetcher.get_name_map()
+    assert "31" in mock.tq_obj.markets       # 确实拉了 ETF 列表
+    assert names["159949.SZ"] == "创业板50"  # ETF 名称纳入
+    assert names["600519.SH"] == "贵州茅台"
+
+
+def test_fmt_tdx_error_带文本():
+    """ErrorId 非 0 且带 Error 文本 → 原样带出, 不再"未知错误"。"""
+    from core.data_fetcher import _fmt_tdx_error
+    assert _fmt_tdx_error({"ErrorId": "2", "Error": "超出数据范围"}) == \
+        "ErrorId=2 超出数据范围"
+
+
+def test_fmt_tdx_error_无文本列键名():
+    """只有 ErrorId 无文本 → 列出返回键, 供事后定位 (7250 条未知错误的根)。"""
+    from core.data_fetcher import _fmt_tdx_error
+    out = _fmt_tdx_error({"ErrorId": "1", "TradingState": 3})
+    assert out.startswith("ErrorId=1")
+    assert "ErrorId" in out or "ErrorMsg" in out  # 键名被带出
+
+
+def test_fmt_tdx_error_空返回():
+    from core.data_fetcher import _fmt_tdx_error
+    assert "空返回" in _fmt_tdx_error(None)
+    assert "空返回" in _fmt_tdx_error({})

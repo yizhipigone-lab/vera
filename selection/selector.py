@@ -30,6 +30,14 @@ UNIVERSE_TYPE_MAP = {
 # ETF 基金的 TDX list_type (原生分类, 天然含 51/56/58/511, 排除 501/508 LOF)
 ETF_LIST_TYPE = "31"
 
+#: universe 配置里**缺省为 True** 的键 (2026-09-19 架构修订批次 3.3)。
+#: 语义归属地就是本文件 (真正决定缺省值的是下方 `u.get("exclude_quit", True)`);
+#: 缓存 key 归一化必须知道这份名单 —— 这类键的**显式 False 与"缺键"语义相反**
+#: (保留退市股 vs 剔除), 当假值剔掉会让两种池子撞同一个 key (2026-09-16 P0-1)。
+#: **新增此类键时只改这里**, 缓存层自动跟随; tests/test_universe_key_spec.py
+#: 用 AST 扫描本文件的 `u.get(k, True)` 调用, 保证声明与实现不漂移。
+UNIVERSE_TRUE_DEFAULT_KEYS = frozenset({"exclude_quit"})
+
 
 def _merge_etf(stocks: List[str]) -> List[str]:
     """拉 ETF 池 (list_type='31') 并与现有股票池合并去重。"""
@@ -226,3 +234,67 @@ class StockSelector:
             dividend_type=self.dividend_type,
         )
         return df
+
+    def run_cached(
+        self,
+        start_time: str = "",
+        end_time: str = "",
+        *,
+        cache_enabled: bool = True,
+        l2_enabled: bool = True,
+        force_refresh: bool = False,
+    ) -> pd.DataFrame:
+        """带 L0 整段缓存的选股入口 (收编自 pipeline.step1_select 的直连代码)。
+
+        原 pipeline 直连 selection_cache 拼 key / 注入 today_str / load / save
+        的整段缓存 (L0) 收进 selector 内部, pipeline 只传 selection_cache 开关。
+
+        语义与旧 pipeline 字节级等价:
+        - L0 只服务 period≠1d (1d 由 run() 内 L2 按日信号缓存接管, 键更精确
+          含 pool_hash、支持子区间命中); L2 被配置关闭时 1d 仍走 L0, 不留空档。
+        - key 含 today_str (按日失效); force_refresh 跳过查找强制重跑。
+        - 任何缓存异常回退直跑 + warning, 不中断选股; 空结果不缓存。
+        """
+        use_sel_cache = cache_enabled and (self.period != "1d" or not l2_enabled)
+        key = None
+        picks = None
+
+        if use_sel_cache:
+            try:
+                from selection import selection_cache as sc
+                key = sc.build_key(
+                    formula_name=self.formula_name,
+                    formula_arg=self.formula_arg,
+                    universe_cfg=self.universe_config,
+                    start_time=start_time, end_time=end_time,
+                    period=self.period,
+                    dividend_type=self.dividend_type,
+                    today_str=datetime.now().strftime("%Y%m%d"),
+                )
+                if not force_refresh:
+                    picks = sc.load(sc.default_cache_root(), key)
+                else:
+                    logger.info("选股缓存 force_refresh: 跳过查找, 强制重跑")
+            except Exception as e:
+                logger.warning("选股缓存读取异常 (回退直跑): %s", e)
+                picks = None
+
+        if picks is None:
+            stocks = self.resolve_universe()
+            picks = self.run(start_time=start_time, end_time=end_time,
+                             stock_list=stocks)
+            if use_sel_cache and key is not None and not picks.empty:
+                # 2026-09-16 审计 S1: L0 (5m/1m) 缺"当日不落盘"防线 — 盘中首次
+                # 运行把半成品信号落盘, 当日后续全部命中陈旧缓存 (L2 的当日防线
+                # 不覆盖 5m/1m)。end_time ≥ 当日则跳过落盘, 对齐
+                # signal_day_cache.py 的"当日永不缓存"语义。
+                if not end_time or end_time[:8] >= datetime.now().strftime("%Y%m%d"):
+                    logger.info("选股缓存: end_time 含当日, 跳过落盘 (当日不落盘防线)")
+                    return picks
+                try:
+                    from selection import selection_cache as sc
+                    sc.save(sc.default_cache_root(), key, picks)
+                except Exception as e:
+                    logger.warning("选股缓存保存失败 (不中断管线): %s", e)
+
+        return picks

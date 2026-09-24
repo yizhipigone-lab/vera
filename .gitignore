@@ -11,6 +11,8 @@ Thumbs.db
 .env
 .venv/
 *.pkl
+# 研究结果 parquet（回测产物，大二进制 + 含策略机密，本地不入库）
+*.parquet
 dump.rdb
 .coverage
 .coverage.*
@@ -32,12 +34,15 @@ data/universe_cache/
 data/signal_day_cache/
 data/brain_vectors/
 data/brain_model_cache/
+data/sentiment/
 
 # 第二大脑 vault（4586+ 生成文件，知识库数据，不入 git）— 2026-08-01
 vera_obs_vault/
 # 知识图谱原始数据与构建产物（可由 chainkg_loader 重建，不入 git）
 kg/data/
 kg/graph.db
+kg/graph.db-shm
+kg/graph.db-wal
 # 概念标签 TTL 缓存（按日失效，可再生成）
 concept_kb/concept_cache.json
 
@@ -56,3 +61,56 @@ docs/research/
 # A5 parity snapshots must be versioned (regression baseline, overrides *.json above)
 !tests/snapshots/
 !tests/snapshots/*.json
+# 手机版契约快照同理必须入库 (2026-09-19 批次 2.3; *.json 规则的例外)
+!tests/web/mobile_contract_snapshot.json
+
+# DSH 深度思考便携运行时 (含 node 二进制/凭据/会话日志, 不入 git;
+# 重建: 从 IRX 拷贝或 python scripts/setup_dsh_home.py --apply) — 2026-09-04
+# 例外: workspace/CLAUDE.md 是岗前手册 (治"答非所问"的人设本体), 要版本化
+dsh-runtime/*
+!dsh-runtime/workspace/
+dsh-runtime/workspace/*
+!dsh-runtime/workspace/CLAUDE.md
+data/brain_dsh_runs.db
+
+# 临时脚本/暂存区防堆积闸 (治理III W1-a, 2026-09-05) — /_tmp_* 仅根目录锚定,
+# tools/ 下的 PS1 助手 (kill/tun helper) 不受影响; scratch/ 存放有残留价值的临时产物
+/_tmp_*
+scratch/
+
+# 运行时数据库/流水产物 (治理III 2026-09-05 收尾): 研报雷达库 + 影子轮动流水
+data/sgpjbg_radar.db
+data/shadow_rotation.jsonl
+# 大盘位置连续录像 (2026-09-17): 可由 tools/market_position_collect.py --backfill 重建
+data/market_position/
+# DSH 视觉路由会话截图 (工具产物, 可再生成)
+.dsh-vision-router/
+# WorkBuddy 助手记忆 (工具产物)
+.workbuddy/
+
+# 2026-09-17 (M5): 邮箱收到的外部研究产物 —— 第三方内容、体积随收信增长、可重建
+docs/research_inbox/
+
+# 2026-09-19 架构修订批次 1.4: 运行时数据/日志收口 (此前漏网, git status 1298 条噪音)
+# 注意: gitignore 不支持行内注释, # 必须在行首 (本次实测踩坑)
+# 公式农场: 抓取的公式原文/日报属运行时产物(可重建), 但 **voided.json 是
+# 203 条人工作废判定 = 唯一真相源, 不可重建** —— 必须入库 (2026-09-20 审计 P1-2:
+# 原规则把它一起挡在 git 外, 一条 git clean 就永久删除)。
+# 坑: 不能写 `data/formula_farm/` 再 `!.../voided.json` —— 父目录被整体忽略后
+# git 不再往里看, 例外永不生效; 必须写成 `data/formula_farm/*` (忽略内容)。
+data/formula_farm/*
+!data/formula_farm/voided.json
+# 盘后复盘报告 (机器生成, 落盘即归档)
+data/daily_review/
+# 隔夜简报 (同上)
+data/morning_brief/
+# 进程控制台日志 + .prev 轮转 (*.log 管不到 .prev 后缀)
+logs/
+# agent 协作运行时状态
+.agent-teams/
+
+# 2026-09-20 审计 P1-3: `*.csv` / `*.json` 会误伤测试夹具 —— 新克隆跑
+# test_market_event_sources 直接 FileNotFoundError (全量套件不可复现)。
+# 夹具是"测试输入", 不是运行时产物, 一律入库。
+!tests/fixtures/**
+!tests/web/mobile_contract_snapshot.json

@@ -1,0 +1,64 @@
+# config/sentiment.yaml — 实时舆情监控配置 (v1)
+#
+# 守业务铁律 1: 本配置只影响"报告显示" (飞书推送 + 盘后日报),
+# 绝不联入任何交易决策 / 选股打分 / 自动下单 / 仓位调度。
+#
+# 文件缺失或无 PyYAML 时, brain/alert_rules.py 用 DEFAULT_CONFIG 兜底, 模块照跑。
+# 阈值含义见 brain/alert_rules.py 各 rule 函数 docstring。
+
+scan:
+  interval_min: 10              # 盘中扫描间隔 (分钟, 用户拍板)
+  daily_report_hhmm: "15:05"    # 盘后日报推送时刻
+
+news:
+  max_per_scan: 15              # 单轮最多打分新闻数 (LLM 批次上限 10, 留余量)
+
+rules:
+  # 规则1: 个股情绪突变 (LLM 打分驱动, 无需行情)
+  stock_sentiment:
+    enabled: true
+    polarity_min: 0.6           # |polarity| 阈值 (中等档, 用户拍板)
+    strength_min: 2             # 强度阈值 (0 弱 / 1 中 / 2 强)
+
+  # 规则2: 板块新闻密集 + 情绪一致 (新闻维度, 文本匹配关键词)
+  sector_cluster:
+    enabled: true
+    min_hits: 3                 # 同板块最少命中新闻数
+    polarity_min: 0.4           # 平均 |polarity| 一致性阈值
+
+  # 规则3: 大盘指数阈值 (解析 data_tools market_snapshot)
+  index_move:
+    enabled: true
+    threshold_pct: 1.5          # 主要指数涨跌幅绝对值阈值 (中等档)
+    watch_indices: ["上证", "深证", "创业", "科创"]   # 短关键词, 子串匹配兜名称变体
+
+  # 规则4: 量能异常
+  # v1 默认关: 相对倍数需"前 5 日成交均值"基建, v1 未建。
+  # v2 接历史均值后启用 threshold_x (今日/前5日均值 ≥ 1.5)。
+  volume_anomaly:
+    enabled: false
+    threshold_x: 1.5
+
+# 推送抑制 (独立噪声控制层, 不计入规则条数)
+suppression:
+  push_window_min: 30           # 同 code 推送抑制窗口 (分钟)
+  max_per_tick: 3               # 单轮最多推送条数 (按 |polarity|×strength 降序)
+
+feishu:
+  enabled: true                 # 推送总开关 (webhook 走环境变量 FEISHU_WEBHOOK_URL, 半密钥不入 yaml)
+
+# 监控标的 (用户拍板: 大盘 + 半导体产业链 + 算力 + 十五五重点行业)
+watch:
+  concepts:                     # 算力主题 + 半导体 + 十五五重点 (文本匹配关键词)
+    - 算力租赁
+    - 华为算力
+    - CPO
+    - 光通信
+    - 芯片
+    - EDA
+    - 半导体
+    - 人工智能
+    - 数据中心
+    - 新能源
+    - 高端装备
+  # P1 档行业 (十二五个重点) 从 policy_kb/tongdaxin_priority.json 读, 此处不重复列

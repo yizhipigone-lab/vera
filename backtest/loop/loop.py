@@ -69,11 +69,20 @@ class BacktestLoop:
             open_np: Optional[np.ndarray],
             tradable_np: Optional[np.ndarray],
             last_tradable_idx: Optional[np.ndarray],
-            formula_exit_np: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+            formula_exit_np: Optional[np.ndarray],
+            degraded_np: Optional[np.ndarray] = None,
+            turnover_day_np: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
         """跑完整回测, 返回 (equity_arr, raw_trades)。
 
         formula_exit_np: 信号已存于 FormulaSellStrategy(absolutes), 此参数保留作
         显式传递/未来扩展, run 内不直接引用（LOW-2）。
+
+        degraded_np (2026-08-06, 审计 HIGH#2): 5m 降级 bar 标记 (bar 级布尔,
+        degrade_5m 产物, 仅 run() 路径有)。降级 bar 不刷新移动止盈峰值 ——
+        降级天 48 根 bar 广播同一 1d OHLC, 当日 high 盘中何时出现不可知,
+        新回撤线推迟到次日生效 (等同 1D "峰值日多观察一天" 的既有代价)。
+        否则首根 bar 峰值即被刷成当日 1d high, real 模式
+        peak_hi==bar.high 对全天成立 (trailing.py 创峰值跳过), 峰顶日漏判。
 
         2026-07-18 审计 F2: 单实例不可复用 — PositionBook 与 entry skip 计数
         不重置, 二次 run 会带上一轮持仓/计数, 资金数字静默错乱。fail-fast。
@@ -105,6 +114,10 @@ class BacktestLoop:
             if p.sell_cooldown_bars > 0 else None
         )
 
+        # 2026-08-08: 全局连亏冷却状态 (loss_streak_halt_n>0 时启用)
+        self._loss_streak = 0
+        self._halt_until_bar = -1  # 当前 bar < 此值时禁开新仓
+
         for i in range(n_dates):
             # 停止回测按钮: is_set() 开销 ~几十 ns, 逐 bar 检查可秒级响应
             raise_if_stopped()
@@ -114,13 +127,32 @@ class BacktestLoop:
                                  f"{i}/{n_dates} bar", i, n_dates)
             # ── 1. 卖出 ──
             cash = self._sell_bar(i, cash, book, trade_buf, price_np, high_np,
-                                  low_np, open_np, tradable_np, last_tradable_idx)
+                                  low_np, open_np, tradable_np, last_tradable_idx,
+                                  degraded_np=degraded_np)
             # ── 2. 买入 ──
             prev_eq = equity.equity_arr[i - 1] if i > 0 else float(p.initial_capital)
+            # 2026-08-08: 当前持仓市值 + 总权益 (总仓位上限门槛用, bar 级)
+            cur_mkt_value = 0.0
+            if p.max_total_exposure < 1.0:
+                _ca = book.code_arr
+                _sa = book.shares_arr
+                for _pp in range(book.count):
+                    _ci = int(_ca[_pp])
+                    if _ci >= 0:
+                        _px = price_np[i, _ci]
+                        if _px > 0.0:
+                            cur_mkt_value += _sa[_pp] * _px
+            total_equity = cash + cur_mkt_value
+            halt_ub = (self._halt_until_bar
+                       if p.loss_streak_halt_n > 0 else None)
             cash = self.entry_engine.run_bar(i, cash, book, trade_buf, price_np,
                                              entry_np, tradable_np, prev_eq,
                                              sig_cis=sig_by_bar[i],
-                                             last_exit_bar=self._last_exit_bar)
+                                             last_exit_bar=self._last_exit_bar,
+                                             cur_mkt_value=cur_mkt_value,
+                                             total_equity=total_equity,
+                                             halt_until_bar=halt_ub,
+                                             turnover_day_np=turnover_day_np)
             # ── 3. 权益 ──
             equity.update(i, cash, price_np, book)
 
@@ -144,6 +176,13 @@ class BacktestLoop:
         cd_skipped = self.entry_engine.cooldown_skip_count
         if cd_skipped:
             logger.info("sell_cooldown: %d 个买入信号因卖出冷却期被跳过", cd_skipped)
+        # 2026-08-08: 仓位上限/连亏冷却 跳过汇总
+        exp_skipped = self.entry_engine.exposure_skip_count
+        if exp_skipped:
+            logger.info("max_total_exposure: %d 个买入信号因总仓位达上限被跳过", exp_skipped)
+        halt_skipped = self.entry_engine.halt_skip_count
+        if halt_skipped:
+            logger.info("loss_streak_halt: %d 个买入信号因连亏冷却期被跳过", halt_skipped)
         return equity.equity_arr, trade_buf.to_array()
 
     def _mark_full_exit(self, ci: int, i: int) -> None:
@@ -152,10 +191,35 @@ class BacktestLoop:
         if leb is not None and 0 <= ci < leb.shape[0]:
             leb[ci] = i
 
+    def _update_loss_streak(self, ret: float, cur_bar: int) -> None:
+        """2026-08-08: 平仓后更新全局连亏计数。
+
+        ret<0 累加, >=0 清零; 达 loss_streak_halt_n 笔设停止开仓截止 bar
+        (cur_bar + loss_streak_halt_bars) 并清零 (一次性触发, 冷却期后重数)。
+        仅在 loss_streak_halt_n>0 时生效, 否则 no-op (零行为变化)。
+        仅 loop 内正常出场调用 (退市/_execute_single/_execute_dual),
+        换股 reason=1 在 entry.py 不计入。
+        """
+        n = self.params.loss_streak_halt_n
+        if n <= 0:
+            return
+        if ret < 0.0:
+            self._loss_streak += 1
+            if self._loss_streak >= n:
+                self._halt_until_bar = cur_bar + self.params.loss_streak_halt_bars
+                self._loss_streak = 0
+        else:
+            self._loss_streak = 0
+
     # ─────────────────────────────────────────────────────────
     def _sell_bar(self, i, cash, book, trade_buf, price_np, high_np,
-                  low_np, open_np, tradable_np, last_tradable_idx) -> float:
-        """_simulate_core_v3_legacy 卖出段的移植。返回更新后的 cash。"""
+                  low_np, open_np, tradable_np, last_tradable_idx,
+                  degraded_np=None) -> float:
+        """_simulate_core_v3_legacy 卖出段的移植。返回更新后的 cash。
+
+        degraded_np (2026-08-06 HIGH#2): 5m 降级 bar 标记, 降级 bar 不刷新
+        移动止盈峰值 (推迟到次日, 详见 run() docstring)。None = 无降级信息,
+        全部照常 (run_cached/直调路径)。"""
         p = self.params
         bpday = p.bpday
         slippage = p.slippage
@@ -170,12 +234,19 @@ class BacktestLoop:
         high_px_arr = book.high_px_arr
         high_hi_arr = book.high_hi_arr
         ladder_done_arr = book.ladder_done_arr
+        day_lo_arr = book.day_lo_arr          # 2026-08-04: 日频确认模式用
+        ladder_day_arr = book.ladder_day_arr  # 阶梯值班日 (i//bpday)
         pp = 0
         while pp < book.count:
             ci = int(code_arr[pp])
             if ci < 0:
                 pp += 1
                 continue
+            # 2026-08-06 HIGH#4: 日首哨兵必须在退市/停牌 continue 之前置位 —
+            # 否则日首 bar 停牌会在下方 continue 跳过 day_lo 重置, day_lo 沿用昨天,
+            # low/close 确认模式误判。哨兵 inf 由当日首个可交易 bar 的 lo_t 填充。
+            if (i % bpday) == 0:
+                day_lo_arr[pp] = math.inf
             xp = price_np[i, ci]
             # ── 退市/停牌 ──
             if (tradable_np is not None and ci < tradable_np.shape[1]
@@ -195,6 +266,7 @@ class BacktestLoop:
                                      ret, 11)
                     book.remove_swap_pop(pp)
                     self._mark_full_exit(ci, i)
+                    self._update_loss_streak(ret, i)
                     continue  # 不 pp+=1
                 # 临时停牌: 跳过卖出检查
                 pp += 1
@@ -202,9 +274,20 @@ class BacktestLoop:
             if math.isnan(xp) or xp <= 0.0:
                 pp += 1
                 continue
+            # 2026-08-04: 当日累计最低价 (日频确认模式用; 日首哨兵重置, 其后取 min)
+            # 2026-08-06 HIGH#4: 日首哨兵已在循环顶置位, 这里只填充+取 min;
+            #   lo_t 为 NaN 时 NaN<inf 为 False 不写入, 比旧逻辑(日首无条件写 NaN)更安全
+            lo_t = low_np[i, ci] if low_np is not None else xp
+            if lo_t < day_lo_arr[pp]:
+                day_lo_arr[pp] = lo_t
+            # 2026-08-06 (审计 HIGH#2, 用户拍板"推迟峰值"): 降级 bar (5m 缺失,
+            # 48 根广播同一 1d OHLC) 不刷新峰值 high_hi —— 当日 high 盘中何时
+            # 出现不可知, 新回撤线次日才生效。注意 high_px (收盘价轨迹, 值为
+            # 真实 1d 收盘) 不受影响, 照常更新。
+            deg = degraded_np is not None and bool(degraded_np[i, ci])
             # ── T+1: 当日买入不可当日卖 ──
             if (i // bpday) == (entry_idx_arr[pp] // bpday):
-                if high_np is not None:
+                if high_np is not None and not deg:
                     hi_t = high_np[i, ci]
                     if hi_t > high_hi_arr[pp]:
                         high_hi_arr[pp] = hi_t
@@ -222,7 +305,7 @@ class BacktestLoop:
             lo = low_np[i, ci] if low_np is not None else xp
             hi_pp = (hi - ep) / ep if ep > 0.0 else 0.0
             lo_pp = (lo - ep) / ep if ep > 0.0 else 0.0
-            if high_np is not None and hi > high_hi_arr[pp]:
+            if high_np is not None and not deg and hi > high_hi_arr[pp]:
                 high_hi_arr[pp] = hi
             peak_hi = high_hi_arr[pp] if high_hi_arr[pp] > 0 else ep
             peak_hi_profit = (peak_hi - ep) / ep if ep > 0.0 else 0.0
@@ -254,6 +337,9 @@ class BacktestLoop:
                 hi_pp=hi_pp, lo_pp=lo_pp,
                 ladder_profits=self.ladder_profits,
                 ladder_ratios=self.ladder_ratios, n_ladder=self.n_ladder,
+                is_last_bar=((i % bpday) == bpday - 1),
+                day_lo=day_lo_arr[pp],
+                ladder_fired_today=(ladder_day_arr[pp] == i // bpday),
             )
 
             # ── 1. 绝对优先 (formula_sell, reason=12) ──
@@ -317,6 +403,10 @@ class BacktestLoop:
                                  tr.execution_price, sell_sh,
                                  gross - sell_sh * ep, ret, tr.reason)
                 book.set_shares(pp, total_sh - sell_sh)
+                self._update_loss_streak(ret, i)
+                if tr.reason == 5:
+                    # 2026-08-04: 记录阶梯值班日 — 日频确认模式下 trailing 当日休息
+                    book.ladder_day_arr[pp] = i // p.bpday
                 return cash, "keep"
             # sell_sh >= total_sh → 落到全卖
         # 全卖
@@ -329,6 +419,7 @@ class BacktestLoop:
                          gross - total_sh * ep, ret, tr.reason)
         book.remove_swap_pop(pp)
         self._mark_full_exit(ci, i)
+        self._update_loss_streak(ret, i)
         return cash, "clear"
 
     @staticmethod
@@ -363,6 +454,7 @@ class BacktestLoop:
                                  gross - sell_sh * ep, ret0, tr0.reason)
                 remaining = total_sh - sell_sh
                 book.set_shares(pp, remaining)
+                self._update_loss_streak(ret0, i)
         # 2. 全卖剩余 (trailing/cost)
         if remaining > 0:
             sell_eff = tr1.execution_price * (1.0 - slippage)
@@ -372,6 +464,7 @@ class BacktestLoop:
             trade_buf.append(ci, book.entry_idx_arr[pp], i, ep,
                              tr1.execution_price, remaining,
                              gross - remaining * ep, ret1, tr1.reason)
+            self._update_loss_streak(ret1, i)
         # 3. 清仓
         book.remove_swap_pop(pp)
         self._mark_full_exit(ci, i)

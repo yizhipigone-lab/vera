@@ -26,14 +26,35 @@ ENTRY_PATH: EntryPath = EntryPath.BACKTEST_T_CLOSE
 
 
 class EntryEngine:
-    """每 bar 的买入循环: 换股先卖旧 + 新仓买入。"""
+    """每 bar 的买入循环: 换股先卖旧 + 新仓买入。
 
-    def __init__(self, params: BacktestParams):
+    buy_price_np (2026-08-20, open_t1 口径): 提供时买入价取该矩阵而非
+    price_np (收盘价) — 调用方传 open 矩阵, 配合 entry_next_open.py 平移后的
+    信号实现"T+1 开盘价买入"。None = 老行为 (收盘价), 零行为变化。
+    entry_path 与 buy_price_np 必须配对: 传了 buy_price_np 就必须声明
+    EntryPath.BACKTEST_T1_OPEN (防两套口径混用, 业务铁律 3)。
+    """
+
+    def __init__(self, params: BacktestParams,
+                 buy_price_np: Optional[np.ndarray] = None,
+                 entry_path: EntryPath = None):
         self.params = params
+        if entry_path is None:
+            entry_path = (EntryPath.BACKTEST_T1_OPEN if buy_price_np is not None
+                          else ENTRY_PATH)
+        if buy_price_np is not None and entry_path is not EntryPath.BACKTEST_T1_OPEN:
+            raise ValueError(
+                "buy_price_np 提供时 entry_path 必须是 BACKTEST_T1_OPEN "
+                "(open_t1 口径), 防回测/实盘口径混用")
+        self._buy_price_np = buy_price_np
+        self.entry_path = entry_path
         # F7 [H4]: entry 因停牌/价缺失被 skip 的计数 (loop 结束汇总告警, 补圆"不静默吞信号")
         self.skipped_signal_count = 0
         # 2026-07-23: 卖出冷却跳过的买入信号计数 (loop 结束汇总)
         self.cooldown_skip_count = 0
+        # 2026-08-08: 总仓位上限/连亏冷却 跳过的新仓信号计数 (loop 结束汇总)
+        self.exposure_skip_count = 0
+        self.halt_skip_count = 0
 
     def _record_skip(self):
         self.skipped_signal_count += 1
@@ -44,7 +65,11 @@ class EntryEngine:
                 tradable_np: Optional[np.ndarray],
                 prev_equity: float,
                 sig_cis: Optional[np.ndarray] = None,
-                last_exit_bar: Optional[np.ndarray] = None) -> float:
+                last_exit_bar: Optional[np.ndarray] = None,
+                cur_mkt_value: float = 0.0,
+                total_equity: float = 0.0,
+                halt_until_bar: Optional[int] = None,
+                turnover_day_np: Optional[np.ndarray] = None) -> float:
         """_simulate_core_v3_legacy 买入块的移植。返回更新后的 cash。
 
         sig_cis: 本 bar 有信号的股票列索引(升序)。None 时按旧路径全列扫描
@@ -63,7 +88,8 @@ class EntryEngine:
             if tradable_np is not None and ci < tradable_np.shape[1] and not tradable_np[i, ci]:
                 self._record_skip()
                 continue
-            bp = price_np[i, ci]
+            bp = (self._buy_price_np[i, ci] if self._buy_price_np is not None
+                  else price_np[i, ci])
             if np.isnan(bp) or bp <= 0.0:
                 self._record_skip()
                 continue
@@ -89,10 +115,30 @@ class EntryEngine:
                     and i - int(last_exit_bar[ci]) < p.sell_cooldown_bars):
                 self.cooldown_skip_count += 1
                 continue
+            # ── 2026-08-08 新仓门槛 (仅约束净新仓 old_p<0; 换股 old_p>=0 不拦) ──
+            if old_p < 0:
+                # 全局连亏冷却期内禁开新仓 (持仓照常止损止盈)
+                if halt_until_bar is not None and i < halt_until_bar:
+                    self.halt_skip_count += 1
+                    continue
+                # 总仓位上限: 持仓市值/总权益 >= 上限禁开新仓
+                if (p.max_total_exposure < 1.0 and total_equity > 0.0
+                        and cur_mkt_value / total_equity >= p.max_total_exposure):
+                    self.exposure_skip_count += 1
+                    continue
             # ── 买入新仓 ──
             buy_amount = min(cash, p.max_buy_amount)
             if p.max_position_pct < 1.0:
                 buy_amount = min(buy_amount, prev_equity * p.max_position_pct)
+            # 2026-08-28: 流动性约束 — 单笔 ≤ 当日成交额 × max_turnover_pct。
+            # turnover NaN → min(x, nan)=x 约束跳过; 0 → 拒买 (当日无真实成交额)。
+            if p.max_turnover_pct < 1.0 and turnover_day_np is not None:
+                day_turnover = turnover_day_np[i // p.bpday, ci]
+                if day_turnover <= 0.0 or np.isnan(day_turnover):
+                    if day_turnover == 0.0:
+                        continue  # 当日无成交额 → 拒买 (保守)
+                else:
+                    buy_amount = min(buy_amount, day_turnover * p.max_turnover_pct)
             if buy_amount < p.min_buy_amount:
                 continue
             raw_sh = int(buy_amount / bp)

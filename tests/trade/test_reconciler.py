@@ -382,3 +382,121 @@ def test_sync_reports_heals_missing_trade_row(store, kill):
     assert notified == []                   # 不重复通知
     # 第二轮幂等: 行已补齐, 不再补写
     assert rec.sync_reports()["adopted"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-04 (600127 双记账急停事件): QMT 盘前/跨日查询会返回
+# 前一交易日的成交与委托, 同步两腿只认当日数据
+# ═══════════════════════════════════════════════════════════════
+
+def test_adopt_skips_cross_day_trades(store, kill):
+    """盘前 QMT 返回昨日成交 + known 只装当日 traded_id → 昨日成交被
+    当"新手工单"重复认领 (600127 实测 1700→3400 双扣急停)。
+    修复: 非当日 ts 的成交一律跳过, 不入账不落库, audit 留痕。"""
+    gw = _gw()
+    book = Book()
+    trade = gw.simulate_external_trade(CODE, DIRECTION_BUY, 5.67, 1700)
+    # 成交时间改成昨天 (模拟盘前 QMT 返回昨日数据的剧本)
+    gw._trades[trade["traded_id"]]["ts"] = time.time() - 86400
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    result = rec.sync_reports()
+    assert result["adopted"] == 0
+    assert CODE not in book.snapshot()["positions"]          # 没重复入账
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM trades").fetchone()[0] == 0    # 没落库
+    kinds = {r[0] for r in store._conn.execute("SELECT kind FROM audit")}
+    assert "sync_stale_skipped" in kinds
+    assert "manual_adopt" not in kinds
+
+
+def test_sync_orders_skips_cross_day_orders(store, kill):
+    """同日事件另一条腿: 昨日委托回写会把 orders.updated_ts 盖成今天,
+    昨日废单混进"当日委托" (api 按 updated_ts 过滤当日)。
+    修复: 非当日 ts 的委托一律跳过, 不回写 book/store。"""
+    gw = _gw()
+    book = Book()
+    oid = gw.order(CODE, DIRECTION_SELL, 14.57, 600, remark="V0803-036X")
+    gw._orders[oid] = dict(gw._orders[oid], status=56, filled_qty=600,
+                           ts=time.time() - 86400)
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    result = rec.sync_reports()
+    assert result["orders_updated"] == 0
+    assert oid not in book.snapshot()["orders"]
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE order_id=?",
+        (oid,)).fetchone()[0] == 0
+    kinds = {r[0] for r in store._conn.execute("SELECT kind FROM audit")}
+    assert "sync_stale_skipped" in kinds
+
+
+def test_c_side_same_day_eod_snapshot_not_double_counted(store, kill):
+    """C 方双算修复: 15:05 EOD 快照已含当日成交, 净额基准从"当日 0 点"
+    改为"快照时点"——成交先于快照归档时不再被加第二遍
+    (昨: 快照 1200 + 当日买 200 → C=1400, 与 B=1200 假 WARN)。"""
+    store.save_trade({"traded_id": "T-today", "order_id": "O-x", "code": CODE,
+                      "direction": DIRECTION_BUY, "price": 10.0, "qty": 200,
+                      "ts": time.time() - 10})
+    # EOD 快照在成交之后归档, 已含这 200 股
+    store.save_position_snapshot(
+        {CODE: {"volume": 1200, "can_use": 1200, "avg_cost": 10.0}})
+    rec = _reconciler(store, kill, _book_with(1200), 1200)
+    report = rec.reconcile(now_ts=time.time())
+    assert report.level == LEVEL_NONE
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2026-08-07 审计 HIGH#1: 补记卖出也落 pnl (单源)
+# ═══════════════════════════════════════════════════════════════
+
+def test_backfill_sell_records_pnl_high1(store, kill):
+    """审计 HIGH#1: 成交回调丢失走 sync_reports 补记时, 卖出成交同样
+    落 pnl_amount/pnl_pct (与实时 _on_trade 路径、飞书成交卡
+    _on_adopted_trade → _sell_pnl 同口径)。修复前 record 字典不含 pnl
+    → save_trade 默认 0 → 日报 realized_pnl 在补记场景静默欠算、/deals
+    盈亏列空, 且与同笔飞书卡不一致 (违反"单源 book 成本法")。"""
+    gw = _gw()
+    book = Book()
+    # 建仓 100 股 @ 成本 10 (补记路径 pre_avg_cost 取自 book 持仓快照)
+    book.apply_trade("T-seed", "O-seed", CODE, DIRECTION_BUY, 10.0, 100)
+    # 卖出回调丢失剧本: 网关已成交, book 没见过成交回报
+    oid = gw.order(CODE, DIRECTION_SELL, 12.0, 100, remark="V0807-H1X")
+    book.apply_order_update(oid, 50, code=CODE, direction=DIRECTION_SELL,
+                            price=12.0, qty=100, remark="V0807-H1X")
+    store.save_order({"order_id": oid, "remark": "V0807-H1X", "code": CODE,
+                      "direction": DIRECTION_SELL, "price": 12.0, "qty": 100,
+                      "status": 50})
+    gw.simulate_fill(oid)
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    assert rec.sync_reports()["adopted"] == 1
+    row = store._conn.execute(
+        "SELECT pnl_amount, pnl_pct FROM trades WHERE order_id=?", (oid,)
+    ).fetchone()
+    assert row[0] == 200.0   # (12 - 10) * 100
+    assert row[1] == 20.0    # (12/10 - 1) * 100
+
+
+def test_sync_orders_placeholder_order_id_not_merged(store, kill):
+    """2026-08-27 (159226 手工单时间错乱): QMT 对手机端手工单回报
+    order_id="0" 占位, 按 oid upsert 会把多日多笔手工单合并成一条,
+    created_ts 停在旧单时间, 委托页显示"旧时间+新价格"四不像。
+    修复: oid="0" 时改用当日唯一合成 id, 各笔手工单独立成行,
+    created_ts 用本地首见时刻 (而非不可信的柜面占位时间)。"""
+    gw = _gw()
+    book = Book()
+    rec = Reconciler(gw, book, store, kill, retry_interval_sec=0.0)
+    today = time.strftime("%Y%m%d")
+    # 伪造两笔 order_id="0" 的手工委托 (同日两只票 / 同票同价同量也各自独立)
+    with gw._lock:
+        gw._orders["0"] = {
+            "order_id": "0", "remark": "", "code": "159226.SZ",
+            "direction": DIRECTION_SELL, "price": 1.284, "qty": 195300,
+            "filled_qty": 195300, "status": 56,
+            "ts": time.time(), "price_type": None}
+    rec.sync_reports()
+    rows = store._conn.execute(
+        "SELECT order_id, code, created_ts FROM orders").fetchall()
+    assert len(rows) == 1                          # 合成 id 单行, 不复用 "0"
+    assert rows[0][0] == f"manual_{today}_159226.SZ_{DIRECTION_SELL}_1.284_195300"
+    assert rows[0][1] == "159226.SZ"
+    # created_ts 用本地首见时刻 (落在本次运行窗口内), 不是 QMT 占位时间
+    assert abs(rows[0][ 2] - time.time()) < 10

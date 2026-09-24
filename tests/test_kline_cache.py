@@ -154,6 +154,49 @@ def test_gap_persist_marks_intact_false(tmp_path):
     assert not rec[intact_idx], "补拉仍缺 → intact=false"
 
 
+def test_fix_d_intact_covered_skips_gap_detection(tmp_path, monkeypatch):
+    """2026-08-16 Fix D: intact=True 且区间完全覆盖 → 第二次 get 跳过缺口检测
+    (不再重复读 parquet/日历/strftime)。缺口不会凭空出现。"""
+    cache = _make_cache(tmp_path)
+    calls = {"n": 0}
+    orig = cache._detect_and_fill_gaps
+
+    def spy(code, period, start_ts, end_ts, dividend_type):
+        calls["n"] += 1
+        return orig(code, period, start_ts, end_ts, dividend_type)
+
+    monkeypatch.setattr(cache, "_detect_and_fill_gaps", spy)
+    # 首次 get: 取数 + 缺口检测一次
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+    n1 = calls["n"]
+    assert n1 == 1, f"首次取数应跑一次缺口检测, 实际 {n1}"
+    # 第二次 get 同区间: intact=True + 覆盖 → 跳过
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+    assert calls["n"] == n1, "intact=True 且区间覆盖时, 第二次 get 不应再跑缺口检测"
+
+
+def test_fix_d_probe_ran_forces_gap_detection(tmp_path, monkeypatch):
+    """2026-08-16 Fix D 审计修复: 探针运行 (可能因复权漂移全量重拉, 数据已变) 时,
+    即便本地 intact 仍 True, 也必须照查缺口 (probe_ran 兜底), 不能跳过。"""
+    cache = _make_cache(tmp_path)
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+
+    gap_calls = {"n": 0}
+    orig_gap = cache._detect_and_fill_gaps
+
+    def gap_spy(*a, **k):
+        gap_calls["n"] += 1
+        return orig_gap(*a, **k)
+
+    monkeypatch.setattr(cache, "_detect_and_fill_gaps", gap_spy)
+    # 强制 probe_due=True (probe_ran=True), probe 本体 no-op 即可验证守卫
+    monkeypatch.setattr(cache, "_probe_due", lambda code, period: True)
+    monkeypatch.setattr(cache, "_probe_shift", lambda *a, **k: None)
+
+    cache.get(["600000.SH"], "2024-01-02", "2024-01-10", period="1d")
+    assert gap_calls["n"] >= 1, "probe_ran=True 时必须照查缺口, 不能跳过"
+
+
 # ───────────────────────── 原子写 ─────────────────────────
 
 
@@ -192,7 +235,7 @@ def test_get_kline_use_cache_true_routes_via_cache(monkeypatch, tmp_path):
     from core.data_fetcher import DataFetcher
     monkeypatch.setattr(DataFetcher, "_KLINE_CACHE_DIR", str(tmp_path / "kc"))
     monkeypatch.setattr(DataFetcher, "_ensure_ready", classmethod(lambda cls: None))
-    monkeypatch.setattr(DataFetcher, "get_trading_dates", classmethod(
+    monkeypatch.setattr(DataFetcher, "get_calendar_days", classmethod(
         lambda cls, *a, **k: _fake_calendar()))
 
     calls = {"n": 0}
@@ -573,3 +616,43 @@ def test_fetch_span_guard_1m(tmp_path):
     # 2024-03-01 ~ 2024-04-30 ≈ 44 工作日 ≤ 80 → 单次
     cache2.get(["600001"], "20240301", "20240430", period="1m")
     assert len(calls) == 1
+
+
+def test_readonly_env_skips_network_validation(tmp_path, monkeypatch):
+    """VERA_KLINE_READONLY=1: 缓存命中时跳过缺口补拉 + 复权探针 (网络零校验)。
+
+    2026-08-14: 16 年 5m 寻优 prep 实测缺口补拉对远古停牌日逐只发 TDX 请求,
+    取数从分钟级拖到 50 小时级 —— 批量历史读取用只读模式绕开。
+    """
+    cache = _make_cache(tmp_path)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")  # 落缓存
+
+    def _forbidden(*a, **k):
+        raise AssertionError("只读模式不应触发网络校验")
+    monkeypatch.setattr(cache, "_detect_and_fill_gaps", _forbidden)
+    monkeypatch.setattr(cache, "_probe_shift", _forbidden)
+    monkeypatch.setenv("VERA_KLINE_READONLY", "1")
+    res = cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    assert not res["Close"].empty, "只读模式仍应正常返回缓存数据"
+
+
+def test_readonly_env_no_full_refetch_when_not_intact(tmp_path, monkeypatch):
+    """只读模式 + intact=false: 也不触发全量重拉 (601888.SH 事件, 2026-08-14)。
+
+    批量历史读取时, 几千只 intact=false 的票逐只全史重拉会把任务打爆;
+    只读模式必须"有缓存记录就原样用", 网络零动作。
+    """
+    calls = {"n": 0}
+
+    def counting_fetcher(*a, **k):
+        calls["n"] += 1
+        return _make_fake_kline(*a, **k)
+
+    cache = _make_cache(tmp_path, fetcher=counting_fetcher)
+    cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    n_after_first = calls["n"]
+    cache._manifest_set_intact("002008.SZ", "1d", False)  # 标记不完整
+    monkeypatch.setenv("VERA_KLINE_READONLY", "1")
+    res = cache.get(["002008.SZ"], "2024-01-01", "2024-01-10", period="1d")
+    assert calls["n"] == n_after_first, "只读模式下 intact=false 不应触发重拉"
+    assert not res["Close"].empty, "缓存数据应原样返回"

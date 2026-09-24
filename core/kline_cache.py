@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -35,6 +36,16 @@ _FIELD_LOWER = {"Open": "open", "High": "high", "Low": "low",
                 "Close": "close", "Volume": "volume", "Amount": "amount"}
 
 
+#: **空壳 bar 的统一判据（单一真相源）**: 某一天"有成交的股票占比"低于它,
+#: 就认为那天的行情是盘前抓数留下的空壳（2026-09-16 实测空壳日只有 0.2%,
+#: 正常日接近 100%）。
+#: **消费方**（必须都引这个常量, 不许各写一份 0.5）:
+#:   - `core/kline_cache_maintenance._STUB_MIN_TRADED_RATIO`
+#:   - `core/market_position_runner.MIN_TRADED_RATIO`
+#:   - `core/market_position.last_valid_date(min_ratio=...)` 的调用方
+STUB_TRADED_RATIO = 0.5
+
+
 class KlineCache:
     """per-stock parquet + sqlite manifest (WAL) 的 K 线缓存。
 
@@ -57,19 +68,43 @@ class KlineCache:
         self.db_path = self.cache_dir / "manifest.db"
         self.tdx_fetcher = tdx_fetcher
         self.calendar_fetcher = calendar_fetcher
-        self._lock = threading.Lock()
+        # 2026-09-16 C5: Lock → RLock。manifest 写方法 (_mark_refetch/_mark_probe/
+        # _manifest_set_intact/force_invalidate/_manifest_upsert) 内部已补
+        # `with self._lock:`, 而 _refresh_manifest → _mark_probe/_manifest_upsert
+        # 是在 _ensure/_probe_shift 已持锁的路径里被调 (锁内调锁), 必须可重入。
+        self._lock = threading.RLock()
         # 2026-07-18: 复权因子漂移探针间隔 (0 = 禁用)。除权后前复权历史价整体
         # 平移, F6 只在增量扩展时检测, 区间已覆盖时靠探针自愈。
         self._probe_interval = pd.Timedelta(hours=float(probe_hours))
+        # 2026-08-16 Fix A: 持久连接 — 原 _conn() 每次查询新开连接 + 两条 PRAGMA,
+        # 每只股每次 get 开 2~3 个新连接 (实测 nt.stat 上万次)。改为单条持久连接
+        # (check_same_thread=False), 写路径已有 self._lock 串行, 读路径单线程。
+        self._db = self._open_db()
         self._init_db()
+
+    def _open_db(self):
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
     # ───────────────────── sqlite manifest ─────────────────────
 
     def _conn(self):
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        # 2026-08-16 Fix A: 返回持久连接 (不再每次新建)。调用方 `with self._conn()
+        # as c:` 语义不变 — with 管的是事务 commit/rollback, 不是连接生命周期。
+        return self._db
+
+    def close(self):
+        """关闭持久 sqlite 连接 (2026-09-16 C2 — 原全类无 close, 句柄泄漏)。
+        重复调用安全; 关闭后实例不可再用。"""
+        db = getattr(self, "_db", None)
+        if db is not None:
+            self._db = None
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def _init_db(self):
         with self._conn() as c:
@@ -105,17 +140,105 @@ class KlineCache:
 
     def _manifest_upsert(self, code: str, period: str, first_date: str, last_date: str,
                          last_close: Optional[float], rows: int, intact: bool):
+        # 2026-09-16 C5: manifest 写收口进锁 (RLock — 本方法经 _refresh_manifest
+        # 在 _ensure/_probe_shift 已持锁的路径里被调, 可重入)
+        with self._lock:
+            with self._conn() as c:
+                c.execute(
+                    """INSERT INTO manifest(stock_code, period, first_date, last_date,
+                       last_close, rows, fetched_at, intact)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(stock_code, period) DO UPDATE SET
+                       first_date=excluded.first_date, last_date=excluded.last_date,
+                       last_close=excluded.last_close, rows=excluded.rows,
+                       fetched_at=excluded.fetched_at, intact=excluded.intact""",
+                    (code, period, first_date, last_date, last_close, rows,
+                     datetime.now().isoformat(), 1 if intact else 0))
+
+    # ───────────────────── 只读统计 (治理III W3-schema) ───────────
+    # 维护工具 (kline_cache_maintenance) 经本接口访问, 不再裸开 manifest.db ——
+    # 列名/schema 知识只在 kline_cache.py 定义 (DDL 在 _init_db, 读查询在此)。
+
+    def cached_last_date(self, period: str) -> Optional[str]:
+        """该 period 的缓存 MAX(last_date) ('YYYYMMDD'), 无记录返 None。"""
         with self._conn() as c:
-            c.execute(
-                """INSERT INTO manifest(stock_code, period, first_date, last_date,
-                   last_close, rows, fetched_at, intact)
-                   VALUES(?,?,?,?,?,?,?,?)
-                   ON CONFLICT(stock_code, period) DO UPDATE SET
-                   first_date=excluded.first_date, last_date=excluded.last_date,
-                   last_close=excluded.last_close, rows=excluded.rows,
-                   fetched_at=excluded.fetched_at, intact=excluded.intact""",
-                (code, period, first_date, last_date, last_close, rows,
-                 datetime.now().isoformat(), 1 if intact else 0))
+            row = c.execute(
+                "SELECT MAX(last_date) FROM manifest WHERE period=?",
+                (period,)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def manifest_stats(self, period: str) -> dict:
+        """单个 period 概览 {stocks, first_date, last_date, not_intact}。"""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*), MIN(first_date), MAX(last_date), "
+                "SUM(CASE WHEN intact=0 THEN 1 ELSE 0 END) "
+                "FROM manifest WHERE period=?", (period,)).fetchone()
+        return {"stocks": row[0] or 0, "first_date": row[1],
+                "last_date": row[2], "not_intact": row[3] or 0}
+
+    def last_bar_traded_ratio(self, period: str = "1d",
+                              sample: int = 50) -> Optional[float]:
+        """抽检「最后一根 bar 有没有真成交」的比例 —— 判空壳 bar (2026-09-17)。
+
+        为什么需要它: `MAX(last_date)` 只说明"这一行存在", 说明不了"这一行有数据"。
+        实测 (2026-09-17): 2026-09-16 沪深 5204 只票**都有该日行**, 但只有 **10 只**
+        成交量 > 0 (0.2%) —— 那是盘前抓数留下的**空壳 bar**。若只用日期判新鲜,
+        空壳会被当成好数据, 补拉永远不触发, 它就永远卡在缓存里
+        (实证: 大盘位置体温表一直显示"数据滞后", 而 `stale_periods` 却说 1d 新鲜)。
+
+        做法: 从 manifest 取该 period 的代码列表, 按固定步长**确定性抽样** sample 只
+        (同输入同结果, 便于测试), 读各自最后一根 bar 的 volume, 统计 >0 的比例。
+
+        **分母是什么（审计 F-15 明确口径）**: 分母 = **在 `MAX(last_date)` 那天真的有行**
+        的抽样股票数。某只票的历史截止日早于全局 MAX（长期停牌、退市、或它自己还没补上
+        最后一根）时**读不到行 → 既不算分子也不算分母**，只记一个 `no_row` 计数并打
+        WARNING。**为什么不把它算成"没成交"**: 那样长期停牌股会**永远**拉低这个比例，
+        于是"判陈旧 → 全量补拉"变成永不停止的误报（补拉是小时级代价）。
+        所以这里的方向是"分母偏小 → 比例可能偏高"，配合下面的 WARNING 让人能看见；
+        真正的"这批票没有那一天"由 `stale_periods` 的**日期**口径兜底。
+
+        Returns:
+            float 0~1; **None = 查不了** (无记录/无末根/抽样全读不到/读盘异常)。
+            调用方拿到 None 必须按"查不了"处理 —— **不得**据此判陈旧,
+            否则读盘抖动会误触发全量补拉 (那是小时级代价)。
+        """
+        try:
+            last = self.cached_last_date(period)
+            if not last:
+                return None
+            with self._conn() as c:
+                rows = c.execute(
+                    "SELECT stock_code FROM manifest WHERE period=? "
+                    "ORDER BY stock_code", (period,)).fetchall()
+            codes = [r[0] for r in rows]
+            if not codes:
+                return None
+            ts = pd.Timestamp(str(last))
+            step = max(1, len(codes) // max(1, int(sample)))
+            picked = codes[::step][:max(1, int(sample))]
+            traded = total = no_row = 0
+            for code in picked:
+                try:
+                    df = self._read_parquet(code, period, ts, ts)
+                except Exception:      # 单只读失败只少一个样本, 不推翻结论
+                    no_row += 1
+                    continue
+                if df is None or len(df) == 0 or "volume" not in df.columns:
+                    no_row += 1
+                    continue
+                total += 1
+                if float(df["volume"].iloc[-1]) > 0:
+                    traded += 1
+            if no_row:
+                logger.warning(
+                    "last_bar_traded_ratio(%s): 抽样 %d 只里有 %d 只在 %s 没有行"
+                    "（分母只算有行的 %d 只 —— 比例可能偏高，属已知口径）",
+                    period, len(picked), no_row, last, total)
+            return (traded / total) if total else None
+        except Exception as e:         # 任何意外都退成"查不了", 不改变旧行为
+            logger.warning("last_bar_traded_ratio 异常 (按查不了处理): %s", e)
+            return None
 
     # ───────────────────── trading calendar ─────────────────────
 
@@ -123,11 +246,19 @@ class KlineCache:
         return self.cache_dir / "calendar" / "trading_days.parquet"
 
     def _get_calendar(self) -> set:
-        """返回交易日集合 (str YYYYMMDD)。命中 parquet 直接读, 否则拉取落盘。"""
+        """返回交易日集合 (str YYYYMMDD)。命中 parquet 直接读, 否则拉取落盘。
+
+        2026-08-16 Fix C: 实例级 memoize — 交易日历一天内不变, 原实现每次调用
+        (缺口检测每只股一次) 都重读 parquet。"""
+        cached = getattr(self, "_calendar_cache", None)
+        if cached is not None:
+            return cached
         p = self._calendar_path()
         if p.exists():
             df = pq.read_table(p).to_pandas()
-            return set(df["date"].astype(str).tolist())
+            result = set(df["date"].astype(str).tolist())
+            self._calendar_cache = result
+            return result
         dates = [str(d) for d in self.calendar_fetcher()]
         df = pd.DataFrame({"date": dates})
         # 2026-08-01: 收编 pcu 原语 (原固定 .tmp 名是最后一个没收编点) —
@@ -137,7 +268,8 @@ class KlineCache:
         pq.write_table(table, tmp)
         pcu.atomic_replace(tmp, p,
                            rewrite=lambda t: pq.write_table(table, t))
-        return set(dates)
+        self._calendar_cache = set(dates)
+        return self._calendar_cache
 
     # ───────────────────── public: get ─────────────────────
 
@@ -187,10 +319,19 @@ class KlineCache:
         F6 [H2] 增量含重叠 bar 比对 last_close → 前复权分红 shift 检测
         """
         rec = self._manifest_get(code, period)
+        # 只读模式 (VERA_KLINE_READONLY=1, 批量历史回测取数专用): 有缓存记录就
+        # 直接用现状, 零网络动作 —— 不增量/不探针/不补缺口/不因 intact=false
+        # 全量重拉。2026-08-14 601888.SH 事件: intact=false 的 3343 只票在 16 年
+        # 5m 寻优 prep 里逐只触发全史分块重拉 (几百次 TDX 请求/只), prep 被打爆。
+        # 这些票的"缺口"多为远古停牌日, 补不补对回测零影响。
+        # 无记录 (rec is None) 仍走正常逻辑做首次拉取 (否则该票完全无数据)。
+        if rec is not None and os.environ.get("VERA_KLINE_READONLY") == "1":
+            return
         need_fetch: Optional[tuple] = None
         staleness_check: Optional[tuple] = None  # (last_d, old_last_close)
         is_full_fetch = False
         skip_gap_detection = False
+        intact = False  # 仅在 rec is not None 分支被赋真值; 用于 Fix D 判断
         if rec is None:
             need_fetch = (start_ts, end_ts)
             is_full_fetch = True
@@ -218,8 +359,10 @@ class KlineCache:
                 staleness_check = (last_d, last_close)
         if need_fetch:
             with self._lock:
-                self._fetch_and_store(code, period, need_fetch[0], need_fetch[1], dividend_type)
-            if is_full_fetch:
+                fetch_ok = self._fetch_and_store(code, period, need_fetch[0], need_fetch[1], dividend_type)
+            if is_full_fetch and fetch_ok:
+                # 2026-09-16 C3: 拉取失败不盖 F5 冷却戳 — 瞬时故障也盖戳会让
+                # intact=False 的票被 24h 冷却吞掉重试
                 self._mark_refetch(code, period)  # F5: 记录全量拉取时间
             # F6: 比对重叠 bar close, 不一致 → 分红 shift → 全量重拉
             if staleness_check is not None:
@@ -231,14 +374,34 @@ class KlineCache:
                         "kline_staleness: %s %s 重叠 bar %s close 由 %s 变为 %s (分红 shift), 全量重拉",
                         code, period, last_d.strftime("%Y-%m-%d"), old_close, new_close)
                     with self._lock:
-                        self._fetch_and_store(code, period, start_ts, end_ts, dividend_type)
-                    self._mark_refetch(code, period)
+                        refetch_ok = self._fetch_and_store(code, period, start_ts, end_ts, dividend_type)
+                    if refetch_ok:  # 2026-09-16 C3: 失败不盖戳
+                        self._mark_refetch(code, period)
+        # 2026-08-14: 只读模式 (VERA_KLINE_READONLY=1) — 批量历史回测取数专用。
+        # 跳过两类网络校验: 复权因子探针 + 缺口补拉。动机: 16 年长区间 5m 寻优
+        # prep 实测, 缺口补拉对远古停牌日逐只发 TDX 请求 (永远无数据, 每次 ~1s),
+        # 几千只票把取数从分钟级拖到 50 小时级; 而这些校验对"读历史"零价值。
+        # 缺数据段 (need_fetch) 的正常拉取不受此开关影响。
+        if os.environ.get("VERA_KLINE_READONLY") == "1":
+            return
+        probe_ran = False
         if need_fetch is None and self._probe_due(code, period):
             # 2026-07-18: 复权因子漂移探针。F6 只在增量扩展时检测, 区间已覆盖
             # (含 intact=false 冷却期内) 的因子漂移靠探针自愈 — 600000.SH 事件
             # 里浦发 1d 缓存 intact=false, 探针挂在 intact 分支后永远到不了。
+            probe_ran = True
             self._probe_shift(code, period, dividend_type)
-        if period in ("1d", "5m", "1m") and not skip_gap_detection:
+        # 2026-08-16 Fix D: manifest 已确认 intact=True 且本轮无取数 (区间完全被
+        # 缓存覆盖) 时, 跳过缺口检测 —— 缺口不会凭空出现, 上次已查过无缺; 重复
+        # 检测是每只股每次 get 的第二次 parquet 读 + 日历读 + strftime 的元凶。
+        # 任何区间扩展 / intact=False / 本轮有取数 (need_fetch 非 None) 一律照查,
+        # 缺口兜底逻辑不丢; 部分 bar 告警在首次取数时已发过, 不再逐次重发。
+        # 审计补充: 探针可能因复权漂移触发全量重拉 (数据变了), 此时本地 intact
+        # 已陈旧 → 必须照查缺口, 不能跳过 (probe_ran 兜底)。
+        intact_covered = (rec is not None) and intact and (need_fetch is None) \
+            and not probe_ran
+        if (period in ("1d", "5m", "1m") and not skip_gap_detection
+                and not intact_covered):
             self._detect_and_fill_gaps(code, period, start_ts, end_ts, dividend_type)
 
     # ── F5 冷却 / F6 重叠 bar ──
@@ -266,16 +429,20 @@ class KlineCache:
                                       self._REFETCH_COOLDOWN)
 
     def _mark_refetch(self, code: str, period: str):
-        with self._conn() as c:
-            c.execute("UPDATE manifest SET last_full_refetch_at=? WHERE stock_code=? AND period=?",
-                      (datetime.now().isoformat(), code, period))
+        # 2026-09-16 C5: manifest 写收口进锁 (RLock, _probe_shift 等持锁路径可重入)
+        with self._lock:
+            with self._conn() as c:
+                c.execute("UPDATE manifest SET last_full_refetch_at=? WHERE stock_code=? AND period=?",
+                          (datetime.now().isoformat(), code, period))
 
     # ── 复权因子漂移探针 (2026-07-18, 600000.SH 事件) ──
 
     def _mark_probe(self, code: str, period: str):
-        with self._conn() as c:
-            c.execute("UPDATE manifest SET last_probe_at=? WHERE stock_code=? AND period=?",
-                      (datetime.now().isoformat(), code, period))
+        # 2026-09-16 C5: manifest 写收口进锁 (RLock, _refresh_manifest 持锁路径可重入)
+        with self._lock:
+            with self._conn() as c:
+                c.execute("UPDATE manifest SET last_probe_at=? WHERE stock_code=? AND period=?",
+                          (datetime.now().isoformat(), code, period))
 
     def _probe_due(self, code: str, period: str) -> bool:
         """距上次探测超过间隔 → 该探。从未探过 (存量缓存) → 首次接触自愈。"""
@@ -326,9 +493,10 @@ class KlineCache:
                     code, period, last_d.strftime("%Y-%m-%d"), old_close, new_close)
                 first_d = pd.Timestamp(rec[0])
                 with self._lock:
-                    self._fetch_and_store(code, period, first_d,
-                                          pd.Timestamp.now(), dividend_type)
-                self._mark_refetch(code, period)
+                    refetch_ok = self._fetch_and_store(code, period, first_d,
+                                                       pd.Timestamp.now(), dividend_type)
+                if refetch_ok:  # 2026-09-16 C3: 失败不盖 F5 冷却戳
+                    self._mark_refetch(code, period)
         except Exception:
             logger.debug("kline_probe: %s %s 探针失败 (TDX 不可用?), 用缓存现状",
                          code, period, exc_info=True)
@@ -340,9 +508,11 @@ class KlineCache:
         下次 get 必全量重拉 (此前 force_refresh 被 24h 冷却静默吞掉)。
         """
         self._manifest_set_intact(code, period, False)
-        with self._conn() as c:
-            c.execute("UPDATE manifest SET last_full_refetch_at=NULL "
-                      "WHERE stock_code=? AND period=?", (code, period))
+        # 2026-09-16 C5: manifest 写收口进锁
+        with self._lock:
+            with self._conn() as c:
+                c.execute("UPDATE manifest SET last_full_refetch_at=NULL "
+                          "WHERE stock_code=? AND period=?", (code, period))
 
     def _close_at(self, code: str, period: str, date: pd.Timestamp) -> Optional[float]:
         """读 parquet 在 date 当日的 close (F6 重叠 bar 比对用)。"""
@@ -350,10 +520,15 @@ class KlineCache:
         if df.empty or "close" not in df.columns:
             return None
         s = df["close"].dropna()
-        return float(s.iloc[0]) if not s.empty else None
+        # 2026-09-16 P0-2: 取当日**最后一根** bar, 与 manifest last_close
+        # (_refresh_manifest 存全文件末根) 口径对齐。原 iloc[0] 取首根,
+        # 5m/1m 每日增量比对必然超阈 → 误报分红 shift 全量重拉。
+        return float(s.iloc[-1]) if not s.empty else None
 
     def _fetch_and_store(self, code: str, period: str, fstart: pd.Timestamp,
-                         fend: pd.Timestamp, dividend_type: str):
+                         fend: pd.Timestamp, dividend_type: str) -> bool:
+        """拉取并落盘。返回 True=有数据落库, False=拉取失败/无数据 (2026-09-16 C3 —
+        调用方据此决定是否盖 F5 全量重拉冷却戳: 失败不盖, 瞬时故障下次可重试)。"""
         # 2026-07-26: TDX 单次 ~24000 根上限守卫 (1m 长窗口防前段静默截断)。
         # 分钟级且跨度 >80 交易日时按 ≤80 交易日分段递归拉取; _write_merge 去重合并。
         _bpday = self._INTRADAY_BARS_PER_DAY.get(period)
@@ -364,22 +539,23 @@ class KlineCache:
             _seg = sorted(d for d in self._get_calendar()
                           if fstart.strftime("%Y%m%d") <= d <= fend.strftime("%Y%m%d"))
             if len(_seg) > 80:
+                _ok = True
                 for _s in range(0, len(_seg), 80):
                     _chunk = _seg[_s:_s + 80]
-                    self._fetch_and_store(code, period,
-                                          pd.Timestamp(_chunk[0]),
-                                          pd.Timestamp(_chunk[-1]), dividend_type)
-                return
+                    _ok = self._fetch_and_store(code, period,
+                                                pd.Timestamp(_chunk[0]),
+                                                pd.Timestamp(_chunk[-1]), dividend_type) and _ok
+                return _ok
         raw = self.tdx_fetcher([code], fstart.strftime("%Y%m%d"),
                                fend.strftime("%Y%m%d"), period=period,
                                dividend_type=dividend_type)
         if not raw or "Close" not in raw or code not in raw["Close"].columns:
             logger.warning("kline_fetch_fail: %s %s [%s~%s] 拉取无数据",
                            code, period, fstart.date(), fend.date())
-            return
+            return False
         close_s = raw["Close"][code].dropna()
         if close_s.empty:
-            return
+            return False
         df = pd.DataFrame(index=close_s.index)
         for field in _FIELDS:
             col = _FIELD_LOWER[field]
@@ -392,6 +568,7 @@ class KlineCache:
         df.index.name = "date"
         self._write_merge(code, period, df)
         self._refresh_manifest(code, period)
+        return True
 
     def _write_merge(self, code: str, period: str, new_df: pd.DataFrame):
         """合并写: 读旧 parquet (若有) → concat → 去重(keep last) → 排序 → 原子写。"""
@@ -454,7 +631,8 @@ class KlineCache:
         if df.empty:
             return
         cal = self._get_calendar()
-        cached_str = {d.strftime("%Y%m%d") for d in df.index}
+        # 2026-08-16 Fix B: 逐 bar strftime 改向量化 (原列表推导每根 bar 一次 strftime)
+        cached_str = set(df.index.strftime("%Y%m%d"))
         lo = max(df.index.min().strftime("%Y%m%d"), start_ts.strftime("%Y%m%d"))
         hi = min(df.index.max().strftime("%Y%m%d"), end_ts.strftime("%Y%m%d"))
         expected = {d for d in cal if lo <= d <= hi}
@@ -473,7 +651,7 @@ class KlineCache:
                                   dividend_type)
         # 复检
         df2 = self._read_parquet(code, period, start_ts, end_ts)
-        cached_str2 = {d.strftime("%Y%m%d") for d in df2.index}
+        cached_str2 = set(df2.index.strftime("%Y%m%d"))
         still = sorted(expected - cached_str2)
         if still:
             logger.warning("kline_gap: %s %s 补拉后仍缺 %s, 标记 intact=false",
@@ -518,9 +696,11 @@ class KlineCache:
         return segs
 
     def _manifest_set_intact(self, code: str, period: str, intact: bool):
-        with self._conn() as c:
-            c.execute("UPDATE manifest SET intact=? WHERE stock_code=? AND period=?",
-                      (1 if intact else 0, code, period))
+        # 2026-09-16 C5: manifest 写收口进锁 (RLock, 持锁路径可重入)
+        with self._lock:
+            with self._conn() as c:
+                c.execute("UPDATE manifest SET intact=? WHERE stock_code=? AND period=?",
+                          (1 if intact else 0, code, period))
 
     # ───────────────────── read ─────────────────────
 
@@ -539,6 +719,8 @@ class KlineCache:
         df = df.sort_index()
         # F2 [H3]: 按日期比较, 1d (00:00) 与 5m (09:35-15:00) 都含首末日全天。
         # 直接 <= end_ts (end=00:00) 会把 5m 区间末日 48 根 bar 全切掉。
+        # 2026-08-16 Fix B: normalize() 原被调两次 (每次全索引遍历), 算一次复用。
         start_norm = start_ts.normalize()
         end_norm = end_ts.normalize()
-        return df.loc[(df.index.normalize() >= start_norm) & (df.index.normalize() <= end_norm)]
+        norm = df.index.normalize()
+        return df.loc[(norm >= start_norm) & (norm <= end_norm)]

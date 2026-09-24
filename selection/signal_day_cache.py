@@ -16,7 +16,7 @@
   仅当日命中 (当日数据已 settled), 跨日自动重算
 - 超过 MAX_AGE_DAYS=60 天的旧信号重算 — 前复权除权漂移
 - 空信号日缓存 (稀疏公式多数天无信号), 但批次失败区段不落盘
-  (FormulaRunner.last_batch_errors 区分"真空" vs "失败空")
+  (SelectionBatchResult.batch_errors 区分"真空" vs "失败空", 治理III W3-BatchResult)
 - period != 1d 不走本模块 (粒度不匹配, 调用方守卫)
 - 缓存异常一律当未命中/只警告, 绝不中断选股
 """
@@ -150,17 +150,22 @@ def _prune(root: Path, keep: int) -> None:
         logger.warning("L2 LRU 清理异常 (不影响选股): %s", e)
 
 
-def _recent_market_days() -> set:
-    """市场最近 FRESH_DAYS 个交易日 (YYYYMMDD 集合)。异常时回退空集
-    (调用方再兜底按区间尾部处理)。"""
+def _recent_market_days() -> set | None:
+    """市场最近 FRESH_DAYS 个交易日 (YYYYMMDD 集合)。
+
+    2026-09-16 审计 S2 修复: 异常返 None 并记 warning (原裸 except 返空集
+    → 调用方 `ds in recent` 恒 False → "最近交易日仅当日命中"防线静默关闭)。
+    调用方收到 None 时按"全部视为 recent"处理 (宁可多重算不错命中)。
+    """
     try:
         from core.data_fetcher import DataFetcher
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - pd.Timedelta(days=14)).strftime("%Y%m%d")
         days = DataFetcher.get_trading_days(start, end)
         return {pd.Timestamp(d).strftime("%Y%m%d") for d in days[-FRESH_DAYS:]}
-    except Exception:
-        return set()
+    except Exception as e:
+        logger.warning("L2 最近交易日历获取异常, 全部按 recent 保守校验: %s", e)
+        return None
 
 
 def get_or_compute(formula_name: str, formula_arg: str, period: str,
@@ -201,7 +206,10 @@ def get_or_compute(formula_name: str, formula_arg: str, period: str,
             missing.append((i, d, ds, "stale"))       # 超龄重算并覆盖
             continue
         if not force:
-            if ds in recent:
+            # 2026-09-16 审计 S2: recent 为 None (日历异常) 时全部视为 recent
+            # (最保守方向) — 所有非当日条目都走 fresh_only_today 校验,
+            # 宁可多重算不错命中。
+            if recent is None or ds in recent:
                 # 最近交易日: 仅当日计算的条目可命中 (当日有效, 跨日重算)
                 df = _load_day(root, combo, ds, fresh_only_today=today_ds)
             else:
@@ -209,7 +217,7 @@ def get_or_compute(formula_name: str, formula_arg: str, period: str,
             if df is not None:
                 cached_frames.append(df)
                 continue
-        missing.append((i, d, ds, "fresh" if ds in recent else "miss"))
+        missing.append((i, d, ds, "fresh" if recent is None or ds in recent else "miss"))
 
     logger.info("L2 按日缓存: 命中 %d 天, 缺失 %d 天", len(cached_frames), len(missing))
 
@@ -224,7 +232,8 @@ def get_or_compute(formula_name: str, formula_arg: str, period: str,
             stock_period=period,
             dividend_type=dividend_type,
         )
-        if FormulaRunner.last_batch_errors == 0:
+        # 治理III W3-BatchResult: 失败统计随返回值走, 不再读类属性 (并发竞态)
+        if df.batch_errors == 0:
             for (_, d, ds, kind) in missing:
                 if kind == "today":
                     continue                    # 当日永不落盘; fresh/miss/stale 均落

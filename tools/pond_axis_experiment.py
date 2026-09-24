@@ -143,7 +143,7 @@ def main() -> None:
     print(f"[INFO] 全A池 {len(stocks)} 只")
     padded_start = (pd.Timestamp(args.start) - pd.Timedelta(days=PAD_DAYS)
                     ).strftime("%Y%m%d")
-    calendar = pd.DatetimeIndex(pd.to_datetime(DataFetcher.get_trading_dates(
+    calendar = pd.DatetimeIndex(pd.to_datetime(DataFetcher.get_calendar_days(
         "SH", start_time=padded_start, end_time=args.end)))
     win_days = [d for d in calendar if pd.Timestamp(args.start) <= d
                 and d <= pd.Timestamp(args.end)]

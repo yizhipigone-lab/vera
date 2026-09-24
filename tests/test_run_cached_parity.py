@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from backtest.engine import BacktestEngine
+from backtest.prepared import PreparedMatrix
 
 # 2026-08-01 批次 3b C2: _simulate_core_v3 壳退役, 改直调 BacktestLoop (等价展开)
 from tests.loop_direct import run_loop_direct
@@ -130,8 +131,21 @@ def _direct_call(eng, close, entries, high_np, low_np, stop_config,
     # filter_limit_up=False → entries 不变 (与 run_cached 一致)
     entry_np = entries.values
 
+    # 2026-08-19 审计 Q1 修复: 与生产 _resolve_stop_and_build_loop 同口径,
+    # 价格矩阵统一转 float32 (engine.py:326-332)。run_cached 侧在共享段收口处
+    # 转换, 而直调核心循环 (loop.run) 不自己转 dtype —— 若此处不转, 两侧
+    # 数据 dtype 不一致 (float64 vs float32), 数值差 ~6e-9, array_equal 必炸。
+    # 此转换仅对齐生产路径, 不改变本测试锁定的等价语义。
+    close_np = np.asarray(close.values, dtype=np.float32)
+    if high_np is not None:
+        high_np = np.asarray(high_np, dtype=np.float32)
+    if low_np is not None:
+        low_np = np.asarray(low_np, dtype=np.float32)
+    if open_np is not None:
+        open_np = np.asarray(open_np, dtype=np.float32)
+
     return run_loop_direct(
-        close.values.astype(np.float64), entry_np,
+        close_np, entry_np,
         float(eng.initial_capital), float(eng.eff_commission),
         float(eng.min_buy_amount), float(eng.max_buy_amount),
         int(eng.lot_size), int(eng.min_lots),
@@ -160,8 +174,14 @@ def _assert_parity(eng, close, entries, high, low, sc, **caps):
     hn = high.values.astype(np.float64)
     ln = low.values.astype(np.float64)
     ea, rt = _direct_call(eng, close, entries, hn, ln, sc, lp, lr, nl, **caps)
+    prepared = PreparedMatrix(
+        close=close, entries=entries, high_np=hn, low_np=ln,
+        open_np=caps.pop("open_np", None),
+        tradable_np=caps.pop("tradable_np", None),
+        last_tradable_idx=caps.pop("last_tradable_idx", None),
+    )
     result = eng.run_cached(
-        close, entries, hn, ln, sc, None, lp, lr, nl,
+        prepared, sc, lp, lr, nl,
         filter_limit_up=False, return_raw=True, **caps,
     )
     assert np.array_equal(result["raw_equity"], ea), (

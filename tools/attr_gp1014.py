@@ -78,23 +78,19 @@ def _close_confirm_check(self, pos, bar, ctx):
     return []
 
 
-def _identity_filter_limit_up(self, entries, close):
-    """Variant C: 涨停过滤恒等 (不做任何过滤)。"""
-    return entries
-
-
 def run_once(selections, label, patch=None, stop=None):
     unpatch = []
     if patch in ('close_confirm', 'both'):
         orig = TrailingStrategy.check
         TrailingStrategy.check = _close_confirm_check
         unpatch.append(lambda: setattr(TrailingStrategy, 'check', orig))
-    if patch in ('no_limit_filter', 'both'):
-        orig = BacktestEngine._filter_limit_up
-        BacktestEngine._filter_limit_up = _identity_filter_limit_up
-        unpatch.append(lambda: setattr(BacktestEngine, '_filter_limit_up', orig))
     try:
-        eng = BacktestEngine(BT_CFG)
+        # 2026-09-19 批次 3.1: no_limit_filter 变体改走引擎显式配置
+        # filter_limit_up=False (2026-09-19 新增), 不再 monkeypatch
+        # BacktestEngine._filter_limit_up (运行时打补丁会污染同进程其他回测)
+        cfg = (dict(BT_CFG, filter_limit_up=False)
+               if patch in ('no_limit_filter', 'both') else BT_CFG)
+        eng = BacktestEngine(cfg)
         t0 = time.perf_counter()
         r = eng.run(selections=selections, start_time=START, end_time=END,
                     stop_config=stop or STOP)

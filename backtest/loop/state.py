@@ -53,6 +53,20 @@ class BacktestParams:
     # 全清仓后 cooldown bar 内禁止同票重新买入; 仅约束"空仓后的新买",
     # 持仓中的换股 (reason=1 卖旧买新) 不受影响。
     sell_cooldown_bars: int = 0
+    # 2026-08-08: 总仓位上限 — 持仓市值/当前总权益 >= 此值则停开新仓 (换股照常),
+    # 1.0=不约束 (默认零行为变化)。总权益 = cash + 持仓市值 (当日收盘价)。
+    max_total_exposure: float = 1.0
+    # 2026-08-08: 全局连亏冷却 — 连续 N 笔亏损平仓触发停开新仓 (换股/持仓照常),
+    # 0=关闭 (默认)。任一笔盈利清零重数。仅统计正常出场 (止损/止盈/时间/退市),
+    # 换股 (reason=1) 不计入。
+    loss_streak_halt_n: int = 0
+    # 连亏触发后停止开新仓的 bar 数 (0=关闭, 默认)。engine 传交易日×bpday。
+    loss_streak_halt_bars: int = 0
+    max_turnover_pct: float = 1.0  # 2026-08-28: 单笔 ≤ 当日成交额×此比例
+    # 2026-08-28: 流动性约束 — 单笔买入 ≤ 当日成交额 × max_turnover_pct
+    # (1.0=不约束, 默认零行为变化)。turnover_day_np 由 engine 构建 (5m Amount
+    # 按日聚合), entry 在买入时取当日行约束; 成交额 NaN → 约束跳过 (退化为
+    # 其余约束), 0 → 拒买 (当日无真实成交额)。
 
     def __post_init__(self):
         # M2: 启动期 fail-fast, 防 bpday=0 除零
@@ -104,6 +118,40 @@ class Context:
     # 阶梯止盈只读视图:
     ladder_profits: np.ndarray
     ladder_ratios: np.ndarray
+    n_ladder: int
+    # 2026-08-04: 移动止盈日频确认模式 (trailing confirm=low/close) 用。
+    # intraday 默认模式下全部为占位值, 策略不读。
+    is_last_bar: bool = False       # 当日最后一根 bar (i % bpday == bpday-1)
+    day_lo: float = float("nan")    # 当日累计最低价 (日首 bar 重置)
+    ladder_fired_today: bool = False  # 当日阶梯止盈已触发过新档位 (值班日 trailing 休息)
+
+
+# ─────────────────────────────────────────────────────────────
+# 预筛标量输入束（Phase 3 prefilter 派生重构, 2026-08-16）
+# ─────────────────────────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class PrefilterInputs:
+    """TriggerPreFilter.could_trigger 的标量输入束。
+
+    预筛的本意是"跳过构造完整 Position/Bar/Context 对象", 所以用纯标量束
+    而非 (pos, bar, ctx)。各策略的 prefilter(x) 只读本束 + 自身只读参数,
+    返回"本 bar 数学上是否可能触发"的保守充分条件。
+    """
+
+    ci: int
+    i: int
+    ep: float
+    hi: float
+    lo: float
+    hi_pp: float
+    lo_pp: float
+    peak_hi: float
+    peak_hi_profit: float
+    hold_days: int
+    entry_idx: int
+    bpday: int
+    ladder_done: int
+    ladder_profits: np.ndarray
     n_ladder: int
 
 
@@ -233,6 +281,9 @@ class PositionBook:
         self._high_px = np.zeros(max_pos, dtype=np.float64)
         self._high_hi = np.zeros(max_pos, dtype=np.float64)
         self._ladder_done = np.zeros(max_pos, dtype=np.int32)
+        # 2026-08-04: 移动止盈日频确认模式的逐持仓状态
+        self._day_lo = np.zeros(max_pos, dtype=np.float64)     # 当日累计最低价
+        self._ladder_day = np.full(max_pos, -1, dtype=np.int32)  # 最近阶梯触发日 (i//bpday)
         self._count = 0
         # 2026-07-18 Phase 3: code→slot 索引, 换股查找 O(n)→O(1)。
         # 不变量: 同一 code 在 book 中至多一个槽位(同码买入前先换股卖旧)。
@@ -269,6 +320,8 @@ class PositionBook:
         self._high_px[p] = high_px
         self._high_hi[p] = high_hi
         self._ladder_done[p] = 0
+        self._day_lo[p] = 0.0
+        self._ladder_day[p] = -1
         self._slot_of[int(code)] = p
         self._count += 1
         return p
@@ -328,6 +381,14 @@ class PositionBook:
     def ladder_done_arr(self) -> np.ndarray:
         return self._ladder_done
 
+    @property
+    def day_lo_arr(self) -> np.ndarray:
+        return self._day_lo
+
+    @property
+    def ladder_day_arr(self) -> np.ndarray:
+        return self._ladder_day
+
     def slot_of(self, code: int) -> int:
         """code 的槽位, 不存在返回 -1。O(1), 替代逐槽扫描 (2026-07-18 Phase 3)。"""
         return self._slot_of.get(int(code), -1)
@@ -348,5 +409,7 @@ class PositionBook:
             self._high_px[p] = self._high_px[last]
             self._high_hi[p] = self._high_hi[last]
             self._ladder_done[p] = self._ladder_done[last]
+            self._day_lo[p] = self._day_lo[last]
+            self._ladder_day[p] = self._ladder_day[last]
         self._slot_of.pop(removed_code, None)
         self._count -= 1

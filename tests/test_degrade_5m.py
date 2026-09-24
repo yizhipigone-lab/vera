@@ -356,13 +356,15 @@ def _run_engine_5m(monkeypatch, close_5m, mask, kline_1d, trading_days,
 
     class _MockLoop:
         def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
-                tradable_np=None, last_tradable_idx=None, formula_exit_np=None):
+                tradable_np=None, last_tradable_idx=None, formula_exit_np=None,
+                degraded_np=None, turnover_day_np=None):
             if capture is not None:
                 capture['price_np'] = price_np
                 capture['entry_np'] = entry_np
                 capture['high_np'] = high_np
                 capture['tradable_np'] = tradable_np
                 capture['last_tradable_idx'] = last_tradable_idx
+                capture['degraded_np'] = degraded_np
                 capture['shape'] = price_np.shape
             return np.full(price_np.shape[0], 100000.0), (
                 core_raw_trades if core_raw_trades is not None else np.empty((0, 9)))

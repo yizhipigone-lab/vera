@@ -39,6 +39,28 @@ class DataCache:
     def _expired(self, ts: float | None, ttl: float) -> bool:
         return ts is None or self._clock() - ts > ttl
 
+    # ── 判过期→回源→回填 一体化 (治理III W3-get_or: 吃掉 has/get/set 样板) ──
+    def sector_list_or(self, fetcher) -> List[dict]:
+        """板块列表: 过期/未命中 → fetcher() 回源回填 → 返回。"""
+        if not self.has_sector_list():
+            self.set_sector_list(fetcher())
+        return self.get_sector_list()
+
+    def sector_stocks_or(self, sector_code: str, fetcher) -> List[str]:
+        """板块成份股 (按键): 过期/未命中 → fetcher() 回源回填 → 返回。"""
+        if not self.has_sector_stocks(sector_code):
+            self.set_sector_stocks(sector_code, fetcher())
+        return self.get_sector_stocks(sector_code)
+
+    def name_map_or(self, fetcher, *, force_refresh: bool = False) -> Dict[str, str]:
+        """简称映射: 过期/未命中 → fetcher() 回源回填 → 返回。
+        force_refresh=True 强制回源 (先失效再走同路径)。"""
+        if force_refresh:
+            self.clear_name()
+        if not self.has_name_map():
+            self.set_name_map(fetcher())
+        return self.get_name_map()
+
     # ── 板块列表 ──
     def has_sector_list(self) -> bool:
         return bool(self.sector_list) and not self._expired(

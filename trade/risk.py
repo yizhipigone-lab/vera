@@ -80,12 +80,21 @@ class KillSwitch:
 
 @dataclass(frozen=True)
 class OrderIntent:
-    """一道下单意图。风控看到的最小事实集。"""
+    """一道下单意图。风控看到的最小事实集。
+
+    manual=True 表示人工指令 (Web/CLI 手动买卖): 2026-08-13 用户裁决 ——
+    人工买入不受单笔金额上限约束 (用户对自己的当下意图负全责),
+    整手/下限/持仓数等其他闸保持生效。"""
 
     code: str
     direction: int
     price: float
     qty: int
+    manual: bool = False
+    # 2026-08-14 ETF 轮动: rotation=True 的买单绕过单笔金额上限与持仓数上限
+    # (轮动是"总资产×比例"的满仓/半仓, 受 position_sizing 的 2 万上限约束
+    # 永远买不满); 急停/对账/日亏/T+1 四道保命闸照常生效。
+    rotation: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +125,12 @@ class RiskGate:
         self._loss_limit = daily_loss_limit
         # sizing = PositionSizingConfig (None 表示不校验, 测试最小装配用)
         self._sizing = sizing
+
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换 loss 上限与 sizing 快照。
+        RiskGate 是构造时标量快照, 热更只能逐字段替换 (frozen 对象换引用)。"""
+        self._loss_limit = cfg.daily_loss_limit
+        self._sizing = cfg.position_sizing
 
     def check(self, intent: OrderIntent, ctx: RiskContext) -> tuple[bool, str]:
         """过闸。返回 (是否放行, 拒绝原因)。"""
@@ -169,12 +184,19 @@ class RiskGate:
         if intent.qty % s.lot_size != 0:
             return False, f"非整手: {intent.qty} 不是 {s.lot_size} 的整数倍"
         amount = intent.price * intent.qty
-        if amount < s.min_buy_amount:
+        # 2026-08-15 (审计 L5): 轮动买入豁免金额下限 —— 低单价 ETF (如黄金
+        # 518880 一手约 560 元) 的 1~3 手补仓会被 2000 元下限误拒, 导致半仓
+        # 小额缺口永不补齐; 轮动有池级预算帽兜底, 豁免下限无超买风险
+        if not intent.rotation and amount < s.min_buy_amount:
             return False, f"买入金额 {amount:.0f} 低于下限 {s.min_buy_amount:.0f}"
-        if amount > s.max_buy_amount:
+        # 2026-08-13 用户裁决: 人工买入 (manual=True) 跳过单笔金额上限;
+        # 2026-08-14: 轮动买入 (rotation=True) 同理 —— 满仓/半仓是
+        # "总资产×比例", 受 2 万上限约束永远买不满
+        if not intent.manual and not intent.rotation and amount > s.max_buy_amount:
             return False, f"买入金额 {amount:.0f} 高于上限 {s.max_buy_amount:.0f}"
         held = {c for c, p in ctx.positions.items() if p.volume > 0}
-        if intent.code not in held and len(held) >= s.max_positions:
+        # 轮动买入的 2 只 ETF 是"池子", 不受选股持仓数上限约束
+        if not intent.rotation and intent.code not in held and len(held) >= s.max_positions:
             return False, f"持仓数 {len(held)} 已达上限 {s.max_positions}"
         return True, ""
 

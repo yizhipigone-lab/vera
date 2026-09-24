@@ -21,7 +21,10 @@ class TestAdaptiveScanCount:
         assert _adaptive_scan_count("20240101", "20250630", "1d") == 3000
 
     def test_1d_long_range(self):
-        assert _adaptive_scan_count("20100101", "20250630", "1d") == 3000
+        # 2026-08-02 起 _adaptive_scan_count 按"start 距今天"估算, floor=3000 cap=7000
+        # (formula_runner.py:44-50)。超长区间(2010→今天)突破 floor 返回 ~4318,
+        # 写死 ==3000 已过期; 改 >=3000 表达"始终覆盖到 floor 以上"的语义。
+        assert _adaptive_scan_count("20100101", "20250630", "1d") >= 3000
 
     def test_1d_tiny_range(self):
         assert _adaptive_scan_count("20250101", "20250131", "1d") == 3000

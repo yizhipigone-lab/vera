@@ -33,6 +33,7 @@ import backtest.engine as engine_module
 import backtest.stop_config as stop_config_module
 from backtest.engine import BacktestEngine
 from backtest.loop import build_backtest_loop
+from backtest.prepared import PreparedMatrix
 from backtest.stop_config import load_stop_config
 from tests.loop_direct import run_loop_direct
 
@@ -82,6 +83,33 @@ class TestBuildBacktestLoopSignature:
             assert p.default != inspect.Parameter.empty, (
                 f"{kw} 必须有默认值 (默认 None/1.0/1), 否则调用方被强制要求传."
             )
+
+    def test_keyword_only_params_whitelist(self):
+        """契约: keyword 参数白名单 — 新增 keyword 参数必须显式登记 (2026-09-15 审计)。
+
+        位置参数 ≤20 有守卫, 但 keyword 增长对守卫静默 (40→42 就是这样发生的:
+        buy_price_np 2026-08-20 / max_turnover_pct 2026-08-28, 均有记录但守卫
+        无感)。白名单不是禁止新增 —— 把新参数名加进来即视为"已审查"。
+        """
+        sig = inspect.signature(build_backtest_loop)
+        optional = {name for name, p in sig.parameters.items()
+                    if p.default != inspect.Parameter.empty}
+        expected = {
+            'first_day_enabled', 'first_day_target', 'bpday',
+            'slippage', 'stamp_tax', 'max_position_pct',
+            'ladder_tp_first', 'trailing_first',
+            'formula_exit_np', 'formula_exit_ratio', 'formula_exit_lag_bars',
+            'atr_enabled', 'atr_matrix', 'atr_multiplier',
+            'trailing_gap_protection', 'trailing_confirm',
+            'sell_cooldown_bars', 'max_total_exposure',
+            'loss_streak_halt_n', 'loss_streak_halt_bars',
+            'buy_price_np', 'max_turnover_pct',
+        }
+        assert optional == expected, (
+            f"keyword 参数集漂移: 多出 {sorted(optional - expected)}, "
+            f"缺少 {sorted(expected - optional)}. "
+            f"新增 keyword 参数请显式登记到本白名单 (视为已审查)."
+        )
 
     def test_slippage_and_stamp_tax_have_defaults(self):
         """slippage 和 stamp_tax 必须有默认值 (不能是必需位置参数)"""
@@ -303,7 +331,7 @@ class TestNoNewPositionalParamsAdded:
         """2026-08-01 批次 3b C2: run()/run_cached() 都必须经共享段, 不得各自 build。"""
         src = self._read_engine_src()
         run_start = src.find('def run(self, selections')
-        run_end = src.find('def run_cached(self, close')
+        run_end = src.find('def run_cached(self, prepared')
         cached_end = src.find('def _build_trades')
         run_body = src[run_start:run_end]
         cached_body = src[run_end:cached_end]
@@ -344,14 +372,16 @@ class TestNoNewPositionalParamsAdded:
 
 # === 4. run_cached 签名契约测试 (候选 A 阶段 1: 加厚前门) ===
 class TestRunCachedSignature:
-    """run_cached 深化后的签名契约 — 锁 10 旧位置参数 + 9 新 keyword-only 能力参数.
+    """run_cached 前门收敛后 (P2-1) 的签名契约 — 5 位置参数 (prepared + stop_config
+    + ladder_profits + ladder_ratios + n_ladder) + 6 keyword-only 能力参数。
 
-    深化方式: 旧 10 位置参数一字不动 (40 调用方依赖), 新增 9 个 keyword-only
-    全默认 None/False/True → 40 调用方不传 = 三类能力 off = 旧行为字节级一致。
+    close/entries/high_np/low_np/open_np/tradable_np/last_tradable_idx 已收进
+    PreparedMatrix, 死参数 selections 已删。
     """
 
     def test_run_cached_positional_params_unchanged(self):
-        """核心契约: 必需位置参数 ≤ 10 (含 self; 锁旧 baseline, 40 调用方位置调用依赖)."""
+        """核心契约: 必需位置参数 = 6 (含 self; 即 prepared + stop_config +
+        ladder_profits + ladder_ratios + n_ladder)。"""
         sig = inspect.signature(BacktestEngine.run_cached)
         positional_count = sum(
             1 for p in sig.parameters.values()
@@ -359,39 +389,40 @@ class TestRunCachedSignature:
             and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
                            inspect.Parameter.POSITIONAL_OR_KEYWORD)
         )
-        # 实测 = 10 (self + 9 必需位置: close/entries/high_np/low_np/stop_config/selections/
-        #           ladder_profits/ladder_ratios/n_ladder; skip_sm 有默认值不算)
-        assert positional_count <= 10, (
-            f"run_cached 必需位置参数个数 {positional_count} > 10 (self+9). "
-            f"40 调用方依赖旧 9 必需位置参数 (skip_sm 有默认), 不能加新必需位置参数 — 新能力必须 keyword-only。"
+        assert positional_count == 6, (
+            f"run_cached 必需位置参数个数 {positional_count} != 6 (self+5). "
+            f"P2-1 收敛后应为 prepared/stop_config/ladder_profits/ladder_ratios/n_ladder。"
         )
 
     def test_run_cached_capability_kwargs_keyword_only(self):
-        """9 个能力参数必须 keyword-only + 有默认值 (40 调用方不传 = 旧行为)."""
+        """6 个能力参数必须 keyword-only + 有默认值 (None=能力 off)。"""
         sig = inspect.signature(BacktestEngine.run_cached)
         required_kw = {
-            'filter_limit_up', 'open_np', 'tradable_np', 'last_tradable_idx',
-            'formula_exit_np', 'formula_exit_ratio', 'formula_exit_lag_bars',
-            'close_raw', 'return_raw',
+            'filter_limit_up', 'formula_exit_np', 'formula_exit_ratio',
+            'formula_exit_lag_bars', 'close_raw', 'return_raw',
         }
         for kw in required_kw:
             assert kw in sig.parameters, f"run_cached 缺少 keyword 参数 [{kw}]"
             p = sig.parameters[kw]
             assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
-                f"{kw} 必须 keyword-only (防 40 调用方位置传参错位)"
+                f"{kw} 必须 keyword-only (防位置传参错位)"
             )
             assert p.default != inspect.Parameter.empty, (
-                f"{kw} 必须有默认值 (40 调用方不传 = 旧行为)"
+                f"{kw} 必须有默认值 (不传 = 能力 off)"
             )
 
     def test_run_cached_capability_kwargs_default_values(self):
-        """H2 修复: 9 keyword 的精确默认值 (40 调用方行为命脉, 防 filter_limit_up=True 被改 False)."""
+        """6 keyword 的精确默认值。
+
+        2026-09-20 审计 P1-5: `filter_limit_up` 默认值由 `True` 改为 **`None`**
+        （None = 跟随 `self.filter_limit_up` 配置）。原默认 `True` 会把
+        `filter_limit_up=False` 的配置**静默否定** —— 配置项写了等于没写。
+        所以这条锁的语义从"默认必须是 True"改成"默认必须是 None(跟随配置)"；
+        "不许把它改回 True"由同一个断言继续守住。
+        """
         sig = inspect.signature(BacktestEngine.run_cached)
         expected_defaults = {
-            'filter_limit_up': True,
-            'open_np': None,
-            'tradable_np': None,
-            'last_tradable_idx': None,
+            'filter_limit_up': None,     # 2026-09-20 P1-5: None = 跟随配置
             'formula_exit_np': None,
             'formula_exit_ratio': None,
             'formula_exit_lag_bars': 1,
@@ -402,8 +433,51 @@ class TestRunCachedSignature:
             actual = sig.parameters[kw].default
             assert actual == expected, (
                 f"run_cached.{kw} 默认值应为 {expected!r}, 实际 {actual!r} — "
-                f"改默认值会破坏 40 调用方行为 (filter_limit_up=True 是命脉)"
+                f"改默认值会破坏行为 (filter_limit_up 默认 None = 跟随配置, "
+                f"改回 True 会静默否定 filter_limit_up=False)"
             )
+
+    def test_run_cached_filter_limit_up_none_follows_config(self, monkeypatch):
+        """P1-5 的**功能**锁: `filter_limit_up=None` 必须跟随 engine 配置。
+
+        只断言签名默认值是不够的（实现里回落成硬编码 True 也照样通过），
+        源码 grep 更是没牙（docstring 里就有 `self.filter_limit_up` 这个串）。
+        这里真调一次 `run_cached`，用 spy 记录"到底有没有去调 `_filter_limit_up`":
+        配置 False + 传 None → 必须**不**过滤；配置 True（缺省）→ 必须过滤。
+        突变验证记录: 把回落改成硬编码 True，本用例立刻红。
+        """
+        close, entries = _default_contract_market()
+
+        class _MockLoop:
+            def run(self, *a, **kw):
+                return (np.full(len(close), 100_000.0, dtype=np.float64),
+                        np.empty((0, 9), dtype=np.float64))
+
+        monkeypatch.setattr(engine_module, "build_backtest_loop",
+                            lambda *a, **kw: _MockLoop())
+
+        def _run(cfg_filter):
+            eng = _default_contract_engine()
+            eng.filter_limit_up = cfg_filter
+            calls = []
+            monkeypatch.setattr(
+                eng, "_filter_limit_up",
+                lambda e, c: (calls.append(1), e)[1])
+            eng.run_cached(
+                PreparedMatrix(close=close, entries=entries,
+                               high_np=None, low_np=None),
+                {"trailing_stop": {"enabled": True}},
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.float64),
+                0,
+                filter_limit_up=None,      # 缺省形态 = 跟随配置
+            )
+            return calls
+
+        assert _run(False) == [], (
+            "配置 filter_limit_up=False 时 run_cached 仍去过滤了 —— "
+            "参数缺省值把配置静默否定 (P1-5 旧病)")
+        assert _run(True) == [1], "配置 True 时应当过滤 (缺省行为不许变)"
 
     def test_run_cached_forwards_capability_keywords(self):
         """源码守卫: run_cached 读 capabilities + 共享段 loop.run 必须透传能力 keyword.
@@ -416,7 +490,7 @@ class TestRunCachedSignature:
                                 'backtest', 'engine.py')
         with open(src_path, 'r', encoding='utf-8') as f:
             src = f.read()
-        cached_start = src.find('def run_cached(self, close')
+        cached_start = src.find('def run_cached(self, prepared')
         cached_end = src.find('def _build_trades')
         cached_body = src[cached_start:cached_end]
         seg_start = src.find('def _resolve_stop_and_build_loop(')
@@ -505,13 +579,11 @@ def test_run_cached_uses_yaml_defaults_when_trailing_values_missing(
     close, entries = _default_contract_market()
     captured = _capture_core_trailing(monkeypatch, len(close))
 
+    prepared = PreparedMatrix(close=close, entries=entries,
+                              high_np=None, low_np=None)
     engine.run_cached(
-        close,
-        entries,
-        None,
-        None,
+        prepared,
         {"trailing_stop": trailing_config},
-        pd.DataFrame(),
         np.array([], dtype=np.float64),
         np.array([], dtype=np.float64),
         0,
@@ -532,11 +604,10 @@ def test_run_cached_preserves_explicit_trailing_values(
     close, entries = _default_contract_market()
     captured = _capture_core_trailing(monkeypatch, len(close))
 
+    prepared = PreparedMatrix(close=close, entries=entries,
+                              high_np=None, low_np=None)
     engine.run_cached(
-        close,
-        entries,
-        None,
-        None,
+        prepared,
         {
             "trailing_stop": {
                 "enabled": True,
@@ -544,7 +615,6 @@ def test_run_cached_preserves_explicit_trailing_values(
                 "drawdown": drawdown,
             },
         },
-        pd.DataFrame(),
         np.array([], dtype=np.float64),
         np.array([], dtype=np.float64),
         0,

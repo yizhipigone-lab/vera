@@ -71,27 +71,10 @@ def create_lab_router(lab_status, pipeline_status) -> APIRouter:
 
     @router.get("/api/lab/history")
     async def lab_history():
-        """历史体检: 按公式聚合 规则JSON + 体检报告 md。"""
-        import json as _json
-        out = {}
-        rep_dir = _ROOT / "output" / "reports"
-        for p in rep_dir.glob("*_filter_rules.json"):
-            try:
-                d = _json.loads(p.read_text(encoding="utf-8"))
-                formula = d.get("formula") or p.name.replace("_filter_rules.json", "")
-                adopted = sum(1 for r in d.get("rules", []) if r.get("adopted"))
-                out.setdefault(formula, {"formula": formula, "generated_at": d.get("generated_at", ""),
-                                         "rules": len(d.get("rules", [])), "adopted": adopted,
-                                         "tags": d.get("tags", [])})
-            except Exception:
-                continue
-        audit_dir = _ROOT / "docs" / "audit"
-        for p in sorted(audit_dir.glob("*因子体检报告.md")):
-            for formula in out:
-                if f"_{formula}_" in p.name:
-                    out[formula]["report"] = p.name
-                    out[formula]["report_date"] = p.name[:10]
-        return {"success": True, "items": sorted(out.values(), key=lambda x: x.get("generated_at", ""), reverse=True)}
+        """历史体检: 按公式聚合 规则JSON + 体检报告 md。
+        聚合计算已下沉 core.lab_runner.history_items (2026-09-15 深模块治理)。"""
+        from core.lab_runner import history_items
+        return {"success": True, "items": history_items()}
 
     @router.get("/api/lab/report")
     async def lab_report(formula: str):

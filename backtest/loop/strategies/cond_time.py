@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -20,6 +20,10 @@ class CondTimeStrategy:
     def __init__(self, days: int, profit: float):
         self.days = int(days)
         self.profit = float(profit)
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛: 到期且当根 High 达标即可能触发。"""
+        return x.hold_days >= self.days and x.hi_pp >= self.profit
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         if ctx.hold_days < self.days or ctx.hi_pp < self.profit:

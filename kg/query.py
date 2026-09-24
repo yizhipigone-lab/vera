@@ -10,6 +10,8 @@ code 归一化: 接受带后缀 (159226.SZ) 或不带 (159226), 内部 normalize
 - get_company_products(stock_code, top_n) → [{product,weight}]
 - get_product_upstream(product_name, max_depth) → [{level,upstream}]  (递归 CTE)
 - get_holdings_chain(stock_code) → 穿透 dict | None  (★P0 闸门)
+- get_all_companies() → [(code,name)]  (2026-09-15 审计收口: data_tools 的 SQL 下沉)
+- get_link_nodes() → [{node_id,node_type,code,name}]  (同上: archive 的 SQL 下沉)
 """
 from __future__ import annotations
 
@@ -165,36 +167,45 @@ def get_holdings_chain(stock_code: str, db_path: Path | None = None) -> Optional
     }
 
 
-def get_stock_policy_impact(stock_code: str, db_path: Path | None = None) -> list[dict]:
-    """票 → A 层行业(881) → AFFECTS 边 → 政策影响列表 (P1, 计划书 §6).
+def get_all_companies(db_path: Path | None = None) -> list[tuple[str, str]]:
+    """全量公司 (code, name) 列表 (名字→代码反查用)。失败返 [] (松耦合)。
 
-    复用 A 层 build_sector_index (票→881.SH). 返 [{policy_id,title,direction,strength,evidence,weight}]
-    按 |weight| 降序 (力度强+方向明的在前). 失败/票不在 A 层 → [].
+    2026-09-15 审计收口: brain/data_tools._kg_all_companies 的 SQL 下沉门面;
+    进程级缓存/mtime 失效逻辑留在消费方 (性能关注点与查询分离)。
+    db 缺失 → [] (不创建 0 字节空库文件, 与原 URI mode=ro 语义对齐)。
     """
+    db = db_path or get_db_path()
+    if not db.exists():
+        return []
     try:
-        from policy_kb.build_sector_index import get_sector_of
-        sector_code = get_sector_of(stock_code)  # 票 → 881.SH (A 层)
-        if not sector_code:
-            return []
-        conn = _connect(db_path)
-        rows = conn.execute(
-            """SELECT p.code pid, p.name ptitle, e.weight,
-               json_extract(e.payload_json, '$.direction') direction,
-               json_extract(e.payload_json, '$.strength') strength,
-               json_extract(e.payload_json, '$.evidence_quote') evidence
-               FROM kg_edges e JOIN kg_nodes p ON e.src_id = p.node_id
-               WHERE e.dst_id=? AND e.edge_type='affects'
-               ORDER BY abs(e.weight) DESC""",
-            (f"industry_tdx:{sector_code}",),
-        ).fetchall()
-        conn.close()
-        return [
-            {"policy_id": r["pid"], "title": r["ptitle"], "direction": r["direction"],
-             "strength": r["strength"], "evidence": r["evidence"], "weight": r["weight"]}
-            for r in rows
-        ]
-    except Exception as e:
-        logger.warning(f"get_stock_policy_impact 失败(返[]): {e}")
+        rows = _query(
+            "SELECT code, name FROM kg_nodes "
+            "WHERE node_type='company' AND name IS NOT NULL AND name != ''",
+            (), db_path)
+        return [(r["code"], r["name"]) for r in rows]
+    except sqlite3.Error as e:
+        logger.warning(f"get_all_companies 查询失败(松耦合返[]): {e}")
+        return []
+
+
+def get_link_nodes(db_path: Path | None = None) -> list[dict]:
+    """打链候选节点 {node_id, node_type, code, name} (industry_tdx/industry/company)。
+
+    2026-09-15 审计收口: brain/archive._link_candidates 的 SQL 下沉门面;
+    匹配词组装/长词优先排序规则留在消费方。失败返 [] (松耦合)。
+    db 缺失 → [] (不创建 0 字节空库文件, 与原 URI mode=ro 语义对齐)。
+    """
+    db = db_path or get_db_path()
+    if not db.exists():
+        return []
+    try:
+        rows = _query(
+            "SELECT node_id, node_type, code, name FROM kg_nodes "
+            "WHERE node_type IN ('industry_tdx','industry','company')",
+            (), db_path)
+        return [dict(r) for r in rows]
+    except sqlite3.Error as e:
+        logger.warning(f"get_link_nodes 查询失败(松耦合返[]): {e}")
         return []
 
 

@@ -1,0 +1,60 @@
+# 1D vs 5M 对比实验 (2026-08-04): 除 backtest.period 外完全一致
+strategy:
+  name: CMP_1D日频Low确认
+selection:
+  formula_name: GUPIAO_018
+  formula_arg: ''
+  universe:
+    type: '50'
+    exclude_st: true
+    include_etf: false
+    etf_only: false
+    sectors: []
+  period: 1d
+  dividend_type: 1
+time_range:
+  start: '20260501'
+  end: '20260731'
+backtest:
+  initial_capital: 1000000.0
+  commission: 0.0003
+  slippage: 0.001
+  period: 1d
+  degrade_5m: true
+  position_sizing:
+    max_positions: 999
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
+stop_loss:
+  priority: stop_first
+  cost_stop:
+    enabled: true
+    threshold: -0.12
+  trailing_stop:
+    enabled: true
+    activation: 0.06
+    drawdown: 0.01
+    confirm: low
+  ladder_tp:
+    enabled: true
+    levels:
+    - profit: 0.06
+      sell_ratio: 0.3
+    - profit: 0.15
+      sell_ratio: 0.3
+  time_stop:
+    enabled: true
+    max_hold_days: 12
+  cond_time_stop:
+    enabled: false
+    days: 7
+    profit: 0.02
+  first_day:
+    enabled: false
+    target: 0.03
+  formula_sell:
+    enabled: false
+    formula_name: ''
+    formula_arg: ''

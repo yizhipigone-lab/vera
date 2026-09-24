@@ -1,0 +1,71 @@
+# CLI 复跑: GUPIAO_018 日线 2019-01-01~2026-07-01, 止损优先
+# 参数镜像前端 20260802_090630 那次 (702.34%): -12% / +6%+15%卖30% / 3.5%+1% / 20天
+strategy:
+  name: CLI_2019止损优先
+selection:
+  formula_name: GUPIAO_018
+  formula_arg: ''
+  universe:
+    type: '50'
+    exclude_st: true
+    include_etf: false
+    etf_only: false
+    sectors: []
+  period: 1d
+  dividend_type: 1
+time_range:
+  start: '20190101'
+  end: '20260701'
+backtest:
+  initial_capital: 1000000.0
+  commission: 0.0003
+  slippage: 0.001
+  period: 1d
+  degrade_5m: true
+  position_sizing:
+    max_positions: 999
+    min_buy_amount: 2000.0
+    max_buy_amount: 20000.0
+    lot_size: 100
+    min_lots: 1
+stop_loss:
+  priority: stop_first
+  cost_stop:
+    enabled: true
+    threshold: -0.12
+  trailing_stop:
+    enabled: true
+    activation: 0.035
+    drawdown: 0.01
+  ladder_tp:
+    enabled: true
+    levels:
+    - profit: 0.06
+      sell_ratio: 0.3
+    - profit: 0.15
+      sell_ratio: 0.3
+  time_stop:
+    enabled: true
+    max_hold_days: 20
+  cond_time_stop:
+    enabled: false
+    days: 7
+    profit: 0.02
+  first_day:
+    enabled: false
+    target: 0.03
+  formula_sell:
+    enabled: false
+    formula_name: ''
+    formula_arg: ''
+    sell_ratio: 1.0
+    priority: 0
+benchmark:
+  indices:
+  - shanghai
+  - hs300
+  - zz500
+  - chuangyeban
+  - kechuang50
+  - zhongzhengA500
+factor_filter: {}

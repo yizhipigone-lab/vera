@@ -1,0 +1,68 @@
+{
+  "GET /api/trade/analysis/daily_pnl": {
+    "_gapfill": "null",
+    "_missing": {},
+    "_month": "null"
+  },
+  "GET /api/trade/analysis/summary": {
+    "current_asset": "num",
+    "end_date": "str",
+    "initial_capital": "num",
+    "start_date": "str",
+    "total_trades": "num"
+  },
+  "GET /api/trade/asset": {
+    "cash": "num",
+    "frozen_cash": "num",
+    "market_value": "num",
+    "prev_day_asset": "null",
+    "total_asset": "num"
+  },
+  "GET /api/trade/deals?limit=15": {
+    "deals": []
+  },
+  "GET /api/trade/positions": {
+    "closed": [],
+    "positions": [],
+    "ts": "num"
+  },
+  "GET /api/trade/rotation/last": {
+    "config": {
+      "cyb_etf": "str",
+      "enabled": "bool",
+      "etf_ratio": "num",
+      "execute_time": "str",
+      "gold_etf": "str",
+      "hedge_etf2": "str",
+      "hedge_ratio": "num",
+      "momentum_window": "num",
+      "risk_etf2": "str",
+      "signal_day": [
+        "str"
+      ],
+      "trailing_stop_pct": "num"
+    },
+    "last": "null"
+  },
+  "GET /api/trade/status": {
+    "armed_effective": "null",
+    "armed_intent": "null",
+    "channel": "str",
+    "channel_down": "bool",
+    "connected": "bool",
+    "kill_active": "bool",
+    "last_probe": "null",
+    "last_tick_age_s": "null",
+    "monitor_healthy": "bool",
+    "monitor_reason": "str",
+    "reconciled": "bool",
+    "session": "str",
+    "ts": "num"
+  },
+  "POST /api/trade/kill": {
+    "accepted": "bool"
+  },
+  "POST /api/trade/unkill": {
+    "accepted": "bool"
+  }
+}

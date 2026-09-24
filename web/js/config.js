@@ -7,6 +7,7 @@
 export const STORAGE_KEY = 'vera_all_config';
 export const CONFIG_IDS = [
   'cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
+  'cfgEntryPriceMode',
   'cfgStart', 'cfgEnd', 'cfgExcludeST',
   'cfgIncludeEtf', 'cfgEtfOnly',
   'cfgCapital', 'cfgCommission', 'cfgSlippage',
@@ -29,6 +30,15 @@ export const RADIO_CONFIGS = [
 export function cleanNum(x) {
   const n = Number(x);
   return isNaN(n) ? 0 : parseFloat(n.toPrecision(12));
+}
+
+// 2026-09-16 审计第二轮 MEDIUM-E: 程序化写 cfgFormula (加载配置/农场回填) 后必须
+// 通知依赖公式名的下游 (因子过滤规则面板挂的是 input/change 监听)。原来
+// applyConfigDict 与农场回填各自静默赋值 → 面板列的还是上一个公式的规则。
+// 收口成这一个函数, 两处共引。
+export function notifyFormulaChanged() {
+  const el = document.getElementById('cfgFormula');
+  if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 // ── 表单校验 ──
@@ -122,6 +132,8 @@ export function collectConfigFromForm(_selectedSectors, collectFactorFilter, esc
     sectors: (_selectedSectors || []).join(','),
     start_time: getVal('cfgStart'), end_time: getVal('cfgEnd'),
     period: getVal('cfgPeriod'), dividend_type: 1,
+    // 2026-08-20: 买入价口径 (close_t=信号日收盘/open_t1=次日开盘, 一字涨停才放弃)
+    entry_price_mode: (document.getElementById('cfgEntryPriceMode') || {}).value || 'close_t',
     initial_capital: safeFloat('cfgCapital'),
     commission: safeFloat('cfgCommission'),
     slippage: safeFloat('cfgSlippage'),
@@ -133,6 +145,7 @@ export function collectConfigFromForm(_selectedSectors, collectFactorFilter, esc
     min_lots: safeInt('cfgMinLots'),
     cost_stop_enabled: document.getElementById('cfgCostStopEn').checked, cost_stop_threshold: -Math.abs(pct('cfgCostStopVal')),
     trailing_enabled: document.getElementById('cfgTrailingEn').checked, trailing_activation: pct('cfgTrailingAct'), trailing_drawdown: pct('cfgTrailingDD'),
+    trailing_confirm: (document.getElementById('cfgTrailingConfirm') || {}).value || 'real',
     ladder_enabled: document.getElementById('cfgLadderEn').checked, ladder_levels: ladderParts,
     time_enabled: document.getElementById('cfgTimeEn').checked, max_hold_days: safeInt('cfgTimeVal'),
     cond_time_enabled: document.getElementById('cfgCondTimeEn').checked,
@@ -158,6 +171,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     cfgFormulaArg: cfg.selection?.formula_arg,
     cfgUniverse: cfg.selection?.universe?.type,
     cfgPeriod: cfg.backtest?.period === '1m' ? '1m' : cfg.backtest?.period === '5m' ? '5m' : cfg.backtest?.period === '1w' ? '1w' : '1d',
+    cfgEntryPriceMode: cfg.backtest?.entry_price_mode || 'close_t',
     cfgStart: cfg.time_range?.start,
     cfgEnd: cfg.time_range?.end,
     cfgCapital: cfg.backtest?.initial_capital,
@@ -170,6 +184,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     cfgCostStopVal: cfg.stop_loss?.cost_stop?.threshold != null ? String(cleanNum(Math.abs(cfg.stop_loss.cost_stop.threshold * 100))) : null,
     cfgTrailingAct: cfg.stop_loss?.trailing_stop?.activation != null ? String(cleanNum(cfg.stop_loss.trailing_stop.activation * 100)) : null,
     cfgTrailingDD: cfg.stop_loss?.trailing_stop?.drawdown != null ? String(cleanNum(cfg.stop_loss.trailing_stop.drawdown * 100)) : null,
+    cfgTrailingConfirm: cfg.stop_loss?.trailing_stop?.confirm || 'real',
     cfgLadderVal: cfg.stop_loss?.ladder_tp?.levels?.map(l => cleanNum(l.profit * 100) + ':' + cleanNum(l.sell_ratio * 100)).join(','),
     cfgTimeVal: cfg.stop_loss?.time_stop?.max_hold_days,
     cfgCondTimeDays: cfg.stop_loss?.cond_time_stop?.days,
@@ -201,6 +216,7 @@ export function applyConfigDict(cfg, renderSectorsFn, updateSectorSummaryFn, tog
     if (!el) continue;
     if (val != null) el.checked = val;
   }
+  notifyFormulaChanged();   // MEDIUM-E: 程序化改公式后刷因子规则面板
   RADIO_CONFIGS.forEach(rc => {
     const val = mapping[rc.allow];
     if (val != null) {
@@ -277,7 +293,16 @@ export function refreshAllSummaries(escFn) {
   document.getElementById('sumCostStop').innerHTML = '成本止损：亏损达到 <b>' + cs + '%</b> 全仓卖出 <span class="saved-badge saved">已保存</span>';
   const ta = esc(document.getElementById('cfgTrailingAct').value);
   const td = esc(document.getElementById('cfgTrailingDD').value);
-  document.getElementById('sumTrailing').innerHTML = '移动止盈：盈利 <b>' + ta + '%</b> 激活后，盘中 Low 触及回撤 <b>' + td + '%</b> 线即按回撤线价全仓卖出 <span class="saved-badge saved">已保存</span>';
+  const confirmEl = document.getElementById('cfgTrailingConfirm');
+  const confirmMap = {
+    simple: '5M碰线按bar收盘价成交 / 1D收盘价确认',
+    real: '条件单语义：创新高bar不触发，跳空按开盘价，触线按线价',
+    intraday: '盘中 Low 触及线即按线价卖出',
+    low: '当日最低价碰线，按收盘价卖出',
+    close: '收盘价跌破线才按收盘价卖出',
+  };
+  const confirmLabel = confirmMap[(confirmEl || {}).value] || confirmMap.intraday;
+  document.getElementById('sumTrailing').innerHTML = '移动止盈：盈利 <b>' + ta + '%</b> 激活后，回撤 <b>' + td + '%</b> 触发全仓卖出（' + confirmLabel + '） <span class="saved-badge saved">已保存</span>';
   const lv = esc(document.getElementById('cfgLadderVal').value.replace(/,/g, ', '));
   document.getElementById('sumLadder').innerHTML = '阶梯止盈：<b>' + lv + '</b> <span class="saved-badge saved">已保存</span>';
   const priChecked = document.querySelector('input[name="cfgPriority"]:checked');

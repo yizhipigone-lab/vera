@@ -110,6 +110,45 @@ def _args(price, entry):
             None, None, None, None, 1.0, 1, False, False, 1.0)
 
 
+def test_unknown_strategy_fail_open():
+    """新策略缺 prefilter 方法 → fail-open 恒 True, 防静默漏卖 (P0-1)。"""
+    class _Unknown:
+        name = "magic_stop"
+
+        def check(self, pos, bar, ctx):
+            return []
+
+    class _Dispatcher:
+        strategies = {"magic_stop": _Unknown()}
+
+    pf = TriggerPreFilter(_Dispatcher(), [])
+    assert pf.could_trigger(
+        ci=0, i=0, ep=10.0, hi=10.0, lo=10.0, hi_pp=0.0, lo_pp=0.0,
+        peak_hi=10.0, peak_hi_profit=0.0, hold_days=0, entry_idx=0, bpday=1,
+        ladder_done=0, ladder_profits=np.array([]), n_ladder=0) is True
+
+
+def test_known_strategy_prefilter_false():
+    """策略有 prefilter 且判 False → could_trigger False (正常预筛仍生效)。"""
+    class _Never:
+        name = "never"
+
+        def prefilter(self, x):
+            return False
+
+        def check(self, pos, bar, ctx):
+            return []
+
+    class _Dispatcher:
+        strategies = {"never": _Never()}
+
+    pf = TriggerPreFilter(_Dispatcher(), [])
+    assert pf.could_trigger(
+        ci=0, i=0, ep=10.0, hi=10.0, lo=10.0, hi_pp=0.0, lo_pp=0.0,
+        peak_hi=10.0, peak_hi_profit=0.0, hold_days=0, entry_idx=0, bpday=1,
+        ladder_done=0, ladder_profits=np.array([]), n_ladder=0) is False
+
+
 def test_swap_pop_same_bar_multi_sell():
     """swap-pop 专项: 3 持仓同 bar 两个触发, 重排后第三持仓判定不错位。"""
     n, k = 6, 3

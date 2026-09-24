@@ -22,16 +22,20 @@ from core.tdx_path import tdx_home
 
 BASE = "output/gs_5m_sweep"
 OUT_MD = os.path.join(BASE, "EVAL_REPORT.md")
-TARGET_ANN = 0.30
-TARGET_MAXDD = 0.15
-MIN_TRADES = 1000
+# 2026-09-11: 达标线收口到 core/farm_rules (单一真相源; 2026-09-22 起年化≥10%
+# 且 |回撤|≤15% 且 笔数≥20)。
+# 此前本文件硬编码 0.30/0.15/1000, 与 09-09 批实际在用的 15% 冲突。
+from core import farm_rules  # noqa: E402
+
+TARGET_ANN = farm_rules.TARGET_ANN
+TARGET_MAXDD = farm_rules.TARGET_MAXDD
+MIN_TRADES = farm_rules.MIN_TRADES
 
 # 未来函数排除 (权威清单, 2026-07-20 网上核实). 报告只含干净公式
+# 2026-09-16 F4 收口: 原手写副本改引单一真相源 tools/future_tokens.py
+# (第一轮自查抓到的漏网副本, 比并集少 ZXNH)
 GS_DIR = os.path.join(tdx_home(), "T0001", "export", "gs_txt")
-EXCL_FUNCS = ["ZIG", "ZIGA", "ZIGBARS", "FLATZIG", "FLATZIGA", "PEAK", "PEAKA",
-              "PEAKBARS", "PEAKBARSA", "TROUGH", "TROUGHA", "TROUGHBARS", "BACKSET",
-              "REFX", "REFXV", "REFXR", "BARSNEXT", "DCLOSE", "DHIGH", "DLOW",
-              "DOPEN", "DVOL", "DRAWLINE", "POLYLINE", "XMA", "FFT"]
+from tools.future_tokens import FUTURE_TOKEN_BLACKLIST as EXCL_FUNCS  # noqa: E402
 CROSS_FUNCS = ["#MONTH", "#WEEK", "#DAY"]
 
 
@@ -72,6 +76,7 @@ def combo_cn(r) -> str:
 
 def main():
     rows = []
+    read_fail = []  # G5: 读取失败的公式名单, 报告末尾列出 (不再静默消失)
     dirs = sorted(d for d in glob.glob(os.path.join(BASE, "*")) if os.path.isdir(d))
     if not dirs:
         print("[ERR] 无公式目录")
@@ -88,7 +93,8 @@ def main():
             continue
         try:
             df = pd.concat([pd.read_csv(s) for s in sweeps], ignore_index=True)
-        except Exception:
+        except Exception as e:                                   # noqa: BLE001
+            read_fail.append((formula, f"{type(e).__name__}: {e}"))
             continue
         for col in ["annret", "maxdd", "calmar", "trades", "cost", "act", "dd"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -99,8 +105,7 @@ def main():
                          "best_maxdd": None, "best_trades": None,
                          "best_combo": ""})
             continue
-        hit = df[(df["annret"] > TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
-                 & (df["trades"] >= MIN_TRADES)]
+        hit = df[df.apply(farm_rules.is_pass, axis=1)]
         if not hit.empty:
             best = hit.loc[hit["calmar"].idxmax()]
             rows.append({"formula": formula, "n_combos": len(df), "hit": len(hit),
@@ -108,11 +113,16 @@ def main():
                          "best_maxdd": best["maxdd"], "best_trades": best["trades"],
                          "best_combo": combo_cn(best)})
         else:
-            top = df.loc[df["annret"].idxmax()]
+            # G1: 无达标组合时, "最佳"也只在笔数 ≥ MIN_TRADES 的组合里选
+            # (farm_rules.pick_best); 全不足样本退回最高年化但标注「样本不足」
+            top = farm_rules.pick_best(df.to_dict("records"))
+            thin = farm_rules.verdict(top.get("annret"), top.get("maxdd"),
+                                      top.get("trades"))["code"] == farm_rules.THIN
             rows.append({"formula": formula, "n_combos": len(df), "hit": 0,
                          "best_annret": top["annret"], "best_calmar": top["calmar"],
                          "best_maxdd": top["maxdd"], "best_trades": top["trades"],
-                         "best_combo": combo_cn(top)})
+                         "best_combo": combo_cn(top) + (
+                             "（样本不足（笔数<20），数字不作数）" if thin else "")})
     rep = pd.DataFrame(rows)
     rep.to_csv(os.path.join(BASE, "eval_summary.csv"), index=False, encoding="utf-8")
 
@@ -125,8 +135,7 @@ def main():
     lines.append("# gs_txt 5m 全参数扫描 — 评测报告\n")
     lines.append("> 生成: 阶段C 汇总 | 区间 2024-08-01 ~ 2026-07-17 | "
                  "5m | T收盘买入 | 沪深300 | 300万/单票2万 | 移动止盈优先\n")
-    lines.append(f"> 达标硬口径: 年化>{TARGET_ANN*100:.0f}% 且 回撤≤{TARGET_MAXDD*100:.0f}% "
-                 f"且 交易≥{MIN_TRADES}笔\n")
+    lines.append(f"> {farm_rules.describe()}\n")
     lines.append("> **已排除未来函数** (权威清单: ZIG/PEAK/TROUGH/BACKSET/REFX/DCLOSE/DRAWLINE/XMA/FFT/#周期等) "
                  "— 含 DCLOSE/DRAWLINE 的公式(之前回测虚高)已剔除\n")
     lines.append("\n## 一、总览\n")
@@ -184,12 +193,21 @@ def main():
         lines.append(f"  - {k}: {v} 个")
     lines.append("")
 
+    if read_fail:
+        lines.append("\n## 五、读取失败\n")
+        lines.append("以下公式的 sweep CSV 读取失败, 已从本报告剔除"
+                     "（2026-09-16 G5 修复前是静默消失, 无清单）:\n")
+        for f_name, err in read_fail:
+            lines.append(f"- **{f_name}**: {err}")
+        lines.append("")
+
     lines.append("\n---\n> 详细每公式结果: output/gs_5m_sweep/<公式>/report_merged.csv")
     lines.append("> 汇总 CSV: output/gs_5m_sweep/eval_summary.csv\n")
 
     with open(OUT_MD, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"[OK] 公式数={n_formulas} 达标={n_hit} 零组合={n_zero_combo}")
+    print(f"[OK] 公式数={n_formulas} 达标={n_hit} 零组合={n_zero_combo} "
+          f"读取失败={len(read_fail)}")
     print(f"[OUT] {OUT_MD}")
 
 

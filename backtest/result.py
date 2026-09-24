@@ -50,6 +50,14 @@ class BacktestResult:
     # 2026-07-26: K线数据指纹 (可复现性戳 — 结果对比时识别是否同一份数据;
     # 仅 run() 路径设置, run_cached 数据来自调用方不打戳)
     data_fingerprint: Any = _UNSET
+    # 2026-08-20: 买入价口径标注 (仅 entry_price_mode=open_t1 时设置;
+    # 含 mode/信号数/平移数/一字涨停拒买数/无T+1丢弃数 — 防两口径结果混排)
+    entry_mode_info: Any = _UNSET
+    # 2026-09-16 B4: 公式卖出规则构造失败标记 (仅 run() 且 formula_sell.enabled
+    # 构造抛异常时设置, 值为错误说明字符串)。原行为: error 日志后静默按
+    # "无该规则"跑完全程, 结果无任何标注 — 批量流程不炸 (容错保留), 但结果
+    # 必须带标记, 否则看报告的人不知道公式卖出根本没生效。
+    formula_sell_failed: Any = _UNSET
 
     # 字段名集合类级缓存 (_is_set 每次访问都 fields() 反射太贵; 类定义后填充,
     # 见模块尾部)。ClassVar 不会被 dataclasses.fields 计入。

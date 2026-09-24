@@ -24,6 +24,7 @@ import pytest
 import pipeline.pipeline as pipeline_module
 from pipeline.pipeline import Pipeline
 from selection import selection_cache as sc
+from selection.selector import StockSelector
 
 
 def _selections():
@@ -47,13 +48,15 @@ def _key(**overrides):
     return sc.build_key(**kw)
 
 
-class _FakeSelector:
-    """不碰 TDX 的替身, 记录调用次数。"""
+class _FakeSelector(StockSelector):
+    """不碰 TDX 的替身, 记录调用次数。
+
+    子类化真实 StockSelector 以继承 run_cached (L0 整段缓存接缝), 只替换
+    resolve_universe / run 两个触 TDX 的口子, 让 TestPipelineSeam 直接测到
+    真实 L0 行为 (build_key/load/save/force_refresh/1d 跳过/L2 关闭兜底)。
+    """
 
     calls = 0
-
-    def __init__(self, cfg):
-        self.cfg = cfg
 
     def resolve_universe(self):
         return ["600001.SH", "000001.SZ"]
@@ -151,6 +154,17 @@ class TestKeyInvalidation:
         full = {"type": "23", "exclude_st": True, "include_etf": False,
                 "etf_only": False, "sectors": [], "exclude_new_listings_days": 0}
         assert _key(universe_cfg=full) == _key(universe_cfg=sparse)
+
+    def test_exclude_quit_false_not_collapsed(self):
+        """2026-09-16 审计 P0-1 回归: exclude_quit 缺省 True (selector.py),
+        显式 False (保留退市股) 必须进 key — 否则与缺键 (剔除退市股) 撞 key。"""
+        uni = {**_KEY_KW["universe_cfg"], "exclude_quit": False}
+        assert _key(universe_cfg=uni) != _key()
+
+    def test_exclude_quit_true_equals_omitted(self):
+        """exclude_quit: True 恰是缺省值 → 与缺键同 key (跨入口命中不破)。"""
+        uni = {**_KEY_KW["universe_cfg"], "exclude_quit": True}
+        assert _key(universe_cfg=uni) == _key()
 
     def test_formula_arg_none_normalized(self):
         assert _key(formula_arg=None) == _key(formula_arg="")

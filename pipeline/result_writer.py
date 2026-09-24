@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from backtest._entry_basis import ENTRY_BASIS_BACKTEST as ENTRY_PRICE_BASIS
+from backtest._entry_basis import ENTRY_BASIS_BACKTEST_T1 as ENTRY_PRICE_BASIS_T1
 from backtest.result import BacktestResult
 
 # P1-3 (2026-07-15): 模块级 logger, 替代 4 处内联 `import logging` + `logging.getLogger(__name__)`
@@ -216,8 +217,17 @@ class ResultWriter:
             "trade_count": len(trades),
             # F2 回归保护 (server.py:508-514)
             "engine_version": ENGINE_VERSION,
-            "entry_price_basis": ENTRY_PRICE_BASIS,
+            # 2026-08-20: open_t1 口径时标注次日开盘 (有才变值, close_t 恒为旧值,
+            # F2 回归保护语义不变)
+            "entry_price_basis": (
+                ENTRY_PRICE_BASIS_T1
+                if (backtest.get("entry_mode_info") or {}).get("mode") == "open_t1"
+                else ENTRY_PRICE_BASIS),
         }
+        # 2026-08-20: 买入价口径统计 (有才加 key, 同 degradation 先例)
+        entry_mode_info = backtest.get("entry_mode_info")
+        if entry_mode_info is not None:
+            resp["entry_mode_info"] = safe_serialize(entry_mode_info)
         if benchmark_stats:
             resp["benchmark_stats"] = benchmark_stats
         # 2026-07-18 (计划书 §4.7 LOW-2): 5m 降级报告有才加 key, 无则响应形状不变
@@ -248,6 +258,44 @@ class ResultWriter:
         # 2026-07-28 P1.5 B层: 票→概念标签 (有才加 key, 不动 policy_priority; H-3 _FIELDS 已同步)
         if result.policy_enriched:
             resp["policy_enriched"] = safe_serialize(result.policy_enriched)
+        # 2026-08-13 图表分析深挖包 Phase 2: 滚动指标 + 业绩归因。
+        # 有才加 key (同 degradation 先例), 每个 key 独立 try/except,
+        # 失败 logger.warning + 跳过该 key, 绝不拖垮主结果; 产出必须过 safe_serialize。
+        try:
+            if not equity_curve.empty:
+                from backtest.metrics import MetricsCalculator
+                resp["rolling_metrics"] = safe_serialize(
+                    MetricsCalculator.rolling_metrics(equity_curve))
+        except Exception:
+            logger.warning("rolling_metrics 计算失败, 跳过该 key", exc_info=True)
+        try:
+            if not trades.empty and {"stock_code", "pnl"} <= set(trades.columns):
+                items = [
+                    {"code": str(c), "pnl": float(p)}
+                    for c, p in zip(trades["stock_code"], trades["pnl"])
+                    if pd.notna(p)
+                ]
+                if items:
+                    from backtest.attribution import attribute_returns
+                    from core.data_fetcher import DataFetcher
+                    from policy_kb.build_sector_index import build_stock_sector_index
+                    sector_index = build_stock_sector_index()
+                    try:
+                        sector_names = {s.get("code", ""): s.get("name", "")
+                                        for s in DataFetcher.get_sector_list()}
+                    except Exception:
+                        logger.warning("get_sector_list 失败, 行业名回退为行业代码", exc_info=True)
+                        sector_names = {}
+                    try:
+                        stock_names = DataFetcher.get_name_map() or {}
+                    except Exception:
+                        stock_names = {}
+                    resp["attribution"] = safe_serialize(
+                        attribute_returns(items, sector_index,
+                                          sector_names=sector_names,
+                                          stock_names=stock_names))
+        except Exception:
+            logger.warning("attribution 计算失败, 跳过该 key", exc_info=True)
         return resp
 
     def persist(self, response: dict, *, results_dir: Path, last_result_path: Path,
@@ -264,14 +312,17 @@ class ResultWriter:
                 "trade_count": response.get("trade_count", 0),
                 "cumulative_return": (response.get("metrics", {}) or {}).get("cumulative_return", 0),
                 "engine_version": ENGINE_VERSION,
-                "entry_price_basis": ENTRY_PRICE_BASIS,
+                # 2026-08-20 审计 LOW: meta 口径跟随 response (open_t1 时不再写死 close_t)
+                "entry_price_basis": response.get("entry_price_basis", ENTRY_PRICE_BASIS),
                 **meta_extras,
             }
             # data 顶层也加 engine_version/entry_price_basis (server.py:512-514)
-            # 改用直接赋值(与 server.py 一致)，setdefault 在非 dict 时抛 AttributeError 被吞
+            # 2026-08-20: entry_price_basis 改 setdefault — serialize() 在 open_t1
+            # 口径下已写入 BASIS_T1, 直接赋值会覆盖掉; close_t 时键已存在且值相同,
+            # setdefault 语义与旧直接赋值完全一致 (非 dict 时 AttributeError 仍被吞)。
             if isinstance(response, dict):
                 response["engine_version"] = ENGINE_VERSION
-                response["entry_price_basis"] = ENTRY_PRICE_BASIS
+                response.setdefault("entry_price_basis", ENTRY_PRICE_BASIS)
             # results/{ts}.json
             result_path = results_dir / f"{ts}.json"
             with open(result_path, "w", encoding="utf-8") as f:

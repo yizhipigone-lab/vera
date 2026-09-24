@@ -21,6 +21,9 @@ def _isolate_archive(tmp_path, monkeypatch):
     """ask_brain 默认归档进 vault —— 测试一律隔离到 tmp, 不碰真实归档/映射。"""
     monkeypatch.setattr(brain_archive, "ARCHIVE_DIR", tmp_path / "arch")
     monkeypatch.setattr(brain_archive, "_MAP_PATH", tmp_path / "map.json")
+    # 2026-09-15: 屏蔽本机 config/ai.json —— 有 standard 段时 _provider_warning
+    # 短路 (测试机配置了 AI 设置 → provider 软告警用例恒红, 环境红非真红)
+    monkeypatch.setattr(cli, "_standard_cfg", lambda: None)
 
 
 # ── counter / evidence ───────────────────────────────────────
@@ -131,9 +134,17 @@ class TestAskBrain:
 
     def test_missing_marks_low_confidence(self, monkeypatch):
         _patch_proc(monkeypatch, _FakeProc(stdout="随便答答。".encode()))
-        r = asyncio.run(cli.ask_brain("q", session_id="s1"))
+        r = asyncio.run(cli.ask_brain("值得买吗？", session_id="s1"))
         assert r["success"] and r["low_confidence"]
         assert r["answer"].count("低置信") == 2  # 反证 + 引用两个标记
+
+    def test_non_judgment_skips_counter_tag(self, monkeypatch):
+        """2026-08-12 意图分类: 非判断类问题不强制反证, 只缺引用 → 1 个标记。"""
+        _patch_proc(monkeypatch, _FakeProc(stdout="随便答答。".encode()))
+        r = asyncio.run(cli.ask_brain("q", session_id="s1"))
+        assert r["success"] and r["low_confidence"]
+        assert r["answer"].count("低置信") == 1  # 只有引用标记
+        assert "反证" not in r["answer"]
 
     def test_resume_flag_and_stdin(self, monkeypatch):
         exec_ = _patch_proc(monkeypatch, _FakeProc(stdout=_GOOD.encode()))

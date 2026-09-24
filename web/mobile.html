@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><!-- W4-3: 放开缩放(原 maximum-scale=1/user-scalable=no 违反 WCAG 1.4.4, 量化页小数字需可放大) -->
+<meta name="theme-color" content="#0a0e14">
+<title>VERA 移动版</title>
+<script src="/web/marked.min.js"></script>
+<script src="/web/purify.min.js"></script>
+<script src="/web/js/stock_link.js?v=20260826a"></script>
+<!-- W4-1: 设计令牌两页同源 (index.html 共用 web/css/tokens.css; 本页固定 dark,
+     令牌/字体由 tokens.css 提供, 终结手抄分叉 — polish.css 的 --text2 提亮同步生效) -->
+<link rel="stylesheet" href="/web/css/tokens.css?v=20260906c">
+<style>
+/* 本页独有覆盖 (变量本体在 tokens.css, 不再手抄) */
+/* W4-1 保险: 本页固定暗色 — tokens.css 的亮色在 :root、暗色在 [data-theme=dark];
+   若浏览器扩展等外部脚本把 html 翻成 data-theme=light, 本页没有亮色样式会破版。
+   本块选择器同等特异性但加载在 tokens.css 之后, 且同时命中两种取值 → 永远暗色。
+   值与 tokens.css [data-theme=dark] 保持同步。 */
+[data-theme="dark"], [data-theme="light"] {
+  color-scheme: dark;
+  --bg:#0a0e14; --surface:#11161f; --card:#161c28; --border:#232b3a;
+  --text:#e8ecf4; --text2:#8b95a8;
+  --up:#ff4d5a; --down:#2ec27e; --accent:#f0b429; --accent2:#4cc9d4;
+  --ok:#3dd68c; --pending:#e8b339; --fail:#7a8499; --info:#4cc9d4; --link:#f0b429;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+  font-size:var(--fs-md);line-height:1.5;display:flex;flex-direction:column;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+
+/* ===== 顶栏 ===== */
+.topbar{
+  position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-3);padding-top:calc(10px + env(safe-area-inset-top));
+  background:var(--surface);border-bottom:1px solid var(--border);
+}
+.brand{font-weight:800;letter-spacing:1px;font-size:var(--fs-lg);color:var(--accent);font-family:'JetBrains Mono',ui-monospace,monospace}
+.status{flex:1;display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm);color:var(--text2);white-space:nowrap;overflow:hidden}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--text2);flex-shrink:0}
+.status .dot.on{background:var(--down);box-shadow:0 0 6px var(--down)}
+.status .dot.off{background:var(--up)}
+.status .dot.busy{background:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.kill{
+  padding:var(--sp-2) var(--sp-4);border-radius:10px;font-size:var(--fs-md);font-weight:700;letter-spacing:1px;
+  background:var(--up);color:#fff;flex-shrink:0;   /* 白字: 与桌面 .btn-danger 同款"红底白字", 无对应令牌保留 */
+  min-height:44px;min-width:44px;                   /* W4-3: 触控目标≥44px (原≈37px, 全页最急的按钮最难按) */
+  touch-action:manipulation;
+}
+.kill.armed{background:var(--down)}
+/* W4-3: 按压反馈 (原 tap-highlight:transparent 后全页无 :active, 点了没反应感) */
+.kill:active,.refresh-btn:active,.chat-tools button:active,.tab-btn:active{filter:brightness(1.25);transform:scale(.97)}
+.refresh-btn,.chat-tools button{min-height:44px;min-width:44px;touch-action:manipulation}
+.tab-btn{touch-action:manipulation}
+
+/* ===== 主体 ===== */
+main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:var(--sp-3)}
+.tab{display:none}
+.tab.active{display:block}
+
+/* ===== 资产卡 ===== */
+.asset-card{
+  background:linear-gradient(135deg,var(--card),color-mix(in srgb,var(--accent) 8%,var(--card)));
+  border:1px solid var(--border);border-radius:16px;padding:var(--sp-5);margin-bottom:var(--sp-3);
+}
+.asset-label{font-size:var(--fs-sm);color:var(--text2)}
+.asset-total{font-size:var(--fs-kpi);font-weight:800;font-family:'JetBrains Mono',ui-monospace,monospace;margin:var(--sp-1) 0;letter-spacing:-.5px}
+.asset-pnl{font-size:var(--fs-lg);font-weight:700;font-family:'JetBrains Mono',ui-monospace,monospace;margin-bottom:var(--sp-3)}
+.asset-sub{display:flex;gap:var(--sp-2)}
+.asset-sub>div{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:var(--sp-3) var(--sp-3)}
+.asset-sub .k{font-size:var(--fs-xs);color:var(--text2)}
+.asset-sub .v{font-size:var(--fs-md);font-weight:600;font-family:'JetBrains Mono',ui-monospace,monospace;margin-top:2px}
+
+/* ===== 区块标题 ===== */
+.sec-title{font-size:var(--fs-md);color:var(--text2);font-weight:600;margin:var(--sp-5) 0 var(--sp-2);display:flex;align-items:center;gap:var(--sp-2)}
+.sec-title::before{content:'';width:3px;height:12px;background:var(--accent);border-radius:2px}
+
+/* ===== 持仓列表 ===== */
+.pos-list,.deal-list,.daily-list{display:flex;flex-direction:column;gap:var(--sp-2)}
+.pos-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:var(--sp-3) var(--sp-3)}
+.pos-top{display:flex;align-items:baseline;gap:var(--sp-2);margin-bottom:var(--sp-2)}
+.pos-name{font-weight:600;font-size:var(--fs-md)}
+.pos-code{font-size:var(--fs-xs);color:var(--text2);font-family:'JetBrains Mono',ui-monospace,monospace}
+.pos-badge{font-size:var(--fs-xs);padding:1px var(--sp-2);border-radius:8px;background:var(--surface);color:var(--text2);margin-left:auto}
+.pos-badge.etf{background:color-mix(in srgb,var(--accent2) 16%,transparent);color:var(--accent2)}
+.pos-row{display:flex;justify-content:space-between;font-size:var(--fs-md);margin:2px 0}
+.pos-row .l{color:var(--text2)}
+.pos-row .v{font-family:'JetBrains Mono',ui-monospace,monospace}
+.up{color:var(--up)} .down{color:var(--down)}
+
+/* 成交/每日盈亏条目 */
+.deal-row,.daily-row{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:var(--sp-3) var(--sp-3);display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-md)}
+.deal-row .n,.daily-row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 2026-08-26: 股票代码/简称 → 同花顺跳转链接 */
+.stock-link{color:inherit;text-decoration:none;border-bottom:1px dashed color-mix(in srgb,var(--accent) 55%,transparent)}
+.stock-link:hover,.stock-link:active{color:var(--accent);border-bottom-style:solid}
+.deal-row .t,.daily-row .t{color:var(--text2);font-size:var(--fs-xs)}
+.deal-row .amt{font-family:'JetBrains Mono',ui-monospace,monospace;font-weight:600}
+.tag-buy{color:var(--up)} .tag-sell{color:var(--down)}
+
+/* ===== KPI 网格 ===== */
+.kpi-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3);margin-bottom:var(--sp-2)}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:var(--sp-3)}
+.kpi-card .k{font-size:var(--fs-xs);color:var(--text2)}
+.kpi-card .v{font-size:var(--fs-xl);font-weight:700;font-family:'JetBrains Mono',ui-monospace,monospace;margin-top:var(--sp-1)}
+
+/* ===== 研究聊天 ===== */
+.chat-box{display:flex;flex-direction:column;gap:var(--sp-3);padding-bottom:10px}
+.msg{max-width:92%;padding:var(--sp-3) var(--sp-3);border-radius:14px;font-size:var(--fs-md);line-height:1.6;word-wrap:break-word}
+.msg.user{align-self:flex-end;background:var(--accent);color:#1a1d24;border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.ai p{margin:var(--sp-2) 0} .msg.ai pre{background:var(--bg);padding:var(--sp-2);border-radius:8px;overflow-x:auto;font-size:var(--fs-sm)}
+.msg.ai code{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:var(--fs-sm);background:var(--surface);padding:1px var(--sp-1);border-radius:4px}
+.msg.ai ul,.msg.ai ol{padding-left:20px}
+.msg.ai blockquote{border-left:3px solid var(--accent);padding-left:10px;color:var(--text2);margin:var(--sp-2) 0}
+.msg.warn{align-self:flex-start;background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up);font-size:var(--fs-md)}
+.chat-input{position:sticky;bottom:0;display:flex;gap:var(--sp-2);padding:var(--sp-3);background:var(--surface);border-top:1px solid var(--border)}
+.chat-input input{flex:1;padding:var(--sp-3) var(--sp-3);background:var(--bg);border:1px solid var(--border);border-radius:12px;color:var(--text);font-size:16px;outline:none}/* W4-3: 16px 防 iOS 聚焦自动放大 (放开缩放后此项必须) */
+.chat-input input:focus{border-color:var(--accent)}
+.chat-input button{padding:var(--sp-3) var(--sp-5);background:var(--accent);color:#1a1d24;border-radius:12px;font-size:var(--fs-md);font-weight:700;flex-shrink:0}
+.chat-input button:disabled{opacity:.5}
+.chat-tools{display:flex;gap:var(--sp-2);margin-bottom:var(--sp-2)}
+.chat-tools button{font-size:var(--fs-sm);padding:var(--sp-2) var(--sp-3);border-radius:8px;border:1px solid var(--border);color:var(--text2)}
+
+/* ===== 底部页签栏 ===== */
+.tabbar{
+  position:sticky;bottom:0;z-index:10;display:flex;
+  background:var(--surface);border-top:1px solid var(--border);
+}
+.tabbar .tab-btn{flex:1;padding:var(--sp-3) 0;font-size:var(--fs-md);font-weight:600;color:var(--text2);text-align:center}
+.tabbar .tab-btn.active{color:var(--accent)}
+.tabbar .tab-btn.active::before{content:'';display:block;width:24px;height:3px;background:var(--accent);border-radius:2px;margin:0 auto var(--sp-1)}
+
+/* 空态 */
+.empty{color:var(--text2);text-align:center;padding:var(--sp-6);font-size:var(--fs-md)}
+.refresh-btn{font-size:var(--fs-sm);padding:var(--sp-1) var(--sp-3);border-radius:8px;border:1px solid var(--border);color:var(--text2)}
+
+/* W4-3: 尊重系统"减弱动态" — pulse 呼吸动画等全部关停 (桌面版已有, 本页原缺) */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+/* W4-3: 页签栏自身吃掉底部安全区 (原靠 body padding 兜底, 页签 --surface 与 body --bg 间露双色条);
+   横屏左右 inset 一并补 */
+.tabbar{padding-bottom:env(safe-area-inset-bottom)}
+body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">VERA</div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText" aria-live="polite">连接中…</span></div>
+  <button class="kill" id="killBtn">急停</button>
+</header>
+
+<main>
+  <!-- 交易监控 -->
+  <section class="tab active" id="tab-trade">
+    <div class="asset-card">
+      <div class="asset-label">总资产</div>
+      <div class="asset-total" id="totalAsset">--</div>
+      <div class="asset-pnl" id="dayPnl">--</div>
+      <div class="asset-sub">
+        <div><div class="k">可用现金</div><div class="v" id="cash">--</div></div>
+        <div><div class="k">持仓市值</div><div class="v" id="mktval">--</div></div>
+      </div>
+    </div>
+    <div class="sec-title">持仓 <button class="refresh-btn" id="refreshTrade" style="margin-left:auto">刷新</button></div>
+    <div class="pos-list" id="posList"><div class="empty">加载中…</div></div>
+    <div class="sec-title">ETF 轮动</div>
+    <div class="pos-list" id="rotList"><div class="empty">加载中…</div></div>
+    <div class="sec-title">最近成交</div>
+    <div class="deal-list" id="dealList"><div class="empty">加载中…</div></div>
+  </section>
+
+  <!-- 盈亏分析 -->
+  <section class="tab" id="tab-analysis">
+    <div class="kpi-grid" id="kpiGrid"><div class="empty">加载中…</div></div>
+    <div class="sec-title">每日盈亏（近30个交易日） <button class="refresh-btn" id="refreshAnalysis" style="margin-left:auto">刷新</button></div>
+    <div class="daily-list" id="dailyPnlList"><div class="empty">加载中…</div></div>
+  </section>
+
+  <!-- 研究大脑 -->
+  <section class="tab" id="tab-research">
+    <div class="chat-tools">
+      <button id="btnReset">清空会话</button>
+      <span style="font-size:var(--fs-xs);color:var(--text2);align-self:center">个股诊断 / 大盘 / 盘面 都能问</span>
+    </div>
+    <div class="chat-box" id="chatBox"></div>
+    <div class="chat-input">
+      <input id="chatInput" placeholder="问点什么…（回车发送）" enterkeyhint="send">
+      <button id="chatSend">发送</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button class="tab-btn active" data-tab="trade">交易</button>
+  <button class="tab-btn" data-tab="analysis">分析</button>
+  <button class="tab-btn" data-tab="research">研究</button>
+</nav>
+
+<script type="module">
+// 2026-09-19 架构修订批次 2.1: 8081 基址唯一出口 = decision_util.tradeApiBase
+// (node 可测的那份实现), 这里桥到 window 供下面的 classic 主脚本用。
+// 主脚本已包 DOMContentLoaded —— module 是 deferred, 先于 DOMContentLoaded 执行,
+// 时序有保。
+import { tradeApiBase } from '/web/js/decision_util.mjs?v=20260919b';
+window.tradeApiBase = tradeApiBase;
+</script>
+<script>
+// 2026-09-19: 包 DOMContentLoaded —— 上面的 module 桥是 deferred, 若 IIFE 立刻跑,
+// window.tradeApiBase 尚未挂上; DOMContentLoaded 在所有 deferred module 之后触发。
+document.addEventListener('DOMContentLoaded', function(){
+'use strict';
+// 2026-09-16: 交易服务地址可配 — 默认 http://<当前主机>:8081 (局域网/ tailscale 直连);
+// 走单端口反代或 https 时用 ?trade=<base> 覆盖 (如 ?trade=https://vera.example.com/trade),
+// 覆盖值记入 localStorage, 下次免带参数; ?trade=reset 清除记忆回落默认。
+// 2026-09-19: 默认基址改走唯一出口 window.tradeApiBase (上面的 module 桥)。
+var TRADE_BASE = (function(){
+  var def = window.tradeApiBase(location.hostname);
+  var m = location.search.match(/[?&]trade=([^&]+)/);
+  if(m){
+    var v = decodeURIComponent(m[1]).replace(/\/+$/,'');
+    if(v === 'reset'){ try{ localStorage.removeItem('vera_trade_base'); }catch(e){} return def; }
+    try{ localStorage.setItem('vera_trade_base', v); }catch(e){}
+    return v;
+  }
+  try {
+    var saved = localStorage.getItem('vera_trade_base');
+    if(saved) return saved;
+  } catch(e){}
+  return def;
+})();
+var CONV = 'mobile';   // 研究大脑固定会话号
+
+// ── 工具 ────────────────────────────────────────────
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+// 2026-08-26: 股票代码/简称 → 同花顺标的首页链接 (stock_link.js, stock_link.js 缺失时降级纯文本)
+function thsLink(code,text){ return window.stockLink ? window.stockLink(code,text) : esc(text!=null&&text!==''?text:(code||'')); }
+function fmtMoney(n){
+  if(n==null||isNaN(n)) return '--';
+  var neg = n<0; n = Math.abs(n);
+  var s;
+  if(n>=1e8) s = (n/1e8).toFixed(2)+'亿';
+  else if(n>=1e4) s = (n/1e4).toFixed(2)+'万';
+  else s = n.toFixed(0);
+  return (neg?'-':'')+s;
+}
+function fmtPct(n){
+  if(n==null||isNaN(n)) return '--';
+  return (n>=0?'+':'')+(n*100).toFixed(2)+'%';
+}
+// 已乘过 100 的百分比字段 (如持仓 pnl_pct 后端已 ×100), 直接拼 %, 别再 ×100
+function fmtPctVal(n){
+  if(n==null||isNaN(n)) return '--';
+  return (n>=0?'+':'')+n.toFixed(2)+'%';
+}
+function cls(n){ return n>0?'up':(n<0?'down':''); }
+
+// ── 页签切换 ─────────────────────────────────────────
+var tabs = {trade:true, analysis:false, research:false};
+document.querySelectorAll('.tabbar .tab-btn').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var t = btn.dataset.tab;
+    document.querySelectorAll('.tabbar .tab-btn').forEach(function(b){ b.classList.toggle('active', b===btn); });
+    document.querySelectorAll('.tab').forEach(function(sec){ sec.classList.toggle('active', sec.id==='tab-'+t); });
+    if(t==='trade') refreshTrade();
+    if(t==='analysis') refreshAnalysis();
+  });
+});
+
+// ── 交易监控 ─────────────────────────────────────────
+var pollTimer = null;
+function tradeGet(u){
+  return fetch(TRADE_BASE + u).then(function(r){ return tradeParse(r); });
+}
+// 2026-09-20 审计 P1-1/P2-10: POST 也要查 r.ok, 且失败时读响应体里的人话。
+// 原实现只 `return r.json()` —— 服务端 500 从"纯文本(解析失败→reject)"改成
+// JSON `{detail}` 之后, 这里会**resolve**, 于是急停/解除急停遇服务端报错
+// 被当成成功。失败必须 reject, 并把 detail/error 带出来。
+function tradeParse(r){
+  return r.json().catch(function(){ return null; }).then(function(d){
+    if(!r.ok){
+      var msg = (d && (d.detail || d.error)) || ('HTTP ' + r.status);
+      throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return d;
+  });
+}
+function tradePost(u){
+  return fetch(TRADE_BASE + u, {method:'POST'}).then(function(r){ return tradeParse(r); });
+}
+
+function setStatus(ok, text){
+  $('statusDot').className = 'dot ' + (ok===null?'busy':(ok?'on':'off'));
+  $('statusText').textContent = text;
+}
+
+function refreshTrade(){
+  // 状态 + 资产 + 持仓 + 成交 + 轮动 并行拉 (轮动失败不影响其余, 单列空态)
+  Promise.allSettled([
+    tradeGet('/api/trade/status'),
+    tradeGet('/api/trade/asset'),
+    tradeGet('/api/trade/positions'),
+    tradeGet('/api/trade/deals?limit=15'),
+    tradeGet('/api/trade/rotation/last'),
+  ]).then(function(rs){
+    var st = rs[0].status==='fulfilled' ? rs[0].value : null;
+    var as = rs[1].status==='fulfilled' ? rs[1].value : null;
+    var ps = rs[2].status==='fulfilled' ? rs[2].value : null;
+    var ds = rs[3].status==='fulfilled' ? rs[3].value : null;
+    var rot = rs[4].status==='fulfilled' ? rs[4].value : null;
+
+    // ETF 轮动放在早退判断之前: 主状态挂了它也照样出「获取失败」空态, 不停在「加载中…」
+    renderRotation(rot);
+    if(!st || !as || !ps){
+      setStatus(false, '交易服务未连接');
+      return;
+    }
+    // 状态: 连接 + 对账 + 急停 + 通道 (2026-09-16: 补 09-07 新增的 channel/armed 字段,
+    // 通道挂了原来手机上完全看不出来)
+    var chDown = !!st.channel_down;
+    var ok = st.connected && st.reconciled && !chDown;
+    var label = st.kill_active ? '已急停' : (ok ? '运行中' : '异常');
+    var extras = [];
+    if(st.channel) extras.push(String(st.channel).toUpperCase());
+    if(chDown) extras.push('通道异常');
+    // ths 通道未武装 = 武装意图与实际不一致, 挂单不会真出去
+    if(st.channel === 'ths' && st.armed_effective === false) extras.push('未武装');
+    var tail = extras.concat(st.monitor_reason ? [st.monitor_reason] : []).join(' · ');
+    setStatus(ok, label + (tail ? ' · '+tail : ''));
+    $('killBtn').classList.toggle('armed', !!st.kill_active);
+    $('killBtn').textContent = st.kill_active ? '解除急停' : '急停';
+
+    // 资产卡
+    var total = as.total_asset, cash = as.cash, mkt = as.market_value;
+    $('totalAsset').textContent = fmtMoney(total);
+    $('cash').textContent = fmtMoney(cash);
+    $('mktval').textContent = fmtMoney(mkt);
+    if(as.prev_day_asset){
+      var dp = total - as.prev_day_asset;
+      var dpct = as.prev_day_asset>0 ? dp/as.prev_day_asset : 0;
+      var dpEl = $('dayPnl');
+      dpEl.textContent = '当日 ' + (dp>=0?'+':'') + fmtMoney(dp) + ' (' + fmtPct(dpct) + ')';
+      dpEl.className = 'asset-pnl ' + cls(dp);
+    } else {
+      $('dayPnl').textContent = '';
+    }
+
+    // 持仓
+    renderPositions(ps.positions || []);
+    // 成交
+    renderDeals(ds && ds.deals || []);
+  });
+}
+
+// ── ETF 轮动状态 (2026-09-16 新增) ─────────────────────────────
+// 后端结构: {last:{ts,source,tranches:[{tranche,anchor,signal}]}, config:{enabled,...}}
+// signal = {target, insufficient, reason, momentum:{代码:涨幅|null}, decision, note}
+var ROT_WD = {monday:'周一',tuesday:'周二',wednesday:'周三',thursday:'周四',friday:'周五'};
+function renderRotation(r){
+  var el = $('rotList');
+  if(!r){ el.innerHTML = '<div class="empty">轮动状态获取失败</div>'; return; }
+  if(!r.config || !r.config.enabled){ el.innerHTML = '<div class="empty">ETF 轮动未启用</div>'; return; }
+  var last = r.last;
+  if(!last || !last.tranches || !last.tranches.length){
+    el.innerHTML = '<div class="empty">暂无轮动信号 (尚未执行过)</div>'; return;
+  }
+  el.innerHTML = last.tranches.map(function(t){
+    var sig = t.signal || {};
+    var badge = sig.insufficient ? '数据不足' : (sig.target ? '持仓腿' : '避险');
+    var tgt = sig.target ? thsLink(sig.target) : '避险篮子 (黄金)';
+    var mom = '';
+    if(sig.momentum){
+      mom = Object.keys(sig.momentum).map(function(c){
+        var m = sig.momentum[c];
+        return thsLink(c) + ' ' + (m==null ? '—' : ((m>=0?'+':'')+(m*100).toFixed(1)+'%'));
+      }).join(' / ');
+    }
+    return '<div class="pos-card">'
+      + '<div class="pos-top"><span class="pos-name">份'+(t.tranche+1)+' · '+(ROT_WD[t.anchor]||t.anchor)+'锚</span>'
+      + '<span class="pos-badge'+(sig.target?' etf':'')+'">'+badge+'</span></div>'
+      + '<div class="pos-row"><span class="l">目标</span><span class="v">'+tgt+'</span></div>'
+      + (mom ? '<div class="pos-row"><span class="l">动量</span><span class="v" style="font-size:var(--fs-sm)">'+mom+'</span></div>' : '')
+      + (sig.decision ? '<div class="pos-row"><span class="l">决策</span><span class="v" style="font-size:var(--fs-sm);text-align:right;max-width:72%">'+esc(sig.decision)+'</span></div>' : '')
+      + '</div>';
+  }).join('');
+}
+
+function renderPositions(list){
+  var el = $('posList');
+  if(!list.length){ el.innerHTML = '<div class="empty">暂无持仓</div>'; return; }
+  el.innerHTML = list.map(function(p){
+    var pnlCls = cls(p.pnl);
+    var dayCls = cls(p.day_chg_amt);
+    return '<div class="pos-card">'
+      + '<div class="pos-top"><span class="pos-name">'+(p.name?thsLink(p.code,p.name):esc(p.code))+'</span>'
+      + '<span class="pos-code">'+thsLink(p.code)+'</span>'
+      + (p.etf?'<span class="pos-badge etf">ETF</span>':'')
+      + '</div>'
+      + '<div class="pos-row"><span class="l">现价 · 持仓</span><span class="v">'+fmtMoney(p.last)+' · '+p.volume+'股</span></div>'
+      + '<div class="pos-row"><span class="l">当日盈亏</span><span class="v '+dayCls+'">'+(p.day_chg_amt!=null?(p.day_chg_amt>=0?'+':'')+fmtMoney(p.day_chg_amt):'--')+'</span></div>'
+      + '<div class="pos-row"><span class="l">浮盈亏</span><span class="v '+pnlCls+'">'+(p.pnl!=null?(p.pnl>=0?'+':'')+fmtMoney(p.pnl)+' ('+fmtPctVal(p.pnl_pct)+')':'--')+'</span></div>'
+      + '</div>';
+  }).join('');
+}
+
+function renderDeals(list){
+  var el = $('dealList');
+  if(!list.length){ el.innerHTML = '<div class="empty">暂无成交</div>'; return; }
+  el.innerHTML = list.map(function(d){
+    var buy = d.direction===23;  // 23=买 24=卖
+    var tag = buy ? '<span class="tag-buy">买</span>' : '<span class="tag-sell">卖</span>';
+    var pnl = (d.pnl_amount!=null && !buy) ? ('<span class="amt '+(d.pnl_amount>=0?'up':'down')+'">'+(d.pnl_amount>=0?'+':'')+fmtMoney(d.pnl_amount)+'</span>') : '';
+    return '<div class="deal-row">'+tag
+      + '<span class="n">'+(d.name?thsLink(d.code,d.name):thsLink(d.code))+'</span>'
+      + '<span class="t">'+thsLink(d.code)+' '+d.qty+'@'+d.price+'</span>'
+      + pnl + '</div>';
+  }).join('');
+}
+
+$('killBtn').addEventListener('click', function(){
+  var armed = $('killBtn').classList.contains('armed');
+  // W1-6: 与桌面端对齐 — 急停激活/解除都是重操作, 补二次确认
+  if(!confirm(armed ? '确认解除急停? 解除后恢复自动交易。' : '确认急停? 将立即停止一切自动交易。')) return;
+  tradePost(armed ? '/api/trade/unkill' : '/api/trade/kill').then(function(){ refreshTrade(); });
+});
+$('refreshTrade').addEventListener('click', refreshTrade);
+$('refreshAnalysis').addEventListener('click', loadAnalysis);
+
+// 交易页 5 秒轮询 (2026-09-16: 页面切后台暂停, 回前台立即补一次 — 省电量/流量)
+pollTimer = setInterval(function(){
+  if(document.hidden) return;
+  if(document.getElementById('tab-trade').classList.contains('active')) refreshTrade();
+}, 5000);
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden) return;
+  if(document.getElementById('tab-trade').classList.contains('active')) refreshTrade();
+  if(document.getElementById('tab-analysis').classList.contains('active')) loadAnalysis();
+});
+
+// ── 盈亏分析 ─────────────────────────────────────────
+// 2026-09-16: 首次切进页签自动加载一次, 之后靠「刷新」按钮或切回前台时主动拉
+// (原 analysisLoaded 挡死只拉一次, 盘中看到的是早上的旧数)
+var analysisLoaded = false;
+function refreshAnalysis(){
+  if(analysisLoaded) return;
+  analysisLoaded = true;
+  loadAnalysis();
+}
+function loadAnalysis(){
+  Promise.allSettled([
+    fetch(TRADE_BASE + '/api/trade/analysis/summary').then(function(r){return r.json();}),
+    fetch(TRADE_BASE + '/api/trade/analysis/daily_pnl').then(function(r){return r.json();}),
+  ]).then(function(rs){
+    var s = rs[0].status==='fulfilled' ? rs[0].value : null;
+    var d = rs[1].status==='fulfilled' ? rs[1].value : null;
+    renderSummary(s);
+    renderDailyPnl(d);
+  });
+}
+
+function renderSummary(s){
+  var el = $('kpiGrid');
+  if(!s){ el.innerHTML = '<div class="empty">分析服务未连接</div>'; return; }
+  var kpis = [
+    ['累计收益', fmtPct(s.cumulative_return), cls(s.cumulative_return)],
+    ['年化收益', fmtPct(s.annualized_return), cls(s.annualized_return)],
+    ['最大回撤', (s.max_drawdown!=null?fmtPct(s.max_drawdown):'--'), cls(s.max_drawdown)],
+    ['夏普比率', s.sharpe_ratio!=null?s.sharpe_ratio.toFixed(2):'--', ''],
+    ['胜率', (s.win_rate!=null?fmtPct(s.win_rate):'--'), ''],
+    ['盈亏比', s.profit_loss_ratio!=null?s.profit_loss_ratio.toFixed(2):'--', ''],
+  ];
+  el.innerHTML = kpis.map(function(k){
+    return '<div class="kpi-card"><div class="k">'+k[0]+'</div><div class="v '+k[2]+'">'+k[1]+'</div></div>';
+  }).join('');
+}
+
+function renderDailyPnl(d){
+  var el = $('dailyPnlList');
+  if(!d){ el.innerHTML = '<div class="empty">无数据</div>'; return; }
+  // 2026-09-04: 过滤非日期键 — daily_pnl 响应新增 "_month" 月度汇总键,
+  // 字典序排在日期键之后、reverse 后排最前, 不过滤会渲染出一行幽灵数据
+  var keys = Object.keys(d).filter(function(k){return /^\d{4}-\d{2}-\d{2}$/.test(k);}).sort().reverse().slice(0, 30);
+  if(!keys.length){ el.innerHTML = '<div class="empty">暂无逐日盈亏</div>'; return; }
+  el.innerHTML = keys.map(function(k){
+    var r = d[k];
+    var c = cls(r.pnl_amount);
+    return '<div class="daily-row">'
+      + '<span class="n">'+k.slice(5)+'</span>'
+      + '<span class="t">'+r.buy_count+'买 '+r.sell_count+'卖</span>'
+      + '<span class="amt '+c+'">'+(r.pnl_amount>=0?'+':'')+fmtMoney(r.pnl_amount)+' ('+fmtPct(r.pnl_rate)+')</span>'
+      + '</div>';
+  }).join('');
+}
+
+// ── 研究大脑 ─────────────────────────────────────────
+function addMsg(role, html){
+  var box = $('chatBox');
+  var div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if(html) div.innerHTML = html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+function renderMd(text){
+  try {
+    var html = marked.parse(text || '');
+    return DOMPurify.sanitize(html);
+  } catch(e){ return esc(text); }
+}
+
+function sendChat(){
+  var input = $('chatInput');
+  var q = input.value.trim();
+  if(!q) return;
+  input.value = '';
+  addMsg('user', esc(q));
+  var ai = addMsg('ai', '<span style="color:var(--text2)">思考中…</span>');
+  $('chatSend').disabled = true;
+
+  var acc = '';
+  fetch('/api/research/chat/stream', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({question:q, conv:CONV}),
+  }).then(function(resp){
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    function pump(){
+      return reader.read().then(function(r){
+        if(r.done) return;
+        buf += decoder.decode(r.value, {stream:true});
+        var idx;
+        while((idx = buf.indexOf('\n\n')) >= 0){
+          var chunk = buf.slice(0, idx); buf = buf.slice(idx+2);
+          chunk.split('\n').forEach(function(line){
+            if(line.indexOf('data: ')!==0) return;
+            try {
+              var data = JSON.parse(line.slice(6));
+              if(data.type==='line'){ acc += data.text; ai.innerHTML = renderMd(acc); ai.scrollIntoView(false); }
+              else if(data.type==='done'){
+                if(!acc && data.answer) ai.innerHTML = renderMd(data.answer);
+                if(data.success===false && data.answer) ai.className = 'msg warn';
+              }
+            } catch(e){}
+          });
+        }
+        return pump();
+      });
+    }
+    return pump();
+  }).catch(function(e){
+    ai.className = 'msg warn';
+    ai.textContent = '调用失败: ' + e.message;
+  }).finally(function(){
+    $('chatSend').disabled = false;
+  });
+}
+
+$('chatSend').addEventListener('click', sendChat);
+$('chatInput').addEventListener('keydown', function(e){ if(e.key==='Enter') sendChat(); });
+$('btnReset').addEventListener('click', function(){
+  fetch('/api/research/chat/reset', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({conv:CONV})});
+  $('chatBox').innerHTML = '';
+});
+
+// ── 启动 ─────────────────────────────────────────────
+refreshTrade();
+});
+</script>
+</body>
+</html>

@@ -231,7 +231,10 @@ def test_run_empty_list(monkeypatch):
 
 def test_fetch_news_first_fetcher_wins(monkeypatch):
     ok_items = [{"title": "t", "url": "u", "date": "d", "text": "x"}]
-    monkeypatch.setattr(news_search, "_FETCHERS", [
+    # 2026-09-20: 候选表的接缝由 `_FETCHERS` 常量改为 `_candidates(keyword)` 函数
+    # —— 因为东财源必须给关键词，无词时**不该被列入**（否则每轮白跑一次 + 刷
+    # 一条误导性的"返空"日志）。桩点必须跟着搬。
+    monkeypatch.setattr(news_search, "_candidates", lambda kw: [
         ("bad", lambda kw, lim: []),
         ("ok", lambda kw, lim: ok_items),
         ("never", lambda kw, lim: pytest.fail("不应执行到第三源")),
@@ -242,11 +245,21 @@ def test_fetch_news_first_fetcher_wins(monkeypatch):
 def test_fetch_news_all_fail_returns_empty(monkeypatch):
     def _boom(kw, lim):
         raise RuntimeError("源故障")
-    monkeypatch.setattr(news_search, "_FETCHERS", [
+    monkeypatch.setattr(news_search, "_candidates", lambda kw: [
         ("bad1", _boom),
         ("bad2", lambda kw, lim: []),
     ])
     assert news_search.fetch_news(keyword="政策", limit=5) == []
+
+
+def test_候选表_无关键词时不列入东财源():
+    """无关键词时东财源必须**不在候选里** —— 而不是"列进去跑一遍再报空"。
+
+    后者会在 `sentiment_pipeline` 源1（无词取财新，每个 tick 一次）刷出
+    误导性的 "新闻源 em_stock_news 返空"。2026-09-20 端到端实测抓到。
+    """
+    assert [n for n, _ in news_search._candidates("")] == ["caixin_main", "cctv_news"]
+    assert [n for n, _ in news_search._candidates("算力租赁")][0] == "em_stock_news"
 
 
 def test_fetch_caixin_main_keyword_filter(monkeypatch):

@@ -38,6 +38,8 @@ from selection.signal_rules import filter_first_signal_in_window  # noqa: E402
 from utils.config_loader import ConfigLoader  # noqa: E402
 
 PAD_DAYS = 70
+#: T+1 保留率下限: 低于此值判「显著衰减」 (farm_verify 复核判定引用本常量, F5)
+FUTURE_MIN_KEEP = 0.6
 
 
 def shift_dates(selections: pd.DataFrame, calendar: pd.DatetimeIndex,
@@ -109,7 +111,7 @@ def main() -> None:
     padded_start = (pd.Timestamp(args.start) - pd.Timedelta(days=PAD_DAYS)
                     ).strftime("%Y%m%d")
     calendar = pd.DatetimeIndex(pd.to_datetime(
-        DataFetcher.get_trading_dates("SH", start_time=padded_start,
+        DataFetcher.get_calendar_days("SH", start_time=padded_start,
                                       end_time=args.end)))
 
     defaults = ConfigLoader.load_defaults()
@@ -158,7 +160,7 @@ def main() -> None:
         ret0, ret1 = r0["cumulative_return"], r1["cumulative_return"]
         keep = (ret1 / ret0) if ret0 else float("nan")
         verdict = "疑似未来函数" if (ret0 > 0.10 and keep < 0.3) else \
-                  ("显著衰减" if keep < 0.6 else "衰减正常")
+                  ("显著衰减" if keep < FUTURE_MIN_KEEP else "衰减正常")
         print(f"{f}: T+0={ret0*100:+.1f}% T+1={ret1*100:+.1f}% "
               f"保留率={keep*100:.0f}% → {verdict}")
 

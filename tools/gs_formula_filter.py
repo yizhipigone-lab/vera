@@ -31,12 +31,11 @@ DRAW_FUNCS = ["POLYLINE"]
 # 2026-07-20: 修词边界漏变体 (钱龙-长预警 PEAKBARS 之前 \bPEAK\b 漏)
 # 2026-07-20: 加 D 系列不定周期函数 (用户要求排除; 实测达标6全用DCLOSE, 排除后达标=0)
 # 2026-07-20: 网上核实扩展权威清单 (ZIGA/FLATZIG/PEAKA/TROUGHA/REFXV/BARSNEXT/XMA/FFT/DRAWLINE/#周期)
-FUTURE_FUNCS = ["ZIG", "ZIGA", "ZIGBARS", "FLATZIG", "FLATZIGA",
-                "PEAK", "PEAKA", "PEAKBARS", "PEAKBARSA",
-                "TROUGH", "TROUGHA", "TROUGHBARS",
-                "BACKSET", "REFX", "REFXV", "REFXR", "BARSNEXT",
-                "DCLOSE", "DHIGH", "DLOW", "DOPEN", "DVOL",
-                "DRAWLINE", "XMA", "FFT"]
+# 2026-09-16 F4 收口: 本清单原是第四份手写副本, 改引单一真相源 tools/future_tokens.py
+# (三份清单并集, 比原清单多 ZXNH/POLYLINE — 过滤方向宁严勿漏)
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from tools.future_tokens import FUTURE_TOKEN_BLACKLIST as FUTURE_FUNCS
 # 跨周期引用 (盘中大周期数据会变, 隐前视). 字符串匹配 (# 前缀 \b 不匹配)
 CROSS_FUNCS = ["#MONTH", "#WEEK", "#DAY"]
 

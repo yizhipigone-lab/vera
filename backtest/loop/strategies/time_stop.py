@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -18,6 +18,10 @@ class TimeStopStrategy:
 
     def __init__(self, max_hold_days: int):
         self.max_hold_days = int(max_hold_days)
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛: 持仓到期即可能触发。"""
+        return x.hold_days >= self.max_hold_days
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         if ctx.hold_days < self.max_hold_days:

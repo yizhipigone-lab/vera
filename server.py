@@ -1,6 +1,7 @@
 """VERA Web 服务器 — FastAPI 后端 + 量化前端界面。
 
-启动: python server.py [--port 8080]
+启动: python server.py [--port 8080]   # 默认稳定模式 (2026-09-07)
+       python server.py --reload         # 开发热更 (默认关: 文件改动会打断回测/深度思考)
 访问: http://localhost:8080
 
 2026-08-01 批次5 C4c 拆分 (纯移动不改行为):
@@ -12,6 +13,7 @@
 import json
 import re
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # 2026-07-17: 协作式停止标志 (停止回测按钮)
@@ -26,7 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,7 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from config_mapper import StrategyConfig, _config_to_yaml_dict  # noqa: F401
 from lab_api import create_lab_router
 from research_api import router as research_router
-from utils.config_loader import ConfigLoader
+from utils.config_loader import ConfigLoader, get_run_config_summary
 from utils.logger import setup_logger
 
 logger = setup_logger("VERA-Server", level="INFO")
@@ -45,11 +47,48 @@ def _read_json(path: Path):
     """读取 JSON 文件 (UTF-8) 并解析, 供结果类端点复用。"""
     return json.loads(path.read_text(encoding="utf-8"))
 
-app = FastAPI(title="VERA 量化回测系统", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"], allow_methods=["*"], allow_headers=["*"])
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """启动自检 (2026-09-05: 由 on_event 迁移到 lifespan, 消除 DeprecationWarning):
+    K线缓存不新鲜则后台补拉 (2026-08-14, 5M 回测超时事故)。
+
+    与 scheduler 每日 15:45 的定时补拉是双保险 —— 调度器没常驻/电脑关机/
+    周末启动回测时, 靠这个自检兜底。非阻塞 (检查毫秒级, 补拉在后台线程),
+    fail-soft (缓存问题永不挡服务启动)。
+    """
+    try:
+        from core.kline_cache_maintenance import ensure_cache_fresh
+        logger.info(f"K线缓存启动自检: {ensure_cache_fresh(trigger='server_startup')}")
+    except Exception as e:
+        logger.warning(f"K线缓存启动自检异常 (不影响服务): {e}")
+    yield
+
+
+app = FastAPI(title="VERA 量化回测系统", version="1.0.0", lifespan=_lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])  # 2026-08-18: 放行局域网手机访问
+
+
+# 2026-09-19 架构修订批次 2.2: 未捕获异常的全局兜底 —— 统一 JSON {"detail": ...},
+# 不再让 Starlette 默认返回纯文本 "Internal Server Error" (前端两个 fetch 封装
+# api.js/trade.js 都按 detail 解析, 纯文本 500 会让 r.json() 抛 SyntaxError,
+# 错误信息不可控)。
+# 全站错误契约 (两种许可形状, 不许发明第三种):
+#   传输/意外错误 → 非 200 状态码 + {"detail": "人话"} (HTTPException / 本 handler)
+#   业务软失败    → 200 + {"success": false, "error": "..."} (只读查询类接口,
+#                   前端按 success 分支处理, 如大盘仪表盘快照缺失)
+@app.exception_handler(Exception)
+async def _unhandled_exc(request, exc):
+    logger.warning(f"未捕获异常 {request.method} {request.url.path}: {exc}",
+                   exc_info=True)
+    return JSONResponse(status_code=500,
+                        content={"detail": f"服务器内部错误: {exc}"})
 
 # 静态文件
-app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output")), name="output")
+# check_dir=False (2026-09-20 CI 修红): output/ 被 gitignore, CI checkout 后
+# 目录不存在, starlette 默认 check_dir=True 会在 import 期直接 RuntimeError
+# (收集期炸 exit 2)。目录不存在时请求才 404, 生产行为不变。
+app.mount("/output", StaticFiles(directory=str(_PROJECT_ROOT / "output"), check_dir=False), name="output")
 app.mount("/web", StaticFiles(directory=str(_PROJECT_ROOT / "web")), name="web")
 
 # ====== 数据模型 ======
@@ -86,7 +125,23 @@ lab_status = LabQueue(pipeline_busy=lambda: pipeline_status.running)
 
 # C4c: 抽出的路由模块 (路由注册语义不变, 路径/方法逐个平移)
 app.include_router(create_lab_router(lab_status, pipeline_status))
+# 2026-09-06: 公式农场页签 (三段闸门: 检查增量/一键入库/开始回测)
+from core.farm_runner import FarmRunner  # noqa: E402
+from farm_api import create_farm_router  # noqa: E402
+
+farm_status = FarmRunner()
+app.include_router(create_farm_router(farm_status, pipeline_status))
 app.include_router(research_router)
+from data_cache_api import router as data_cache_router  # 2026-08-14: 数据准备 TAB
+app.include_router(data_cache_router)
+from ai_api import router as ai_router  # 2026-09-06: AI 设置 TAB (对话大脑三档接入配置)
+app.include_router(ai_router)
+# 2026-09-17: 大盘位置 TAB (十年百分位/市场宽度/照镜子/择时影子; 只读参考不联仓位)
+from market_position_api import router as market_position_router  # noqa: E402
+app.include_router(market_position_router)
+# 2026-09-20: 舆情 TAB (异动台账回溯 + 机构研究雷达; 只读, 守铁律 1 不联仓位调度)
+from sentiment_api import router as sentiment_router  # noqa: E402
+app.include_router(sentiment_router)
 
 
 # ====== 配置端点 ======
@@ -211,6 +266,14 @@ async def get_status():
             step = _progress.STAGE_NAMES.get(snap["stage"], step)
     prog = max(prog, _last_served_pct)
     _last_served_pct = prog
+    # 2026-09-20: 调度器存活 (三态: running/stopped/down)。
+    # additive 字段, 旧前端不读不受影响。fail-soft: 判读本身挂了不许拖垮 /api/status。
+    try:
+        from scheduler.health import status as _sched_status
+        sched = _sched_status()
+    except Exception as _e:
+        sched = {"state": "unknown", "age_s": None, "heartbeat": None,
+                 "note": f"调度器状态判读不可用: {_e}"}
     return {
         "running": pipeline_status.running,
         "progress": prog,
@@ -219,6 +282,7 @@ async def get_status():
         "eta_s": round(eta, 1),
         "error": pipeline_status.error,
         "has_result": pipeline_status.result is not None,
+        "scheduler": sched,
     }
 
 
@@ -253,18 +317,26 @@ def run_pipeline(cfg: StrategyConfig):
     # 输入校验（保留）
     if not re.match(r'^\d{8}$', cfg.start_time) or not re.match(r'^\d{8}$', cfg.end_time):
         pipeline_status.running = False
+        pipeline_status.error = ""  # 2026-09-16 审计 P2: 校验失败早退, 不残留上次错误态
         return {"success": False, "error": "日期格式错误，应为 YYYYMMDD（8位数字），如 20240101"}
     if cfg.start_time >= cfg.end_time:
         pipeline_status.running = False
+        pipeline_status.error = ""
         return {"success": False, "error": "起始日期必须早于结束日期"}
     if not cfg.formula_name.strip():
         pipeline_status.running = False
+        pipeline_status.error = ""
         return {"success": False, "error": "选股公式名称不能为空"}
 
     # C1-3: 构建 YAML 配置临时文件，Pipeline(run) 接收路径字符串
     import os as _os
     import tempfile
     config_dict = _config_to_yaml_dict(cfg)
+    # 2026-08-06 HIGH#5: validate 下沉到 /api/run (原仅 save/validate 端点调).
+    # 不阻塞回测, 仅 warning 入日志, 便于直调 API/yaml 路径暴露 ladder 比例错配。
+    _stop_warnings = ConfigLoader.validate_stop_config(config_dict)
+    if _stop_warnings:
+        logger.warning("止损止盈配置告警 (不阻塞): %s", _stop_warnings)
     tmp_yaml = None
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as fp:
@@ -309,6 +381,10 @@ def run_pipeline(cfg: StrategyConfig):
             pipeline_status.running = False
             return {"success": False, "error": str(err)}
         response_data = writer.serialize(result)
+
+        # 2026-08-20: 回测口径摘要 (初始资金/周期/买入价/公式/股票池/复权) —
+        # 历史回测卡片需展示边界条件, 落进 data 顶层 (有才加 key, 老结果无此键前端回退)。
+        response_data["run_config_summary"] = get_run_config_summary(config_dict)
 
         # C1-3: 落盘三文件（替换原来的手写 persist 块）
         writer.persist(
@@ -404,14 +480,112 @@ async def index():
     html_path = _PROJECT_ROOT / "web" / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
-    # index.html 缺失时返回兜底提示，避免隐式返回 None 触发 ResponseValidationError
     return "<h1>VERA Web 前端未找到，请创建 web/index.html</h1>"
+
+
+@app.get("/m", response_class=HTMLResponse)
+async def mobile():
+    """移动版入口 (2026-08-18): 手机局域网访问 http://<lan-ip>:8080/m。"""
+    html_path = _PROJECT_ROOT / "web" / "mobile.html"
+    if html_path.exists():
+        return html_path.read_text(encoding="utf-8")
+    return "<h1>VERA 移动版未找到，请创建 web/mobile.html</h1>"
 
 @app.get("/favicon.ico")
 async def favicon():
-    """重定向到 SVG 图标，消除 404 日志噪音。"""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/web/favicon.svg")
+
+
+# ====== 分析 Tab 端点 ======
+
+@app.get("/api/calendar")
+async def api_calendar(year: int = 0, month: int = 0):
+    """交易日历 (utils.trading_calendar 精确历, 2026-09-04 修复)。
+
+    旧数据源 TDX get_calendar_days (原 get_trading_dates) 派生自上证指数
+    盘后数据 —— 只含 "已收盘且已下载" 的日子: 盘中永远缺当天、未来整月空白,
+    周五盘中也会被标"休市" (实测 9 月只返回 1/2/3 号、10 月 0 天)。
+    现改用与实盘时段感知同源的精确历 (exchange_calendars XSHG 上交所历,
+    缺库时内置 2026 假日表), 今天/未来/法定节假日全部正确, 显示与实盘
+    判断同源。2026-09-15: 月历网格构建下沉 utils.trading_calendar
+    .month_grid 纯函数 (深模块治理), 本路由只转发。"""
+    from utils.trading_calendar import month_grid
+    return month_grid(year, month)
+
+
+def _norm_yyyymmdd(s: str) -> str:
+    """日期归一: 前端可能传 YYYY-MM-DD, 数据层只认 YYYYMMDD (去横杠)。
+    2026-09-16 审计 P2: 原 /api/benchmark/history 与 /api/stock/kline 两处
+    各手写一份 replace("-",""), 下沉单一实现。"""
+    return s.replace("-", "")
+
+
+@app.get("/api/benchmark/history")
+async def api_benchmark_history(
+    indices: str = "shanghai,hs300,chuangyeban,kechuang50,zhongzhengA500",
+    start: str = "", end: str = "",
+):
+    """拉取基准指数日线 (分析 Tab 权益曲线基准对比)。
+    indices: 逗号分隔的指数名; start/end: YYYY-MM-DD。"""
+    from core.data_fetcher import DataFetcher
+    # 2026-08-08 修复: 前端传 YYYY-MM-DD, get_kline 只认 YYYYMMDD,
+    # 此前直接抛 ValueError 被静默吞掉 → 基准恒空 (权益曲线无对比线)
+    start = _norm_yyyymmdd(start)
+    end = _norm_yyyymmdd(end)
+    index_names = [n.strip() for n in indices.split(",") if n.strip()]
+    from core.kline_view import close_records  # 变形下沉纯函数 (2026-09-15)
+    result: dict = {}
+    for name in index_names:
+        code = DataFetcher.INDEX_CODES.get(name)
+        if not code:
+            continue
+        try:
+            kline = DataFetcher.get_kline([code], start_time=start,
+                                          end_time=end, period="1d",
+                                          dividend_type="none")
+            result[name] = close_records(kline, code)
+        except Exception:
+            result[name] = []
+    return result
+
+
+@app.get("/api/stock/kline")
+def api_stock_kline(
+    code: str = Query(..., pattern=r"(?i)^\d{6}(\.(SH|SZ|BJ))?$"),
+    start: str = Query("", pattern=r"^(\d{8}|\d{4}-\d{2}-\d{2})?$"),
+    end: str = Query("", pattern=r"^(\d{8}|\d{4}-\d{2}-\d{2})?$"),
+):
+    """单笔交易 K 线回放日线 (图表分析深挖包 Phase 3, 2026-08-14)。
+
+    薄 adapter: 校验 → 归一 → get_kline → field-major 转 rows → 异常映射。
+    - code 正则白名单 (6位数字+可选 SH/SZ/BJ 后缀) 防注入 TDX 查询, 不匹配 → 422。
+    - start/end 同时接受 YYYYMMDD 和 YYYY-MM-DD, 归一成 YYYYMMDD 再调数据层
+      (照抄 /api/benchmark/history 2026-08-08 修复教训: 未归一直接抛错被静默吞)。
+    - 复权口径 dividend_type="front" (前复权): 与回测引擎一致
+      (backtest/engine.py:213 硬编码 "front", engine.run docstring 注明与
+      pipeline.assert_consistent 对齐), 保证买卖点 marker 和 K 线价格对得上;
+      benchmark 端点用 "none" 是指数口径, 不适用于个股回放。
+    - 任何字段 NaN/inf 的行整行丢弃 (FastAPI allow_nan=False, 漏一个就 500)。
+    - 无数据/缺列 → 200 空 rows; 数据层异常 → 502 {"detail": ...}。
+    """
+    from core.data_fetcher import DataFetcher
+    from core.kline_view import ohlcv_rows  # 变形下沉纯函数 (2026-09-15)
+    from utils.code_normalizer import normalize as _normalize_code
+
+    code_in = code.strip().upper()
+    tdx_code = _normalize_code(code_in) or code_in  # 补默认后缀, 如 600000 → 600000.SH
+    start = _norm_yyyymmdd(start)
+    end = _norm_yyyymmdd(end)
+    try:
+        kline = DataFetcher.get_kline(
+            [tdx_code], start_time=start, end_time=end,
+            period="1d", dividend_type="front")
+    except Exception as e:
+        logger.error(f"/api/stock/kline 数据层异常 ({tdx_code}): {e}")
+        raise HTTPException(status_code=502, detail=f"K线数据获取失败: {e}")
+
+    return {"code": code_in, "period": "1d", "rows": ohlcv_rows(kline, tdx_code)}
 
 
 # ====== 启动 ======
@@ -422,9 +596,46 @@ if __name__ == "__main__":
     import uvicorn
     parser = argparse.ArgumentParser(description="VERA Web 服务器")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--host", type=str, default="127.0.0.1")
+    parser.add_argument("--host", type=str, default="0.0.0.0")  # 2026-08-18: 局域网手机访问
+    # 2026-09-07 稳定优先: 默认关闭文件改动自动重启 (用户拍板)。此前默认热更,
+    # 别人改 trade_main.py 等任何代码都会连带把 server 重启 → 打断正在跑的
+    # 深度思考/回测 (2026-09-07 早盘实测)。要热更时显式 --reload。
+    # reload 监视必须排除非代码目录 —— data/ (trade.db、kline_cache)、
+    # output/ (回测报告) 高频写入, 不排除会引发重启风暴 (reload 分支内处理)。
+    parser.add_argument("--reload", action="store_true",
+                        help="开启文件改动自动重启 (仅开发调后端时用; "
+                             "默认关闭, 更稳定)")
     args = parser.parse_args()
 
     logger.info("VERA 量化回测系统 Web 服务器启动")
     logger.info(f"访问: http://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, access_log=False)
+    # 2026-09-04 大脑启动失败修复: uvicorn 0.44 在 reload 模式下把 Windows
+    # 事件循环换成 SelectorEventLoop (不支持子进程), brain 的 claude CLI 起不来。
+    # 传自定义 loop factory 强制 Proactor (详见 utils/proactor_loop.py docstring)。
+    _LOOP_FACTORY = "utils.proactor_loop:factory"
+    if not args.reload:  # 默认: 稳定模式 (不盯文件改动, 长回测/深度思考不被打断)
+        uvicorn.run(app, host=args.host, port=args.port, access_log=False,
+                    loop=_LOOP_FACTORY)
+    else:  # 显式 --reload: 开发热更模式
+        logger.info("开发模式: 后端代码改动自动重启 (--reload 显式开启; "
+                    "跑长回测/深度思考期间勿用, 保存代码会中断)")
+        # 目录 pattern 正反斜杠双写: watchfiles 的 fnmatch 按字面分隔符
+        # 匹配, Windows 路径是反斜杠, 只写 "data/*" 挡不住 data\...。
+        # 2026-09-05: dsh-runtime 必须排除 —— 449MB 便携运行时 + 430 个
+        # junction, watchfiles 全树行走会 stat 风暴甚至沿链接打转; 且 DSH
+        # 每答一问就往 home/sessions/ 写 .jsonl.zstd 会话日志, 不排除会
+        # 在深度思考进行中触发重启 (实测: 8080 端口 deep 请求后整站 wedge)。
+        _excl_dirs = ["data", "output", "reports", "research", "docs",
+                      "notes", "tests", "tools", "skills", ".git",
+                      ".venv", "__pycache__", "dsh-runtime"]
+        _excludes = [p for d in _excl_dirs for p in (f"{d}/*", f"{d}\\*")]
+        _excludes += ["*.log", "*.txt", "*.json", "*.jsonl", "*.parquet",
+                      "*.csv", "*.yaml", "*.html", "*.db"]
+        # 2026-09-05: 排除项目根目录的临时草稿脚本 (_tmp*.py)。它们一保存/
+        # 运行就触发热重启 → Windows 上连续重启会抢端口/报 WinError 87。
+        # 根目录散落的 _tmp_xxx.py 是历史遗留草稿, 不再 watch 即不再误杀服务。
+        _excludes += ["_tmp*.py", "_tmp_*.py"]
+        uvicorn.run(
+            "server:app", host=args.host, port=args.port,
+            access_log=False, reload=True, reload_excludes=_excludes,
+            loop=_LOOP_FACTORY)

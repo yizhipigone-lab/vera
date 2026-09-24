@@ -50,8 +50,23 @@ def build_backtest_loop(
     # 移动止盈跳空保护 (2026-07-21 用户拍板, opt-in 默认关):
     # 跳空低开跌穿回撤线时按 min(回撤线, 开盘价) 成交
     trailing_gap_protection: bool = False,
+    # 移动止盈确认模式 (2026-08-04): intraday=旧行为(每bar判定,线价成交);
+    # low=日频最低价确认, close=日频收盘价确认 (日频模式当日末根bar判定,
+    # 收盘价成交, 阶梯值班日休息)
+    trailing_confirm: str = "intraday",
     # 卖出冷却 (2026-07-23, bar 数): 全清仓后 N bar 内禁止同票重新买入, 0=关闭
     sell_cooldown_bars: int = 0,
+    # 2026-08-08: 总仓位上限 (持仓市值/总权益, 1.0=不约束); 全局连亏冷却
+    # (连亏 N 笔触发停开新仓, 0=关闭; 触发后停 halt_bars 个 bar)
+    max_total_exposure: float = 1.0,
+    loss_streak_halt_n: int = 0,
+    loss_streak_halt_bars: int = 0,
+    # 2026-08-20: open_t1 买入口径 — 买入价矩阵 (=open), None=收盘价老行为。
+    # 配合 entry_next_open.py 平移后的信号使用; 提供时 EntryEngine 自动
+    # 声明 EntryPath.BACKTEST_T1_OPEN (entry.py 构造期校验配对)。
+    buy_price_np: Optional[np.ndarray] = None,
+    # 2026-08-28: 流动性约束 — 单笔 ≤ 当日成交额×此比例 (1.0=不约束, 老行为)
+    max_turnover_pct: float = 1.0,
 ) -> BacktestLoop:
     """从原 _simulate_core_v3 壳的参数构造 BacktestLoop。
 
@@ -68,6 +83,10 @@ def build_backtest_loop(
         lot_size=lot_size, min_lots=min_lots,
         bpday=bpday, max_position_pct=max_position_pct,
         sell_cooldown_bars=sell_cooldown_bars,
+        max_total_exposure=max_total_exposure,
+        loss_streak_halt_n=loss_streak_halt_n,
+        loss_streak_halt_bars=loss_streak_halt_bars,
+        max_turnover_pct=max_turnover_pct,
     )
 
     # ── capability gating: 按 enabled 过滤策略 ──
@@ -79,7 +98,7 @@ def build_backtest_loop(
     if trailing_enabled:
         strategies["trailing"] = TrailingStrategy(
             activation=trailing_activation, drawdown=trailing_drawdown,
-            gap_protection=trailing_gap_protection)
+            gap_protection=trailing_gap_protection, confirm=trailing_confirm)
     if time_enabled:
         strategies["time_stop"] = TimeStopStrategy(max_hold_days=max_hold_days)
     if cond_time_enabled:
@@ -113,7 +132,7 @@ def build_backtest_loop(
         params=params,
         dispatcher=dispatcher,
         absolutes=absolutes,
-        entry_engine=EntryEngine(params),
+        entry_engine=EntryEngine(params, buy_price_np=buy_price_np),
         equity_tracker=EquityTracker(n_dates_hint),
         position_book=PositionBook(),
         ladder_profits=ladder_profits,

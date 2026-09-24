@@ -14,8 +14,9 @@ import datetime as _dt
 import time
 from typing import Callable
 
-from scheduler.trading_calendar import is_trading_day as _cal_is_trading_day
-from trade.book import is_etf
+from utils.trading_calendar import is_trading_day as _cal_is_trading_day
+from trade.book import is_etf, label_of, ladder_tier_qty
+from trade.quote_stale import REASON_STALE, is_quote_stale
 from utils.logger import get_logger
 
 _logger = get_logger("trade.monitor")
@@ -25,7 +26,7 @@ SESSION_NAMES = {"pre_open": "盘前", "auction": "集合竞价",
                  "continuous": "盘中", "lunch": "午休中", "closed": "已收盘"}
 
 # D5 (2026-08-01): 节假日日历统一 —— trading_session 原只判周末
-# (TODO P2), 现接 scheduler.trading_calendar (exchange_calendars 精确历,
+# (TODO P2), 现接 utils.trading_calendar (exchange_calendars 精确历,
 # 缺失时降级内置 2026 假日表, 其自身松耦合不抛异常)。盘中热路径
 # (scan 每轮都调) 按日 memoize; 日历万一异常回落周末判定
 # (fail-open, 与 D5 前行为一致, 不让日历故障压制盘中规则)。
@@ -47,6 +48,19 @@ def is_trading_day_cached(d: _dt.date | None = None) -> bool:
         v = day.weekday() < 5
     _TRADING_DAY_CACHE[key] = v
     return v
+
+
+def _ladder_tier_qty(volume: int, ratio: float) -> int | None:
+    """阶梯兜底档的卖出数量, 口径对齐 executor.place_ladder:
+    ratio<1 → 比例手数四舍五入 (0.5 边界向上, 计算单一真相源
+    trade/book.ladder_tier_qty, 2026-09-16 P2-1 收口); ratio≥1 → 清仓档。
+    返回 None = 卖全部可用 (execute_exit 的 qty=None 语义) —— 用于
+    清仓档、比例档算不出整手、或 volume 未知 (<=0): 兜底语义宁可
+    全卖不漏卖, 与 2026-08-06 前的旧行为一致。"""
+    if ratio >= 1.0 or volume <= 0:
+        return None
+    qty = ladder_tier_qty(volume, ratio, int(volume / 100))
+    return qty if qty > 0 else None
 
 
 def trading_session(now: float | None = None) -> str:
@@ -78,7 +92,12 @@ def trading_session(now: float | None = None) -> str:
 
 class Monitor:
     """行情缓存 + 健康检测 + 动态规则评估。公开接口:
-    on_quote / quote_of / scan_once / pending_check / is_healthy (5 个)。"""
+    on_quote / quote_of / scan_once / pending_check / is_healthy / has_tick (6 个)。"""
+
+    # 审计降噪 (2026-09-05 体检 P2-1): monitor_no_quote/stale_quote 逐轮刷库
+    # (14 天 7070+133 条) 淹没真告警。同 code 同类 15 分钟最多落一条;
+    # 首现立即写, 状态翻转/recover 等不走过道, 真信号不丢。
+    _AUDIT_THROTTLE_SEC = 900.0
 
     def __init__(
         self,
@@ -88,6 +107,7 @@ class Monitor:
         store,
         config,
         hold_days: Callable[[str], int] | None = None,
+        peak_px: Callable[[str], "float | None"] | None = None,
         clock: Callable[[], float] = time.time,
     ):
         self._gw = gateway
@@ -97,6 +117,8 @@ class Monitor:
         self._cfg = config
         # 持有天数来源 (MVP 由 root 注入, 实盘来自 EOD 归档的建仓日)
         self._hold_days = hold_days or (lambda code: 0)
+        # 持仓期历史峰值来源 (2026-08-06): None=取不到, 回退当日口径
+        self._peak_px = peak_px or (lambda code: None)
         self._clock = clock
         self._quotes: dict[str, dict] = {}   # code -> {last, bid1, high, ts}
         self._last_tick_ts: float | None = None
@@ -104,6 +126,34 @@ class Monitor:
         self._triggered: set[str] = set()    # 当日已触发票, 防同票连环触发
         # 审计H2修复: _triggered 的日期戳, scan_once 跨日清空
         self._triggered_date = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        # 审计节流账: kind -> {key: 上次落库时间}
+        self._audit_last: dict[str, dict[str, float]] = {}
+
+    def apply(self, cfg) -> None:
+        """热更契约 (治理III W2-1): 换配置引用。cfg 用时读属性, 换引用即热。"""
+        self._cfg = cfg
+
+    def clear_trigger(self, code: str) -> None:
+        """解除当日触发标记 (2026-08-01 P0-3): executor pending 终态为
+        废单/已撤且持仓仍在时回调, 该票下轮扫描重新评估。
+        (2026-09-05 唯一下单口收口 T6: 转公开 —— 组合根接线不再摸
+        _triggered 私有集合)"""
+        self._triggered.discard(code)
+
+    def _write_throttled(self, kind: str, key: str, message: str,
+                         detail: dict | None = None) -> None:
+        """按 (kind, key) 节流写审计: 首现即写, 窗口内同 key 跳过。
+
+        供逐轮刷屏的 monitor_no_quote/monitor_stale_quote 用 —— 持续缺失/
+        陈旧是稳态不是新事件, 每轮都落库只产生噪音; 恢复/触发等真状态
+        翻转走直写不经过这里。"""
+        bucket = self._audit_last.setdefault(kind, {})
+        now = self._clock()
+        last = bucket.get(key)
+        if last is not None and (now - last) < self._AUDIT_THROTTLE_SEC:
+            return
+        bucket[key] = now
+        self._store.write_audit(kind, message, detail or {})
 
     # ── 行情入口 ────────────────────────────────────────────────
 
@@ -152,8 +202,9 @@ class Monitor:
         self._quotes[code] = {
             "last": float(quote.get("last") or 0.0),
             "bid1": float(quote.get("bid1") or 0.0),
-            # ask1 也要缓存: 尾盘自动买入按卖一价定价 (2026-07-27 MVP),
-            # 丢了它买单会全走对手最优分支
+            # ask1 也要缓存: 尾盘自动买入按卖一价定价 (2026-07-27 MVP);
+            # 买单对手最优分支已于 2026-08-12 移除 (auto_buy.py), 丢了它
+            # 买单无价可定
             "ask1": float(quote.get("ask1") or 0.0),
             "high": high,
             "prev_close": prev_close,
@@ -243,33 +294,51 @@ class Monitor:
             quote = self._quotes.get(code)
             if not quote or quote["last"] <= 0:
                 # 无价 fail-closed: 本轮跳过+WARN, 绝不按零价/无数据处理
-                self._store.write_audit(
-                    "monitor_no_quote", f"{code} 无行情快照, 本轮跳过",
+                # (节流: 持续无行情是稳态, 同票 15 分钟只落一条, 体检 P2-1)
+                self._write_throttled(
+                    "monitor_no_quote", code, f"{code} 无行情快照, 本轮跳过",
                     {"code": code})
                 continue
             # 审计M6修复: 陈旧快照与无快照同等 fail-closed —— 单票订阅
             # 丢失时全局心跳兜不住, 陈旧价驱动卖出比不卖更危险。
-            # 2026-07-27 裁决③: tick 显式缺时间戳 (ts=None) 也视为陈旧
-            if quote.get("tick_ts_missing"):
-                self._store.write_audit(
-                    "monitor_stale_quote",
-                    f"{code} tick 缺时间戳, 视为陈旧, 本轮跳过",
-                    {"code": code})
+            # 判定统一走 trade/quote_stale.py (单一真相源): 无 ts / ts 为
+            # None / tick_ts_missing / 超时 任一即陈旧 (2026-07-27 裁决③)。
+            stale, reason = is_quote_stale(quote, self._clock(),
+                                           self._cfg.quote_stale_sec)
+            if stale:
+                if reason == REASON_STALE:
+                    msg = (f"{code} 行情快照陈旧 "
+                           f"(>{self._cfg.quote_stale_sec}s), 本轮跳过")
+                else:
+                    # tick_ts_missing / no_ts / ts_none 同属"没可信时间戳"
+                    msg = f"{code} tick 缺时间戳, 视为陈旧, 本轮跳过"
+                # (节流: 持续陈旧是稳态, 同票 15 分钟只落一条, 体检 P2-1)
+                self._write_throttled(
+                    "monitor_stale_quote", code, msg,
+                    {"code": code, "quote_ts": quote.get("ts")})
                 continue
-            if (self._clock() - quote["ts"]) > self._cfg.quote_stale_sec:
-                self._store.write_audit(
-                    "monitor_stale_quote",
-                    f"{code} 行情快照陈旧 (>{self._cfg.quote_stale_sec}s), 本轮跳过",
-                    {"code": code, "quote_ts": quote["ts"]})
+            result = self._evaluate(code, pos.avg_cost, quote, pos.volume)
+            if result is None:
                 continue
-            reason = self._evaluate(code, pos.avg_cost, quote)
-            if reason is None:
-                continue
+            reason, qty, tier = result
             # 审计H1修复: 执行成功才标记"已触发"。execute_exit 有大量
             # 合法 fail-closed 返回路径 (无买一价/可用为0/风控拒绝),
             # 先标记等于"一跳行情延迟换一整天无保护"
-            if self._executor.execute_exit(code, reason):
-                self._triggered.add(code)
+            if self._executor.execute_exit(code, reason, qty=qty):
+                if tier is not None and qty is not None:
+                    # 2026-08-06 阶梯兜底部分卖: 乐观标记该档 (对齐
+                    # place_ladder "提交成功即标记, 废单也不重复卖"),
+                    # 但不入 _triggered —— 剩余仓位继续受 trailing/
+                    # cost_stop/高档位兜底保护 (预埋单世界的分工复原:
+                    # 档已卖 = 已标记, 其余腿照常评估)
+                    self._book.mark_tier(code, tier, today)
+                    # 审计 P0-3 (2026-09-16): 补落 tier_state 表 —— 原只写
+                    # 内存, 盘中重启后该档标记丢失, 同档可再次部分卖
+                    # (双卖)。对齐 executor.place_ladder 的双写。
+                    self._store.tier_state.save(
+                        code, sorted(self._book.tier_done(code, today)), today)
+                else:
+                    self._triggered.add(code)
                 triggers.append((code, reason))
             else:
                 self._store.write_audit(
@@ -287,19 +356,155 @@ class Monitor:
             return
         self._executor.pending_check(now_hhmm=now_hhmm)
 
-    def _evaluate(self, code: str, avg_cost: float, quote: dict) -> str | None:
+    # ── 收盘决策汇总 (2026-09-18 决策台账) ──────────────────────
+
+    def daily_digest(self, positions: dict) -> list[dict]:
+        """收盘汇总: 每个持仓「今天为什么没卖」一行 (**只读, 不产生任何交易**)。
+
+        返回 ``[{code, action, reason_code, reason_text, evidence}]``, 由
+        ``trade_main._capture_decision_digest`` 落进决策台账。卖出动作仍然是盘中
+        ``scan_once`` 的事 —— 本方法**永远不会**下一笔单, 它只负责把"现在离各条
+        卖出线还差多少"算出来、说成人话。
+
+        **防漂移硬约束** (本方案最容易被写歪的地方): 命中与否一律调盘中的那三个
+        ``_hit_cost_stop`` / ``_hit_trailing`` / ``_hit_ladder`` 以及同族的
+        ``_hit_time_stop`` / ``_hit_cond_time`` / ``_hit_first_day``, 本方法只额外
+        算"给人看的距离百分比"。这样改了阈值, 台账里的话术自动跟着变, 不会出现
+        "台账说没触发、规则其实已经触发了"这种最伤信任的分叉。
+
+        三种结果 (E5/E6/E12):
+        - 拿不到行情 → FAIL + ``EXIT_NO_QUOTE``, **不拿零价硬算距离**;
+        - 规则已命中但当天没有卖出成交 (调用方会再核对一遍) → FAIL + ``EXIT_ARM_FAIL``,
+          白话说"按规则今天该卖, 但没卖掉";
+        - 都没命中 → HOLD + ``EXIT_NO_TRIGGER``, 白话给出离每条线的距离。
+        """
+        stop = self._cfg.stop
+        today = time.strftime("%Y%m%d", time.localtime(self._clock()))
+        out: list[dict] = []
+        for code, pos in sorted(positions.items()):
+            if int(getattr(pos, "volume", 0) or 0) <= 0:
+                continue
+            # ETF 不纳入自动管理 (与 _evaluate 的早退同口径): 不给它编"没触发"
+            if self._cfg.exclude_etf and is_etf(code):
+                continue
+            label = label_of(code)
+            quote = self._quotes.get(code)
+            last = float((quote or {}).get("last") or 0.0)
+            avg_cost = float(getattr(pos, "avg_cost", 0.0) or 0.0)
+            if last <= 0:
+                if not self._quotes:
+                    text = (f"行情缓存是空的（程序刚重启过），拿不到 {label} 的价格，"
+                            f"判不了今天要不要卖")
+                else:
+                    text = (f"行情缓存里没有 {label} 的最后价格，判不了要不要卖"
+                            f"（不拿零价硬算）")
+                out.append({"code": code, "action": "FAIL",
+                            "reason_code": "EXIT_NO_QUOTE", "reason_text": text,
+                            "evidence": {"code": code,
+                                         "has_any_quote": bool(self._quotes)}})
+                continue
+            high = float((quote or {}).get("high") or 0.0)
+            try:
+                hist_peak = self._peak_px(code) or 0.0
+            except Exception:
+                hist_peak = 0.0
+            peak = max(avg_cost, high, float(hist_peak))
+            days = self._hold_days(code)
+
+            # ── 命中判定: 全部复用盘中的 _hit_* (唯一真相源) ──
+            hit = ""
+            if self._hit_cost_stop(stop.cost_stop, avg_cost, last):
+                hit = "硬止损"
+            elif self._hit_trailing(stop.trailing_stop, avg_cost, peak, last):
+                hit = "移动止盈"
+            elif self._hit_time_stop(stop.time_stop, days):
+                hit = "时间止损"
+            elif self._hit_cond_time(stop.cond_time_stop, avg_cost, high, days):
+                hit = "条件时间止损"
+            elif self._hit_first_day(stop.first_day, avg_cost, high, days):
+                hit = "首日未达标"
+            else:
+                tier = self._hit_ladder(stop.ladder_tp, avg_cost, high, today, code)
+                if tier is not None:
+                    hit = f"阶梯止盈第 {tier + 1} 档"
+            if hit:
+                out.append({
+                    "code": code, "action": "FAIL",
+                    "reason_code": "EXIT_ARM_FAIL",
+                    "reason_text": (f"按规则今天该卖出 {label}（触发的是{hit}），"
+                                    f"但当天没有查到它的卖出成交记录"),
+                    "evidence": {"code": code, "last": round(last, 3),
+                                 "hit_rule": hit}})
+                continue
+
+            # ── 没命中: 逐条给出"还差多少" ──
+            ev = {"code": code, "last": round(last, 3),
+                  "avg_cost": round(avg_cost, 3), "peak": round(peak, 3),
+                  "hold_days": days}
+            says = [f"没到任何一条卖出线：现价 {last:.2f} 元"]
+            c = stop.cost_stop
+            if c.enabled and avg_cost > 0:
+                line = avg_cost * (1.0 + c.threshold)
+                gap = (last - line) / last * 100.0
+                ev["cost_stop_price"] = round(line, 3)
+                ev["gap_to_cost_stop_pct"] = round(gap, 2)
+                says.append(f"跌到 {line:.2f} 元（成本 {avg_cost:.2f} 元 "
+                            f"×(1{c.threshold:+.0%})）才会硬止损，还差 {gap:.1f}%")
+            t = stop.trailing_stop
+            if t.enabled and avg_cost > 0:
+                act_line = avg_cost * (1.0 + t.activation)
+                if peak >= act_line:
+                    line = peak * (1.0 - t.drawdown)
+                    gap = (last - line) / last * 100.0
+                    ev["trailing_stop_price"] = round(line, 3)
+                    ev["gap_to_trailing_pct"] = round(gap, 2)
+                    says.append(f"移动止盈线在 {line:.2f} 元（最高 {peak:.2f} 元 "
+                                f"回撤 {t.drawdown:.0%} 才触发），还差 {gap:.1f}%")
+                else:
+                    says.append(f"移动止盈还没激活（要涨到 {act_line:.2f} 元才启动）")
+            lv = stop.ladder_tp
+            if lv.enabled and avg_cost > 0:
+                done = self._book.tier_done(code, today)
+                nxt = next(((i, p) for i, (p, _r) in enumerate(lv.levels)
+                            if i not in done), None)
+                if nxt is not None:
+                    ti, profit = nxt
+                    line = avg_cost * (1.0 + profit)
+                    gap = (line - last) / last * 100.0
+                    ev["ladder_next_tier"] = ti + 1
+                    ev["ladder_next_price"] = round(line, 3)
+                    says.append(f"离下一个阶梯止盈档（第 {ti + 1} 档 "
+                                f"{line:.2f} 元）还差 {gap:.1f}%")
+            ts = stop.time_stop
+            if ts.enabled:
+                says.append(f"已持有 {days} 天（到 {ts.max_hold_days} 天就该卖）")
+            out.append({"code": code, "action": "HOLD",
+                        "reason_code": "EXIT_NO_TRIGGER",
+                        "reason_text": "；".join(says), "evidence": ev})
+        return out
+
+    def _evaluate(self, code: str, avg_cost: float, quote: dict,
+                  volume: int = 0) -> tuple[str, int | None, int | None] | None:
         """全规则评估, 复刻回测 ExitDispatcher 优先级语义
         [backtest/loop/exit_engine.py:46-53/99-139]。
         每条规则对齐回测单 bar 版本 (出处逐条标注), 数据缺失维持
-        fail-closed。返回触发原因或 None。
+        fail-closed。返回 (原因, 指定卖出数量, 阶梯档位) 或 None;
+        数量/档位仅阶梯兜底部分卖时非 None, 其余规则恒 (reason, None, None)
+        (None 数量 = 卖全部可用, execute_exit 口径)。
 
         与回测的已知口径差 (parity 测试头注同款):
         - bar low/close ≡ tick last; hi_pp 用当日行情 high;
         - trailing_first 的双触发 (ladder 部分卖 + trailing 全卖剩余)
           在实盘由 executor 预埋单承担部分卖 —— 本腿只对"未预埋档"
-          兜底, 首触发即返回, 无双触发路径。
+          兜底。2026-08-06 起兜底按档位比例部分卖 (不再一锅端):
+          卖完标档不武装, 剩余仓位由其余规则继续保护。
         """
         stop = self._cfg.stop
+        # 2026-08-16 卖出总开关: 关闭时整个监控腿不再评估任何卖出规则 (不新触发),
+        # 已挂单子/持仓不动; 人工卖出走 dispatch_command → execute_exit(manual)
+        # 不经本函数, 不受此开关限制。
+        if not self._cfg.auto_sell_enabled:
+            return None
         # 2026-07-27 ETF 误卖事件裁决③: ETF 不纳入自动管理,
         # 规则评估直接跳过 (持仓仍照常对账, 那是 reconciler 的事)
         if self._cfg.exclude_etf and is_etf(code):
@@ -307,63 +512,15 @@ class Monitor:
         last = quote["last"]
         high = quote["high"]
         days = self._hold_days(code)
-        # 峰值 = max(成本, 当日最高)。历史峰值 MVP 用成本价兜底 ——
-        # TODO P2 接 K 线缓存取历史日高
-        peak = max(avg_cost, high)
+        # 峰值 = max(成本, 持仓期历史最高, 当日最高)。
+        # 2026-08-06 P2 落地: 历史日高经 gateway 拉不复权日线 (与成本同口径),
+        # 取不到时回退当日口径 (旧 MVP 行为), 与回测 peak-since-entry 对齐。
+        try:
+            hist_peak = self._peak_px(code) or 0.0
+        except Exception:
+            hist_peak = 0.0
+        peak = max(avg_cost, high, hist_peak)
         today = time.strftime("%Y%m%d", time.localtime(self._clock()))
-
-        def hit_cost_stop():
-            # [cost_stop.py:28] lo_pp ≤ threshold ≡ low ≤ ep×(1+threshold),
-            # threshold 负值口径 (回测 config 同)
-            c = stop.cost_stop
-            return (c.enabled and avg_cost > 0
-                    and last <= avg_cost * (1.0 + c.threshold))
-
-        def hit_trailing():
-            # [trailing.py:35-39] 先过 activation 激活线 (峰值涨幅),
-            # 再判现价跌破 峰值×(1-drawdown) —— 2026-07-26 裁决前
-            # 实盘缺激活线, 现已补齐复刻
-            t = stop.trailing_stop
-            if not t.enabled or avg_cost <= 0:
-                return False
-            if (peak - avg_cost) / avg_cost < t.activation:
-                return False
-            return last <= peak * (1.0 - t.drawdown)
-
-        def hit_ladder():
-            # [ladder_tp.py:37-53] High 涨破新档位即触发。实盘的档位
-            # 执行在券商端 (executor 预埋限价单), 本腿只对"未预埋档"
-            # 兜底 —— 已标记档券商自己会成交, 再触发就是双卖
-            lv = stop.ladder_tp
-            if not lv.enabled or avg_cost <= 0:
-                return None
-            done = self._book.tier_done(code, today)
-            for i, (profit, _ratio) in enumerate(lv.levels):
-                if i in done:
-                    continue
-                if high >= avg_cost * (1.0 + profit):
-                    return i
-            return None
-
-        def hit_time_stop():
-            # [time_stop.py:23] 到点即走 (回测无收益门槛;
-            # 旧 trade 私设的 min_gain 已随裁决①删除)
-            t = stop.time_stop
-            return t.enabled and days >= t.max_hold_days
-
-        def hit_cond_time():
-            # [cond_time.py:25] 持仓 ≥ days 且当日最高涨幅 ≥ profit
-            c = stop.cond_time_stop
-            return (c.enabled and avg_cost > 0 and days >= c.days
-                    and (high - avg_cost) / avg_cost >= c.profit)
-
-        def hit_first_day():
-            # [first_day.py:28-40] 首个可交易日 (T+1 即 hold_days==1)
-            # 日内最高涨幅 < target 即卖。回测在当日最后一根 bar 判定,
-            # 实盘无 bar 收盘概念取"当日"粒度 (1d bpday=1 口径相同)
-            f = stop.first_day
-            return (f.enabled and avg_cost > 0 and days == 1
-                    and (high - avg_cost) / avg_cost < f.target)
 
         # 优先级调度顺序 [exit_engine.py:46-53]: priority block 在前,
         # 公共尾部 time_stop → cond_time → first_day 恒在后
@@ -379,35 +536,88 @@ class Monitor:
         high_pct = (high / avg_cost - 1) if avg_cost > 0 else 0.0
         dd_now = (1 - last / peak) if peak > 0 else 0.0
         checks = {
-            "cost_stop": (hit_cost_stop,
+            "cost_stop": (lambda: self._hit_cost_stop(stop.cost_stop, avg_cost, last),
                           f"cost_stop: 现价 {last:.2f} 跌破止损线 "
                           f"{avg_cost * (1.0 + stop.cost_stop.threshold):.2f} "
                           f"(成本 {avg_cost:.2f} {stop.cost_stop.threshold:+.0%})"),
-            "trailing": (hit_trailing,
+            "trailing": (lambda: self._hit_trailing(stop.trailing_stop, avg_cost,
+                                                    peak, last),
                          f"trailing: 最高 {peak:.2f} (峰值涨幅 {peak_pct:+.1%}, "
-                         f"过激活线 {stop.trailing_stop.activation:.0%}), "
-                         f"现价 {last:.2f} 回撤 {dd_now:.1%} 触发 "
-                         f"(阈值 {stop.trailing_stop.drawdown:.0%})"),
-            "time_stop": (hit_time_stop, f"time_stop: 持有 {days} 天达上限 "
+                         f"过激活线 {stop.trailing_stop.activation:.1%}), "
+                         f"现价 {last:.2f} 回撤 {dd_now:.2%} 触发 "
+                         f"(阈值 {stop.trailing_stop.drawdown:.1%})"),
+            "time_stop": (lambda: self._hit_time_stop(stop.time_stop, days),
+                          f"time_stop: 持有 {days} 天达上限 "
                           f"{stop.time_stop.max_hold_days} 天"),
-            "cond_time": (hit_cond_time,
+            "cond_time": (lambda: self._hit_cond_time(stop.cond_time_stop,
+                                                      avg_cost, high, days),
                           f"cond_time: 持有 {days} 天, 当日最高涨幅 "
                           f"{high_pct:+.1%} 达门槛 {stop.cond_time_stop.profit:.0%}"),
-            "first_day": (hit_first_day,
+            "first_day": (lambda: self._hit_first_day(stop.first_day,
+                                                      avg_cost, high, days),
                           f"first_day: 首日最高涨幅 {high_pct:+.1%} "
                           f"未达 {stop.first_day.target:.0%}"),
         }
         for name in _ORDER[stop.priority] + ("time_stop", "cond_time",
                                              "first_day"):
             if name == "ladder_tp":
-                tier = hit_ladder()
+                tier = self._hit_ladder(stop.ladder_tp, avg_cost, high, today, code)
                 if tier is not None:
-                    profit = stop.ladder_tp.levels[tier][0]
+                    profit, ratio = stop.ladder_tp.levels[tier]
                     return (f"ladder_tp: 最高 {high:.2f} 涨破档{tier + 1}线 "
                             f"{avg_cost * (1.0 + profit):.2f} "
-                            f"(成本 {avg_cost:.2f} {profit:+.0%}, 未预埋兜底)")
+                            f"(成本 {avg_cost:.2f} {profit:+.0%}, 未预埋兜底)",
+                            _ladder_tier_qty(volume, ratio), tier)
                 continue
             hit, reason = checks[name]
             if hit():
-                return reason
+                return reason, None, None
         return None
+
+    def _hit_cost_stop(self, c, avg_cost: float, last: float) -> bool:
+        """[cost_stop.py:28] lo_pp ≤ threshold ≡ low ≤ ep×(1+threshold),
+        threshold 负值口径 (回测 config 同)。"""
+        return (c.enabled and avg_cost > 0
+                and last <= avg_cost * (1.0 + c.threshold))
+
+    def _hit_trailing(self, t, avg_cost: float, peak: float, last: float) -> bool:
+        """[trailing.py:35-39] 先过 activation 激活线 (峰值涨幅),
+        再判现价跌破 峰值×(1-drawdown) —— 2026-07-26 裁决前实盘缺激活线,
+        现已补齐复刻。"""
+        if not t.enabled or avg_cost <= 0:
+            return False
+        if (peak - avg_cost) / avg_cost < t.activation:
+            return False
+        return last <= peak * (1.0 - t.drawdown)
+
+    def _hit_ladder(self, lv, avg_cost: float, high: float,
+                    today: str, code: str) -> int | None:
+        """[ladder_tp.py:37-53] High 涨破新档位即触发。实盘的档位执行在
+        券商端 (executor 预埋限价单), 本腿只对"未预埋档"兜底 —— 已标记档
+        券商自己会成交, 再触发就是双卖。返回档位序号或 None。"""
+        if not lv.enabled or avg_cost <= 0:
+            return None
+        done = self._book.tier_done(code, today)
+        for i, (profit, _ratio) in enumerate(lv.levels):
+            if i in done:
+                continue
+            if high >= avg_cost * (1.0 + profit):
+                return i
+        return None
+
+    def _hit_time_stop(self, t, days: int) -> bool:
+        """[time_stop.py:23] 到点即走 (回测无收益门槛;
+        旧 trade 私设的 min_gain 已随裁决①删除)。"""
+        return t.enabled and days >= t.max_hold_days
+
+    def _hit_cond_time(self, c, avg_cost: float, high: float, days: int) -> bool:
+        """[cond_time.py:25] 持仓 ≥ days 且当日最高涨幅 ≥ profit。"""
+        return (c.enabled and avg_cost > 0 and days >= c.days
+                and (high - avg_cost) / avg_cost >= c.profit)
+
+    def _hit_first_day(self, f, avg_cost: float, high: float, days: int) -> bool:
+        """[first_day.py:28-40] 首个可交易日 (T+1 即 hold_days==1)
+        日内最高涨幅 < target 即卖。回测在当日最后一根 bar 判定,
+        实盘无 bar 收盘概念取"当日"粒度 (1d bpday=1 口径相同)。"""
+        return (f.enabled and avg_cost > 0 and days == 1
+                and (high - avg_cost) / avg_cost < f.target)

@@ -7,8 +7,8 @@
 - 因果: 面板因子 trailing-only(复用 factor_ic_screen 注册函数);
   daily_basic 因子用 T 日快照(T 收盘决策点已知, 与 T 收盘买入铁律一致)。
 
-注意: 过滤语义与 tools/overheat_ab_test.py::apply_filter 一致(终审同款),
-此处是生产版(多规则顺序应用), 改动时需两侧同步。
+注意: tools/overheat_ab_test.py::apply_filter (终审同款) 自 2026-09-16 审计
+S4 修复起单臂/组合臂均委托本模块 apply_rules — 过滤语义单一实现, 不再有两份。
 """
 from __future__ import annotations
 

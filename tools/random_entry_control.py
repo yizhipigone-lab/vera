@@ -110,7 +110,7 @@ def main() -> None:
 
     padded_start = (pd.Timestamp(args.start) - pd.Timedelta(days=PAD_DAYS)
                     ).strftime("%Y%m%d")
-    calendar = pd.DatetimeIndex(pd.to_datetime(DataFetcher.get_trading_dates(
+    calendar = pd.DatetimeIndex(pd.to_datetime(DataFetcher.get_calendar_days(
         "SH", start_time=padded_start, end_time=args.end)))
     trade_dates = [d for d in calendar
                    if pd.Timestamp(args.start) <= d <= pd.Timestamp(args.end)]

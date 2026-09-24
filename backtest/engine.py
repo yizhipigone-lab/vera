@@ -13,7 +13,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from backtest._constants import BARS_PER_DAY, PERIODS_PER_YEAR, STD_5M_BAR_TIMES
+from backtest._constants import (
+    BARS_PER_DAY,
+    PERIODS_PER_YEAR,
+    STD_5M_BAR_TIMES,
+    detect_limit_up,
+)
 from backtest.degrade_5m import (
     apply_5m_degradation,
     recompute_last_tradable_idx,
@@ -35,7 +40,39 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-ENGINE_VERSION = "v3.6-no-legacy-20260723"
+ENGINE_VERSION = "v3.7-entry-t1-open-20260820"
+
+#: 准备段口径标签 (2026-09-19 批次 3.1: 准备段统一走 `prepare_matrices`)。
+#: tools/ 的 sweep 把矩阵缓存落盘时写进 meta.json; 加载时必须校验 ——
+#: 旧缓存是"手工复刻配方"产物 (**不把窗口终点截断到 end_time**, 与接缝口径
+#: 相差可达约 60 个交易日), 静默复用会让参数扫描与引擎口径分叉且不报错。
+#: 2026-09-20 审计 P1-4: 原先只有 gs_5m_sweep 一家校验, 口径真变的 quantqq
+#: 5m/1m 反而没校验 —— 校验收进本模块, 四个 sweep + research 脚本统一调用。
+PREP_SEAM = "engine_prepare_matrices@2026-09-19"
+
+
+def check_prep_caliber(meta: dict, where: str = "") -> None:
+    """加载 sweep 矩阵缓存前校验准备段口径 (fail-closed)。
+
+    缺标记 / 标记不符 → **拒绝加载** (抛 RuntimeError), 除非显式设环境变量
+    `VERA_SWEEP_ALLOW_OLD_PREP=1` (此时只告警, 供"就是要看旧结果"的场合)。
+    理由见 PREP_SEAM 注释: 旧口径的窗口多出一截尾巴, 混用即静默改变结论。
+    """
+    import os as _os
+    got = str((meta or {}).get("prep_seam") or "")
+    if got == PREP_SEAM:
+        return
+    msg = (f"{where}矩阵缓存口径不符: prep_seam={got!r}, 期望 {PREP_SEAM!r} "
+           f"(旧缓存是手工复刻配方产物, 窗口不截断到 end_time, 与引擎口径不同)。"
+           f"请重跑 prep 生成缓存。")
+    if _os.environ.get("VERA_SWEEP_ALLOW_OLD_PREP") == "1":
+        logger.warning("%s [VERA_SWEEP_ALLOW_OLD_PREP=1, 放行]", msg)
+        return
+    raise RuntimeError(msg + " (确实要用旧缓存: 设 VERA_SWEEP_ALLOW_OLD_PREP=1)")
+
+# 2026-09-16 P2: 硬止损阈值缺省值单一真相源 (原 -0.12 在 build 调用与
+# degrade 报告两处各自硬编码)。与 config/default.yaml cost_stop.threshold 对齐。
+_DEFAULT_COST_STOP_THRESHOLD = -0.12
 
 # ═══════════════════════════════════════════════════════════════
 # VeraCore 设计要点 — 核心循环实现已迁至 backtest/loop/ (候选 A 阶段 2, 2026-07-14)
@@ -53,7 +90,8 @@ ENGINE_VERSION = "v3.6-no-legacy-20260723"
 # 执行价格 (权威实现见 backtest/loop/strategies/, 此处仅注记):
 #   成本止损 → stop_price (ep*(1+threshold))
 #   阶梯止盈 → ladder_price (ep*(1+profit))
-#   移动止损/止盈 → Low 触及回撤线即触发, 按回撤线价 trail_line 成交 (trailing.py; 非 Close)
+#   移动止损/止盈 → 取决于 confirm 模式 (trailing.py): intraday=Low触线按线价;
+#     low/close=日频确认按收盘; simple=5M碰线按bar收盘 / 1D收盘判定按收盘 (无阶梯休息)
 #   其他     → Close
 # ═══════════════════════════════════════════════════════════════
 
@@ -136,6 +174,11 @@ class BacktestEngine:
         self.min_lots = int(ps.get("min_lots", 1))
         # 2026-07-09: 单票仓位占比上限 (<1.0 启用, 基于上一bar总权益; 默认1.0=不约束, 老脚本零变化)
         self.max_position_pct = float(ps.get("max_position_pct", 1.0))
+        # 2026-08-28: 流动性约束 — 单笔买入 ≤ 当日成交额 × max_turnover_pct
+        # (<1.0 启用, 如 0.01 = 单笔 ≤ 当日成交额 1%; 默认 1.0=不约束, 零行为变化)。
+        # 启用时矩阵缓存自动绕过 (prep 需含 turnover_day 字段, 旧缓存无此字段会
+        # 静默失效约束 → 必须重新取数, 见 run() 的 use_mc 条件)。
+        self.max_turnover_pct = float(ps.get("max_turnover_pct", 1.0))
         # 2026-07-17: 本地 K 线 parquet 缓存开关 (Phase 1, 默认 True 启用; 配置 use_kline_cache:false 回退 TDX 直拉)
         self.use_kline_cache = bool(config.get("use_kline_cache", True))
         # 2026-07-18: 5m 数据层降级 (计划书 2026-07-18, 默认关 G4)。缺 5m 的股-天
@@ -150,6 +193,33 @@ class BacktestEngine:
         # 2026-07-23: 卖出冷却 (交易日), 全清仓后 N 个交易日内禁止同票重新买入。
         # 默认 0=关闭 (零行为变化); run 时 × bpday 转 bar 数传给 loop。
         self.sell_cooldown_days = int(config.get("sell_cooldown_days", 0))
+        # 2026-08-08: 总仓位上限 (持仓市值/总权益 >= 此值停开新仓; 1.0=不约束, 默认零变化)
+        self.max_total_exposure = float(config.get("max_total_exposure", 1.0))
+        # 2026-08-08: 全局连亏冷却 — 连亏 n 笔停开新仓 days 交易日 (n<=0=关闭)
+        _ls = config.get("loss_streak_halt", {}) or {}
+        self.loss_streak_halt_n = int(_ls.get("n", 0))
+        self.loss_streak_halt_days = int(_ls.get("days", 0))
+        # 2026-08-20: 买入价口径 — close_t=信号日收盘价(默认, 零行为变化);
+        # open_t1=次日开盘价买入 (T+1 一字涨停拒买, T 日涨停过滤关闭)。
+        # 计划书: docs/plan/2026-08-20_回测次日开盘买入模式_计划书.md
+        self.entry_price_mode = str(config.get("entry_price_mode", "close_t"))
+        if self.entry_price_mode not in ("close_t", "open_t1"):
+            raise ValueError(
+                f"entry_price_mode 非法: {self.entry_price_mode!r} "
+                f"(合法: close_t/open_t1)")
+        # 2026-09-19 架构修订批次 3.1: 涨停过滤显式开关 (默认开, 零行为变化)。
+        # 此前要关只能 monkeypatch _filter_limit_up (tools/attr_gp1014.py 的
+        # no_limit_filter 变体就是这么干的) —— 显式配置取代运行时打补丁。
+        # open_t1 口径下本开关不适用 (T 日涨停过滤被 T+1 一字板判定替代)。
+        self.filter_limit_up = bool(config.get("filter_limit_up", True))
+        # 2026-08-20 审计 HIGH: open_t1 仅支持日频语义 period — "次日开盘价"在
+        # 1w (周线) 下会被静默解释成"下周开盘价" (BARS_PER_DAY[1w]=1, T+1=下一根周 bar),
+        # 语义偷换且无任何告警。构造期 fail-fast, 不许静默跑错口径。
+        if (self.entry_price_mode == "open_t1"
+                and self.period not in ("1d", "5m", "1m")):
+            raise ValueError(
+                f"entry_price_mode=open_t1 暂不支持 period={self.period!r} "
+                f"(次日开盘价仅日频语义; 支持: 1d/5m/1m)")
 
         # C1 修复: 实际生效的费率 (兼容层)
         # 关闭时用 0 覆盖, 确保绝对不破坏老脚本行为
@@ -185,12 +255,29 @@ class BacktestEngine:
             )
         return win_td
 
+    def prepare_matrices(self, selections, start_time, end_time, win_td):
+        """准备段公开接缝 (2026-09-19 架构修订批次 3.1)。
+
+        run() 的准备段对外出口: 取数 → 非标准 bar 过滤 → (可选) 降级 →
+        entries → 列对齐 → ffill → tradable。tools/ 的 4 个 sweep 脚本曾把
+        这段配方各复刻一份 (engine 一改即静默漂移, 2026-09-19 架构审查 P1-7),
+        一律改调本方法。
+
+        返回 dict (run()/matrix_cache 的内部契约: close/entries/high/low/open/
+        tradable/last_tradable_idx/idx/cols/degraded_np/degrade_res/turnover_day);
+        取数为空返回 None。**注意**: 不含涨停过滤 —— 那是买入口径的事
+        (_apply_entry_price_mode, 与 entry_price_mode 绑定), 需要预过滤的
+        调用方在拿到 entries 后自行调 _filter_limit_up (sweep 脚本即如此)。
+        """
+        return self._prepare_run_matrices(selections, start_time, end_time, win_td)
+
     def _prepare_run_matrices(self, selections, start_time, end_time, win_td):
         """run() 的准备段 (2026-07-18 抽出, 供矩阵级缓存复用)。
 
         取数 → 非标准bar过滤 → degrade → entries → 列对齐 → ffill → tradable。
         产物只依赖 选股结果/区间/period/窗口/复权/数据, 与止盈止损参数无关。
         取数为空返回 None (调用方转 _empty_result)。
+        2026-09-19: 公开出口 = prepare_matrices (本方法保持私有实现)。
         """
         window_mask = None
         if self.bars_per_day > 1:
@@ -264,6 +351,28 @@ class BacktestEngine:
             degraded_np = degraded_df.reindex(
                 index=idx, columns=cols, fill_value=False).values.astype(bool)
 
+        # 2026-08-28: 流动性约束 — 当日成交额矩阵 (元, 天×股)。
+        # 供 entry 约束 单笔 ≤ 当日成交额×max_turnover_pct。成交额 = Σ(volume×close)
+        # 按日聚合 (不用 kline 的 Amount 字段 — 5m/1d Amount 单位是「万元」,
+        # 直接当元用会缩小 10000 倍, 2026-08-28 踩坑实录)。停牌日 volume=NaN/0
+        # → 乘积 0 → 当日成交额 0 → entry 拒买 (保守, 不会虚假放大买入)。
+        turnover_day_np = None
+        if self.max_turnover_pct < 1.0:
+            vol_df = kline.get("Volume")
+            if vol_df is not None:
+                vols = vol_df.reindex(index=idx, columns=cols)
+                amt = vols * close  # close 已 ffill; 停牌日 volume NaN → NaN
+                day_sum = amt.groupby(amt.index.date).sum()
+                turnover_day_np = day_sum.values.astype(np.float64)
+                _nz = np.count_nonzero(~np.isnan(turnover_day_np) & (turnover_day_np > 0))
+                logger.info(
+                    "流动性约束: 成交额矩阵 %s 天×%s 股, 非零格 %d (%.2f%%)",
+                    turnover_day_np.shape[0], turnover_day_np.shape[1],
+                    _nz, 100.0 * _nz / max(1, turnover_day_np.size))
+            else:
+                logger.warning(
+                    "max_turnover_pct<1.0 但 K 线数据无 Volume 字段, 流动性约束跳过")
+
         # 候选 A 审计 M1 修复: 改用公用 _build_tradable_from_raw helper
         # 消除 run 与 run_cached 的 drift (close_raw 是 line 671 重索引后的 DataFrame, helper 对 DataFrame 等价)
         tradable_np, last_tradable_idx = _build_tradable_from_raw(close_raw, close)
@@ -289,6 +398,7 @@ class BacktestEngine:
             "tradable": tradable_np, "last_tradable_idx": last_tradable_idx,
             "idx": idx, "cols": cols,
             "degraded_np": degraded_np, "degrade_res": degrade_res,
+            "turnover_day": turnover_day_np,
         }
 
     def _resolve_stop_and_build_loop(self, stop, close, entry_np,
@@ -296,7 +406,10 @@ class BacktestEngine:
                                      tradable_np, last_tradable_idx,
                                      ladder_profits, ladder_ratios, n_ladder,
                                      formula_exit_np, formula_exit_ratio,
-                                     formula_exit_lag_bars=1):
+                                     formula_exit_lag_bars=1,
+                                     degraded_np=None,
+                                     buy_price_np=None,
+                                     turnover_day_np=None):
         """run()/run_cached() 共享段 (2026-08-01 批次 3b C2 合并)。
 
         priority 校验 → trailing 缺省 → 时间参数 ×bpday 缩放 → ATR →
@@ -310,6 +423,27 @@ class BacktestEngine:
         返回 (equity_arr, raw_trades, resolved); resolved 携带调用方后续需要的
         解析值 (目前仅 run() 的 degrade 报告用 trailing 缺省后值)。
         """
+        # 2026-09-16 B1: 流动性约束静默失效 → 有声。约束已配置但无换手数据时
+        # (run_cached 调用方未提供 turnover_day_np / run() 取数缺 Volume),
+        # loop 层实际不执行约束, 必须显式告警而非静默跑完全程。
+        if float(self.max_turnover_pct) < 1.0 and turnover_day_np is None:
+            logger.warning(
+                "流动性约束已配置 (max_turnover_pct=%s) 但无换手数据 "
+                "(turnover_day_np=None), 约束不生效", self.max_turnover_pct)
+        # 2026-08-16 药2 (回测提速): 价格矩阵降 float32 — 价格只需 ~7 位有效数字,
+        # float64 是浪费 (内存减半 + CPU 缓存友好); 资金/权益账 (cash/equity/
+        # trade buffer) 仍 float64 保精度。两入口 (run/run_cached) 都经此收口,
+        # 统一转 float32 防 drift。见 docs/plan/2026-08-16_float32价格矩阵_回测提速_方案书.md
+        close_np = np.asarray(close.values, dtype=np.float32)
+        if high_np is not None:
+            high_np = np.asarray(high_np, dtype=np.float32)
+        if low_np is not None:
+            low_np = np.asarray(low_np, dtype=np.float32)
+        if open_np is not None:
+            open_np = np.asarray(open_np, dtype=np.float32)
+        # 2026-08-20: open_t1 买入价矩阵 (与价格矩阵同一 float32 口径)
+        if buy_price_np is not None:
+            buy_price_np = np.asarray(buy_price_np, dtype=np.float32)
         cost = stop.get("cost_stop", {})
         trail = stop.get("trailing_stop", {})
         # 移动止损止盈缺字段/None 语义: 回退命名常量 (两入口同一兜底, 防漂移)
@@ -346,7 +480,7 @@ class BacktestEngine:
         if atr_enabled:
             if high_np is not None and low_np is not None:
                 atr_matrix = _compute_atr_matrix(
-                    high_np, low_np, close.values.astype(np.float64),
+                    high_np, low_np, close_np,
                     period=int(atr_cfg.get("period", 14)))
             else:
                 logger.warning("atr_stop.enabled=true 但 high_np/low_np 缺失, ATR 强制禁用")
@@ -356,7 +490,7 @@ class BacktestEngine:
             float(self.initial_capital), float(self.eff_commission),
             float(self.min_buy_amount), float(self.max_buy_amount),
             int(self.lot_size), int(self.min_lots),
-            cost.get("enabled", True), float(cost.get("threshold", -0.12)),
+            cost.get("enabled", True), float(cost.get("threshold", _DEFAULT_COST_STOP_THRESHOLD)),
             trail.get("enabled", True), float(trailing_activation),
             float(trailing_drawdown),
             ladder.get("enabled", True), ladder_profits, ladder_ratios, n_ladder,
@@ -371,14 +505,22 @@ class BacktestEngine:
             formula_exit_lag_bars=formula_exit_lag_bars,
             atr_enabled=atr_enabled, atr_matrix=atr_matrix, atr_multiplier=atr_multiplier,
             trailing_gap_protection=bool(trail.get("gap_protection", False)),
+            trailing_confirm=str(trail.get("confirm", "intraday")),
             sell_cooldown_bars=self.sell_cooldown_days * bpday,
+            max_total_exposure=float(self.max_total_exposure),
+            loss_streak_halt_n=self.loss_streak_halt_n,
+            loss_streak_halt_bars=self.loss_streak_halt_days * bpday,
+            buy_price_np=buy_price_np,
+            max_turnover_pct=float(self.max_turnover_pct),
         )
         self._last_loop = loop
         equity_arr, raw_trades = loop.run(
-            close.values.astype(np.float64), entry_np,
+            close_np, entry_np,
             high_np=high_np, low_np=low_np, open_np=open_np,
             tradable_np=tradable_np, last_tradable_idx=last_tradable_idx,
             formula_exit_np=formula_exit_np,
+            degraded_np=degraded_np,
+            turnover_day_np=turnover_day_np,
         )
         resolved = {
             "trailing_activation": float(trailing_activation),
@@ -388,13 +530,89 @@ class BacktestEngine:
         }
         return equity_arr, raw_trades, resolved
 
-    def run(self, selections, start_time="", end_time="", stop_config=None):
-        """执行回测。dividend_type 硬编码 "front"（前复权），与 pipeline.py 的 assert_consistent 对齐。
+    def _apply_entry_price_mode(self, entries, close, high_np, low_np, open_np,
+                                tradable_np):
+        """买入价口径应用 (run()/run_cached() 共用, 2026-08-20, 防双入口漂移)。
 
-        调用方注意：若 selections 来自不复权数据源，需通过 Pipeline.run() 统一入口，
-        pipeline 会在 step1 之后校验复权口径一致性。直接调 engine.run() 绕过了此校验。
+        close_t (默认): T 日收盘涨停过滤 (_filter_limit_up), 返回 (entries, None, None)。
+        open_t1: 信号平移到 T+1 首个可交易 bar (一字涨停拒买, 详见
+        backtest/entry_next_open.py), 返回 (平移后 entries, 买入价矩阵=open, 统计)。
+        open_t1 需要 OHLC 齐全, 缺失 fail-fast (不许静默退化成错误口径)。
         """
-        if selections.empty: return self._empty_result()
+        if self.entry_price_mode != "open_t1":
+            # 2026-09-19: filter_limit_up=False 时恒等放行 (显式配置,
+            # 取代 tools/attr_gp1014.py 的 monkeypatch 变体)
+            if not self.filter_limit_up:
+                return entries, None, None
+            return self._filter_limit_up(entries, close), None, None
+        if open_np is None or high_np is None or low_np is None:
+            raise ValueError(
+                "entry_price_mode=open_t1 需要 OHLC 数据 (open/high/low 缺失)")
+        from backtest.entry_next_open import shift_entries_to_next_open
+        idx, cols = close.index, close.columns
+        t1 = shift_entries_to_next_open(
+            entries,
+            pd.DataFrame(open_np, index=idx, columns=cols),
+            pd.DataFrame(high_np, index=idx, columns=cols),
+            pd.DataFrame(low_np, index=idx, columns=cols),
+            close,
+            limit_ratio_vec=self._limit_ratio_vector(entries.columns),
+            tradable_np=tradable_np)
+        info = {"mode": "open_t1", "n_signals": t1.n_signals,
+                "n_shifted": t1.n_shifted,
+                "n_oneline_limit_up": t1.n_oneline_limit_up,
+                "n_no_t1_bar": t1.n_no_t1_bar,
+                "n_no_tradable_bar": t1.n_no_tradable_bar}
+        logger.info(
+            "open_t1: 信号 %d → 平移 %d, 一字涨停拒买 %d, 无T+1丢弃 %d, 全天停牌丢弃 %d",
+            t1.n_signals, t1.n_shifted, t1.n_oneline_limit_up,
+            t1.n_no_t1_bar, t1.n_no_tradable_bar)
+        return t1.entries, np.asarray(open_np), info
+
+    def _validate_caliber(self, caliber):
+        """选股口径校验 (2026-09-19 架构修订批次 3.2 —— 自 pipeline 下沉)。
+
+        原本只在 Pipeline.step2_backtest 里校验, **直调 engine.run() 全部绕过**
+        (本类 run() 的旧 docstring 自己承认)。下沉后: 传了 caliber 就校验
+        (复权不一致直接抛 ValueError; period 不一致告警), 没传则打 WARNING
+        明示"本次未校验" —— 不留静默旁路 (静默旁路才是真问题)。
+
+        caliber: {"dividend_type": int|str, "period": str}; None = 未声明。
+        """
+        if not caliber:
+            logger.warning(
+                "caliber_unverified: 本次 run() 未声明选股口径 (selection_caliber), "
+                "跳过复权一致性校验 —— Pipeline 路径会自动带该声明; 直调本方法"
+                "请显式传 {\"dividend_type\":…, \"period\":…}, 否则选股与回测"
+                "复权口径不一致时不会被发现 (engine 硬编码 front)")
+            return
+        from core.dividend_type import assert_consistent
+        assert_consistent(caliber.get("dividend_type", 1), "front")
+        sel_period = caliber.get("period", "1d")
+        if sel_period != self.period:
+            # P1-8 (2026-07-17, 002008 bug): 1d 选股 + 5m 回测是合法组合, 仅告警
+            logger.warning(
+                "period_mismatch: 选股 period=%s 与 回测 period=%s 不一致, "
+                "若回测 period 数据有缺口, 选股信号会被丢弃 (不顺延)。"
+                "1d 选股 + 5m 回测为合法组合, 数据完整时可忽略; "
+                "若非有意, 请统一 period 或补全回测 period 的盘后数据。",
+                sel_period, self.period,
+            )
+
+    def run(self, selections, start_time="", end_time="", stop_config=None,
+            selection_caliber=None):
+        """执行回测。dividend_type 硬编码 "front"（前复权）。
+
+        selection_caliber: 选股口径声明 {"dividend_type":…, "period":…}。
+        Pipeline 路径自动传 (校验在此处统一执行, 2026-09-19 批次 3.2 自 pipeline
+        下沉); 直调不传则打 WARNING 明示"未校验", 不再静默绕过。
+        """
+        if selections is None or selections.empty:
+            # 口径校验先于空信号早退 —— 空 selections 也代表一次"用某口径跑的请求",
+            # 复权不一致该抛还是要抛 (与 pipeline 下沉前行为一致)
+            self._validate_caliber(selection_caliber)
+            return self._empty_result()
+        self._validate_caliber(selection_caliber)
 
         # 2026-07-26: 1m 数据深度硬限制 (探针实测 TDX 1m 仅 2026-01-26 起,
         # 更早区间无数据 → 截断不静默); win_td 过大时告警 (取数跨度守卫在
@@ -428,7 +646,11 @@ class BacktestEngine:
         #   (degrade_res 含非序列化对象, 见 backtest/matrix_cache.py docstring)。
         win_td = self._resolve_window_td(stop)
         use_mc = (self.matrix_cache
-                  and not (self.degrade_5m and self.bars_per_day == 48))
+                  and not (self.degrade_5m and self.bars_per_day == 48)
+                  # 2026-09-16 B2: 约束开启即不用矩阵缓存 — _ARRAY_FIELDS 不含
+                  # turnover_day, 缓存命中时约束静默丢失 (原条件只对 5m 生效,
+                  # 1d/1m 漏网)
+                  and not (self.max_turnover_pct < 1.0))
         from core import progress as _progress
         _progress.report("fetch", 0.0, "准备取数...")  # 2026-07-26
         prep = None
@@ -469,6 +691,7 @@ class BacktestEngine:
         # P-v3.4: 公式卖出 (formula_sell) — 一次性预计算信号矩阵
         formula_exit_np = None
         formula_exit_ratio = 1.0
+        formula_sell_failed = None  # 2026-09-16 B4: 构造失败标记 (进 result)
         fs_cfg = stop.get("formula_sell", {})
         if fs_cfg.get("enabled", False):
             formula_name = str(fs_cfg.get("formula_name", "")).strip()
@@ -528,6 +751,10 @@ class BacktestEngine:
                 except Exception as e:
                     logger.error("formula_sell 构造失败, 回退禁用: %s", e)
                     formula_exit_np = None
+                    # 2026-09-16 B4: 容错保留 (不抛, 怕破坏批量流程), 但结果带
+                    # 标记 — 否则报告读者不知道公式卖出根本没生效
+                    formula_sell_failed = (
+                        f"formula_sell 构造失败已回退禁用: {formula_name}: {e}")
             elif not formula_name:
                 logger.warning("formula_sell: enabled=true 但 formula_name 为空, 跳过")
             else:
@@ -543,7 +770,9 @@ class BacktestEngine:
 
         bpday = self.bars_per_day
         t0 = pd.Timestamp.now()
-        entries = self._filter_limit_up(entries, close)
+        # 2026-08-20: 买入价口径 (close_t=T日收盘+涨停过滤; open_t1=T+1开盘+一字板拒买)
+        entries, buy_price_np, entry_t1_info = self._apply_entry_price_mode(
+            entries, close, high_np, low_np, open_np, tradable_np)
         _progress.report("loop", 0.0, "核心回测...")  # 2026-07-26
         # 2026-08-01 批次 3b C2: 共享段 (priority/trailing 缺省/缩放/ATR/build+run)
         equity_arr, raw_trades, resolved = self._resolve_stop_and_build_loop(
@@ -552,6 +781,9 @@ class BacktestEngine:
             tradable_np, last_tradable_idx,
             ladder_profits, ladder_ratios, len(lv),
             formula_exit_np, formula_exit_ratio,
+            degraded_np=degraded_np,
+            buy_price_np=buy_price_np,
+            turnover_day_np=prep.get("turnover_day"),
         )
         # ENGINE_DEBUG 日志的缩放值仅作展示, 从 resolved 读 (2026-08-01 批次 3b C2;
         # 权威计算在 _resolve_stop_and_build_loop, 两处不得各自演化)。
@@ -600,7 +832,7 @@ class BacktestEngine:
                 degradation.update(compute_impact_report(
                     raw_trades, degraded_np, high_np, low_np, bpday,
                     cost_enabled=cost.get("enabled", True),
-                    cost_threshold=float(cost.get("threshold", -0.12)),
+                    cost_threshold=float(cost.get("threshold", _DEFAULT_COST_STOP_THRESHOLD)),
                     trailing_enabled=trail.get("enabled", True),
                     # 2026-08-01 批次 3b C2: 缺省后值取自共享段 resolved (口径一致)
                     trailing_activation=resolved["trailing_activation"],
@@ -658,47 +890,46 @@ class BacktestEngine:
         bt_kwargs["data_fingerprint"] = _data_fp()
         if degradation is not None:
             bt_kwargs["degradation"] = degradation
+        if entry_t1_info is not None:
+            bt_kwargs["entry_mode_info"] = entry_t1_info
+        if formula_sell_failed is not None:
+            bt_kwargs["formula_sell_failed"] = formula_sell_failed
         if open_positions:
             bt_kwargs["open_positions"] = open_positions
         return BacktestResult(**bt_kwargs)
 
-    def run_cached(self, close, entries, high_np, low_np, stop_config, selections,
+    def run_cached(self, prepared, stop_config,
                    ladder_profits, ladder_ratios, n_ladder, *,
-                   filter_limit_up=True,
-                   open_np=None,
-                   tradable_np=None, last_tradable_idx=None,
+                   filter_limit_up=None,
                    formula_exit_np=None, formula_exit_ratio=None, formula_exit_lag_bars=1,
                    close_raw=None,
                    return_raw=False):
-        """用预取数据运行回测，跳过K线获取（用于批量优化）
+        """用预取数据运行回测，跳过K线获取（P2-1 前门收敛: prepared 打包 7 矩阵）。
 
-        候选 A 阶段 1 深化（加厚前门）: 9 旧位置参数不动, 新增 9 个 keyword-only
-        透传三类能力（公式卖出/跳空保护/退市检测）。40 调用方不传新参 → 全 None
-        → 三类能力 off → 与旧版字节级一致。capabilities 三开关（默认全开）gate
-        已提供的数据, 不自动造数据。
+        close/entries/high_np/low_np/open_np/tradable_np/last_tradable_idx 收进
+        PreparedMatrix (消除位置顺序陷阱 + 配对不变量构造期 fail-fast); 删除了
+        死参数 selections。
 
-        - filter_limit_up: 默认 True（40 调用方现状, 跑涨停过滤）; 收编脚本传 False
-          复现旧直调核心循环口径 (2026-08-01 前为直调 _simulate_core_v3, 壳已退役)。
-        - open_np/tradable_np/last_tradable_idx/formula_exit_np: 能力数据, None=off。
-        - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np（不从 close 自动建,
-          防 ffill 调用方误触发退市）。
-        - return_raw: True 时 result dict 加 raw_equity/raw_trades（收编脚本 + parity 测试用）。
+        - filter_limit_up: 缺省 None = **跟随构造期配置 `self.filter_limit_up`**
+          (2026-09-20 审计 P1-5: 原先关键字默认 True 会**静默盖掉**
+          `BacktestEngine({"filter_limit_up": False})`, 同名双开关);
+          显式传 True/False 仍可逐次覆盖 (收编脚本传 False 复现旧口径)。
+        - formula_exit_np/close_raw: 可选能力数据, None=off。
+        - close_raw: 显式原始未 ffill 价, 提供时自建 tradable_np。
+        - return_raw: True 时 result dict 加 raw_equity/raw_trades。
 
-        ⚠️ degrade_5m (5m 数据层降级) 仅 run() 路径支持, run_cached 不做降级
-        (计划书 2026-07-18 LOW-3): 批量优化走预取数据, 缺 5m 的股-天照旧丢信号。
+        ⚠️ degrade_5m (5m 数据层降级) 仅 run() 路径支持, run_cached 不做降级。
         """
+        if filter_limit_up is None:
+            filter_limit_up = self.filter_limit_up
         stop = stop_config or {}
-        # 2026-08-01 批次 3b C2: priority 校验/trailing 缺省/时间缩放/ATR/build+run
-        # 已并入 _resolve_stop_and_build_loop (run/run_cached 共享, 防漂移)。
-
-        # 2026-07-06: bug fix - v3 优化脚本发现 close 是 tuple, 详情见 optimize_quantqq_v3.py 失败堆栈
-        # DEBUG 输出 close 实际类型 + 调用栈
-        if isinstance(close, tuple) and not isinstance(close, pd.DataFrame):
-            logger.warning("run_cached 收到 tuple 类型 close (疑似旧调用方位置参数错位), len=%d", len(close))
-            # 兼容老调用: (close, entries) 位置传成 tuple
-            if len(close) == 2 and isinstance(close[0], pd.DataFrame) and isinstance(close[1], pd.DataFrame):
-                close, entries = close[0], close[1]
-                logger.debug("已自动 unpack tuple → (close, entries)")
+        close = prepared.close
+        entries = prepared.entries
+        high_np = prepared.high_np
+        low_np = prepared.low_np
+        open_np = prepared.open_np
+        tradable_np = prepared.tradable_np
+        last_tradable_idx = prepared.last_tradable_idx
 
         bpday = self.bars_per_day
 
@@ -718,9 +949,8 @@ class BacktestEngine:
         if not cap_delist:
             tradable_np = None
             last_tradable_idx = None
-        # M2 修复: tradable_np 与 last_tradable_idx 应成对 (单传会导致退市永不触发, 仓位长期挂账)
-        if tradable_np is not None and last_tradable_idx is None:
-            logger.warning("tradable_np 已传但 last_tradable_idx=None, 退市检测将不触发 (应成对传)")
+        # (M2 配对 warning 已删: PreparedMatrix.__post_init__ 在构造期强制成对,
+        #  此处的 tradable_np/last_tradable_idx 恒成对或同 None, warning 永不触发)
         # formula_exit_ratio: keyword 优先, None 回退 config.formula_sell.sell_ratio
         if formula_exit_ratio is None:
             formula_exit_ratio = float(stop.get("formula_sell", {}).get("sell_ratio", 1.0))
@@ -728,7 +958,16 @@ class BacktestEngine:
         if n_ladder > 1 and not bool(np.all(np.diff(ladder_profits[:n_ladder]) >= 0)):
             logger.warning("ladder_profits 非升序, 阶梯触发可能不符预期 (调用方应预排序)")
 
-        entries = self._filter_limit_up(entries, close) if filter_limit_up else entries
+        # 2026-08-20: 买入价口径 (engine config entry_price_mode)。
+        # open_t1 时 T 日涨停过滤由 T+1 一字板判定替代 (filter_limit_up 开关不适用);
+        # close_t 维持 filter_limit_up 开关语义 (收编脚本传 False 复现旧口径)。
+        buy_price_np = None
+        entry_t1_info = None
+        if self.entry_price_mode == "open_t1":
+            entries, buy_price_np, entry_t1_info = self._apply_entry_price_mode(
+                entries, close, high_np, low_np, open_np, tradable_np)
+        elif filter_limit_up:
+            entries = self._filter_limit_up(entries, close)
         # 2026-08-01 批次 3b C2: 共享段 (priority/trailing 缺省/缩放/ATR/build+run)
         equity_arr, raw_trades, _ = self._resolve_stop_and_build_loop(
             stop, close, entries.values,
@@ -737,12 +976,12 @@ class BacktestEngine:
             ladder_profits, ladder_ratios, n_ladder,
             formula_exit_np, formula_exit_ratio,
             formula_exit_lag_bars=formula_exit_lag_bars,
+            buy_price_np=buy_price_np,
+            turnover_day_np=prepared.turnover_day_np,  # 2026-09-16 B1: 原 getattr 恒 None
         )
 
         # C2: 共享后处理（与 run 同一入口, 防 drift）
         equity_curve, trades_df, metrics = self._post_process(equity_arr, raw_trades, close, bpday)
-        # C2 修复: 返回真实 equity_curve (以前只返回 cumret, 强制调用方用 trades 重建, 有前视偏差)
-        # C3: 返回 BacktestResult dataclass (dict-like 兼容老代码; raw_* 仅 return_raw 时设置)
         bt_kwargs = dict(
             metrics=metrics,
             trades=trades_df,
@@ -752,6 +991,8 @@ class BacktestEngine:
         if return_raw:
             bt_kwargs["raw_equity"] = equity_arr
             bt_kwargs["raw_trades"] = raw_trades
+        if entry_t1_info is not None:
+            bt_kwargs["entry_mode_info"] = entry_t1_info
         return BacktestResult(**bt_kwargs)
 
     def _post_process(self, equity_arr, raw_trades, close, bpday):
@@ -821,7 +1062,8 @@ class BacktestEngine:
             "pnl": [round(float(v), 2) for v in raw[:, 6]],
             "return": [round(float(v), 4) for v in raw[:, 7]],
             "profit_pct": [round(float(v), 4) for v in raw[:, 7]],
-            "exit_reason": [reason_map.get(v, "换股卖出") for v in raw[:, 8]],
+            # 2026-09-16 P2: 未知原因码不再误标"换股卖出", 显式暴露异常码值
+            "exit_reason": [reason_map.get(v, f"未知原因({v})") for v in raw[:, 8]],
             "hold_days": list(hold),
         })
 
@@ -948,7 +1190,9 @@ class BacktestEngine:
             win_start, win_end = DataFetcher.compute_window_bounds(
                 selections, win_td, end_time=end_time or None)
             bounds = {c: (win_start[c], win_end[c]) for c in codes if c in win_start}
-            ratio_vec = self._limit_ratio_vector(close_g.columns)
+            # 2026-08-20: open_t1 口径下 T 日不成交, 降级的 1d 涨停拒单无意义 → 关闭
+            ratio_vec = (None if self.entry_price_mode == "open_t1"
+                         else self._limit_ratio_vector(close_g.columns))
             res = apply_5m_degradation(
                 close_g, high_g, low_g, open_g,
                 c1, _f("High"), _f("Low"), _f("Open"),
@@ -1057,7 +1301,8 @@ class BacktestEngine:
             prev[0] = np.nan
             prev[1:] = cv[:-1]
         # 接近涨停价(0.3%容差)则取消买入信号
-        limit_up = cv >= prev * (1.0 + ratio_vec) * 0.997
+        # 2026-09-16 B3: 公式下沉 detect_limit_up (浮点顺序 prev*(1+ratio) 再 *0.997 不变)
+        limit_up = detect_limit_up(cv, prev, ratio_vec)
         vals = entries.values.copy()
         vals[limit_up] = False
         result = pd.DataFrame(vals, index=entries.index, columns=entries.columns)

@@ -50,7 +50,8 @@ def _run_5m(monkeypatch, close, mask, stop_config=None, capture=None, config=Non
 
     class _MockLoop:
         def run(self, price_np, entry_np, high_np=None, low_np=None, open_np=None,
-                tradable_np=None, last_tradable_idx=None, formula_exit_np=None):
+                tradable_np=None, last_tradable_idx=None, formula_exit_np=None,
+                degraded_np=None, turnover_day_np=None):
             if capture is not None:
                 capture['tradable_np'] = tradable_np
                 capture['last_tradable_idx'] = last_tradable_idx

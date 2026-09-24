@@ -1,8 +1,9 @@
 // ====== VERA App Shell ======
 // ES module entry — imports API, config, charts modules; orchestrates app logic.
-import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport } from './api.js';
-import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries } from './config.js';
-import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js';
+import { fetchStatus, submitBacktest, stopBacktest, fetchLastResult, fetchResults, fetchResult, fetchConfigDefaults, saveConfig, fetchSavedConfig, deleteSavedConfig, fetchSectors as apiFetchSectors, fetchFactorRules as apiFetchFactorRules, submitLabJob, stopLabJob, fetchLabStatus, fetchLabHistory, fetchLabReport, fetchFarmStatus, farmCheck, farmOnboard, farmVerify, farmBacktest, farmStop, fetchFarmReports, fetchFarmReport, fetchFarmLog, fetchFarmPrefill } from './api.js?v=20260916b';
+import { STORAGE_KEY, CONFIG_IDS, RADIO_CONFIGS, cleanNum, validateDate, validatePositive, validateNonNeg, validateLadder, loadConfig, saveAllConfig, collectConfigFromForm as cfgCollect, applyConfigDict as cfgApply, toggleEdit as cfgToggleEdit, cancelEdit as cfgCancelEdit, saveBlock as cfgSaveBlock, refreshAllSummaries as cfgRefreshSummaries, notifyFormulaChanged } from './config.js?v=20260916f';
+import { esc, escAttr, hexToRgba, getTheme, getColors, toggleTheme, toggleSidebar, showToast, addLog, checkEngineVersion, setChartsRef, echartsInit, tweenNumber, sparkline, fillHeroSub, revealResults, fmtReasonShort, renderTradeTable, filterTrades as chartFilterTrades, renderAllCharts, sunIcon, moonIcon } from './charts.js?v=20260906d';
+import { renderDeepCharts } from './charts_deep.js?v=20260922a';
 
 // ═══════════════════════════════════════════
 // Global State
@@ -31,8 +32,11 @@ R.deps.allTradesRef = { get value() { return allTrades; }, set value(v) { allTra
 const { tryRecoverAbortedResult, resetRunUI, setBtnStopMode, setBtnRunMode } = R;
 
 setChartsRef(charts);
-toggleTheme._onToggle = () => { if (lastResult) renderAllCharts(lastResult); };
-toggleSidebar._onToggle = () => { setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300); };
+toggleTheme._onToggle = () => { if (lastResult) renderAllCharts(lastResult); if (lastResult) renderDeepCharts(lastResult); };
+toggleSidebar._onToggle = () => { setTimeout(() => Object.values(charts).forEach(c => c.resize()), 300);
+  // W1-2: 侧栏折叠钮(div→button)后同步 aria-expanded
+  const st = document.querySelector('.sidebar-toggle');
+  if (st) st.setAttribute('aria-expanded', String(!document.querySelector('.sidebar').classList.contains('collapsed'))); };
 
 // ═══════════════════════════════════════════
 // Config bridge — thin wrappers around config.js
@@ -50,6 +54,16 @@ function toggleEdit(blockId) { cfgToggleEdit(blockId, saveAllConfig, refreshAllS
 function cancelEdit(blockId) { cfgCancelEdit(blockId); }
 function saveBlock(blockId) { cfgSaveBlock(blockId, saveAllConfig, refreshAllSummaries, addLog); }
 function filterTrades() { chartFilterTrades(allTrades, renderTradeTable); }
+
+// W3-4: 搜索防抖 — 9 万笔回测下旧实现每敲一键全量 filter+重建 200 行 DOM;
+// 250ms 内连打只触发一次, 回车立即执行不等防抖
+function debounce(fn, ms) {
+  let t = null;
+  const d = (...a) => { clearTimeout(t); t = setTimeout(() => fn.apply(null, a), ms); };
+  d.cancel = () => clearTimeout(t);
+  return d;
+}
+const filterTradesDebounced = debounce(filterTrades, 250);
 
 // ═══════════════════════════════════════════
 // Config File Ops
@@ -138,6 +152,8 @@ function runPipeline() {
       dispPct += (target - dispPct) * 0.4;                          // 缓动逼近
       if (Math.abs(target - dispPct) < 0.4) dispPct = target;
       document.getElementById('progressFill').style.width = dispPct.toFixed(1)+'%';
+      // W1-7: 进度条语义化, 读屏可感知进度
+      const pb = document.getElementById('progressBar'); if (pb) pb.setAttribute('aria-valuenow', dispPct.toFixed(0));
       const elapsed = (Date.now() - runT0) / 1000;
       let txt = s.step || '';
       if (s.detail) txt += ' · ' + s.detail;
@@ -151,7 +167,10 @@ function runPipeline() {
     } catch(e) {} }, 800);
 
   const controller = new AbortController(); runState.controller = controller;
-  const timeout = setTimeout(() => controller.abort(), 1800000);
+  // 2026-08-14: 30 分钟 → 2 小时。5M 回测取数（594 只 × 多窗口批）实测超 30 分钟，
+  // 超时 abort 后前端报错放弃但后端还在跑，用户白等（recover 探测只有 5×2 秒，
+  // 探到"还在跑"也只能报超时）。拉长到 2 小时覆盖 5M 大池场景。
+  const timeout = setTimeout(() => controller.abort(), 7200000);
   submitBacktest(config, controller.signal)
     .then(data => {
       clearTimeout(timeout); pollActive = false; clearInterval(poll);
@@ -164,7 +183,7 @@ function runPipeline() {
         lastResult = null; document.querySelectorAll('.kpi-value').forEach(el => el.textContent = '--'); return;
       }
       addLog('回测完成: '+data.trade_count+'笔交易 (耗时 '+_fmtDur((Date.now()-runT0)/1000)+')', 'ok'); lastResult = data; allTrades = data.trades || [];
-      renderAllCharts(data); checkEngineVersion(data);
+      renderAllCharts(data); renderDeepCharts(data); checkEngineVersion(data);
     }).catch(e => {
       clearTimeout(timeout); pollActive = false; clearInterval(poll); runState.running = false; runState.controller = null;
       if (runState.userStopped) { runState.userStopped = false; resetRunUI(btn, '已停止', 'on');
@@ -185,7 +204,7 @@ async function loadHistory(id) {
     if (data.success || data.trade_count != null) { lastResult = data; allTrades = data.trades || [];
       document.getElementById('tradeTableBox').style.display = '';
       document.getElementById('tradeCount').textContent = '(历史 '+data.trade_count+' 笔)';
-      renderAllCharts(data); checkEngineVersion(data); addLog('已加载历史回测 ('+data.trade_count+'笔)', 'ok'); }
+      renderAllCharts(data); renderDeepCharts(data); checkEngineVersion(data); addLog('已加载历史回测 ('+data.trade_count+'笔)', 'ok'); }
   } catch(e) { addLog('加载失败: '+e.message, 'error'); }
 }
 
@@ -196,21 +215,54 @@ async function loadHistory(id) {
 const SECTORS_KEY = 'vera_selected_sectors';
 let _allSectors = [], _selectedSectors = [];
 
+// sectorEmpty 原本是 #sectorGrid 的子节点, 而 renderSectors 会 `grid.innerHTML=` 把它
+// 一并抹掉 → 之后任何 getElementById('sectorEmpty') 都返回 null。统一走这个"按需重建"
+// 入口 (2026-09-17 修复: 同一根因在 renderSectors 与 loadSectors 两处都踩过, 不写第二份)。
+function _sectorEmptyBox(grid) {
+  let e = document.getElementById('sectorEmpty');
+  if (!e) { e = document.createElement('div');
+    e.className = 'sector-empty'; e.id = 'sectorEmpty'; grid.appendChild(e); }
+  return e;
+}
+
 async function loadSectors() {
-  const grid = document.getElementById('sectorGrid'), empty = document.getElementById('sectorEmpty');
+  const grid = document.getElementById('sectorGrid'); if (!grid) return;
+  // 失败提示收口一份 (原两处近乎逐行重复, 含重试按钮挂载)
+  const fail = (msg) => {
+    grid.innerHTML = '';                      // 清掉上一轮残留, 让错误提示看得见
+    const e = _sectorEmptyBox(grid);
+    // 2026-09-19 UIUX: msg 携带后端 error/异常文本, 必须转义后再拼 innerHTML
+    e.innerHTML = esc(msg) + '<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:var(--sp-2)">重试</button>';
+    e.style.color = 'var(--danger-text)';
+    setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0);
+  };
   try { const result = await apiFetchSectors();
-    if (!result.success || !result.sectors || result.sectors.length === 0) { empty.innerHTML = '板块列表加载失败：'+(result.error||'未知错误')+'（请检查通达信客户端）<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:6px">重试</button>'; empty.style.color = 'var(--up)';
-      setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0); return; }
-    _allSectors = result.sectors; } catch (e) { empty.innerHTML = '板块列表加载失败：'+e.message+'<br><button class="btn btn-sm btn-secondary" id="btnRetrySectors" style="margin-top:6px">重试</button>'; empty.style.color = 'var(--up)';
-    setTimeout(() => { const b = document.getElementById('btnRetrySectors'); if (b) b.addEventListener('click', loadSectors); }, 0); return; }
-  empty.style.display = 'none';
+    if (!result.success || !result.sectors || result.sectors.length === 0) {
+      fail('板块列表加载失败：' + (result.error || '未知错误') + '（请检查通达信客户端）');
+      return; }
+    _allSectors = result.sectors;
+  } catch (e) { fail('板块列表加载失败：' + e.message); return; }
+  _sectorEmptyBox(grid).style.display = 'none';
   try { _selectedSectors = JSON.parse(localStorage.getItem(SECTORS_KEY) || '[]'); } catch(e) { _selectedSectors = []; }
   renderSectors(); updateSectorSummary(); toggleUniverseDropdown();
 }
 
 function renderSectors() {
-  const grid = document.getElementById('sectorGrid'), empty = document.getElementById('sectorEmpty');
-  if (_allSectors.length === 0) { empty.textContent = '无板块数据'; return; } empty.style.display = 'none';
+  const grid = document.getElementById('sectorGrid'); if (!grid) return;
+  if (_allSectors.length === 0) {
+    // 2026-09-17 修复(真事故): sectorEmpty 是 #sectorGrid 的子节点, 下面的
+    // grid.innerHTML= 会把它一并抹掉 → 从第二次调用起 getElementById 返回 null,
+    // 旧代码 `empty.style.display` 抛 "Cannot read properties of null (reading 'style')"。
+    // 农场「→ 回测页」会先清板块, 异常点恰在参数回填之前 → 区间/本金/止损全没填上,
+    // 页面却看着"填好了"(静默换口径)。这里改成按需重建占位元素 (自愈)。
+    let empty = document.getElementById('sectorEmpty');
+    if (!empty) { empty = document.createElement('div');
+      empty.className = 'sector-empty'; empty.id = 'sectorEmpty'; }
+    empty.textContent = '无板块数据';
+    grid.innerHTML = '';           // 清掉上一轮残留, 再显示占位
+    grid.appendChild(empty);
+    return;
+  }
   grid.innerHTML = _allSectors.map(s => { const checked = _selectedSectors.includes(s.code);
     const codeShort = String(s.code).replace(/\.\w+$/, '');
     return '<div class="sector-item'+(checked?' checked':'')+'" data-name="'+esc(s.name)+'" data-code="'+esc(s.code)+'">'+
@@ -236,10 +288,7 @@ function onSectorToggle(cb) { const code = cb.value;
   try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
   const item = cb.closest('.sector-item'); if (item) item.classList.toggle('checked', cb.checked); updateSectorSummary(); toggleUniverseDropdown(); }
 
-function clearSectors() { _selectedSectors = [];
-  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch(e) {}
-  document.querySelectorAll('#sectorGrid input[type=checkbox]').forEach(cb => { cb.checked = false;
-    const item = cb.closest('.sector-item'); if (item) item.classList.remove('checked'); }); updateSectorSummary(); toggleUniverseDropdown(); }
+function clearSectors() { setSectors([]); }   // 2026-09-16 收口: 唯一写入口 = setSectors
 
 function updateSectorSummary() { const box = document.getElementById('sectorSelected');
   if (_selectedSectors.length === 0) { box.innerHTML = ''; } else {
@@ -275,7 +324,10 @@ function _ffState() { const f = _ffFormula(); if (!_factorFilter[f]) _factorFilt
 
 async function loadFactorRules() { const box = document.getElementById('factorRuleList'), formula = _ffFormula();
   if (!formula) { box.textContent = '先填公式名'; return; }
-  try { _factorRulesData = await apiFetchFactorRules(formula); } catch(e) { _factorRulesData = { exists: false, rules: [] }; } renderFactorRules(); }
+  // 2026-09-19 UIUX: 网络/服务失败必须说"加载失败", 原实现失败被伪装成"该公式暂无体检规则"
+  try { _factorRulesData = await apiFetchFactorRules(formula); }
+  catch(e) { _factorRulesData = null; box.innerHTML = '<div style="color:var(--danger-text)">体检规则加载失败（网络或服务异常）— 请稍后重试</div>'; return; }
+  renderFactorRules(); }
 
 function renderFactorRules() { const box = document.getElementById('factorRuleList'), d = _factorRulesData||{ exists: false, rules: [] }, state = _ffState();
   document.getElementById('cfgFactorFilterEn').checked = !!state.enabled;
@@ -308,26 +360,64 @@ document.getElementById('cfgFormula').addEventListener('change', loadFactorRules
 // ═══════════════════════════════════════════
 
 let _labPollTimer = null;
-function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade';
-  document.getElementById('tabBtnBacktest').classList.toggle('active', !isLab && !isTrade);
+function switchTab(name) { const isLab = name==='lab', isTrade = name==='trade', isAnalysis = name==='analysis';
+  window._veraTab = name;  // 2026-09-19 UIUX: 记录当前页签, visibilitychange 恢复轮询时要用
+  // 2026-08-14: backtest 激活条件从"非lab/trade/analysis"改为显式等值 —
+  // research/records/data 三个后加 TAB 会让旧判断把回测按钮也点亮 (cosmetic bug)
+  document.getElementById('tabBtnBacktest').classList.toggle('active', name==='backtest');
   document.getElementById('tabBtnLab').classList.toggle('active', isLab);
   document.getElementById('tabBtnTrade').classList.toggle('active', isTrade);
-  document.querySelector('.app').style.display = (isLab||isTrade)?'none':'';
+  var _tabA = document.getElementById('tabBtnAnalysis'); if (_tabA) _tabA.classList.toggle('active', isAnalysis);
+  // 2026-09-17: 大盘位置 TAB (固定浮层; 切入时加载一次, 无轮询 —— 每天只更新一次)
+  var isMarket = name==='market';
+  var _tabM = document.getElementById('tabBtnMarket'); if (_tabM) _tabM.classList.toggle('active', isMarket);
+  var _pM = document.getElementById('pageMarket'); if (_pM) _pM.classList.toggle('active', isMarket);
+  if (isMarket && window.marketPageEnter) window.marketPageEnter();
+  // 2026-09-19 UIUX: 补离场钩子 (倒计时 1s 定时器原来切走后空跑+到点后台白刷新)
+  if (!isMarket && window.marketPageLeave) window.marketPageLeave();
+  // 2026-09-20: 舆情 TAB (固定浮层; 异动台账 + 机构研究雷达; 切入加载一次, 无轮询)
+  var isSentiment = name==='sentiment';
+  var _tabSt = document.getElementById('tabBtnSentiment'); if (_tabSt) _tabSt.classList.toggle('active', isSentiment);
+  var _pSt = document.getElementById('pageSentiment'); if (_pSt) _pSt.classList.toggle('active', isSentiment);
+  if (isSentiment && window.sentimentPageEnter) window.sentimentPageEnter();
+  if (!isSentiment && window.sentimentPageLeave) window.sentimentPageLeave();
+  document.querySelector('.app').style.display = (isLab||isTrade||isAnalysis||isMarket||isSentiment)?'none':'';
   document.getElementById('pageLab').classList.toggle('active', isLab);
   document.getElementById('pageTrade').classList.toggle('active', isTrade);
+  var _pa = document.getElementById('pageAnalysis'); if (_pa) _pa.classList.toggle('active', isAnalysis);
+  if (isAnalysis && window.analysisPageEnter) window.analysisPageEnter();
   var isResearch = name==='research';
   var _tabR = document.getElementById('tabBtnResearch'); if (_tabR) _tabR.classList.toggle('active', isResearch);
   var _pr = document.getElementById('pageResearch'); if (_pr) _pr.classList.toggle('active', isResearch);
+  // 2026-08-14: 数据准备 TAB (K线缓存管理台, 切入轮询/切出停止)
+  var isData = name==='data';
+  var _tabD = document.getElementById('tabBtnData'); if (_tabD) _tabD.classList.toggle('active', isData);
+  var _pD = document.getElementById('pageData'); if (_pD) _pD.classList.toggle('active', isData);
+  if (isData && window.dataPageEnter) window.dataPageEnter();
+  if (!isData && window.dataPageLeave) window.dataPageLeave();
   // 2026-07-30: 交易记录 TAB (台账/查询页, 不轮询, 切入时加载)
   var isRecords = name==='records';
   var _tabRec = document.getElementById('tabBtnRecords'); if (_tabRec) _tabRec.classList.toggle('active', isRecords);
   var _pRec = document.getElementById('pageRecords'); if (_pRec) _pRec.classList.toggle('active', isRecords);
   if (isRecords && window.recordsPageEnter) window.recordsPageEnter();
   if (!isRecords && window.recordsPageLeave) window.recordsPageLeave();
+  // 2026-09-06: 公式农场 TAB (三段闸门, 切入轮询/切出停止)
+  var isFarm = name==='farm';
+  var _tabF = document.getElementById('tabBtnFarm'); if (_tabF) _tabF.classList.toggle('active', isFarm);
+  var _pF = document.getElementById('pageFarm'); if (_pF) _pF.classList.toggle('active', isFarm);
+  if (isFarm) { refreshFarmStatus(); loadFarmReports(); startFarmPoll(); } else stopFarmPoll();
+  // 2026-09-06: AI 设置 TAB (对话大脑三档接入配置; 切入加载, 无轮询)
+  var isAi = name==='ai';
+  var _tabAi = document.getElementById('tabBtnAi'); if (_tabAi) _tabAi.classList.toggle('active', isAi);
+  var _pAi = document.getElementById('pageAi'); if (_pAi) _pAi.classList.toggle('active', isAi);
+  if (isAi && window.aiPageEnter) window.aiPageEnter();
   if (isLab) { refreshLabStatus(); loadLabHistory(); startLabPoll(); } else stopLabPoll();
   // 交易页轮询生命周期由 trade.js 自治 (window 钩子, 解耦两个 JS 模块)
   if (isTrade && window.tradePageEnter) window.tradePageEnter();
-  if (!isTrade && window.tradePageLeave) window.tradePageLeave(); }
+  if (!isTrade && window.tradePageLeave) window.tradePageLeave();
+  // W1-4: 页签写入 URL hash — 刷新保持页签、可把"交易页"地址发给别人
+  // (值相同不重复写, 防止与 hashchange 监听互相触发成环)
+  if (location.hash.slice(1) !== name) location.hash = name; }
 function startLabPoll() { stopLabPoll(); _labPollTimer = setInterval(refreshLabStatus, 2000); }
 function stopLabPoll() { if (_labPollTimer) { clearInterval(_labPollTimer); _labPollTimer = null; } }
 
@@ -369,22 +459,30 @@ function _labStatusBadge(t) { if (t.status==='done') return '<span class="lab-ba
 function refreshLabStatus() { fetchLabStatus().then(d => { const box = document.getElementById('labQueue'), hint = document.getElementById('labHint');
     _setLabBtn(d.current ? 'stop' : 'run');
     hint.textContent = d.current ? '当前: '+d.current.formulas.join(',')+' — '+d.current.stage+'(已 '+Math.floor(d.current.elapsed_s/60)+' 分钟) · 基线股票池 '+(d.current.universe_note||'') : (d.running?'':'空闲(回测运行中提交的体检会自动排队)');
-    if (!d.queue||!d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无任务</div>'; return; }
+    if (!d.queue||!d.queue.length) { box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无任务</div>'; return; }
     box.innerHTML = d.queue.slice().reverse().map(t => { const mins = Math.floor(t.elapsed_s/60);
       let html = '<div class="lab-row">'+_labStatusBadge(t)+' <b>'+esc(t.formulas.join(','))+'</b><span style="color:var(--text2)">'+esc(t.stage)+(t.status!=='queued'&&mins?' · '+mins+'分钟':'')+'</span></div>';
-      if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:#d05050">'+esc(t.error.slice(0,200))+'</div></div>';
-      if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <a href="javascript:void(0)" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--link)">查看报告</a></div></div>'; return html; }).join('');
+      if (t.status==='failed'&&t.error) html += '<div class="lab-rules"><div style="color:var(--danger-text)">'+esc(t.error.slice(0,200))+'</div></div>';
+      if (t.status==='done') html += '<div class="lab-rules"><div>规则已登记 — <button type="button" class="lab-report-link" data-formula="'+escAttr(t.formulas[0])+'" style="color:var(--link);background:none;border:none;padding:0;cursor:pointer;font-size:var(--fs-xs);text-decoration:underline">查看报告</button></div></div>'; return html; }).join('');
     setTimeout(() => { box.querySelectorAll('.lab-report-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0);
-    if (d.running||d.queue.some(t=>t.status==='queued')) startLabPoll(); loadLabHistory(); }).catch(() => {}); }
+    if (d.running||d.queue.some(t=>t.status==='queued')) startLabPoll(); loadLabHistory(); })
+    .catch(() => { const h = document.getElementById('labHint'); if (h) h.textContent = '状态刷新失败（网络/服务），轮询会继续重试'; }); }
 
 function loadLabHistory() { fetchLabHistory().then(d => { const box = document.getElementById('labHistory');
-    if (!d.items||!d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:12px">暂无体检记录</div>'; return; }
-    box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><a href="javascript:void(0)" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--link);font-size:11px">查看</a></div>').join('');
-    setTimeout(() => { box.querySelectorAll('.lab-hist-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0); }).catch(() => {}); }
+    if (!d.items||!d.items.length) { box.innerHTML = '<div style="color:var(--text2);font-size:var(--fs-sm)">暂无体检记录</div>'; return; }
+    box.innerHTML = d.items.map(i => '<div class="lab-row"><b>'+esc(i.formula)+'</b><span style="color:var(--text2)">'+esc(i.report_date||i.generated_at||'')+'</span><span class="lab-badge '+(i.adopted?'ok':'wait')+'">'+i.rules+' 规则 / '+i.adopted+' 通过</span><button type="button" class="lab-hist-link" data-formula="'+escAttr(i.formula)+'" style="color:var(--link);background:none;border:none;padding:0;cursor:pointer;font-size:var(--fs-xs);text-decoration:underline">查看</button></div>').join('');
+    setTimeout(() => { box.querySelectorAll('.lab-hist-link').forEach(a => { a.addEventListener('click', function(e) { e.preventDefault(); viewLabReport(this.dataset.formula); }); }); }, 0); })
+    .catch(() => { box.innerHTML = '<div style="color:var(--danger-text);font-size:var(--fs-sm)">体检记录加载失败（网络/服务）</div>'; }); }
 
 function viewLabReport(formula) { fetchLabReport(formula).then(d => { if (!d.success) { showToast(d.error||'无报告', 'error'); return; }
     document.getElementById('labReportCard').style.display = ''; document.getElementById('labReportTitle').textContent = '体检报告: '+d.file;
-    document.getElementById('labReportBody').textContent = d.markdown; document.getElementById('labReportCard').scrollIntoView({ behavior: 'smooth' }); }); }
+    const body = document.getElementById('labReportBody');
+    // 2026-08-19: markdown 渲染 (同 brain_chat 姿势), DOMPurify 消毒防注入; marked 缺载时退回转义文本
+    // W4-6: h1 降级 h2 (与 brain 渲染路径共用 window.veraDemoteH1, 页内已有 <h1>VERA</h1>)
+    body.innerHTML = (window.marked && window.DOMPurify)
+      ? DOMPurify.sanitize(window.veraDemoteH1 ? window.veraDemoteH1(marked.parse(d.markdown)) : marked.parse(d.markdown))
+      : '<pre>'+esc(d.markdown)+'</pre>';
+    document.getElementById('labReportCard').scrollIntoView({ behavior: 'smooth' }); }); }
 
 document.getElementById('labTag').addEventListener('change', e => { document.getElementById('labCustomDates').style.display = e.target.value==='custom'?'flex':'none'; });
 
@@ -395,12 +493,399 @@ document.getElementById('labTag').addEventListener('change', e => { document.get
 document.getElementById('tabBtnBacktest').addEventListener('click', () => switchTab('backtest'));
 document.getElementById('tabBtnLab').addEventListener('click', () => switchTab('lab'));
 document.getElementById('tabBtnTrade').addEventListener('click', () => switchTab('trade'));
+document.getElementById('tabBtnAnalysis')?.addEventListener('click', () => switchTab('analysis'));
 document.getElementById('tabBtnResearch')?.addEventListener('click', () => switchTab('research'));
 document.getElementById('tabBtnRecords')?.addEventListener('click', () => switchTab('records'));
+document.getElementById('tabBtnData')?.addEventListener('click', () => switchTab('data'));
+document.getElementById('tabBtnFarm')?.addEventListener('click', () => switchTab('farm'));
+document.getElementById('tabBtnAi')?.addEventListener('click', () => switchTab('ai'));
+// 2026-09-17: 大盘位置 TAB 的点击监听 **原来漏了** ——
+// `switchTab` 支持 'market'、hash 白名单也有 'market'、按钮也在 index.html 里，
+// 就是没人调它 → **点上去毫无反应**（用户 2026-09-17 实测报的）。
+// 这行"看起来像是本来就有"，所以整整一轮都没人发现：
+// 前端 Node 单测测的是纯函数，**DOM 接线没人测** ——
+// 现在有 `tests/js/test_tab_wiring.js` 逐一对账（每个 tabBtn 必须有点击监听）。
+document.getElementById('tabBtnMarket')?.addEventListener('click', () => switchTab('market'));
+document.getElementById('tabBtnSentiment')?.addEventListener('click', () => switchTab('sentiment'));
+document.getElementById('btnFarmCheck')?.addEventListener('click', () => farmGate(farmCheck, '检查增量'));
+document.getElementById('btnFarmOnboard')?.addEventListener('click', () => farmGate(farmOnboard, '一键入库'));
+document.getElementById('btnFarmVerify')?.addEventListener('click', () => farmGate(farmVerify, '定量复核'));
+document.getElementById('btnFarmBacktest')?.addEventListener('click', () => farmGate(farmBacktest, '开始粗扫'));
+document.getElementById('btnFarmStop')?.addEventListener('click', () => farmStop().then(() => showToast('已请求停止')).catch((e) => showToast('停止请求失败: ' + (e && e.message || e), 'error')));
+
+// ═══════════════════════════════════════════
+// Farm Page (公式农场三段闸门, 2026-09-06)
+// ═══════════════════════════════════════════
+
+let _farmPollTimer = null;
+function startFarmPoll() { stopFarmPoll(); _farmPollTimer = setInterval(refreshFarmStatus, 2000); }
+function stopFarmPoll() { if (_farmPollTimer) { clearInterval(_farmPollTimer); _farmPollTimer = null; } }
+
+// 2026-09-16: 状态三态 (done/stopped/failed) —— 人工停止与真失败分开显示
+function _farmStatusMark(status, withWord) {
+  if (status === 'done') return withWord ? '✅ 完成 ' : '✅';
+  if (status === 'stopped') return withWord ? '⏹ 已人工停止 ' : '⏹';
+  return withWord ? '❌ 失败 ' : '❌';
+}
+
+// ── farm 进度文案(纯函数; tests/js/test_farm_progress.js 按标记抠出来真跑) ──
+// 2026-09-20 用户报「明明说运行中, 却没有体现进度」: 页面只显示**最后一行原始
+// stdout**, 而粗扫一个公式要跑十几分钟 (中间层把它吞了), 那行字就冻在上一阶段的
+// 诊断行「TQ数据连接已关闭」上 —— 看着像报错。现在改成「进度 13/94 · GS1369 ·
+// 已 44 分钟」, 实时输出贴在**正在跑的那张卡**里。
+function _farmElapsedTxt(sec) {
+  if (sec == null || !isFinite(sec)) return '';       // 后端老版本没这字段 → 不显示
+  const mins = Math.floor(sec / 60);
+  if (mins < 1) return '不到 1 分钟';
+  if (mins < 60) return '已 ' + mins + ' 分钟';
+  return '已 ' + Math.floor(mins / 60) + ' 小时 ' + (mins % 60) + ' 分钟';
+}
+
+function _farmRunningText(cur) {
+  cur = cur || {};
+  const p = cur.progress || {};                       // 后端解析阶段行 [i/N] 得来
+  const parts = [];
+  if (p.total) {
+    const gs = String(p.text || '').match(/GS\d{4}/);
+    parts.push('进度 ' + p.done + '/' + p.total + (gs ? ' · ' + gs[0] : ''));
+  }
+  const el = _farmElapsedTxt(cur.elapsed_s);
+  if (el) parts.push(el);
+  let s = '运行中' + (parts.length ? ' · ' + parts.join(' · ') : '');
+  const stage = String(cur.stage || '').trim();
+  // stage 就是那条进度行时不再重复一遍
+  if (stage && stage !== String(p.text || '').trim()) s += ' · ' + stage;
+  return s;
+}
+// ── /farm 进度文案 ──────────────────────────────────────────────
+
+function _farmTailHtml(tail) {
+  const lines = (tail || []).slice(-30);
+  if (!lines.length) return '';
+  return '<div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:2px">实时输出 (最近 '
+    + lines.length + ' 行)</div>'
+    + '<pre style="font-size:var(--fs-xs);max-height:200px;overflow:auto;background:var(--bg);'
+    + 'padding:var(--sp-2);border-radius:6px;margin:0;white-space:pre-wrap">'
+    + esc(lines.join('\n')) + '</pre>';
+}
+
+function refreshFarmStatus() {
+  fetchFarmStatus().then(d => {
+    const cur = d.current, last = d.last || {};
+    const isRunning = !!(cur && cur.status === 'running');
+    const setS = (id, gate) => { const el = document.getElementById(id); if (!el) return;
+      if (isRunning && cur.gate === gate) {
+        // 2026-09-19 UIUX: 四道闸门运行中都给停止入口 (原来只有闸门②有) ——
+        // /api/farm/stop 作用于整个串行 runner, 不分闸门 (core/farm_api.py)
+        el.innerHTML = '';
+        el.appendChild(document.createTextNode('⏳ ' + _farmRunningText(cur) + ' '));
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'btn btn-danger btn-xs';
+        stopBtn.textContent = '■ 停止';
+        stopBtn.addEventListener('click', () => { farmStop().then(() => showToast('已请求停止')).catch((e) => showToast('停止请求失败: ' + (e && e.message || e), 'error')); });
+        el.appendChild(stopBtn);
+        return; }
+      if (cur && cur.gate === gate && cur.status !== 'running') { el.textContent = _farmStatusMark(cur.status, true) + (cur.finished_at || '') + (cur.error ? ' — ' + cur.error : ''); return; }
+      const l = last[gate];
+      el.textContent = l ? ('上次: ' + _farmStatusMark(l.status, false) + ' ' + (l.finished_at || '')) : '未运行'; };
+    setS('farmCheckStatus', 'check'); setS('farmOnboardStatus', 'onboard');
+    setS('farmVerifyStatus', 'verify'); setS('farmBacktestStatus', 'backtest');
+    // 2026-09-16: 「查看完整日志」链接 —— 该闸门有落盘日志才显示
+    const setLog = (id, gate) => { const a = document.getElementById(id); if (!a) return;
+      const has = !!((cur && cur.gate === gate && cur.log_file) || (last[gate] && last[gate].log_file));
+      a.style.display = has ? '' : 'none';
+      a.onclick = has ? () => showFarmLog(gate, (d.gates || {})[gate] || gate) : null; };
+    setLog('farmLogCheck', 'check'); setLog('farmLogOnboard', 'onboard');
+    setLog('farmLogVerify', 'verify'); setLog('farmLogBacktest', 'backtest');
+    // 2026-09-20: 实时输出画在**正在跑的那张卡**里。旧版固定写死闸门①的
+    // farmNewList —— 用户在④卡片盯着「运行中」, 那段日志却在页面另一头, 等于没有。
+    _FARM_GATES.forEach(function (g) {
+      const box = document.getElementById('farmTail' + g[0]); if (!box) return;
+      const live = isRunning && cur.gate === g[1];
+      box.style.display = live ? '' : 'none';
+      if (!live) return;
+      box.innerHTML = _farmTailHtml(cur.log_tail);
+      // 30 行塞不进 200px 的框 —— 每次重绘都滚到底, 保证眼睛落在**最新**那几行上
+      const pre = box.querySelector('pre');
+      if (pre) pre.scrollTop = pre.scrollHeight;
+    });
+    renderFarmSummary(d); renderFarmOverview(d);
+  }).catch(() => {});
+}
+
+function farmGate(fn, label) {
+  fn().then(() => { showToast(label + '已启动'); refreshFarmStatus(); })
+    .catch(e => showToast(e.message || '启动失败', 'error'));
+}
+
+// ── 2026-09-16 看板计划书阶段 3: 流水线卡片(状态灯/成绩单/置灰) + 总览看板 ──
+const _FARM_GATES = [['Check', 'check', 'btnFarmCheck'], ['Onboard', 'onboard', 'btnFarmOnboard'],
+                     ['Verify', 'verify', 'btnFarmVerify'], ['Backtest', 'backtest', 'btnFarmBacktest']];
+
+function _farmDotState(cur, last, gate) {
+  if (cur && cur.gate === gate) {
+    if (cur.status === 'running') return 'run';
+    return cur.status === 'done' ? 'ok' : (cur.status === 'stopped' ? 'stop' : 'bad');
+  }
+  const l = (last || {})[gate];
+  if (!l) return '';
+  return l.status === 'done' ? 'ok' : (l.status === 'stopped' ? 'stop' : 'bad');
+}
+
+function renderFarmSummary(d) {
+  const sum = d.summary || {};
+  _FARM_GATES.forEach(function (g) {
+    const suffix = g[0], gate = g[1], btnId = g[2];
+    const info = sum[gate] || {};
+    const sumEl = document.getElementById('farmSum' + suffix);
+    // 成绩单是**上一轮跑完**的结果 (archive/报告口径), 与上面那行「运行中」不是一回事 ——
+    // 不加这个前缀时, "运行中 + 9月16日 达标 0" 看着像本轮跑完的结论 (2026-09-20 用户报)
+    if (sumEl) sumEl.textContent = info.text ? '上次成绩: ' + info.text : '';
+    const btn = document.getElementById(btnId);
+    if (btn) { btn.disabled = info.ready === false; btn.title = info.ready === false ? (info.hint || '') : ''; }
+    const noteEl = document.getElementById('farmNote' + suffix);
+    if (noteEl) noteEl.textContent = info.note || '';
+    const dot = document.getElementById('farmDot' + suffix);
+    if (dot) dot.className = 'farm-dot ' + _farmDotState(d.current, d.last, gate);
+  });
+}
+
+let _farmOvSig = '';
+function _pct(v, digits) { return v == null ? '—' : (v * 100).toFixed(digits == null ? 1 : digits) + '%'; }
+function renderFarmOverview(d) {
+  const ov = d.overview; if (!ov) return;
+  const sig = JSON.stringify(ov);
+  if (sig === _farmOvSig) return;   // 签名没变不重绘, 防 2 秒轮询闪屏
+  _farmOvSig = sig;
+  const empty = document.getElementById('farmOvEmpty');
+  if (empty) empty.style.display = ov.empty ? '' : 'none';
+  const funnelBox = document.getElementById('farmFunnel');
+  if (funnelBox) {
+    const max = Math.max(1, ...(ov.funnel || []).map(f => f.count || 0));
+    funnelBox.innerHTML = (ov.funnel || []).map(f =>
+      '<div class="farm-funnel-row"><span class="farm-funnel-label">' + esc(f.label) + '</span>'
+      + '<span class="farm-funnel-bar" style="width:' + Math.max(2, Math.round((f.count || 0) / max * 100)) + '%"></span>'
+      + '<span class="farm-funnel-num">' + (f.count || 0) + (f.pass != null ? ' · 过 ' + f.pass : '') + '</span></div>').join('');
+  }
+  const tr = document.getElementById('farmTopReasons');
+  if (tr) tr.textContent = (ov.top_reasons && ov.top_reasons.length)
+    ? '这批货主要死在: ' + ov.top_reasons.map(r => r[0] + ' ' + r[1] + ' 条').join(' · ') : '';
+  const board = document.getElementById('farmBoard');
+  if (board) {
+    // 2026-09-18 用户拍板"卡片不许说黑话": 最优组合列摆人话 (combo_text,
+    // 后端唯一生成), 原始参数串收进鼠标悬停提示; 回测区间单列 —— 池子/周期
+    // 全榜统一在上方口径行说, 区间每条公式不同, 必须逐行给
+    const rowHtml = (r, withBtn) => '<tr><td>' + esc(r.gs) + '</td><td>' + esc((r.file || '').replace(/\.md$/, '').slice(0, 20)) + '</td>'
+      + '<td title="' + escAttr(r.key || '') + '">' + esc(r.combo_text || r.key || '—') + '</td>'
+      + '<td style="white-space:nowrap">' + esc((r.window && r.window[0] && r.window[1]) ? r.window[0] + ' ~ ' + r.window[1] : '—') + '</td>'
+      + '<td class="num">' + _pct(r.annret) + '</td>'
+      + '<td class="num">' + (r.calmar == null ? '—' : Number(r.calmar).toFixed(2)) + '</td>'
+      + '<td class="num">' + _pct(r.maxdd) + '</td><td class="num">' + _pct(r.winrate, 0) + '</td>'
+      + '<td class="num">' + (r.trades == null ? '—' : esc(String(r.trades))) + '</td>'
+      + '<td>' + esc(r.onboard_date || '') + '</td>'
+      // 2026-09-16 审计 L5: url 源自股旁网抓取 HTML, 只放行 http(s) —— escAttr
+      // 不拦 javascript: 协议, 源站被挂马时可落成存储型 XSS (需点击, LOW 但便宜)
+      + '<td>' + (/^https?:\/\//i.test(r.url || '') ? '<a href="' + escAttr(r.url) + '" target="_blank" rel="noopener" style="color:var(--link)">来源</a>' : '') + '</td>'
+      // 2026-09-16 回填回测页计划书: 按钮只放达标组 (样本不足/未达标不放, 防误导)
+      + (withBtn ? '<td><button class="btn farm-to-bt" data-gs="' + escAttr(r.gs) + '" style="font-size:var(--fs-xs);padding:1px 8px">→ 回测页</button></td>' : '') + '</tr>';
+    const table = (rows, withBtn) => '<table><thead><tr><th>GS</th><th>公式</th><th>最优组合(卖出纪律)</th><th>回测区间</th><th>年化</th><th>卡玛</th><th>最大回撤</th><th>胜率</th><th>笔数</th><th>入库日</th><th>来源</th>' + (withBtn ? '<th>操作</th>' : '') + '</tr></thead><tbody>'
+      + rows.map(r => rowHtml(r, withBtn)).join('') + '</tbody></table>';
+    const b = ov.board || { pass: [], insufficient: [], fail: [] };
+    const totals = ov.board_totals || { pass: b.pass.length, insufficient: b.insufficient.length, fail: b.fail.length };
+    const capNote = (rows, total) => rows.length < total ? ' (仅列前 ' + rows.length + ' 条)' : '';
+    let html = '';
+    // 粗扫口径一行 (后端唯一生成): 股票池/周期/本金/买入方式/达标线
+    if (ov.caliber_text) html += '<div style="color:var(--text2);font-size:var(--fs-sm);margin:2px 0 8px">' + esc(ov.caliber_text) + '</div>';
+    if (!ov.board_total) html = '<div style="color:var(--text2);font-size:var(--fs-sm)">粗扫还没跑出结果——点下方「④ 开始粗扫」试第一批。</div>';
+    if (b.pass.length) html += '<div class="farm-group-title farm-group-pass">✅ 达标 ' + totals.pass + ' 条' + capNote(b.pass, totals.pass) + '</div>' + table(b.pass, true);
+    if (b.insufficient.length) html += '<div class="farm-group-title farm-group-thin">🟡 样本不足 ' + totals.insufficient + ' 条 (数字好看但笔数不足 20, 不作数)' + capNote(b.insufficient, totals.insufficient) + '</div>' + table(b.insufficient);
+    if (b.fail.length) html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">未达标 / 无有效组合 ' + totals.fail + ' 条 (点击展开' + capNote(b.fail, totals.fail) + ')</summary>' + table(b.fail) + '</details>';
+    // 2026-09-17 作废组: 入库后才发现踩未来函数黑名单的公式, 成绩不计入达标
+    if (b.void && b.void.length) {
+      const reasons = {};
+      b.void.forEach(r => { const k = (r.void_reason || '未注明').split('(')[0]; reasons[k] = (reasons[k] || 0) + 1; });
+      const rtxt = Object.keys(reasons).map(k => k + ' ×' + reasons[k]).join(' · ');
+      html += '<details style="margin-top:8px"><summary class="farm-group-title farm-group-fail" style="cursor:pointer">⛔ 作废 ' + totals.void + ' 条 (踩黑名单, 成绩不计入: ' + esc(rtxt) + '; 点击展开' + capNote(b.void, totals.void) + ')</summary>' + table(b.void) + '</details>';
+    }
+    board.innerHTML = html;
+  }
+}
+
+// 2026-09-16: 查看闸门完整日志 (失败病因结构化配套)
+function showFarmLog(gate, label) {
+  fetchFarmLog(gate).then(d => {
+    const card = document.getElementById('farmLogCard'); if (!card) return;
+    card.style.display = '';
+    document.getElementById('farmLogTitle').textContent =
+      '运行日志 · ' + label + ' · ' + (d.file || '') + (d.truncated ? ' (过长已截尾)' : '');
+    document.getElementById('farmLogBody').textContent = d.log || '(空)';
+    card.scrollIntoView({ behavior: 'smooth' });
+  }).catch(e => showToast(e.message || '日志读取失败', 'error'));
+}
+
+// ── 2026-09-16 达标榜 → 回测页回填 (计划书: 方案 A 只回填不代跑) ──
+// 快照与直写同一字段集合; 佣金/滑点/整手等**个人成本设置**一律不碰。
+// 审计 HIGH-2: 会改结果的池子/止损语义开关必须一并回填并快照 ——
+// ① 板块选择非空时股票池下拉框会被 silently 忽略 (sector 并集优先),
+//    ② 引擎默认移动止盈确认=盘中触线而页面默认条件单语义 (HIGH-1)。
+// 板块另有单独清理 (clearSectors, 不在字段表内)。
+const _PREFILL_FIELDS = ['cfgFormula', 'cfgFormulaArg', 'cfgUniverse', 'cfgPeriod',
+  'cfgEntryPriceMode', 'cfgStart', 'cfgEnd', 'cfgCapital', 'cfgMinBuy', 'cfgMaxBuy',
+  'cfgExcludeST', 'cfgIncludeEtf', 'cfgEtfOnly',
+  'cfgCostStopEn', 'cfgCostStopVal', 'cfgTrailingEn', 'cfgTrailingAct', 'cfgTrailingDD',
+  'cfgTrailingConfirm',
+  'cfgLadderEn', 'cfgTimeEn', 'cfgTimeVal', 'cfgCondTimeEn', 'cfgCondTimeDays', 'cfgCondTimeProfit',
+  'cfgFirstDayEn', 'cfgFormulaSellEn', 'cfgFactorFilterEn'];
+let _farmPrefillSnapshot = null;
+let _farmPrefillSectorsSnap = null;
+
+function _farmToBacktest(gs) {
+  fetchFarmPrefill(gs).then(d => {
+    const banner = document.getElementById('farmPrefillBanner');
+    const bannerVisible = !!banner && banner.style.display !== 'none';
+    // ① 快照 (横幅「恢复原配置」用) —— 审计 MEDIUM-3: 连续点两条公式时,
+    //    只有第一次快照 (用户原配置); 后续点击不覆盖, 否则恢复的是上一次回填值
+    if (!bannerVisible) {
+      const snap = { radio: (document.querySelector('input[name="cfgPriority"]:checked') || {}).value || '' };
+      _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
+        if (el) snap[id] = el.type === 'checkbox' ? el.checked : el.value; });
+      _farmPrefillSnapshot = snap;
+      // 审计第二轮 MEDIUM-B: 板块快照必须读**磁盘**而不是内存 —— 通达信没开时
+      // loadSectors() 提前 return (_selectedSectors 停在 []), 从内存快照会把
+      // 用户真实选择记成空, 恢复时用空覆盖, 设置不可逆丢失
+      let raw = [];
+      try { raw = JSON.parse(localStorage.getItem(SECTORS_KEY) || '[]'); } catch (e) { raw = []; }
+      _farmPrefillSectorsSnap = Array.isArray(raw) ? raw.slice() : [];
+    }
+    // ② 逐字段直写 (不走 applyConfigDict —— 它会把缺失字段重置成默认值,
+    //    冲掉用户的佣金/滑点设置, 计划书侦察结论 4)
+    const p = d.params, cal = d.caliber;
+    const set = (id, v) => { const el = document.getElementById(id);
+      if (el) { if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v); } };
+    set('cfgFormula', d.gs); set('cfgFormulaArg', '');
+    notifyFormulaChanged();   // 审计 MEDIUM-E: 程序化改公式后刷因子规则面板
+    set('cfgUniverse', cal.universe_type); set('cfgPeriod', cal.period);
+    set('cfgEntryPriceMode', cal.entry_price_mode);
+    // 池子/语义开关按粗扫口径复位 (HIGH-2 / HIGH-1)
+    set('cfgExcludeST', true); set('cfgIncludeEtf', false); set('cfgEtfOnly', false);
+    set('cfgTrailingConfirm', cal.trailing_confirm);
+    set('cfgFirstDayEn', false); set('cfgFormulaSellEn', false);
+    set('cfgFactorFilterEn', false);
+    // 审计第二轮 MEDIUM-B: 板块 UI 未加载成功 (_allSectors 空) 时**只清内存不落盘**
+    // —— 否则 clearSectors() 会把用户磁盘上的真实选择立刻抹成 [] 且恢复不回来;
+    // 结果口径不受影响 (提交走内存 _selectedSectors, 已是空)
+    // 2026-09-17: 整段加 try/catch —— 清板块是**附带动作**, 绝不能让它的异常打断
+    // 下面的参数回填。半截配置比报错危险得多: 页面看着"填好了", 实际跑另一套口径
+    // (真事故: renderSectors 抛 null.style, 本金停在 100万默认值而非粗扫的 300万)。
+    try {
+      if (_allSectors && _allSectors.length > 0) {
+        if (typeof clearSectors === 'function') clearSectors();
+      } else {
+        _selectedSectors = [];
+      }
+    } catch (e) { console.warn('清板块失败(继续回填参数)', e); }
+    if (d.window && d.window[0]) set('cfgStart', String(d.window[0]).replace(/-/g, ''));
+    if (d.window && d.window[1]) set('cfgEnd', String(d.window[1]).replace(/-/g, ''));
+    set('cfgCapital', cal.capital); set('cfgMaxBuy', cal.max_buy);
+    set('cfgMinBuy', cal.min_buy);   // 审计 LOW-G: 硬闸参数, 不同值会让复跑一笔不开
+    // 自审修复: JS 浮点直乘会出 "20.000000000000004" 填进输入框 —— 先修约再写
+    const pct100 = v => String(Number((v * 100).toFixed(6)));
+    set('cfgCostStopEn', true); set('cfgCostStopVal', pct100(Math.abs(p.cost)));
+    set('cfgTrailingEn', true); set('cfgTrailingAct', pct100(p.act));
+    set('cfgTrailingDD', pct100(p.dd));
+    set('cfgLadderEn', false);                       // 当前数据全部不用阶梯止盈
+    set('cfgTimeEn', true); set('cfgTimeVal', p.time_days);
+    const condOn = (p.cond_days || 0) > 0;
+    set('cfgCondTimeEn', condOn);
+    if (condOn) { set('cfgCondTimeDays', p.cond_days);
+      set('cfgCondTimeProfit', pct100(p.cond_profit || 0)); }
+    const radio = document.querySelector('input[name="cfgPriority"][value="' + cal.priority_value + '"]');
+    if (radio) radio.checked = true;
+    // ③ 横幅 + 切页 (人工核对后自己点开始回测 —— 两口径铁律的最后一道闸)
+    const name = (d.file || '').replace(/\.md$/, '');
+    const win = (d.window && d.window[0] && d.window[1])
+      ? ' · 区间 ' + d.window[0] + '~' + d.window[1] : '';
+    let txt = '已从公式农场回填: ' + d.gs + (name ? '(' + name + ')' : '')
+      + ' · 最优组合 ' + d.combo_text
+      + ' · 口径: ' + (d.caliber_text || '')          // 文案后端唯一生成 (LOW-8)
+      + win
+      + ' · 已复位池子/语义开关'
+      + ' · 请核对后手动点「开始回测」';
+    if (d.ladder_note) txt += ' ⚠ ' + d.ladder_note;
+    if (banner) { document.getElementById('farmPrefillText').textContent = txt;
+      banner.style.display = ''; }
+    switchTab('backtest');
+    // 审计第二轮 LOW-I: 摘要刷新是装饰性动作, 必须排在"横幅已显示+已切页"之后
+    // 且自吞异常 —— 原顺序(刷新→横幅)一旦抛错, 表单已改却弹"回填失败"、无横幅
+    // 不切页, 直接违背"人工过目是最后一道闸"的前提
+    try { refreshAllSummaries(); } catch (e) { console.warn('摘要刷新失败', e); }
+  }).catch(e => showToast(e.message || '回填失败', 'error'));
+}
+
+// 板块状态唯一写入口 (审计第二轮 MEDIUM-C: 「变更板块后必须同步股票池下拉框」
+// 原来手写在 onSectorToggle/clearSectors/removeSector 三处, 恢复分支漏调 → 收口)
+function setSectors(list) {
+  _selectedSectors = (list || []).slice();
+  try { localStorage.setItem(SECTORS_KEY, JSON.stringify(_selectedSectors)); } catch (e) {}
+  renderSectors();
+  updateSectorSummary();
+  toggleUniverseDropdown();
+}
+
+function _farmRestorePrefill() {
+  const snap = _farmPrefillSnapshot;
+  if (snap) {
+    _PREFILL_FIELDS.forEach(id => { const el = document.getElementById(id);
+      if (el && id in snap) { if (el.type === 'checkbox') el.checked = snap[id]; else el.value = snap[id]; } });
+    if (snap.radio) { const r = document.querySelector('input[name="cfgPriority"][value="' + snap.radio + '"]');
+      if (r) r.checked = true; }
+    // 板块选择恢复: 走 setSectors (含 toggleUniverseDropdown, 修 MEDIUM-C)
+    if (_farmPrefillSectorsSnap) setSectors(_farmPrefillSectorsSnap);
+    try { refreshAllSummaries(); } catch (e) { console.warn('摘要刷新失败', e); }
+  }
+  _farmPrefillSnapshot = null;                   // MEDIUM-3: 恢复后允许重新快照
+  _farmPrefillSectorsSnap = null;
+  document.getElementById('farmPrefillBanner').style.display = 'none';
+}
+
+document.getElementById('farmBoard')?.addEventListener('click', function (ev) {
+  const btn = ev.target.closest('.farm-to-bt');
+  if (btn) _farmToBacktest(btn.dataset.gs);
+});
+document.getElementById('farmPrefillRestore')?.addEventListener('click', _farmRestorePrefill);
+document.getElementById('farmPrefillDismiss')?.addEventListener('click', () => {
+  // 审计第二轮 MEDIUM-D: 「知道了」只隐藏横幅会让下次点击重新快照(覆盖原配置) ——
+  // 必须一并清快照, 与「恢复原配置」保持同一生命周期语义
+  _farmPrefillSnapshot = null;
+  _farmPrefillSectorsSnap = null;
+  document.getElementById('farmPrefillBanner').style.display = 'none';
+});
+
+function loadFarmReports() {
+  fetchFarmReports().then(d => {
+    const box = document.getElementById('farmReports'); if (!box) return;
+    if (!d.items || !d.items.length) { box.innerHTML = '<div style="color:var(--text2)">暂无报告</div>'; return; }
+    box.innerHTML = d.items.map(i =>
+      '<div class="lab-row"><b>' + esc(i.file) + '</b><span style="color:var(--text2);font-size:var(--fs-xs)"> ' + esc(i.mtime) + '</span> '
+      + '<a href="javascript:void(0)" class="farm-rpt" data-f="' + escAttr(i.file) + '" style="color:var(--link)">查看</a></div>').join('');
+    box.querySelectorAll('.farm-rpt').forEach(a => a.addEventListener('click', function () {
+      fetchFarmReport(this.dataset.f).then(d2 => {
+        const b = document.getElementById('farmReportBody');
+        // 2026-09-06 审查修复: 补上与 lab 报告同款的 marked 守卫 + demoteH1 (原裸调, marked 缺载即抛错)
+        b.innerHTML = (window.marked && window.DOMPurify)
+          ? DOMPurify.sanitize(window.veraDemoteH1 ? window.veraDemoteH1(marked.parse(d2.markdown)) : marked.parse(d2.markdown))
+          : '<pre style="white-space:pre-wrap;margin:0">' + esc(d2.markdown) + '</pre>';
+        b.scrollIntoView({ behavior: 'smooth' });
+      }).catch(e => showToast(e.message, 'error'));
+    }));
+  }).catch(() => { box.innerHTML = '<div style="color:var(--danger-text)">报告列表加载失败（网络/服务）</div>'; });
+}
 document.querySelector('.theme-btn').addEventListener('click', toggleTheme);
 document.querySelector('.sidebar-toggle').addEventListener('click', toggleSidebar);
 document.getElementById('historySelect').addEventListener('change', function() { loadHistory(this.value); });
-const sh = document.querySelector('.sector-header'); if (sh) sh.addEventListener('click', toggleSectorPanel);
+const sh = document.querySelector('.sector-header'); if (sh) { sh.addEventListener('click', toggleSectorPanel);
+  // W1-2: 板块折叠头(div→button)后同步 aria-expanded (toggleSectorPanel 切 class, 本监听在其后同步态)
+  sh.addEventListener('click', () => sh.setAttribute('aria-expanded', String(!document.querySelector('.sector-section').classList.contains('collapsed')))); }
 document.getElementById('sectorSearch').addEventListener('input', filterSectors);
 document.getElementById('btnClearSectors').addEventListener('click', clearSectors);
 document.getElementById('cfgFactorFilterEn').addEventListener('change', saveFactorFilterState);
@@ -408,7 +893,16 @@ document.getElementById('cfgFactorFilterEn').addEventListener('change', saveFact
 const sidebar = document.querySelector('.sidebar');
 sidebar.addEventListener('input', function(e) { const el = e.target;
   if (el.id==='cfgStart'||el.id==='cfgEnd') validateDate(el); else if (el.id==='cfgCapital') validatePositive(el);
-  else if (el.id==='cfgCommission'||el.id==='cfgSlippage') validateNonNeg(el); else if (el.id==='cfgLadderVal') validateLadder(el); });
+  else if (el.id==='cfgCommission'||el.id==='cfgSlippage') validateNonNeg(el); else if (el.id==='cfgLadderVal') validateLadder(el);
+  // 2026-09-19 UIUX: 校验扩面 —— 数字输入全部接入即时校验, 不再裸奔
+  else if (el.id==='cfgFormulaArg') el.classList.toggle('invalid', !el.value.trim());
+  else if (['cfgMinBuy','cfgMaxBuy','cfgLotSize','cfgMinLots','cfgCostStopVal','cfgTrailingAct','cfgTrailingDD'].includes(el.id)) validatePositive(el);
+  // 交叉校验: 最低买入额 > 最高买入额 时两框同时标红 (先各自重验, 防修复后残留红框)
+  if (el.id==='cfgMinBuy'||el.id==='cfgMaxBuy') {
+    const mn = document.getElementById('cfgMinBuy'), mx = document.getElementById('cfgMaxBuy');
+    validatePositive(mn); validatePositive(mx);
+    const bad = parseFloat(mn.value) > 0 && parseFloat(mx.value) > 0 && parseFloat(mn.value) > parseFloat(mx.value);
+    if (bad) { mn.classList.add('invalid'); mx.classList.add('invalid'); } } });
 sidebar.addEventListener('click', function(e) { const btn = e.target.closest('button'); if (!btn) return;
   const block = btn.closest('[id^="blk"]'); if (!block) return;
   if (btn.classList.contains('edit-btn')) toggleEdit(block.id); else if (btn.classList.contains('save-btn')) saveBlock(block.id);
@@ -419,7 +913,8 @@ document.getElementById('btnResetDefaults').addEventListener('click', resetDefau
 document.getElementById('btnSaveToFile').addEventListener('click', saveConfigToFile);
 document.getElementById('btnLoadFile').addEventListener('click', loadConfigFromFile);
 document.getElementById('btnDeleteFile').addEventListener('click', deleteSavedConfigFile);
-document.getElementById('tradeSearch').addEventListener('input', filterTrades);
+document.getElementById('tradeSearch').addEventListener('input', filterTradesDebounced);
+document.getElementById('tradeSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { filterTradesDebounced.cancel(); filterTrades(); } });
 document.getElementById('tradeFilter').addEventListener('change', filterTrades);
 document.getElementById('tradeReason').addEventListener('change', filterTrades);
 document.getElementById('btnLabSubmit').addEventListener('click', labSubmit);
@@ -436,18 +931,92 @@ if (themeIcon) {
 }
 if (localStorage.getItem('vera_sidebar')==='0') { document.querySelector('.sidebar').classList.add('collapsed');
   const svg = document.querySelector('.sidebar-toggle svg'); if (svg) svg.innerHTML = '<polyline points="15 18 9 12 15 6"/>'; }
+// W1-2: 侧栏折叠钮初始 aria-expanded 同步
+(function syncSidebarAria() {
+  const st = document.querySelector('.sidebar-toggle');
+  if (st) st.setAttribute('aria-expanded', String(!document.querySelector('.sidebar').classList.contains('collapsed')));
+})();
 
 loadConfig(); refreshAllSummaries(); loadSectors(); loadFactorRules();
-fetchSavedConfig().then(res => { _savedFileExists = !!(res&&res.exists); toggleSavedButtons(_savedFileExists); }).catch(() => {});
+// W4-6: lab 自定义日期 placeholder 动态生成 (原写死 20250719/20260718 已过期)
+(function labDatePlaceholders() {
+  const f = d => d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+  const now = new Date();
+  const y1 = new Date(now); y1.setFullYear(now.getFullYear()-1);
+  const y3 = new Date(now); y3.setFullYear(now.getFullYear()-3);
+  const s1 = document.getElementById('labStart1'), e1 = document.getElementById('labEnd1');
+  const s2 = document.getElementById('labStart2'), e2 = document.getElementById('labEnd2');
+  if (s1) s1.placeholder = f(y1); if (e1) e1.placeholder = f(now);
+  if (s2) s2.placeholder = f(y3); if (e2) e2.placeholder = f(now);
+})();
+fetchSavedConfig().then(res => { _savedFileExists = !!(res&&res.exists); toggleSavedButtons(_savedFileExists); }).catch((e) => { console.warn('已保存配置探测失败:', e); });
 if (localStorage.getItem('vera_sector_collapsed')==='1') { const sec = document.querySelector('.sector-section'); if (sec) sec.classList.add('collapsed'); }
+// W1-2: 板块折叠头初始 aria-expanded 同步 (须在 localStorage 折叠恢复之后)
+(function syncSectorAria() {
+  const sh2 = document.querySelector('.sector-header');
+  if (sh2) sh2.setAttribute('aria-expanded', String(!document.querySelector('.sector-section').classList.contains('collapsed')));
+})();
 addLog('前端就绪，等待执行回测', 'info');
+
+// 2026-09-19 UIUX 改造: ①页签覆盖层 top 不再写死 41px 魔法数 —— 启动/缩放时
+// 用页签栏实测高度回写 --tabbar-h; ②PC 端页面隐藏暂停轮询 (手机版 9 月 16 日
+// 已修, PC 端补齐): 隐藏停 lab/farm 轮询, 回前台若仍在该页签立即补刷一次再恢复。
+(function syncTabbarH() {
+  const apply = () => { const tb = document.querySelector('.tab-bar');
+    if (tb) document.documentElement.style.setProperty('--tabbar-h', tb.offsetHeight + 'px'); };
+  apply(); window.addEventListener('resize', apply);
+})();
+window._veraTab = window._veraTab || 'backtest';
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopLabPoll(); stopFarmPoll(); return; }
+  if (window._veraTab === 'lab') { refreshLabStatus(); loadLabHistory(); startLabPoll(); }
+  if (window._veraTab === 'farm') { refreshFarmStatus(); loadFarmReports(); startFarmPoll(); }
+});
 
 fetchResults().then(list => { if (list&&list.length>0) { document.getElementById('historyCount').textContent = '('+list.length+'条)';
   const sel = document.getElementById('historySelect'); sel.innerHTML = '<option value="">-- 选择历史回测 --</option>';
   list.forEach(item => { const o = document.createElement('option'); o.value = item.id;
     const cumRet = (item.cumulative_return!=null&&!isNaN(item.cumulative_return))?(item.cumulative_return*100).toFixed(1)+'%':'--';
-    o.textContent = item.time+' | '+item.formula+' '+item.date_range+' | '+item.trade_count+'笔 '+cumRet; sel.appendChild(o); }); } }).catch(() => {});
+    o.textContent = item.time+' | '+item.formula+' '+item.date_range+' | '+item.trade_count+'笔 '+cumRet; sel.appendChild(o); }); } }).catch(() => { document.getElementById('historyCount').textContent = '(加载失败)'; });
 
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => Object.values(charts).forEach(c => c.resize()), 200); });
 
+// W1-4: 初始 hash 恢复页签 + 浏览器前进后退联动 (白名单与 switchTab 实际入参一致)
+const _validTabs = ['backtest','lab','trade','analysis','research','records','data','farm','ai','market','sentiment'];
+function _applyHashTab() { const h = location.hash.slice(1); if (_validTabs.includes(h)) switchTab(h); }
+_applyHashTab();
+window.addEventListener('hashchange', _applyHashTab);
+
 // Test exports are in recover.js (loadable by Node without ES module support)
+
+// ── 2026-09-20: 调度器存活常驻指示 ──────────────────────────────────
+// 为什么单开一个轮询: 上面 run 内那个 setInterval 只在**回测运行时**存在，
+// 空闲时页面什么都不显示 —— 而调度器停机恰恰发生在空闲时（实测两个停机
+// 窗口 09-11~09-14 / 09-19 至今，都是"没人发现"）。
+// 三态由后端 scheduler/health.py 判读：running / stopped（人工停的，不报警）
+// / down（这才是要你看一眼的）。**区分 stopped 与 down 是关键** ——
+// 否则你每次正常 stop_vera.bat 停机，页面都喊"死了"，假警报多了就没人看了。
+async function refreshSchedulerStatus() {
+  const el = document.getElementById('schedStatus');
+  if (!el) return;
+  try {
+    const s = await fetchStatus();
+    const sc = s && s.scheduler;
+    if (!sc) { el.textContent = ''; return; }
+    const map = {
+      running: ['运行中', 'ok'],
+      stopped: ['已人工停止', 'muted'],
+      down: ['疑似停机 ⚠', 'bad'],
+      unknown: ['状态未知', 'muted']
+    };
+    const m = map[sc.state] || map.unknown;
+    const age = (sc.age_s === null || sc.age_s === undefined)
+      ? '' : (' · 心跳 ' + Math.round(sc.age_s) + 's 前');
+    el.className = 'sched-status sched-' + m[1];
+    el.textContent = '调度器：' + m[0] + age;
+    el.title = (sc.note || '')
+      + '\n停机时先看 output/logs/scheduler.log；重启用 start_vera.bat。';
+  } catch (e) { el.textContent = ''; }
+}
+setInterval(refreshSchedulerStatus, 60000);
+refreshSchedulerStatus();

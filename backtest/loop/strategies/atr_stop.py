@@ -17,7 +17,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from ..state import Bar, Context, Position
+from ..state import Bar, Context, Position, PrefilterInputs
 from .base import TriggerResult
 
 
@@ -29,6 +29,16 @@ class AtrStopStrategy:
     def __init__(self, atr_matrix: Optional[np.ndarray], multiplier: float = 3.0):
         self.atr_matrix = atr_matrix   # (n_dates, n_stocks) float64, 可为 None
         self.multiplier = float(multiplier)
+
+    def prefilter(self, x: PrefilterInputs) -> bool:
+        """预筛: atr 有效且 Low 触及回撤线即可能触发。"""
+        if self.atr_matrix is None:
+            return False
+        if not (0 <= x.i < self.atr_matrix.shape[0]
+                and 0 <= x.ci < self.atr_matrix.shape[1]):
+            return False
+        atr = self.atr_matrix[x.i, x.ci]
+        return atr > 0 and x.lo <= x.peak_hi - self.multiplier * atr
 
     def check(self, pos: Position, bar: Bar, ctx: Context) -> List[TriggerResult]:
         if self.atr_matrix is None:

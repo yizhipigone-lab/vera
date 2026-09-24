@@ -110,7 +110,11 @@ def test_signal_day_after_last_bar_drops_with_warning(caplog):
 
 def test_pipeline_warns_on_period_mismatch(caplog):
     """selection.period=1d, backtest.period=5m → 打 WARNING, 不中断。
-    (002008 问题就是 period 不一致 + 5m 缺口共同导致)"""
+    (002008 问题就是 period 不一致 + 5m 缺口共同导致)
+
+    2026-09-19 批次 3.2: 告警实现自 pipeline 下沉到 engine._validate_caliber,
+    logger 随之从 pipeline.pipeline 变 backtest.engine —— 行为不变, 出处变。
+    """
     from pipeline.pipeline import Pipeline
     pipe = Pipeline.__new__(Pipeline)  # 跳过 __init__ 的 TDX/yaml 加载
     pipe.config = {
@@ -121,7 +125,7 @@ def test_pipeline_warns_on_period_mismatch(caplog):
     }
     # 空 selections → run() 立即返回空, 不触 TDX; period 检查在 run 之前触发
     empty_sel = pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
-    with caplog.at_level("WARNING", logger="pipeline.pipeline"):
+    with caplog.at_level("WARNING", logger="backtest.engine"):
         pipe.step2_backtest(empty_sel)
     assert any("period_mismatch" in r.message for r in caplog.records), (
         "selection/backtest period 不一致时必须告警"
@@ -139,7 +143,7 @@ def test_pipeline_no_warn_on_period_match(caplog):
         "stop_loss": {},
     }
     empty_sel = pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
-    with caplog.at_level("WARNING", logger="pipeline.pipeline"):
+    with caplog.at_level("WARNING", logger="backtest.engine"):
         pipe.step2_backtest(empty_sel)
     assert not any("period_mismatch" in r.message for r in caplog.records)
 

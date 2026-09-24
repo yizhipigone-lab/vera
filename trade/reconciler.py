@@ -209,10 +209,11 @@ class Reconciler:
     def sync_reports(self, now: float | None = None) -> dict:
         """增量同步 (2026-07-30): QMT → 本地单向补记成交 + 回写委托状态。
 
-        背景: QMT 回调链实测不可靠 (on_order_status/on_deal_status 可能
-        缺失), 纯事件驱动会让本地记录永久停在陈旧状态。本方法是回调的
-        主动补偿网 —— 定时 (config.sync_interval_sec) / 对账 / 重连后
-        各跑一轮, traded_id/order_id 幂等, 重复跑无副作用。
+        背景: 回调通道曾因方法名写错 (on_order_status/on_deal_status,
+        xtquant 查无此方法) 从未送达 —— 2026-08-07 已修正为官方名
+        on_stock_order/on_stock_trade。本方法仍是回调的主动补偿网 —
+        定时 (config.sync_interval_sec) / 对账 / 重连后各跑一轮,
+        traded_id/order_id 幂等, 重复跑无副作用。
         两腿各自容错: 一路查询失败不影响另一路, 异常记日志不上抛
         (对账主流程不能被同步腿拖死)。
         返回 {"adopted": 补记成交笔数, "orders_updated": 回写委托笔数}。
@@ -225,7 +226,7 @@ class Reconciler:
         except Exception:
             _logger.exception("成交补记失败 (本轮跳过, 下轮重试)")
         try:
-            orders_updated = self._sync_orders()
+            orders_updated = self._sync_orders(now)
         except Exception:
             _logger.exception("委托状态回写失败 (本轮跳过, 下轮重试)")
         if adopted or orders_updated:
@@ -258,9 +259,19 @@ class Reconciler:
         known = self._store.load_today_trade_ids(today)
         local_orders = self._book.snapshot()["orders"]
         adopted = 0
+        stale = 0
         for t in self._gateway.query_trades():
             tid = str(t.get("traded_id", ""))
             if not tid or tid in known:
+                continue
+            # 2026-08-04 (600127 双记账急停事件): QMT 盘前/跨日查询会
+            # 返回前一交易日的成交, 而 known 只装当日 traded_id —— 昨天
+            # 的成交会被当成"新手工单"再记一遍账 (1700→3400 双扣)。
+            # 认领只认当日成交, 跨日的一律跳过 (无 ts 无法验证才放行,
+            # 保 QMT "只回当日" 契约下的旧行为)。
+            ts = t.get("ts")
+            if ts and datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
+                stale += 1
                 continue
             order_id = str(t.get("order_id", ""))
             local_order = local_orders.get(order_id)
@@ -292,6 +303,13 @@ class Reconciler:
                 "source": "system" if local_order is not None else "manual",
                 "reason": (self._reason_of(ctx)
                            if local_order is not None else "")}
+            # 2026-08-07 审计 HIGH#1: 补记卖出也落 pnl (与 TradeApp._sell_pnl 同口径),
+            # 否则日报 realized_pnl / /deals 在回调丢失兜底场景静默欠算,
+            # 且与同笔飞书成交卡 (_on_adopted_trade → _sell_pnl) 不一致 → 违反"单源"
+            if t["direction"] != DIRECTION_BUY and pre_avg_cost > 0:
+                _price, _qty = float(t["price"]), int(t["qty"])
+                record["pnl_amount"] = round((_price - pre_avg_cost) * _qty, 2)
+                record["pnl_pct"] = round((_price / pre_avg_cost - 1) * 100, 2)
             # 落库一次, 两条路径共用 (唯一约束兜底: 已落库视为已认领);
             # A3 补写分支视落库成败决定是否留痕计数
             saved = True
@@ -321,10 +339,13 @@ class Reconciler:
                      "strategy": strategy})
                 adopted += 1
                 continue
-            try:
-                self._store.update_order_filled(order_id, int(t["qty"]))
-            except Exception:
-                pass  # 本地无此委托 (手工单) 时无行可更新, 正常
+            # 2026-08-27: order_id="0" 是手工单占位号, 进度由 _sync_orders
+            # 的合成 id 委托维护; 此处跳过避免累加到占位行。
+            if order_id != "0":
+                try:
+                    self._store.update_order_filled(order_id, int(t["qty"]))
+                except Exception:
+                    pass  # 本地无此委托 (手工单) 时无行可更新, 正常
             kind = "trade_backfill" if local_order is not None else "manual_adopt"
             self._store.write_audit(
                 kind,
@@ -341,19 +362,89 @@ class Reconciler:
                 except Exception:
                     pass  # 通知失败不影响对账/补记
             adopted += 1
+        if stale:
+            # 跨日成交被拦是重要信号 (QMT 查询窗口越界), 不能静默
+            _logger.warning("跳过 %d 笔非当日成交 (QMT 返回了历史数据)", stale)
+            self._store.write_audit(
+                "sync_stale_skipped",
+                f"增量同步拦截 {stale} 笔非当日成交, 未重复入账",
+                {"stale_trades": stale})
         return adopted
 
-    def _sync_orders(self) -> int:
+    def _sync_orders(self, now: float) -> int:
         """委托状态回写 (2026-07-30): 拉 QMT 当日委托, 与本地订单簿比对,
         状态/已成交量有变化的经状态机校验后回写 book + orders 表。
         本地是终态而 QMT 返回非终态 (查询滞后) 时状态机拒绝, 保本地 —
-        成交硬事实优先于查询快照。返回回写笔数。"""
+        成交硬事实优先于查询快照。返回回写笔数。
+
+        2026-08-04 (600127 事件): QMT 跨日查询同样会返回昨日委托,
+        回写会把 orders 表 updated_ts 盖成今天, 昨日废单混进"当日委托"
+        (api 按 updated_ts 过滤当日)。与成交认领同口径: 只认当日委托。"""
+        today = datetime.fromtimestamp(now).strftime("%Y%m%d")
         local_orders = self._book.snapshot()["orders"]
         updated = 0
-        for o in self._gateway.query_orders():
+        stale = 0
+        # 2026-09-07 T5: 同花顺占位号回填认亲 —— THS GUI 下单未取到
+        # 合同编号时网关发本地占位号 THS{mmdd}-{seq} (gateway_ths.order),
+        # 券商侧只有真实合同编号, 按 order_id 归因查无此号会把系统单
+        # 误当手工单。占位号订单按 (code,方向,价格,数量,时间窗±5min)
+        # 与券商当日委托认亲, 唯一命中 → 重绑为合同编号 (book+store),
+        # audit 留痕; 多笔歧义不猜, 交人工。
+        gateway_orders = list(self._gateway.query_orders())
+        if any(k.startswith("THS") for k in local_orders):
+            try:
+                open_map = self._store.load_open_orders()
+            except Exception:
+                open_map = {}
+            for o in gateway_orders:
+                boid = str(o.get("order_id", ""))
+                bts = o.get("ts")
+                if not boid or boid in local_orders or not bts:
+                    continue
+                cands = [
+                    ph for ph in open_map.values()
+                    if ph["order_id"].startswith("THS")
+                    and ph["code"] == str(o.get("code", ""))
+                    and ph["direction"] == int(o.get("direction", 0))
+                    and abs(float(ph["price"]) - float(o.get("price", 0.0))) <= 0.005
+                    and int(ph["qty"]) == int(o.get("qty", 0))
+                    and abs(float(ph.get("created_ts") or 0.0) - float(bts)) <= 300
+                ]
+                if len(cands) != 1:
+                    continue
+                phid = cands[0]["order_id"]
+                # 顺序: store 先落 (可持久) → book 后换; book 失败回滚
+                # store (双写原子性难保, 失败方向让两边回到原位最安全)
+                if self._store.rebind_order(phid, boid):
+                    if not self._book.rebind_order(phid, boid):
+                        self._store.rebind_order(boid, phid)  # 回滚
+                    else:
+                        self._store.write_audit("ths_backfill",
+                            f"同花顺占位号回填: {phid} → {boid}",
+                            {"old": phid, "new": boid,
+                             "code": o.get("code", "")})
+                        local_orders = self._book.snapshot()["orders"]
+        for o in gateway_orders:
             oid = str(o.get("order_id", ""))
             if not oid:
                 continue
+            ts = o.get("ts")
+            if ts and datetime.fromtimestamp(ts).strftime("%Y%m%d") != today:
+                stale += 1
+                continue
+            # 2026-08-27 (159226 手工单时间错乱事件): QMT 对券商端外部渠道
+            # (手机 APP) 手工单不给真实委托号, 统一回报 order_id="0" 占位,
+            # 且 order_time 是该占位单首次被回报的柜面时间(可能是盘后晚间),
+            # 并非真实下单时刻。若按 oid upsert, 多日多笔手工单被合并成一条
+            # 且 created_ts 停在旧单时间 → 委托页显示"旧时间+新价格"四不像。
+            # 修复: order_id="0" 时改用当日唯一合成 id 区分各笔手工单,
+            # created_ts 用本地首见时刻 (对账周期级精度, 远比柜面占位时间准)。
+            # 成交归属不受影响 —— 成交按 traded_id 幂等, 与 order_id 解耦。
+            if oid == "0":
+                oid = (f"manual_{today}_{o.get('code', '')}_"
+                       f"{o.get('direction', 0)}_{o.get('price', 0.0)}_"
+                       f"{o.get('qty', 0)}")
+                ts = None  # 占位单的 order_time 不可信, 走本地首见时间
             local = local_orders.get(oid)
             status = int(o.get("status", 0))
             filled = int(o.get("filled_qty", 0))
@@ -379,8 +470,24 @@ class Reconciler:
                 "direction": int(o.get("direction", 0)),
                 "price": float(o.get("price", 0.0)),
                 "qty": int(o.get("qty", 0)), "filled_qty": filled,
-                "status": status})
+                "status": status,
+                # 2026-08-10: QMT 柜台委托时间 (order_time) 作 created_ts —
+                # 新插入的行 (券商端手工单/重启后首见) 时间列显示真实
+                # 委托时刻而非同步时刻; 已存在的行 ON CONFLICT 不动
+                # created_ts (save_order upsert 语义), 本地原值保留
+                # 2026-08-27: 手工单 (oid 合成 manual_*) 的 QMT order_time
+                # 不可信 (占位号柜面回报时间), 上方已置 ts=None → 此处用
+                # 本地当前时刻 (对账周期级精度) 作 created_ts。
+                "created_ts": (ts if ts else now),
+                # 2026-08-07: 废单原因随回写落库 (XtOrder.status_msg)
+                "status_msg": str(o.get("status_msg", "") or "")})
             updated += 1
+        if stale:
+            _logger.warning("跳过 %d 笔非当日委托 (QMT 返回了历史数据)", stale)
+            self._store.write_audit(
+                "sync_stale_skipped",
+                f"增量同步拦截 {stale} 笔非当日委托, 未回写",
+                {"stale_orders": stale})
         return updated
 
     def _query_positions_with_retry(self, book_pos) -> list[dict] | None:
@@ -401,13 +508,17 @@ class Reconciler:
         return None
 
     def _restore_positions(self, now: float) -> dict[str, int]:
-        """C 方: 昨仓快照 + 当日成交净额。无快照的票不出现在 C 方
-        (缺基准不猜, 由 A vs B 主比对兜底)。"""
+        """C 方: 昨仓快照 + 快照时点之后的成交净额。无快照的票不出现在
+        C 方 (缺基准不猜, 由 A vs B 主比对兜底)。
+
+        2026-08-04: 净额基准从"当日 0 点"改为"快照时点" —— 15:05 EOD
+        快照已含当日全部成交, 再按日初加一遍当日净额会双算 (601699
+        还原出 -600 之类的假 WARN); 按快照时点加, 昨日快照 + 今日成交
+        与当日快照 + 空净额两种形态都对。"""
         snapshot = self._store.load_position_snapshot()
         if not snapshot:
             return {}
-        day_start = datetime.fromtimestamp(now).replace(
-            hour=0, minute=0, second=0, microsecond=0).timestamp()
-        net = self._store.net_trades_since(day_start)
+        snap_ts = max(p.get("ts", 0.0) for p in snapshot.values())
+        net = self._store.net_trades_since(snap_ts)
         return {code: snap["volume"] + net.get(code, 0)
                 for code, snap in snapshot.items()}

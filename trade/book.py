@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping
 
@@ -48,6 +48,40 @@ PRICE_TYPE_LATEST = 5       # 最新价
 # 对手最优 (逃生通道): 真网关在方法内映射到 xtconstant,
 # 这里用名字占位 —— 顶层 import xtquant 是铁律禁止的
 PRICE_TYPE_MARKET_PEER_FIRST = "MARKET_PEER_FIRST"
+# 深市最优五档即成剩余撤销 (2026-08-12): 盘中超时逃生通道。
+# 对手最优是单档 FOK (盘口量不够整单撤), 五档 IOC 扫买1-买5尽量成交
+# 剩余才撤, 成交概率更高。真网关映射到 xtconstant.MARKET_SZ_CONVERT_5_CANCEL。
+PRICE_TYPE_SZ_5LEVEL_CANCEL = "SZ_5LEVEL_CANCEL"
+
+
+def round_price(x: float) -> float:
+    """股票价格 0.01 档对齐, 四舍五入 (审计L10: round() 银行家舍入在
+    x.xx5 边界与交易所价格档位差 1 分)。涨停/跌停价与档位价共用。
+
+    价格档位口径唯一真相源 (治理III W1-c 迁股票档, W3 迁 ETF 档同居)。"""
+    return int(x * 100 + 0.5) / 100
+
+
+def round_price_etf(x: float) -> float:
+    """ETF 场内基金最小报价单位 0.001 元, 用千分位四舍五入 (治理III W3 迁入)。
+
+    不能复用 round_price (股票 0.01 档): 2.004 → 2.00 会挂在不成交价
+    (审计 HIGH#1)。原在 trade/rotation.py, 2026-09-05 迁此与股票档同居。"""
+    return int(x * 1000 + 0.5) / 1000
+
+
+def ladder_tier_qty(volume: int, ratio: float, cap_lots: int) -> int:
+    """阶梯止盈比例档卖出股数 (口径单一真相源, 2026-09-16 治理 P2-1:
+    monitor 兜底与 executor 预埋原两处手写同款四舍五入, 下沉收口)。
+
+    比例手数四舍五入 int(x+0.5) (0.5 边界向上, 审计M2: int() 截断会让
+    1000×0.29 静默少卖 90 股), 封顶 cap_lots 手 (两处上限口径不同:
+    monitor 用 int(volume/100), executor 用剩余手数)。返回股数;
+    ≤0 表示算不出整手, 由调用方按各自语义处置 (monitor 兜底全卖 /
+    executor 跳过该档)。ratio≥1.0 的清仓档不经本函数 —— 两边都是
+    "卖剩余全部, 向下取整防超卖"。"""
+    lots = min(int(volume * ratio / 100 + 0.5), cap_lots)
+    return max(lots, 0) * 100
 
 
 def is_etf(code: str) -> bool:
@@ -56,6 +90,25 @@ def is_etf(code: str) -> bool:
     不在此口径内 (与 VERA universe 配置 default.yaml 的 etf 注释一致)。"""
     num = code.split(".")[0]
     return num.startswith(("51", "56", "58", "15", "16", "18"))
+
+
+def label_of(code: str) -> str:
+    """代码 → ``简称(代码)`` 给人看; 查不到简称时退回原代码。
+
+    2026-09-07 用户反馈: 审计/决策文案满屏 513100.SH 谁看得明白。
+    名称表复用 ``trade/analysis.name_of`` (进程级缓存, 拿不到不落缓存、下次重试);
+    惰性 import 防模块环 (analysis 反向 import 本模块)。
+
+    2026-09-18 收口: 此前 ``trade/rotation.py`` 有自己的 ``_etf_label``、决策台账
+    又要在轮动/选股/监控三处各来一份 —— 同一个格式化语句抄三遍就是三处会分叉的
+    地方, 因此提到这里做唯一实现 (只影响人类可读文案, 机器字段仍存原代码)。
+    """
+    try:
+        from trade.analysis import name_of
+        name = name_of(code)
+    except Exception:
+        name = ""
+    return f"{name}({code})" if name else code
 
 
 def transition(old: int, new: int) -> bool:
@@ -119,6 +172,16 @@ class Book:
         self._tiers: dict[str, dict[str, set[int]]] = {}
         self._seen_trades: set[str] = set()
         self._lock = threading.Lock()
+
+    def rebind_order(self, old_id: str, new_id: str) -> bool:
+        """占位号换绑真实合同编号 (2026-09-07 T5): 内存订单簿键迁移。
+        新键已占用或旧键不存在 → False (不覆盖真相, 不猜测)。"""
+        with self._lock:
+            if new_id in self._orders or old_id not in self._orders:
+                return False
+            rec = replace(self._orders.pop(old_id), order_id=new_id)
+            self._orders[new_id] = rec
+        return True
 
     def apply_order_update(
         self,
@@ -279,3 +342,46 @@ class Book:
                     price=o["price"], qty=o["qty"],
                     filled_qty=int(o.get("filled_qty", 0)), status=o["status"],
                     remark=o.get("remark", ""))
+
+
+def compute_remaining_map(
+    trades_rows: list[dict], target_tids: set
+) -> dict:
+    """重放空 Book, 算 target_tids 里每笔成交交易后的剩余股数/剩余市值/卖出比例。
+
+    盘后日报用 (2026-08-08): trades 表只存成交不存剩余持仓, 这里按 ts 升序重放
+    全历史成交拿到每笔时点的剩余。同股多笔卖出能看到递减过程。
+
+    - trades_rows: [{traded_id, order_id, code, direction, price, qty}, ...],
+      必须**已按 ts 升序** (调用方负责排序)。
+    - target_tids: 只对这些 traded_id 记录结果 (通常是当日成交), 其余只参与
+      重放构建基数。返回 {traded_id: {remaining_vol, remaining_value, [sell_ratio]}}。
+
+    remaining_vol = apply 后该股 volume; remaining_value = remaining_vol × 本笔
+    成交价 (现价近似); sell_ratio (仅卖出) = 本笔卖出 qty ÷ 该股累计买入 qty
+    (用户口径"当初买入总股数", 2026-08-08)。累计买入为 0 → sell_ratio=None。
+    """
+    book = Book()
+    cum_buy: dict[str, int] = {}
+    out: dict[str, dict] = {}
+    for r in trades_rows:
+        code = r["code"]
+        qty = int(r["qty"])
+        direction = r["direction"]
+        tid = str(r["traded_id"])
+        price = float(r["price"])
+        if direction == DIRECTION_BUY:
+            cum_buy[code] = cum_buy.get(code, 0) + qty
+        book.apply_trade(tid, str(r.get("order_id", "")), code, direction, price, qty)
+        if tid in target_tids:
+            pos = book.snapshot()["positions"].get(code)
+            rem = int(getattr(pos, "volume", 0)) if pos else 0
+            entry: dict = {
+                "remaining_vol": rem,
+                "remaining_value": round(rem * price, 2),
+            }
+            if direction != DIRECTION_BUY:
+                cb = cum_buy.get(code, 0)
+                entry["sell_ratio"] = round(qty / cb, 4) if cb > 0 else None
+            out[tid] = entry
+    return out

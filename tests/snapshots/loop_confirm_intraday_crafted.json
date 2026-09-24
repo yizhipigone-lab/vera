@@ -1,0 +1,75 @@
+{
+ "meta": {
+  "name": "loop_confirm_intraday_crafted",
+  "generator": "tools/gen_snapshot_parity.py",
+  "generated_at": "2026-08-07T07:41:59",
+  "engine_version": "v3.6-no-legacy-20260723",
+  "note": "批次3a A5 快照基线; 修改策略逻辑会致测试失败, 确认变更合法后运行生成器重建基线",
+  "level": "loop",
+  "data": "crafted_confirm_6bar",
+  "param_overrides": {
+   "bpday": 2,
+   "trailing_confirm": "intraday",
+   "cost_stop_enabled": false,
+   "ladder_enabled": false,
+   "time_enabled": false,
+   "cond_time_enabled": false,
+   "first_day_enabled": false
+  },
+  "params": {
+   "initial_capital": 1000000.0,
+   "commission": 0.0003,
+   "min_buy_amount": 1000.0,
+   "max_buy_amount": 200000.0,
+   "lot_size": 100,
+   "min_lots": 1,
+   "cost_stop_enabled": true,
+   "cost_stop_threshold": -0.05,
+   "trailing_enabled": true,
+   "trailing_activation": 0.05,
+   "trailing_drawdown": 0.1,
+   "ladder_enabled": true,
+   "ladder_profits": [
+    0.06,
+    0.15
+   ],
+   "ladder_ratios": [
+    0.5,
+    0.5
+   ],
+   "n_ladder": 2,
+   "time_enabled": true,
+   "max_hold_days": 10,
+   "cond_time_enabled": true,
+   "cond_time_days": 3,
+   "cond_time_profit": 0.08,
+   "first_day_enabled": true,
+   "first_day_target": 0.03,
+   "bpday": 1,
+   "slippage": 0.001,
+   "stamp_tax": 0.0005,
+   "max_position_pct": 1.0
+  }
+ },
+ "equity": [
+  999739.9400000001,
+  1011739.9400000001,
+  1015351.3128000001,
+  1015351.3128000001,
+  1015351.3128000001,
+  1015351.3128000001
+ ],
+ "trades": [
+  [
+   0,
+   0,
+   2,
+   10.0,
+   10.8,
+   20000,
+   15611.372800000041,
+   0.08000000000000007,
+   8
+  ]
+ ]
+}

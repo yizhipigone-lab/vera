@@ -61,3 +61,37 @@ def get_logger(name: str = "VERA") -> logging.Logger:
     if not logger.handlers:
         logger = setup_logger(name)
     return logger
+
+
+def attach_file_logger(
+    log_file: str,
+    level: str = "INFO",
+    max_mb: int = 100,
+    backup_count: int = 5,
+    fmt: str = "",
+) -> logging.Handler | None:
+    """给 root logger 挂文件输出 (独立进程落盘用, 如 scheduler)。
+
+    各模块的 get_logger 只挂控制台 handler, 独立进程 (python -m scheduler)
+    关窗即丢日志 —— 2026-09-05 体检 P0-1: 调度停摆/内部错误因此无从复查。
+    调用本函数后, 所有 logger 的记录沿 propagate 一并写入该文件。
+
+    幂等: 同一文件已挂则跳过 (进程内重复调用不双写)。只加文件不加控制台,
+    避免与控制台 handler 重复打印。返回新 handler; 已存在返回 None。
+    """
+    if not fmt:
+        fmt = "[%(asctime)s] [%(levelname)-7s] %(name)s | %(message)s"
+    target = str(Path(log_file).resolve())
+    root = logging.getLogger()
+    for h in root.handlers:
+        if (isinstance(h, RotatingFileHandler)
+                and getattr(h, "baseFilename", "") == target):
+            return None
+    path = Path(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = RotatingFileHandler(str(path), maxBytes=max_mb * 1024 * 1024,
+                             backupCount=backup_count, encoding="utf-8")
+    fh.setFormatter(logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S"))
+    fh.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root.addHandler(fh)
+    return fh

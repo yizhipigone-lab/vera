@@ -39,7 +39,7 @@ class TestKeyCompatibility:
                   start_time="20240101", end_time="20241231",
                   period="1d", dividend_type=1, today_str="20260724")
         import json
-        uni_json = json.dumps(sc._normalize_universe(kw["universe_cfg"]),
+        uni_json = json.dumps(sc.normalize_universe(kw["universe_cfg"]),
                               sort_keys=True, ensure_ascii=False, default=str)
         expected = _ref_key("FOO", "3", uni_json, "20240101", "20241231",
                             "1d", 1, "20260724", sc.SCHEMA_VERSION)
@@ -51,7 +51,7 @@ class TestKeyCompatibility:
 
     def test_universe_keys_unchanged(self):
         import json
-        uni_json = json.dumps(sc._normalize_universe({"type": "50"}),
+        uni_json = json.dumps(sc.normalize_universe({"type": "50"}),
                               sort_keys=True, ensure_ascii=False, default=str)
         assert uc.build_key({"type": "50"}, "20260726") == \
             _ref_key(uni_json, "20260726", uc.SCHEMA_VERSION)

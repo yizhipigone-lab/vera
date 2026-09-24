@@ -1,62 +1,290 @@
 [
   {
     "id": "s01",
+    "cat": "公司档案",
     "q": "信邦制药 002390 ",
-    "expect_path": "company/company_002390.md"
+    "expect_path": "vera_obs_vault/company/company_002390.md"
   },
   {
     "id": "s02",
+    "cat": "公司档案",
     "q": "韶能股份 000601 ",
-    "expect_path": "company/company_000601.md"
+    "expect_path": "vera_obs_vault/company/company_000601.md"
   },
   {
     "id": "s03",
+    "cat": "公司档案",
     "q": "精研科技 300709 ",
-    "expect_path": "company/company_300709.md"
+    "expect_path": "vera_obs_vault/company/company_300709.md"
   },
   {
     "id": "s04",
+    "cat": "公司档案",
     "q": "赢合科技 300457 ",
-    "expect_path": "company/company_300457.md"
+    "expect_path": "vera_obs_vault/company/company_300457.md"
   },
   {
     "id": "s05",
+    "cat": "公司档案",
     "q": "和晶科技 300279 ",
-    "expect_path": "company/company_300279.md"
+    "expect_path": "vera_obs_vault/company/company_300279.md"
   },
   {
     "id": "s06",
+    "cat": "公司档案",
     "q": "美吉姆 002621 ",
-    "expect_path": "company/company_002621.md"
+    "expect_path": "vera_obs_vault/company/company_002621.md"
   },
   {
     "id": "s07",
+    "cat": "公司档案",
     "q": "亚联发展 002316 ",
-    "expect_path": "company/company_002316.md"
+    "expect_path": "vera_obs_vault/company/company_002316.md"
   },
   {
     "id": "s08",
+    "cat": "公司档案",
     "q": "青达环保 688501 ",
-    "expect_path": "company/company_688501.md"
+    "expect_path": "vera_obs_vault/company/company_688501.md"
   },
   {
     "id": "s09",
+    "cat": "公司档案",
     "q": "利达光电 002189 ",
-    "expect_path": "company/company_002189.md"
+    "expect_path": "vera_obs_vault/company/company_002189.md"
   },
   {
     "id": "s10",
+    "cat": "公司档案",
     "q": "陕西黑猫 601015 ",
-    "expect_path": "company/company_601015.md"
+    "expect_path": "vera_obs_vault/company/company_601015.md"
   },
   {
     "id": "s11",
+    "cat": "公司档案",
     "q": "当代东方 000673 ",
-    "expect_path": "company/company_000673.md"
+    "expect_path": "vera_obs_vault/company/company_000673.md"
   },
   {
     "id": "s12",
+    "cat": "公司档案",
     "q": "金科股份 000656 ",
-    "expect_path": "company/company_000656.md"
+    "expect_path": "vera_obs_vault/company/company_000656.md"
+  },
+  {
+    "id": "r01",
+    "cat": "研究报告",
+    "q": "中证500 均线金叉和 ETF 轮动对比研判",
+    "expect_path": "research/2026-08-21_中证500MA金叉vs_ETF轮动_对比研判_研究报告.md"
+  },
+  {
+    "id": "r02",
+    "cat": "研究报告",
+    "q": "ETF 轮动 20 日动量窗口十年回测结论",
+    "expect_path": "research/2026-09-16_ETF轮动基线诊断与改良迭代_研究报告.md"
+  },
+  {
+    "id": "r03",
+    "cat": "研究报告",
+    "q": "ETF 轮动周频和每日哪个好 双负保险丝",
+    "expect_path": "research/2026-09-16_ETF轮动周频vs每日双负保险丝_10年回测研究报告.md"
+  },
+  {
+    "id": "r04",
+    "cat": "研究报告",
+    "q": "MA20 三态信号和动量轮动同成本对决",
+    "expect_path": "research/etf_duel_ma20_vs_momentum/2026-08-23_MA20三态vs动量基线_同成本对决_研究报告.md"
+  },
+  {
+    "id": "r05",
+    "cat": "研究报告",
+    "q": "QUANTQQ 超赢王牛股策略改良",
+    "expect_path": "research/2026-08-02_QUANTQQ超赢王牛股_策略改良研究报告.md"
+  },
+  {
+    "id": "r06",
+    "cat": "研究报告",
+    "q": "QUANTQQ 2026 年内为什么低盈利 归因",
+    "expect_path": "research/2026-08-20_QUANTQQ_2026年内低盈利归因_研究报告.md"
+  },
+  {
+    "id": "r07",
+    "cat": "研究报告",
+    "q": "回测里次日开盘买入 open_t1 口径对照",
+    "expect_path": "research/2026-08-20_QUANTQQ_open_t1买入口径对照_研究报告.md"
+  },
+  {
+    "id": "r08",
+    "cat": "研究报告",
+    "q": "GUPIAO 三个公式 5 分钟线稳定性扫描",
+    "expect_path": "research/2026-08-20_GUPIAO三公式5m稳定性扫描_研究报告.md"
+  },
+  {
+    "id": "r09",
+    "cat": "研究报告",
+    "q": "中证500 均线金叉 10 日 30 日复验",
+    "expect_path": "research/2026-08-21_中证500MA金叉10-30_复验_研究报告.md"
+  },
+  {
+    "id": "r10",
+    "cat": "研究报告",
+    "q": "轮动止盈止损组合寻优 2020 年至今",
+    "expect_path": "research/2026-08-24_轮动止盈止损组合寻优_2020至今_研究报告.md"
+  },
+  {
+    "id": "r11",
+    "cat": "研究报告",
+    "q": "VERA 深模块浅模块设计质量评估",
+    "expect_path": "research/2026-08-16_VERA_深模块浅模块设计质量评估_研究报告.md"
+  },
+  {
+    "id": "r12",
+    "cat": "研究报告",
+    "q": "创业板和纳指轮动 均线过滤对比移动止损",
+    "expect_path": "research/2026-08-28_创业板纳指轮动_均线过滤vs移动止损对比_研究报告.md"
+  },
+  {
+    "id": "r13",
+    "cat": "研究报告",
+    "q": "MA20 止损止盈档位功劳拆解",
+    "expect_path": "research/2026-08-24_MA20信号与档位功劳拆解_研究补遗.md"
+  },
+  {
+    "id": "r14",
+    "cat": "研究报告",
+    "q": "ETF 轮动遍历结论汇总与避险腿改造",
+    "expect_path": "research/2026-08-18_ETF轮动遍历_结论汇总与避险腿改造计划_全过程记录.md"
+  },
+  {
+    "id": "r15",
+    "cat": "研究报告",
+    "q": "自动策略迭代寻优 续篇",
+    "expect_path": "research/auto_iter/2026-08-11_自动策略迭代寻优_研究报告_续篇.md"
+  },
+  {
+    "id": "r16",
+    "cat": "研究报告",
+    "q": "GUPIAO_018 出场改良研究报告",
+    "expect_path": "research/cmp_1d_5m/2026-08-04_GUPIAO_018_出场改良研究报告.md"
+  },
+  {
+    "id": "p01",
+    "cat": "计划与方法论",
+    "q": "公式因子体检方法论 五条纪律是什么",
+    "expect_path": "docs/公式因子体检方法论.md"
+  },
+  {
+    "id": "p02",
+    "cat": "计划与方法论",
+    "q": "大盘位置与趋势研判子系统计划书",
+    "expect_path": "docs/plan/2026-09-17_大盘位置与趋势研判_计划书.md"
+  },
+  {
+    "id": "p03",
+    "cat": "计划与方法论",
+    "q": "研究库检索增强 RAG 计划书",
+    "expect_path": "docs/plan/2026-09-17_研究库检索增强RAG_计划书.md"
+  },
+  {
+    "id": "p04",
+    "cat": "计划与方法论",
+    "q": "盘后复盘报告计划书",
+    "expect_path": "docs/plan/2026-09-17_盘后复盘报告_计划书.md"
+  },
+  {
+    "id": "p05",
+    "cat": "计划与方法论",
+    "q": "ETF 轮动资金三份错峰改造",
+    "expect_path": "docs/plan/2026-09-16_ETF轮动资金三份错峰改造_计划书.md"
+  },
+  {
+    "id": "p06",
+    "cat": "计划与方法论",
+    "q": "ETF 轮动买侧在途台账与隔夜核销",
+    "expect_path": "docs/plan/2026-09-17_ETF轮动买侧在途台账与隔夜核销_计划书.md"
+  },
+  {
+    "id": "p07",
+    "cat": "计划与方法论",
+    "q": "公式农场看板流水线卡片与总览漏斗",
+    "expect_path": "docs/plan/2026-09-16_公式农场流水线卡片与总览看板_计划书.md"
+  },
+  {
+    "id": "p08",
+    "cat": "计划与方法论",
+    "q": "停机日资产补算 怎么补缺失的交易日",
+    "expect_path": "docs/plan/2026-09-10_停机日资产补算_计划书.md"
+  },
+  {
+    "id": "p09",
+    "cat": "计划与方法论",
+    "q": "1 分钟线回测支持",
+    "expect_path": "docs/plan/2026-07-26_1分钟线回测支持_计划书.md"
+  },
+  {
+    "id": "p10",
+    "cat": "计划与方法论",
+    "q": "Hindsight 记忆与 modlens 视觉本地化配置全过程",
+    "expect_path": "docs/2026-08-18_Hindsight记忆与modlens视觉本地化配置_全过程记录.md"
+  },
+  {
+    "id": "p11",
+    "cat": "计划与方法论",
+    "q": "三项目回测与交易系统对比研究",
+    "expect_path": "docs/2026-07-26_三项目回测与交易系统对比研究.md"
+  },
+  {
+    "id": "p12",
+    "cat": "计划与方法论",
+    "q": "个人 AI 事业方向盘点与方案",
+    "expect_path": "docs/2026-09-05_个人AI事业方向_盘点与方案.md"
+  },
+  {
+    "id": "a01",
+    "cat": "审计报告",
+    "q": "QUANTQQ 5 分钟线回测深度复查审计报告",
+    "expect_path": "research/2026-08-28_QUANTQQ_5m回测深度复查_审计报告.md"
+  },
+  {
+    "id": "a02",
+    "cat": "审计报告",
+    "q": "VERA 全面调研优化方向报告",
+    "expect_path": "research/2026-08-24_VERA全面调研_优化方向报告.md"
+  },
+  {
+    "id": "a03",
+    "cat": "审计报告",
+    "q": "全自动交易体系智能化深化研究报告",
+    "expect_path": "research/2026-08-23_全自动交易体系智能化深化_研究报告.md"
+  },
+  {
+    "id": "a04",
+    "cat": "审计报告",
+    "q": "公式农场第一批回测结论",
+    "expect_path": "docs/2026-09-09_公式农场第一批回测结论_研究报告.md"
+  },
+  {
+    "id": "a05",
+    "cat": "审计报告（docs/audit）",
+    "q": "深模块浅模块复查审计报告 结论",
+    "expect_path": "docs/audit/2026-09-15_深模块浅模块复查_审计报告.md"
+  },
+  {
+    "id": "a06",
+    "cat": "审计报告（docs/audit）",
+    "q": "QMT 日线新鲜度判定 审计报告",
+    "expect_path": "docs/audit/2026-09-16_QMT日线新鲜度判定_审计报告.md"
+  },
+  {
+    "id": "a07",
+    "cat": "审计报告（docs/audit）",
+    "q": "公式农场看板审计报告",
+    "expect_path": "docs/audit/2026-09-16_公式农场看板_审计报告.md"
+  },
+  {
+    "id": "a08",
+    "cat": "审计报告（docs/audit）",
+    "q": "端到端全系统功能验证审计报告",
+    "expect_path": "docs/audit/2026-09-05_端到端全系统功能验证_审计报告.md"
   }
 ]

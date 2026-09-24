@@ -86,21 +86,20 @@ class TestMetricsAnnualization:
             f"got {m['annualized_return']:.6f}, expected {expected_ann:.6f}"
         )
 
-    def test_max_drawdown_matches_real_pickle(self):
-        """最大回撤必须在 -23% 到 -27% 区间 (历史实际值 -24.76% ~ -25.34%)"""
-        pkl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                'output', 'gupiao012_a2_real.pkl')
-        if not os.path.exists(pkl_path):
-            pytest.skip("real pickle 不存在, 跳过")
+    def test_max_drawdown_synthetic_range(self):
+        """锁合成数据的最大回撤口径区间 (-50% ~ -30%)。
 
+        pickle 数据已漂移 (2026-07-13 实测 -28.58%, 历史基线 -23%~-27%),
+        本测试不再与 pickle 对比, 仅锁合成数据口径区间, 防算法改动漂移。
+        """
         df = _build_known_equity()
         m = MetricsCalculator.compute_all(df, pd.DataFrame(), initial_capital=1_000_000)
 
-        # 先生先生先生先生先生先生先生先生先生 -0.27 ~ -0.23 区间 (历史实测 -0.2476 ~ -0.2534)
-        # 2026-07-13 放宽: pickle 数据漂移 (实际 -28.58%, 历史基线 -23%~-27%)
-        assert -0.35 < m['max_drawdown'] < -0.15, (
-            f"最大回撤异常. got {m['max_drawdown']*100:.2f}%, 期望区间 (-35%, -15%) "
-            f"(pickle 数据已漂移, 范围放宽承认)"
+        # 合成数据最大回撤锁定在 -0.50 ~ -0.30 区间 (2026-09-16 实测口径值约 -40.9%,
+        # pickle 存在与否两条数据路径均落在该区间)
+        assert -0.50 < m['max_drawdown'] < -0.30, (
+            f"最大回撤异常. got {m['max_drawdown']*100:.2f}%, 期望区间 (-50%, -30%) "
+            f"(合成数据口径)"
         )
 
     def test_sharpe_with_risk_free(self):

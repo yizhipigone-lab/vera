@@ -53,8 +53,8 @@ def test_tier_state_migration_rebuilds_old_table(tmp_path):
     try:
         cols = [r[1] for r in s._conn.execute("PRAGMA table_info(tier_state)")]
         assert "trade_date" in cols
-        s.save_tier_state("600519.SH", [0], "20260726")  # 重建后可正常写
-        assert s.load_tier_states("20260726") == {"600519.SH": [0]}
+        s.tier_state.save("600519.SH", [0], "20260726")  # 重建后可正常写
+        assert s.tier_state.load("20260726") == {"600519.SH": [0]}
     finally:
         s.close()
 
@@ -78,6 +78,37 @@ def test_save_order_roundtrip_and_upsert(store):
     assert rows == [(56, 100, "V0726-1A")]
 
 
+def test_save_order_created_ts_conflict_rules(store):
+    """2026-08-10 (泰山石油事件): QMT 复用 order_id 时,
+    显式提供 created_ts (新单下单时刻/QMT order_time) 必须覆盖旧值;
+    纯状态回写 (不显式提供) 不得把 created_ts 盖成回写时刻。"""
+    old_ts = 1000.0
+    store.save_order({"order_id": "O9", "code": "000721.SZ", "direction": 23,
+                      "price": 5.0, "qty": 100, "status": 56,
+                      "created_ts": old_ts})
+    # 纯状态回写 (如 _on_order_error 不传 created_ts): 保留原创建时间
+    store.save_order({"order_id": "O9", "code": "000721.SZ", "direction": 23,
+                      "price": 5.0, "qty": 100, "status": 57})
+    row = store._conn.execute(
+        "SELECT created_ts FROM orders WHERE order_id='O9'").fetchone()
+    assert row[0] == old_ts
+    # order_id 复用: 新单显式带下单时刻 → 覆盖旧值
+    new_ts = 2000.0
+    store.save_order({"order_id": "O9", "code": "000554.SZ", "direction": 24,
+                      "price": 6.43, "qty": 1500, "status": 50,
+                      "created_ts": new_ts})
+    row = store._conn.execute(
+        "SELECT created_ts, code FROM orders WHERE order_id='O9'").fetchone()
+    assert row == (new_ts, "000554.SZ")
+    # 之后再来的纯状态回写: 不动新创建时间
+    store.save_order({"order_id": "O9", "code": "000554.SZ", "direction": 24,
+                      "price": 6.43, "qty": 1500, "status": 56,
+                      "filled_qty": 1500})
+    row = store._conn.execute(
+        "SELECT created_ts FROM orders WHERE order_id='O9'").fetchone()
+    assert row[0] == new_ts
+
+
 def test_save_trade_roundtrip(store):
     store.save_trade({"traded_id": "T1", "order_id": "O1", "code": "600519.SH",
                       "direction": 23, "price": 1700.0, "qty": 100, "ts": 1.0})
@@ -99,17 +130,17 @@ def test_traded_id_unique_constraint(store):
 def test_tier_state_roundtrip(store):
     """档位状态落库/读回 (按当日过滤); 重存覆盖, 读回升序。
     审计C1修复: 昨日标记不混入当日查询 (日期维度)。"""
-    store.save_tier_state("600519.SH", {2, 0}, "20260726")
-    store.save_tier_state("000001.SZ", [1], "20260726")
-    assert store.load_tier_states("20260726") == {
+    store.tier_state.save("600519.SH", {2, 0}, "20260726")
+    store.tier_state.save("000001.SZ", [1], "20260726")
+    assert store.tier_state.load("20260726") == {
         "600519.SH": [0, 2], "000001.SZ": [1],
     }
-    store.save_tier_state("600519.SH", [0, 1, 2], "20260726")
-    assert store.load_tier_states("20260726")["600519.SH"] == [0, 1, 2]
+    store.tier_state.save("600519.SH", [0, 1, 2], "20260726")
+    assert store.tier_state.load("20260726")["600519.SH"] == [0, 1, 2]
     # 昨日标记留痕但不出现在当日查询里
-    store.save_tier_state("600519.SH", [0], "20260725")
-    assert store.load_tier_states("20260726")["600519.SH"] == [0, 1, 2]
-    assert store.load_tier_states("20260725") == {"600519.SH": [0]}
+    store.tier_state.save("600519.SH", [0], "20260725")
+    assert store.tier_state.load("20260726")["600519.SH"] == [0, 1, 2]
+    assert store.tier_state.load("20260725") == {"600519.SH": [0]}
 
 
 def test_load_today_trade_ids(store):
@@ -146,9 +177,11 @@ def test_audit_written(store):
 
 
 def test_append_raw_jsonl(store, tmp_path):
-    """JSONL append-only: 每行一个合法 JSON, 内容即 payload。"""
+    """JSONL append-only: 每行一个合法 JSON, 内容即 payload。
+    2026-08-06 异步化 (HIGH#3): append 只入队, flush_raw 后文件可见。"""
     store.append_raw({"kind": "order", "order_id": "O1"})
     store.append_raw({"kind": "trade", "traded_id": "T1"})
+    assert store.flush_raw()
     lines = (tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0]) == {"kind": "order", "order_id": "O1"}
@@ -268,3 +301,60 @@ def test_reason_from_ctx():
     assert _reason_from_ctx({"label": "阶梯止盈", "tier": 2}) == "阶梯止盈·档3"
     assert _reason_from_ctx({"label": "移动止盈"}) == "移动止盈"
     assert _reason_from_ctx({}) == ""
+
+
+def test_orders_status_msg_migration_and_roundtrip(tmp_path):
+    """2026-08-07 (0807 废单事件): orders 表 status_msg 列 —— 老库 (无该列)
+    打开即自动迁移; 废单原因写入/读出一致。"""
+    import sqlite3 as _sq
+    db = tmp_path / "old.db"
+    conn = _sq.connect(str(db))
+    conn.execute("""CREATE TABLE orders (
+        order_id TEXT PRIMARY KEY, remark TEXT NOT NULL DEFAULT '',
+        code TEXT NOT NULL, direction INTEGER NOT NULL, price REAL NOT NULL,
+        qty INTEGER NOT NULL, filled_qty INTEGER NOT NULL DEFAULT 0,
+        status INTEGER NOT NULL, created_ts REAL NOT NULL,
+        updated_ts REAL NOT NULL)""")
+    conn.commit()
+    conn.close()
+    s = TradeStore(db, tmp_path / "raw.jsonl")      # 打开即触发迁移
+    s.save_order({"order_id": "O1", "code": "600519.SH", "direction": 23,
+                  "price": 10.0, "qty": 100, "status": 57,
+                  "status_msg": "无科创板交易权限"})
+    row = s._conn.execute(
+        "SELECT status, status_msg FROM orders WHERE order_id='O1'").fetchone()
+    s.close()
+    assert row == (57, "无科创板交易权限")
+
+
+def test_load_today_trades_detail_with_pnl(store):
+    """2026-08-07: 当日成交明细含 pnl_amount/pnl_pct (日报数据源), ts 升序, 跨日不返。"""
+    import datetime as _dt
+    today = _dt.datetime.now().strftime("%Y-%m-%d")
+    base = time.time()
+    store.save_trade({"traded_id": "T-B", "order_id": "O-B", "code": "300750.SZ",
+                      "direction": 23, "price": 10.0, "qty": 100, "amount": 1000.0,
+                      "ts": base, "source": "system"})
+    store.save_trade({"traded_id": "T-S", "order_id": "O-S", "code": "300750.SZ",
+                      "direction": 24, "price": 11.0, "qty": 100, "amount": 1100.0,
+                      "ts": base + 1, "source": "system", "reason": "移动止盈",
+                      "pnl_amount": 100.0, "pnl_pct": 10.0})
+    det = store.load_today_trades_detail(today)
+    assert len(det) == 2
+    assert det[0]["traded_id"] == "T-B"          # ts 升序
+    assert det[1]["pnl_amount"] == 100.0 and det[1]["pnl_pct"] == 10.0
+    assert det[0]["pnl_amount"] == 0.0           # 买入默认 0
+    yest = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    assert store.load_today_trades_detail(yest) == []   # 跨日不返
+
+
+def test_daily_report_upsert_and_latest(store):
+    """daily_report 表 UPSERT + load_latest 取最近日期 (2026-08-07)。"""
+    store.daily_report.save("2026-08-01", {"day_pnl": 100.0})
+    store.daily_report.save("2026-08-07", {"day_pnl": 200.0})
+    store.daily_report.save("2026-08-03", {"day_pnl": 150.0})
+    assert store.daily_report.load("2026-08-07") == {"day_pnl": 200.0}
+    assert store.daily_report.load_latest() == {"day_pnl": 200.0}   # 最新日期
+    store.daily_report.save("2026-08-07", {"day_pnl": 999.0})       # UPSERT
+    assert store.daily_report.load("2026-08-07") == {"day_pnl": 999.0}
+    assert store.daily_report.load("2099-01-01") is None

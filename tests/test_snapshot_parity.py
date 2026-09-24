@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.engine import ENGINE_VERSION, BacktestEngine
 from backtest.loop import build_backtest_loop
+from backtest.prepared import PreparedMatrix
 
 # 复用既有固定种子合成数据生成器 (不依赖真实行情缓存 — 真实数据会漂移)
 from tests.test_loop_parity import make_crafted_dual_trigger, make_synthetic
@@ -62,11 +63,13 @@ def _run_loop(price, high, low, open_, entry, *,
               ladder_tp_first=False, trailing_first=False,
               formula_exit_np=None, formula_exit_ratio=1.0,
               tradable_np=None, last_tradable_idx=None,
+              degraded_np=None,
               **param_overrides):
     """按 SNAP_PARAMS 构造 BacktestLoop 并运行, 返回 (equity_arr, raw_trades)。
 
     param_overrides: 场景级参数覆盖 (如 crafted 场景关 first_day/cond_time
     防抢先平仓, 让目标分支真正走到)。覆盖值同样固化进快照。
+    degraded_np (2026-08-06): 5m 降级 bar 标记, 仅降级场景传。
     """
     kw = dict(SNAP_PARAMS)
     kw.update(param_overrides)
@@ -86,9 +89,11 @@ def _run_loop(price, high, low, open_, entry, *,
         max_position_pct=kw["max_position_pct"],
         ladder_tp_first=ladder_tp_first, trailing_first=trailing_first,
         formula_exit_np=formula_exit_np, formula_exit_ratio=formula_exit_ratio,
+        trailing_confirm=kw.get("trailing_confirm", "intraday"),
     )
     return loop.run(price, entry, high, low, open_,
-                    tradable_np, last_tradable_idx, formula_exit_np)
+                    tradable_np, last_tradable_idx, formula_exit_np,
+                    degraded_np=degraded_np)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -220,13 +225,14 @@ def _sc_engine_run_cached(priority, seed):
     eng = _make_engine()
     sc = _stop_config_snapshot(priority)
     lp, lr, nl = _ladder_triplet(sc)
-    result = eng.run_cached(
-        close, entries,
-        high.astype(np.float64), low.astype(np.float64),
-        sc, None, lp, lr, nl,
-        filter_limit_up=False,  # 合成数据无涨跌停语义, 且避免 ST 信息外部依赖
+    prepared = PreparedMatrix(
+        close=close, entries=entries,
+        high_np=high.astype(np.float64), low_np=low.astype(np.float64),
         open_np=open_.astype(np.float64),
-        tradable_np=tradable, last_tradable_idx=last_tradable,
+        tradable_np=tradable, last_tradable_idx=last_tradable)
+    result = eng.run_cached(
+        prepared, sc, lp, lr, nl,
+        filter_limit_up=False,  # 合成数据无涨跌停语义, 且避免 ST 信息外部依赖
         formula_exit_np=fsig, formula_exit_ratio=1.0,
         return_raw=True,
     )
@@ -243,6 +249,80 @@ def _sc_engine_run_cached_trailing_first_s7():
     return _sc_engine_run_cached("trailing_first", 7)
 
 
+# ── confirm 模式覆盖 (2026-08-06 审计 P2: 5 种确认方式纳入快照防漂移) ──
+def _make_confirm_crafted():
+    """精巧 6 bar (bpday=2, 3 天): 峰顶长上影 + 次日回落, 让 5 种 confirm
+    模式走出 5 个不同结果 (seed 合成数据实测 5 模式全同, 无区分度)。
+
+    day0: 10 买入, high 11.0 创峰 (+10% ≥ 激活 5%), 线 = 9.9
+    day1 bar0: high 12.0 创峰 (新线 10.8), low 10.5 破新线, close 11.5
+    day1 bar1: low 11.0 不碰线, close 11.2
+    day2 bar0: low 10.6 碰线, close 10.7
+    day2 bar1: close 10.5 破线
+    预期: intraday@10.8 线价(d1b0) / simple@11.5 bar收盘(d1b0) /
+          low@11.2 日收盘(d1b1) / real@10.8 线价(d2b0, 创峰bar跳过) /
+          close@10.5 日收盘(d2b1) —— 五模态全部分叉。
+    """
+    close = np.array([10.0, 10.6, 11.5, 11.2, 10.7, 10.5]).reshape(-1, 1)
+    high = np.array([10.2, 11.0, 12.0, 11.6, 11.1, 10.6]).reshape(-1, 1)
+    low = np.array([9.95, 10.3, 10.5, 11.0, 10.6, 10.4]).reshape(-1, 1)
+    open_ = np.array([10.0, 10.4, 10.8, 11.4, 11.0, 10.6]).reshape(-1, 1)
+    entry = np.zeros((6, 1), dtype=bool)
+    entry[0, 0] = True
+    return close, high, low, open_, entry
+
+
+def _make_loop_confirm_scenario(confirm):
+    """同一精巧数据 × 同一 SNAP_PARAMS, 只换 trailing_confirm; 关其他
+    策略防抢先平仓 (ladder 首档 6% / first_day 3% 都会被 +10% 触发)。"""
+    def _sc():
+        close, high, low, open_, entry = _make_confirm_crafted()
+        eq, tr = _run_loop(close, high, low, open_, entry,
+                           bpday=2, trailing_confirm=confirm,
+                           cost_stop_enabled=False, ladder_enabled=False,
+                           time_enabled=False, cond_time_enabled=False,
+                           first_day_enabled=False)
+        return eq, tr, {"level": "loop", "data": "crafted_confirm_6bar",
+                        "param_overrides": {"bpday": 2,
+                                            "trailing_confirm": confirm,
+                                            "cost_stop_enabled": False,
+                                            "ladder_enabled": False,
+                                            "time_enabled": False,
+                                            "cond_time_enabled": False,
+                                            "first_day_enabled": False}}
+    return _sc
+
+
+def _sc_loop_real_degraded_defer():
+    """5m 降级天推迟峰值 (2026-08-06 审计 HIGH#2) 数值锁。
+
+    6 根 bar (bpday=2) 精巧场景, 与 tests/test_degrade_peak_defer.py
+    场景一同源 (两处手工同步): day1 两根降级 bar 广播 1d OHLC
+    (高 12.0), 旧峰值 11 的线 9.9 继续值班 → bar2 按线价 9.9 卖出
+    (旧逻辑峰值被刷成 12 → 全天 peak==high 跳过 → 次日才卖)。
+    """
+    close = np.array([10.0, 10.5, 10.5, 10.5, 10.3, 10.2]).reshape(-1, 1)
+    high = np.array([10.2, 11.0, 12.0, 12.0, 10.6, 10.5]).reshape(-1, 1)
+    low = np.array([9.9, 10.2, 9.8, 9.8, 10.1, 10.0]).reshape(-1, 1)
+    open_ = np.array([10.0, 10.3, 11.5, 11.5, 10.4, 10.3]).reshape(-1, 1)
+    entry = np.zeros((6, 1), dtype=bool)
+    entry[0, 0] = True
+    degraded = np.array([False, False, True, True, False, False]).reshape(-1, 1)
+    eq, tr = _run_loop(close, high, low, open_, entry,
+                       degraded_np=degraded, bpday=2, trailing_confirm="real",
+                       cost_stop_enabled=False, ladder_enabled=False,
+                       time_enabled=False, cond_time_enabled=False,
+                       first_day_enabled=False)
+    return eq, tr, {"level": "loop", "data": "crafted_degraded_6bar",
+                    "extras": ["degraded_np", "confirm_real"],
+                    "param_overrides": {"bpday": 2, "trailing_confirm": "real",
+                                        "cost_stop_enabled": False,
+                                        "ladder_enabled": False,
+                                        "time_enabled": False,
+                                        "cond_time_enabled": False,
+                                        "first_day_enabled": False}}
+
+
 SCENARIOS = {
     "loop_stop_first_s42": _sc_loop_stop_first_s42,
     "loop_ladder_tp_first_s7": _sc_loop_ladder_tp_first_s7,
@@ -251,7 +331,13 @@ SCENARIOS = {
     "loop_trailing_first_dual_trigger": _sc_loop_trailing_first_dual_trigger,
     "engine_run_cached_stop_first_s42": _sc_engine_run_cached_stop_first_s42,
     "engine_run_cached_trailing_first_s7": _sc_engine_run_cached_trailing_first_s7,
+    "loop_real_degraded_defer": _sc_loop_real_degraded_defer,
 }
+
+# 5 种 confirm 模式逐一锁定 (2026-08-06 审计 P2; 精巧数据上五模态结果各异)
+for _confirm in ("intraday", "low", "close", "simple", "real"):
+    SCENARIOS[f"loop_confirm_{_confirm}_crafted"] = _make_loop_confirm_scenario(_confirm)
+del _confirm
 
 
 # ─────────────────────────────────────────────────────────────
@@ -384,14 +470,15 @@ def test_run_vs_run_cached_consistency(monkeypatch):
     assert captured, "_prepare_run_matrices 未被调用, run() 路径异常"
 
     lp, lr, nl = _ladder_triplet(sc)
-    res_cached = eng.run_cached(
-        captured["close"], captured["entries"],
-        captured["high"], captured["low"],
-        sc, selections, lp, lr, nl,
-        filter_limit_up=False,
+    prepared = PreparedMatrix(
+        close=captured["close"], entries=captured["entries"],
+        high_np=captured["high"], low_np=captured["low"],
         open_np=captured["open"],
         tradable_np=captured["tradable"],
-        last_tradable_idx=captured["last_tradable_idx"],
+        last_tradable_idx=captured["last_tradable_idx"])
+    res_cached = eng.run_cached(
+        prepared, sc, lp, lr, nl,
+        filter_limit_up=False,
         return_raw=True,
     )
 

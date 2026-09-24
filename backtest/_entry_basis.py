@@ -19,6 +19,10 @@ from enum import Enum
 # 业务铁律 2 + 3 — 单一真相源,严禁字面量散落
 ENTRY_BASIS_BACKTEST = "close_on_signal_day"   # 回测: 信号日 T 收盘价 (业务铁律 2)
 ENTRY_BASIS_LIVE = "open_on_next_day"          # 实盘: T+1 开盘价 (业务铁律 3)
+# 2026-08-20 用户拍板: 回测新增显式 open_t1 口径 (次日开盘价买入, T+1 一字涨停拒买),
+# 解决 QUANTQQ 尾盘涨停拒单丢信号。默认仍是 close_on_signal_day 零行为变化。
+# 计划书: docs/plan/2026-08-20_回测次日开盘买入模式_计划书.md
+ENTRY_BASIS_BACKTEST_T1 = "open_on_next_day_backtest"  # 回测 open_t1: T+1 开盘价
 
 
 class EntryPath(Enum):
@@ -30,10 +34,13 @@ class EntryPath(Enum):
     """
     BACKTEST_T_CLOSE = "close_on_signal_day"
     LIVE_T_PLUS_1_OPEN = "open_on_next_day"
+    # 2026-08-20: 回测 open_t1 显式口径 (entry_price_mode=open_t1)。
+    # 是回测路径 (is_backtest=True), 与实盘 T+1 路径区分开 — 两套口径仍不得混用。
+    BACKTEST_T1_OPEN = "open_on_next_day_backtest"
 
     @property
     def is_backtest(self) -> bool:
-        return self == EntryPath.BACKTEST_T_CLOSE
+        return self in (EntryPath.BACKTEST_T_CLOSE, EntryPath.BACKTEST_T1_OPEN)
 
     @property
     def is_live(self) -> bool:

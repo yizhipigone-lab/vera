@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from trade.book import DIRECTION_BUY, Book
 from trade.config import (
     CostStopConfig,
+    LadderTpConfig,
     StopConfig,
     TradeConfig,
     TrailingStopConfig,
@@ -38,11 +39,13 @@ class StubExecutor:
 
     def __init__(self, succeed=True):
         self.exits: list[tuple[str, str]] = []
+        self.qtys: list[int | None] = []
         self.pending_calls = 0
         self.succeed = succeed
 
-    def execute_exit(self, code, reason):
+    def execute_exit(self, code, reason, qty=None):
         self.exits.append((code, reason))
+        self.qtys.append(qty)
         return self.succeed
 
     def pending_check(self, now_hhmm=None):
@@ -149,6 +152,28 @@ def test_no_quote_fail_closed(store):
     assert rows
 
 
+def test_no_quote_audit_throttled(store):
+    """体检 P2-1: 持续无行情是稳态不是新事件 —— 同票 15 分钟只落一条,
+    窗口过后再记 (降噪不丢信号, 不再 7070 条/14 天式刷库)。"""
+    t = [_T0 + 100]
+    stub = StubExecutor()
+    mon, _ = _make_monitor(store, _book_with(), stub, t)
+
+    def _count():
+        return store._conn.execute(
+            "SELECT count(*) FROM audit WHERE kind='monitor_no_quote'"
+        ).fetchone()[0]
+
+    mon.scan_once()
+    assert _count() == 1                      # 首现立即写
+    t[0] += 60                                # 1 分钟后同票仍无价 → 节流跳过
+    mon.scan_once()
+    assert _count() == 1
+    t[0] += 1000                              # 过 15 分钟窗口 → 再记一条
+    mon.scan_once()
+    assert _count() == 2
+
+
 def test_trailing_stop_triggered_by_synthetic_peak(store):
     """合成峰值序列: 冲到 12 后回落破 峰值×(1-5%)=11.4 → 移动止盈。
     (档位已预标记 = 实盘正常日状态: ladder 由预埋单覆盖,
@@ -184,6 +209,19 @@ def test_cost_stop_triggered(store):
     assert len(triggers) == 1 and "cost_stop" in triggers[0][1]
 
 
+def test_auto_sell_disabled_no_trigger(store):
+    """2026-08-16 卖出总开关关闭 → 监控腿不评估任何卖出规则 (不新触发)。"""
+    t = [_T0]
+    stub = StubExecutor()
+    cfg = TradeConfig(account_id="TEST", tick_heartbeat_sec=15,
+                      auto_sell_enabled=False,
+                      stop=StopConfig(cost_stop=CostStopConfig(threshold=-0.12)))
+    mon, _ = _make_monitor(store, _book_with(), stub, t, cfg=cfg)
+    # 现价 8.7 本应触发成本止损, 但总开关关 → 不触发
+    mon.on_quote(CODE, {"last": 8.7, "bid1": 8.6, "high": 8.7})
+    assert mon.scan_once() == []
+
+
 def test_time_stop_triggered(store):
     """持有 20 天到点即走 (裁决①后回测口径: 无收益门槛)。"""
     t = [_T0]
@@ -204,6 +242,21 @@ def test_triggered_code_not_retriggered(store):
     mon.scan_once()
     assert mon.scan_once() == []
     assert len(stub.exits) == 1
+
+
+def test_clear_trigger_re_arms_same_day(store):
+    """公开解除口 (计划书 T6): clear_trigger 后同票当日可再次触发 ——
+    executor pending 废单/已撤时经 _on_pending_died 调它解除, 下轮重评。"""
+    t = [_T0]
+    stub = StubExecutor()
+    mon, _ = _make_monitor(store, _book_with(), stub, t)
+    mon.on_quote(CODE, {"last": 8.7, "bid1": 8.6, "high": 8.7})
+    mon.scan_once()
+    assert mon.scan_once() == []              # 已触发 → 当日不再触发
+    mon.clear_trigger(CODE)                   # 公开解除 (P0-3 语义)
+    triggers = mon.scan_once()
+    assert len(triggers) == 1
+    assert len(stub.exits) == 2               # 解除后重新执行
 
 
 def test_h1_failed_exit_not_armed_and_retried(store):
@@ -289,7 +342,9 @@ def test_full_chain_trigger_to_fake_gateway_fill(store, tmp_path):
             is_trading_day=True)
 
     clock = [_T0]
-    quotes = {CODE: {"last": 8.7, "bid1": 8.7, "high": 8.7}}
+    # 注: executor 走共享 fail-closed 判定, 裸 quote 无 ts 键会判"陈旧"拒卖;
+    # 此处补 ts=_T0 使快照新鲜 (clock 即 _T0)。
+    quotes = {CODE: {"last": 8.7, "bid1": 8.7, "high": 8.7, "ts": _T0}}
     ex = Executor(gw, book, store, gate, cfg, build_ctx,
                   get_quote=quotes.get, clock=lambda: clock[0])
     mon = Monitor(gw, book, ex, store, cfg, clock=lambda: clock[0])
@@ -307,3 +362,63 @@ def test_full_chain_trigger_to_fake_gateway_fill(store, tmp_path):
     # Fake 侧持仓清零, 回款到账
     assert gw.query_positions() == []
     assert gw.query_asset()["cash"] == 1_000_000.0 + 8.7 * 1000
+
+
+# ═══════════════════════════════════════════════════════════════
+# 阶梯兜底部分卖 (2026-08-06 002155.SZ 事件: 兜底不再一锅端)
+# ═══════════════════════════════════════════════════════════════
+
+def _ladder_cfg(levels):
+    return TradeConfig(
+        account_id="TEST", tick_heartbeat_sec=15,
+        stop=StopConfig(ladder_tp=LadderTpConfig(levels=levels)))
+
+
+def test_ladder_fallback_partial_sell_marks_tier_not_armed(store):
+    """未预埋档兜底 = 按档位比例部分卖: 乐观标档但不武装 _triggered,
+    剩余仓位继续受其余规则保护; 清仓档兜底仍全卖+武装。"""
+    t = [_T0]
+    stub = StubExecutor()
+    book = _book_with(volume=400)
+    cfg = _ladder_cfg(((0.05, 0.5), (0.10, 1.0)))
+    mon, _ = _make_monitor(store, book, stub, t, cfg=cfg)
+    today = time.strftime("%Y%m%d", time.localtime(_T0))
+    # 档1 (+5% = 10.50) 涨破 → 卖一半 200 股, 标档0, 不武装
+    mon.on_quote(CODE, {"last": 10.4, "bid1": 10.4, "high": 10.5})
+    triggers = mon.scan_once()
+    assert len(triggers) == 1 and "ladder_tp" in triggers[0][1]
+    assert stub.qtys == [200]
+    assert book.tier_done(CODE, today) == frozenset({0})
+    assert CODE not in mon._triggered
+    # 档2 (+10% = 11.00) 涨破 → 清仓档 qty=None (卖全部), 武装
+    mon.on_quote(CODE, {"last": 10.9, "bid1": 10.9, "high": 11.0})
+    triggers = mon.scan_once()
+    assert len(triggers) == 1
+    assert stub.qtys == [200, None]
+    assert CODE in mon._triggered
+
+
+def test_ladder_fallback_qty_lot_rounding(store):
+    """250 股 × 50% = 1.25 手 → 1 手 100 股 (对齐 place_ladder 口径)。"""
+    t = [_T0]
+    stub = StubExecutor()
+    book = _book_with(volume=250)
+    mon, _ = _make_monitor(store, book, stub, t,
+                           cfg=_ladder_cfg(((0.05, 0.5),)))
+    mon.on_quote(CODE, {"last": 10.5, "bid1": 10.5, "high": 10.5})
+    assert len(mon.scan_once()) == 1
+    assert stub.qtys == [100]
+
+
+def test_ladder_fallback_tiny_position_sells_all(store):
+    """比例档算不出整手 (50 股 × 50% = 0 手) → qty=None 卖全部,
+    兜底语义宁可全卖不漏卖。"""
+    t = [_T0]
+    stub = StubExecutor()
+    book = _book_with(volume=50)
+    mon, _ = _make_monitor(store, book, stub, t,
+                           cfg=_ladder_cfg(((0.05, 0.5),)))
+    mon.on_quote(CODE, {"last": 10.5, "bid1": 10.5, "high": 10.5})
+    assert len(mon.scan_once()) == 1
+    assert stub.qtys == [None]
+    assert CODE in mon._triggered

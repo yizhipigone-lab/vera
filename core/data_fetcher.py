@@ -1,6 +1,5 @@
 """数据获取层 — 通过 TDX TQ API 获取 K 线、财务、除权等数据。"""
 
-import bisect
 from typing import List, Optional
 
 import pandas as pd
@@ -12,6 +11,7 @@ from . import progress as _progress
 from .connector import ConnectorSeam
 from .data_cache import DataCache
 from .dividend_type import to_tdx_str
+from .window import compute_window_bounds as _window_compute_bounds, merge_window_masks
 
 # 2026-07-18: 协作式停止 (web「停止回测」按钮)
 from .stop_flag import raise_if_stopped
@@ -19,36 +19,22 @@ from .stop_flag import raise_if_stopped
 logger = get_logger(__name__)
 
 
-def _merge_window_masks(mask_frames: List[pd.DataFrame]) -> pd.DataFrame:
-    """合并各批窗口 mask: 时间轴取并集, 同 (行,列) 跨批取 OR。
+def _fmt_tdx_error(result) -> str:
+    """把 TDX get_market_data 的错误返回渲染成可诊断文本 (2026-09-05 体检 P1)。
 
-    2026-07-18 性能修复: 原 concat(axis=0) + groupby.max 在 bool+NaN→object
-    时退化为纯 Python 逐列聚合 (py-spy 实锤 ~0.84s/列 × 3873 列 ≈ 54 分钟,
-    回测假死事件)。各批 mask 列天然互斥 (每股 win_start 唯一 → 只属于一个
-    批次桶), 同 (行,列) 跨批取 OR 等价于"取唯一非空值", 故逐批 reindex 到
-    并集时间轴 (缺口填 False) 再 axis=1 拼列即等价 — 秒级完成, 内存峰值
-    从 ~5GB 降到 ~70MB。
-
-    兜底: 批间列重叠或批内重复时间戳 (按构造不应发生) 时退回原 groupby
-    慢速路径保正确性。
+    此前一律 `result.get('Error', '未知错误')` —— TDX 只回 ErrorId 不带文本时
+    全池日志打成一串"未知错误", 无法区分"源站故障/无该区间/需登录"。现尽量
+    带出 ErrorId + 文本; 确无文本时列出返回键名供事后定位, 不再吞成未知。
     """
-    col_total = sum(len(m.columns) for m in mask_frames)
-    col_uniq = len({c for m in mask_frames for c in m.columns})
-    fast_ok = (col_total == col_uniq) and not any(
-        m.index.has_duplicates for m in mask_frames
-    )
-    if fast_ok:
-        union_idx = mask_frames[0].index
-        for m in mask_frames[1:]:
-            union_idx = union_idx.union(m.index)
-        return pd.concat(
-            [m.reindex(union_idx, fill_value=False) for m in mask_frames],
-            axis=1,
-        ).sort_index().fillna(False).astype(bool)
-    logger.warning("窗口 mask 批间列重叠/批内重复时间戳, 退回 groupby 慢速合并")
-    window_mask = pd.concat(mask_frames, axis=0)
-    # 同 (行,列) 跨批取 OR (任一批标记窗口内即为窗口内)
-    return window_mask.groupby(level=0).max().sort_index().fillna(False)
+    if not result:
+        return "空返回 (无结果对象)"
+    eid = result.get("ErrorId", "?")
+    msg = (result.get("Error") or result.get("ErrorMsg")
+           or result.get("Message") or "").strip()
+    if msg:
+        return f"ErrorId={eid} {msg[:200]}"
+    keys = [str(k) for k in list(result)[:8]]
+    return f"ErrorId={eid} (TDX 无错误文本; 返回键={keys})"
 
 
 class DataFetcher(ConnectorSeam):
@@ -60,6 +46,10 @@ class DataFetcher(ConnectorSeam):
     """
 
     _KLINE_CACHE_DIR = None  # 测试可覆盖; None → 项目根 data/kline_cache
+    # 2026-09-16 C2: KlineCache 单例池 {cache_dir: 实例} — 原每次取数新建实例,
+    # 持久 sqlite 连接永不关闭, 常驻 server 下句柄持续泄漏。key 含 cache_dir:
+    # _KLINE_CACHE_DIR 被测试改写 → 目录变了自动重建新实例。
+    _KLINE_CACHE_POOL: dict = {}
 
     # 基准指数代码（P1-6: 补沪深300/中证500）
     INDEX_CODES = {
@@ -144,7 +134,10 @@ class DataFetcher(ConnectorSeam):
         )
 
         if not result or ("ErrorId" in result and result.get("ErrorId") != "0"):
-            logger.error(f"获取K线数据失败: {result.get('Error', '未知错误')}")
+            logger.error(
+                "获取K线数据失败: %s (codes=%s %s %s~%s)",
+                _fmt_tdx_error(result), codes[:5],
+                period, start_time or "全部", end_time or "最新")
             return {}
 
         logger.info(f"获取到 {len(result)} 个字段的数据")
@@ -173,10 +166,13 @@ class DataFetcher(ConnectorSeam):
                                            dividend_type=dividend_type, fill_data=False)
 
         def _calendar_fetcher():
-            return cls.get_trading_dates("SH", "20100101", "20991231")
+            return cls.get_calendar_days("SH", "20100101", "20991231")
 
-        cache = KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
-                           calendar_fetcher=_calendar_fetcher)
+        cache = cls._KLINE_CACHE_POOL.get(cache_dir)
+        if cache is None:
+            cache = KlineCache(cache_dir, tdx_fetcher=_tdx_fetcher,
+                               calendar_fetcher=_calendar_fetcher)
+            cls._KLINE_CACHE_POOL[cache_dir] = cache
         if force_refresh:
             for code in normalize_list(stock_list):
                 # 2026-07-18: force_invalidate = intact=False + 清 F5 冷却标记,
@@ -196,6 +192,11 @@ class DataFetcher(ConnectorSeam):
 
         用于稀疏窗口拉取 (get_kline_windowed) 按交易日推进窗口, 避免自然日误差
         (周末/节假日)。底层调 tq.get_trading_dates, 失败时返回空列表。
+
+        【robust 版】: 异常吞掉返空 + 排序去重 —— 回测/选股窗口数学的
+        唯一公开入口 (engine / signal_day_cache / window)。窗口数学依赖
+        有序, 用本方法。字符串版日历 (raw, 工具/缓存用) 走 get_calendar_days;
+        UI 展示用精确历在 utils.trading_calendar (2026-09-04 起 server 已切)。
         """
         cls._ensure_ready()
         tq = cls._connector().tq()
@@ -222,57 +223,14 @@ class DataFetcher(ConnectorSeam):
     ) -> tuple:
         """每只股的稀疏窗口 [窗口起, 窗口止] = [最早信号日, 最晚信号日+N 交易日]。
 
-        2026-07-18 从 get_kline_windowed 抽出 (degrade_5m 降级填充需要同一套
-        窗口边界判定"窗口内才可交易", 防两份逻辑 drift)。行为与原内联实现一致。
-        trading_days 传入则跳过交易日历拉取 (测试/复用)。
-        2026-07-21: end_time (可选, 'yyyymmdd') — 窗口终点截断到请求区间终点,
-        回测执行窗口=请求区间 (不再延长 +N 交易日尾巴); 期末持仓由 loop
-        "期末不平仓"按市值计价, 不被窗口边界当退市强平 (reason=11)。
-
-        Returns:
-            (win_start, win_end): 两个 dict {stock_code: pd.Timestamp}。
+        2026-08-16 去上帝化: 纯数学已挪到 core.window.compute_window_bounds,
+        本方法只做"拉日历 + 委托" (calendar_fetcher 注入 cls.get_trading_days)。
+        行为与原内联实现一致, 完整语义见 core/window.py 的 docstring。
         """
-        sel = selections.copy()
-        sel["select_date"] = pd.to_datetime(sel["select_date"])
-        sel["stock_code"] = sel["stock_code"].apply(
-            lambda c: nl[0] if (nl := normalize_list([c])) else c
+        return _window_compute_bounds(
+            selections, window_trading_days, trading_days, end_time,
+            calendar_fetcher=cls.get_trading_days,
         )
-
-        # 每只股的窗口起点 = 最早信号日; 窗口需覆盖到 最晚信号日 + N 交易日
-        first_sig = sel.groupby("stock_code")["select_date"].min()
-        last_sig = sel.groupby("stock_code")["select_date"].max()
-
-        if trading_days is None:
-            global_start = first_sig.min()
-            global_end = last_sig.max()
-            # 拉全区间交易日历 (往后多留 window+10 天缓冲, 保证末批窗口能推满)
-            cal_end = (global_end + pd.Timedelta(days=int(window_trading_days * 1.7) + 20))
-            trading_days = cls.get_trading_days(
-                global_start.strftime("%Y%m%d"), cal_end.strftime("%Y%m%d")
-            )
-            if not trading_days:
-                logger.warning("交易日历为空, 稀疏窗口退化为按自然日估算窗口")
-                trading_days = None
-
-        def _window_end(sig_date: pd.Timestamp) -> pd.Timestamp:
-            """信号日往后 window_trading_days 个交易日的日期。"""
-            if trading_days:
-                idx = bisect.bisect_left(trading_days, sig_date)  # 第一个 >= sig_date 的交易日
-                target = min(idx + window_trading_days, len(trading_days) - 1)
-                return trading_days[target]
-            # 无交易日历兜底: 自然日估算 (交易日≈自然日×5/7, 反推)
-            return sig_date + pd.Timedelta(days=int(window_trading_days * 1.5) + 5)
-
-        # 每只股的 [窗口起, 窗口止]
-        win_start = {c: first_sig[c] for c in first_sig.index}
-        win_end = {c: _window_end(last_sig[c]) for c in last_sig.index}
-        # 2026-07-21: 请求区间终点截断 (end_time 可为非交易日, 下游取数/日历
-        # 自然对齐到最后交易日 ≤ end_time); 钳制 win_end >= win_start 防
-        # 信号日晚于 end_time 时窗口倒置 (正常管线信号已被区间过滤, 属防御)。
-        if end_time:
-            end_ts = pd.Timestamp(str(end_time))
-            win_end = {c: max(win_start[c], min(w, end_ts)) for c, w in win_end.items()}
-        return win_start, win_end
 
     @classmethod
     def get_kline_windowed(
@@ -359,11 +317,17 @@ class DataFetcher(ConnectorSeam):
                     field_frames[f].append(data[f])
 
             # 构建本批 window_mask: 每只股只在自己 [win_start, win_end] 内为 True
+            # 2026-08-04 修复: win_end 是当日子夜 (00:00) 时间戳 (交易日历/end_time
+            # 截断均如此), 直接比较时间戳会把窗口最后一天的全部分钟 bar 排除在外,
+            # 回测区间末日仍持仓的仓位会在末日第一根 bar 被误判退市强平 (reason=11)。
+            # 终点按日期比较 (含末日全天), 与 degrade_5m 的 normalize() 语义一致。
             m = pd.DataFrame(False, index=close_b.index, columns=close_b.columns)
+            idx_days = m.index.normalize()
             for c in codes:
                 if c not in m.columns:
                     continue
-                in_win = (m.index >= win_start[c]) & (m.index <= win_end[c])
+                in_win = (m.index >= win_start[c]) & (
+                    idx_days <= win_end[c].normalize())
                 m.loc[in_win, c] = True
             mask_frames.append(m)
 
@@ -378,13 +342,18 @@ class DataFetcher(ConnectorSeam):
         kline_out: dict = {}
         for f in fields:
             if field_frames[f]:
-                merged = pd.concat(field_frames[f], axis=0)
-                # groupby(level=0).first() 逐列取首个非 NaN, 正确合并跨批重叠时间戳
-                merged = merged.groupby(level=0).first().sort_index()
-                kline_out[f] = merged
+                # 2026-08-14 内存爆炸修复: 原 pd.concat(所有批次, axis=0) 把 198 批
+                # 堆成 ~1900 万行 (699 GiB) 再 groupby 去重 —— 长区间(11.5 年)下
+                # 窗口=整段信号跨度, 每批都拉全量, concat 中间态先 OOM。
+                # 改增量 combine_first: 结果始终停在最终尺寸(~13.5万行×4915列),
+                # 语义与 groupby(level=0).first() 完全一致 (首个非 NaN 胜出)。
+                merged = field_frames[f][0]
+                for frame in field_frames[f][1:]:
+                    merged = merged.combine_first(frame)
+                kline_out[f] = merged.sort_index()
 
-        # 合并各批窗口 mask (2026-07-18 抽为模块级函数, 见 _merge_window_masks docstring)
-        window_mask = _merge_window_masks(mask_frames)
+        # 合并各批窗口 mask (2026-08-16 挪到 core.window.merge_window_masks)
+        window_mask = merge_window_masks(mask_frames)
         # 对齐到 Close 的行列 (兜底: 缺失填 False)
         if "Close" in kline_out:
             window_mask = window_mask.reindex(
@@ -479,16 +448,14 @@ class DataFetcher(ConnectorSeam):
         Returns:
             [{"code": "881319.SH", "name": "半导体"}, ...]
         """
-        if cls._cache.has_sector_list():
-            return cls._cache.get_sector_list()
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        raw = tq.get_stock_list('11', list_type=1)
-        cls._cache.set_sector_list([
-            {"code": s["Code"], "name": s["Name"].strip()}
-            for s in raw if isinstance(s, dict) and s.get("Code")
-        ])
-        return cls._cache.get_sector_list()
+        def _fetch():
+            cls._ensure_ready()
+            tq = cls._connector().tq()
+            raw = tq.get_stock_list('11', list_type=1)
+            return [{"code": s["Code"], "name": s["Name"].strip()}
+                    for s in raw if isinstance(s, dict) and s.get("Code")]
+        # 判过期→回源→回填 (治理III W3-get_or, TTL 语义在 DataCache)
+        return cls._cache.sector_list_or(_fetch)
 
     @classmethod
     def get_sector_stocks(cls, sector_code: str) -> List[str]:
@@ -497,15 +464,16 @@ class DataFetcher(ConnectorSeam):
 
         Returns: 纯代码字符串列表, 失败返回空列表不抛异常.
         """
-        if cls._cache.has_sector_stocks(sector_code):
-            return cls._cache.get_sector_stocks(sector_code)
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        try:
+        def _fetch():
+            cls._ensure_ready()
+            tq = cls._connector().tq()
             raw = tq.get_stock_list_in_sector(sector_code, list_type=0)
-            stocks = extract_codes(raw)
-            cls._cache.set_sector_stocks(sector_code, stocks)
-            return stocks
+            return extract_codes(raw)
+        # 判过期→回源→回填 (治理III W3-get_or)。失败**不缓存**: 异常在
+        # _or 外接住返 [], 下次调用仍会重试 (旧代码同语义, 防瞬时失败
+        # 毒化 24h 缓存)。
+        try:
+            return cls._cache.sector_stocks_or(sector_code, _fetch)
         except Exception as e:
             logger.warning(f"拉板块成份股失败 [{sector_code}]: {e}")
             return []
@@ -538,28 +506,104 @@ class DataFetcher(ConnectorSeam):
         Returns:
             {'601872.SH': '招商轮船', ...} 共约 5200 条
         """
-        if cls._cache.has_name_map() and not refresh:
-            return cls._cache.get_name_map()
-        cls._ensure_ready()
-        tq = cls._connector().tq()
-        result: dict = {}
-        # list_type='50' = 沪深A股, list_type=1 = 每只用 dict 返回 (含 Name 字段)
-        for market in ('5', '50'):
+        def _fetch():
+            result: dict = {}
+            source = "TDX"
             try:
-                raw = tq.get_stock_list(market, list_type=1)
+                cls._ensure_ready()
+                tq = cls._connector().tq()
+                # '5'=全部A股, '50'=沪深A股, '31'=ETF基金 (2026-08-15: 补 ETF 名称,
+                # 原只拉股票列表, 159949/518880 等场内基金在持仓清单里没名字)
+                for market in ('5', '50', '31'):
+                    try:
+                        raw = tq.get_stock_list(market, list_type=1)
+                    except Exception:
+                        continue
+                    for s in raw:
+                        if not isinstance(s, dict):
+                            continue
+                        code = str(s.get("Code", "")).strip()
+                        name_raw = str(s.get("Name", "")).strip()
+                        if not code or not name_raw:
+                            continue
+                        result[code] = cls._fix_tq_name(name_raw)
+            except Exception:
+                logger.warning("TDX 拉取股票简称失败, 降级腾讯", exc_info=True)
+            if not result:
+                # 2026-08-27 腾讯降级 (页面简称全丢事件): TDX 没开/拉空时用
+                # kline_cache 清单代码全集 + 腾讯批量报价拼名称 (详见 _tencent_name_map)
+                source = "腾讯"
+                result = cls._tencent_name_map()
+            if result:
+                logger.info(f"全量简称缓存已构建({source}): {len(result)} 条")
+            return result
+        # 判过期→回源→回填; force_refresh 强制回源 (治理III W3-get_or)。
+        # 空结果 (TDX+腾讯全挂) 不缓存 —— fetcher 返回 {} 时 set 存空,
+        # 下次 has_name_map 见空不命中会重试 (与旧行为一致)。
+        value = cls._cache.name_map_or(_fetch, force_refresh=refresh)
+        return value
+
+    @staticmethod
+    def _manifest_codes() -> list:
+        """kline_cache 清单里的去重代码全集 (腾讯降级的代码源)。
+
+        全 A + ETF 历史上都拉过日线 (选股/轮动都走 kline_cache), 实际
+        覆盖完整; 清单缺失/读取失败 → [] (降级链末端, fail-soft)。"""
+        try:
+            import sqlite3
+            from pathlib import Path
+            db = (Path(__file__).resolve().parents[1]
+                  / "data" / "kline_cache" / "manifest.db")
+            if not db.exists():
+                return []
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+            try:
+                rows = conn.execute(
+                    "SELECT DISTINCT stock_code FROM manifest").fetchall()
+            finally:
+                conn.close()
+            return [r[0] for r in rows if r and r[0]]
+        except Exception:
+            return []
+
+    @classmethod
+    def _tencent_name_map(cls) -> dict:
+        """腾讯降级 (2026-08-27): 批量走 qt.gtimg.cn 报价接口拼 {code: name}。
+
+        腾讯报价返回 GBK 文本 v_sz000001="51~平安银行~000001~...": 第 1
+        字段=名称, 第 2 字段=裸代码, v_ 前缀带市场。每批 60 只 (腾讯单
+        请求上限量级), 单批失败跳过不整单失败。仅作 TDX 不可用时的兜底。"""
+        import urllib.request
+        codes = cls._manifest_codes()
+        if not codes:
+            return {}
+        out: dict = {}
+        for i in range(0, len(codes), 60):
+            batch = codes[i:i + 60]
+            q = ",".join(c.split(".")[1].lower() + c.split(".")[0]
+                         for c in batch if "." in c)
+            if not q:
+                continue
+            try:
+                req = urllib.request.Request(
+                    "https://qt.gtimg.cn/q=" + q,
+                    headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    text = resp.read().decode("gbk", errors="ignore")
             except Exception:
                 continue
-            for s in raw:
-                if not isinstance(s, dict):
+            for line in text.split(";"):
+                line = line.strip()
+                if not line.startswith("v_") or '"' not in line:
                     continue
-                code = str(s.get("Code", "")).strip()
-                name_raw = str(s.get("Name", "")).strip()
-                if not code or not name_raw:
+                try:
+                    parts = line.split('"')[1].split("~")
+                    if len(parts) > 2 and parts[1] and parts[2]:
+                        market = line[2:4].upper()      # v_sz000001 → SZ
+                        out[f"{parts[2]}.{market}"] = parts[1]
+                except Exception:
                     continue
-                result[code] = cls._fix_tq_name(name_raw)
-        cls._cache.set_name_map(result)
-        logger.info(f"全量简称缓存已构建: {len(result)} 条")
-        return result
+        return out
 
     @classmethod
     def clear_name_cache(cls):
@@ -567,13 +611,23 @@ class DataFetcher(ConnectorSeam):
         cls._cache.clear_name()
 
     @classmethod
-    def get_trading_dates(
+    def get_calendar_days(
         cls,
         market: str = "SH",
         start_time: str = "",
         end_time: str = "",
     ) -> List[str]:
-        """获取交易日列表。"""
+        """获取交易日字符串列表 (YYYYMMDD, TDX 原始顺序) —— 缓存/工具的日历源。
+
+        【raw 版, 治理III W3-③ 由 get_trading_dates 更名】: 直接透传
+        tq.get_trading_dates, 异常上抛 (不吞), 不排序去重 —— 本方法是
+        KlineCache calendar_fetcher 与离线工具 (backfill/import_lc5/
+        重绘检查/未来函数检查等) 的契约: 要真失败就大声失败, 不静默空表。
+
+        与 get_trading_days (robust, Timestamp, 回测窗口数学) 刻意**不同名**:
+        名字点明"字符串日历", 防误选。展示用精确历已迁
+        utils.trading_calendar (2026-09-04), 本方法仅供工具/缓存。
+        """
         cls._ensure_ready()
         tq = cls._connector().tq()
         dates = tq.get_trading_dates(

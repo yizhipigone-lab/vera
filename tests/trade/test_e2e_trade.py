@@ -2,7 +2,8 @@
 
 不依赖 QMT。覆盖任务书 8 步: 组装启动对账 → 预埋 (超涨停跳过 +
 remark 格式) → 第一档成交 (JSONL 先落盘 / book 递减 / tier 标记 /
-store 一致) → 移动止盈触发撤单流水线 + 5s 升级逃生通道 (深市限价@跌停)
+store 一致) → 移动止盈触发撤单流水线 + 5s 升级逃生通道 (盘中深市五档即成剩余
+撤销 / 沪市笼内限价, 尾盘 force 两市限价@跌停)
 → 对账偏差
 急停 + 买入被拒 → 人工 unkill 恢复 → EOD 归档 → 重启恢复档位与持仓。
 附: 断线重连 (退避→重订阅→全量对账) 独立用例。
@@ -16,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from trade.book import PRICE_TYPE_SZ_5LEVEL_CANCEL
 from trade.config import LadderTpConfig, StopConfig, TradeConfig
 from trade.events import EVENT_EOD, EVENT_RECONCILE, EVENT_TIMER_SCAN, Event
 from trade_main import TradeApp
@@ -120,14 +122,16 @@ def test_e2e_full_day(app, cfg, clock):
     # ── 3. 第一档成交: JSONL 先落盘 + book 递减 + tier 标记 + store 一致 ──
     tier0 = cyb_orders[0]
     trade = gw.simulate_fill(tier0["order_id"])
-    # append_raw 在回调里同步发生 (先落盘再入队), 不等消费者即可见
+    # 2026-08-06 异步化 (HIGH#3): append_raw 只入队 (回调不再同步写盘),
+    # flush_raw 等到落盘后读文件 —— 不等消费者, 但要等 writer 线程
+    assert app.store.flush_raw()
     raw_lines = Path(cfg.raw_log_path).read_text(encoding="utf-8").splitlines()
     kinds = [json.loads(l)["kind"] for l in raw_lines]
     assert "trade_fill" in kinds and "order_update" in kinds
 
     assert _wait(lambda: app.book.snapshot()["positions"][CYB].volume == 700)
     assert app.book.tier_done(CYB, today) == frozenset({0, 1, 2})   # 乐观标记
-    assert app.store.load_tier_states(today)[CYB] == [0, 1, 2]
+    assert app.store.tier_state.load(today)[CYB] == [0, 1, 2]
     row = app.store._conn.execute(
         "SELECT qty, price FROM trades WHERE traded_id=?",
         (trade["traded_id"],)).fetchone()
@@ -145,17 +149,22 @@ def test_e2e_full_day(app, cfg, clock):
     canceled = [o for o in gw.query_orders()
                 if o["code"] == CYB and o["status"] == 54]
     assert len(canceled) == 2
-    # ── 5. 5s 未成交 → 升级逃生通道: 深市限价@跌停价 ──
-    # 2026-07-31: monitor 缓存昨收后, 深市逃生通道按设计走限价@跌停
-    # (prev_close 10.0 × (1-20%) = 8.0); 此前 tick 丢昨收才落对手最优
+    # ── 5. 5s 未成交 → 升级逃生通道 ──
+    # 2026-08-11 002253 + 2026-08-12 复盘: 盘中超时深市不得挂跌停价 (撞价格
+    # 笼子 88009 废单, 历史深市升级单全废), 改走五档即成剩余撤销 (扫买1-买5
+    # IOC, 比对手最优单档 FOK 成交率高)。跌停价逃生通道只在尾盘 force
+    # (14:57+ 收盘集合竞价) 时用, 见 test_pending_escalation_sz_uses_limit_down。
+    # 本场景 hhmm=10:31 < 14:57 非 force → 五档即成 (SZ_5LEVEL_CANCEL)。
+    # 注: SZ_5LEVEL_CANCEL 实盘未实测, 待小单验证。
     clock[0] += 6
     _put_scan(app, "10:31")
     assert _wait(lambda: any(
-        o["code"] == CYB and o["remark"].endswith("X") and o["price"] == 8.0
+        o["code"] == CYB and o["remark"].endswith("X")
+        and o["price_type"] == PRICE_TYPE_SZ_5LEVEL_CANCEL
         for o in gw.query_orders()))
     market = [o for o in gw.query_orders()
               if o["code"] == CYB and o["remark"].endswith("X")
-              and o["price"] == 8.0][0]
+              and o["price_type"] == PRICE_TYPE_SZ_5LEVEL_CANCEL][0]
     # 升级单成交, 清空在途 (为对账 CRITICAL 让路: 在途差异会降级 WARN)
     gw.simulate_fill(market["order_id"])
     assert _wait(lambda: app.book.snapshot()["positions"][CYB].volume == 0)
@@ -255,9 +264,42 @@ def test_startup_catchup_ladder_after_0925(cfg):
         app.stop()
 
 
+def test_startup_catchup_ladder_disabled_skips(tmp_path):
+    """2026-08-10: enabled=false → 启动补偿不预埋 (与 place_ladder 入口 guard /
+    盘中兜底三端同步关)。即使 10:00 启动 + 当日未预埋, 也不写 ladder_catchup、
+    不挂任何预埋单。"""
+    disabled_cfg = TradeConfig(
+        account_id="E2E", fake_sdk=True,
+        db_path=str(tmp_path / "trade.db"),
+        raw_log_path=str(tmp_path / "raw.jsonl"),
+        kill_flag_path=str(tmp_path / "KILL"),
+        stop=StopConfig(ladder_tp=LadderTpConfig(enabled=False, levels=_E2E_LADDER)),
+    )
+    clock = _clock_last_trading_day(10, 0)
+    app = TradeApp(disabled_cfg, fake=True, clock=lambda: clock[0],
+                   fake_gateway_kwargs={
+                       "cash": 1_000_000.0,
+                       "positions": {SH: {"volume": 1000, "can_use": 1000,
+                                          "avg_cost": 10.0}}})
+    try:
+        app.gateway.push_quote(SH, {"last": 10.2, "bid1": 10.2,
+                                    "high": 10.3, "prev_close": 10.0})
+        assert app.start(start_timers=False)
+        rows = app.store._conn.execute(
+            "SELECT kind FROM audit WHERE kind='ladder_catchup'").fetchall()
+        assert rows == []                              # 不进入补偿分支
+        ladder = [o for o in app.gateway.query_orders()
+                  if o["remark"].startswith("V")]
+        assert ladder == []                            # 一张预埋单都不挂
+    finally:
+        app.stop()
+
+
 def test_startup_catchup_eod_after_1505(cfg):
     """15:05 后启动且当日无 EOD 快照 → 补 EOD 归档 (对账 C 方次日基准)。"""
-    clock = _clock_at(15, 10)
+    # 用最近交易日 (周末/节假日跑测试时 _clock_at 会落到非交易日, EOD 被正确
+    # 跳过导致本测试假失败); 与 ladder 补偿测试同口径
+    clock = _clock_last_trading_day(15, 10)
     app = TradeApp(cfg, fake=True, clock=lambda: clock[0],
                    fake_gateway_kwargs={
                        "cash": 1_000_000.0,

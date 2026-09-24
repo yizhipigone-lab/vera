@@ -11,6 +11,9 @@ import pandas as pd
 from core import progress as _progress
 from core.connector import ConnectorSeam
 from core.dividend_type import to_formula_int
+# 2026-08-26: 协作式停止 (web「停止回测」按钮) — 批次循环每轮检查,
+# 停止响应从"等选股阶段跑完(~105批×1s)"缩到当前批结束(~1s)。
+from core.stop_flag import raise_if_stopped
 from utils.code_normalizer import extract_codes
 from utils.logger import get_logger
 
@@ -19,10 +22,13 @@ logger = get_logger(__name__)
 # TDX 选股扫描深度: 从"当前日期"往前的 bar 数 (公式计算与命中返回都受此窗口约束)。
 # 覆盖 ~12 年日线 (今天往前 3000 个交易日 ≈ 到 2014)。
 _MAX_SCAN_COUNT = 3000
+# 2026-08-02: start<2014 的回测 (如 2005 起) 需要更深窗口, 按 start 距今天估算,
+# 上限 7000 根 (~28 年), 防止触碰 TDX 单侧返回上限。
+_MAX_SCAN_COUNT_CAP = 7000
 
 
 def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> int:
-    """TDX 选股扫描深度 (恒返回 _MAX_SCAN_COUNT=3000)。
+    """TDX 选股扫描深度 (默认 _MAX_SCAN_COUNT=3000; start<2014 时按需加深)。
 
     2026-07-31 回退: 2026-07-23 引入的"区间跨度+预热"自适应算法有致命缺陷 ——
     它按 (end_time - start_time) 估算 count, 误以为 count 是从 end_time 往前扫。
@@ -33,9 +39,18 @@ def _adaptive_scan_count(start_time: str, end_time: str, stock_period: str) -> i
     导致回测前两年权益曲线为 0)。写死 3000 覆盖到 2014, 代价仅全市场公式阶段
     多约 13s (实测 0.37s→0.87s/批×50批), 相对回测总耗时为噪音。
     参数保留以兼容调用方 (run_stock_selection_with_dates)。
-    若未来需 start<2014 的回测: 提上限并同步调小 BATCH_SIZE 防 "返回数据过大"。
+
+    2026-08-02: 落实上文"若需 start<2014 的回测"——按 start 距**今天**的跨度估算
+    (与 TDX "从今天往前扫"的实测行为一致, 不再用 end_time), 估算值 = 交易日×242/365
+    + 300 根预热, floor=3000 保证 start>=2014 的老行为逐根不变, cap=7000 防 TDX 上限。
     """
-    return _MAX_SCAN_COUNT
+    try:
+        from datetime import date, datetime
+        start_d = datetime.strptime(str(start_time), "%Y%m%d").date()
+        est = int((date.today() - start_d).days * 242 / 365) + 300
+    except (ValueError, TypeError):
+        return _MAX_SCAN_COUNT
+    return max(_MAX_SCAN_COUNT, min(est, _MAX_SCAN_COUNT_CAP))
 
 
 def _empty_selection_df() -> pd.DataFrame:
@@ -43,15 +58,59 @@ def _empty_selection_df() -> pd.DataFrame:
     return pd.DataFrame(columns=["stock_code", "select_date", "formula_name"])
 
 
+class SelectionBatchResult:
+    """选股批次结果: df + 批次失败统计 (治理III W3-BatchResult, 2026-09-05)。
+
+    替代旧类属性 last_batch_errors 侧信道 (并发选股写-读竞态, 08-06 审计
+    MEDIUM): "真空无信号" vs "批次失败空" 的区分随结果返回, 调用方不会
+    漏判 (L2 按日缓存只在 batch_errors==0 时落盘, 失败区段下次重试)。
+
+    对老调用方透明: 未用失败统计的调用方 (engine/selector/测试) 直接当
+    DataFrame 用 —— 非自有属性经 __getattr__ 委托给 df, 常用容器协议
+    (len/[]/iter) 一并转发。新调用方读 .df/.batch_errors/.failed_all 即可。
+    """
+
+    __slots__ = ("df", "batch_errors", "total_batches")
+
+    def __init__(self, df, batch_errors: int = 0, total_batches: int = 0):
+        self.df = df
+        self.batch_errors = batch_errors
+        self.total_batches = total_batches
+
+    @property
+    def any_failed(self) -> bool:
+        return self.batch_errors > 0
+
+    @property
+    def failed_all(self) -> bool:
+        return self.total_batches > 0 and self.batch_errors >= self.total_batches
+
+    # ── DataFrame 委托 (老调用方零改动) ──
+    def __getattr__(self, name):
+        return getattr(self.df, name)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, key):
+        return self.df[key]
+
+    def __iter__(self):
+        return iter(self.df)
+
+    def __repr__(self):
+        return (f"SelectionBatchResult(df=<{type(self.df).__name__} "
+                f"rows={len(self.df)}>, batch_errors={self.batch_errors}/"
+                f"{self.total_batches})")
+
+
 class FormulaRunner(ConnectorSeam):
     """TDX 公式执行封装。支持条件选股 (XG) 和指标计算 (ZB)。
 
     T-H-2 connector 缝隙五成员 2026-08-01 收编为 core.connector.ConnectorSeam。
+    批次失败统计随 SelectionBatchResult 返回 (治理III W3-BatchResult),
+    类属性 last_batch_errors 已删 (并发竞态 + 侧信道)。
     """
-
-    # 2026-07-26: 上次 run_stock_selection_with_dates 的批次失败数 (L2 按日缓存
-    # 区分"真空无信号" vs "失败空" — 失败区段不缓存; 每次 run 重置, 不改签名)
-    last_batch_errors = 0
 
     @classmethod
     def run_stock_selection_with_dates(
@@ -86,26 +145,31 @@ class FormulaRunner(ConnectorSeam):
         str_codes = extract_codes(stock_list)
 
         if not str_codes:
-            return _empty_selection_df()
+            return SelectionBatchResult(_empty_selection_df())
 
         logger.info(
             f"选股 [{formula_name}] arg={formula_arg} "
             f"pool={len(str_codes)} range={start_time}~{end_time}"
         )
 
+        # count 决定 TDX 从当前日期往前扫多少根 bar (见 _adaptive_scan_count 注释)
+        count = _adaptive_scan_count(start_time, end_time, stock_period)
+
         # 分批执行，避免 "返回数据过大" 错误
         # A2 修复: 300 → 100, GUPIAO_012 实测 17/18 批报"返回数据过大",
         # 信号被截断导致累计收益被低估. 100 只/批牺牲时间换稳定性.
-        BATCH_SIZE = 100
+        # 2026-08-02: count 超 3000 (start<2014) 时单批返回体积随窗口加深而增大,
+        # 批次减半到 50 防 "返回数据过大" (与 _adaptive_scan_count 注释的预案一致)。
+        BATCH_SIZE = 100 if count <= _MAX_SCAN_COUNT else 50
         all_records = []
         batch_errors = 0
         total_batches = (len(str_codes) - 1) // BATCH_SIZE + 1
 
-        # count 决定 TDX 从 end_time 往前扫多少根 bar
-        # 2026-07-23: 自适应 (区间交易日 + 预热缓冲), 原写死 3000 扫 ~12年全历史
-        count = _adaptive_scan_count(start_time, end_time, stock_period)
-
         for batch_start in range(0, len(str_codes), BATCH_SIZE):
+            # 2026-08-26: 停止回测按钮 — 选股批次是管线最长无检查点阶段
+            # (~105 批×~1s), 此前停止后线程要跑完整个选股阶段才退出,
+            # 期间 /api/run 409 拒新回测, 用户体感"要等几十秒"。逐批检查。
+            raise_if_stopped()
             batch = str_codes[batch_start:batch_start + BATCH_SIZE]
             batch_num = batch_start // BATCH_SIZE + 1
             logger.info(f"  批次 {batch_num}/{total_batches} ({len(batch)} stocks)")
@@ -168,10 +232,14 @@ class FormulaRunner(ConnectorSeam):
                         date_str = str(entry.get("Date", ""))
                         if not date_str:
                             continue
-                        # TDX API 返回全部 bar 的匹配，需过滤到请求的时间范围
-                        if start_time and date_str < start_time:
+                        # TDX API 返回全部 bar 的匹配，需过滤到请求的时间范围。
+                        # 2026-09-16 P2: 比较统一截前 8 位 (日级) — 分钟级信号
+                        # date_str 是 14 位 (YYYYMMDDHHMMSS), 直接与 8 位 end_time
+                        # 比较恒大于 → 末日信号被误丢 (date_str 恒非空, [:8] 安全)
+                        date_day = date_str[:8]
+                        if start_time and date_day < start_time:
                             continue
-                        if end_time and date_str > end_time:
+                        if end_time and date_day > end_time:
                             continue
                         try:
                             dt = pd.to_datetime(date_str, format="%Y%m%d")
@@ -187,17 +255,19 @@ class FormulaRunner(ConnectorSeam):
                         })
                     break
 
-        cls.last_batch_errors = batch_errors  # 2026-07-26 (L2 用)
         if not all_records:
             if batch_errors >= total_batches:
                 logger.error(f"所有 {total_batches} 批次均失败，请检查公式名称 [{formula_name}] 是否存在")
             else:
                 logger.warning("选股结果解析后为空")
-            return _empty_selection_df()
+            return SelectionBatchResult(_empty_selection_df(),
+                                        batch_errors=batch_errors,
+                                        total_batches=total_batches)
 
         df = pd.DataFrame(all_records)
         df["select_date"] = pd.to_datetime(df["select_date"])
         df = df.drop_duplicates(subset=["stock_code", "select_date"])
         df = df.sort_values(["select_date", "stock_code"]).reset_index(drop=True)
         logger.info(f"选股完成: {len(df)} 条记录, {df['stock_code'].nunique()} 只股票")
-        return df
+        return SelectionBatchResult(df, batch_errors=batch_errors,
+                                    total_batches=total_batches)

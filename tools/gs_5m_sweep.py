@@ -46,10 +46,19 @@ logger = get_logger("gs_5m_sweep")
 WINDOW_TD = 60            # 稀疏窗口交易日: > max_hold_days(40) + 15 缓冲
 DEFAULT_CAPITAL = 3_000_000.0
 DEFAULT_MAX_BUY = 20_000.0
-# 达标硬口径 (用户拍板: 年化>30% + 回撤<15% + 交易≥1000)
-TARGET_ANN = 0.30
-TARGET_MAXDD = 0.15
-MIN_TRADES = 1000
+# 2026-09-11: 达标口径收口到 core/farm_rules (单一真相源)。
+# 2026-09-22 用户拍板: 年化线下调为 ≥10% (|最大回撤|≤15% 且 笔数≥20 不变;
+# 不足 20 笔记「样本不足」)。
+# 此前本文件硬编码 0.30/0.15/1000, 与 09-09 批农场粗扫实际在用的 15% 冲突 —— 两套口径
+# 并存是 2026-09-11 审计认定的缺陷 (详见 docs/plan/2026-09-11_公式农场粗扫报告修复_计划书.md)。
+from core import farm_rules  # noqa: E402
+# 2026-09-20 审计: 这两个名字在 _load_cache (模块级函数) 里用, 必须模块级导入 ——
+# 原先只在 do_prep 内局部导入 → _load_cache 调用即 NameError (实现搬了、消费点没搬)。
+from backtest.engine import PREP_SEAM, check_prep_caliber  # noqa: E402
+
+TARGET_ANN = farm_rules.TARGET_ANN
+TARGET_MAXDD = farm_rules.TARGET_MAXDD
+MIN_TRADES = farm_rules.MIN_TRADES
 
 
 def _safe_dir(name: str) -> str:
@@ -63,7 +72,10 @@ PRIORITY = "trailing_first"  # 默认移动止盈优先; stop_first=止损优先
 
 
 def _formula_dir(formula: str) -> str:
-    return os.path.join(BASE, _safe_dir(formula))
+    # 2026-09-09: 样本外分段验证 — SWEEP_TAG 环境变量隔离目录 (仿 quantqq_5m_sweep_2010)
+    tag = os.environ.get("SWEEP_TAG", "")
+    base = os.path.join(BASE, tag) if tag else BASE
+    return os.path.join(base, _safe_dir(formula))
 
 
 def _cache_dir(formula: str, window_td: int) -> str:
@@ -75,13 +87,7 @@ def _cache_dir(formula: str, window_td: int) -> str:
 
 def do_prep(args):
     """选股(formula) + 5m 窗口取数 + 矩阵落盘. 幂等: 有缓存则跳过."""
-    from backtest.engine import (
-        ENGINE_VERSION,
-        BacktestEngine,
-        _build_tradable_from_raw,
-        recompute_last_tradable_idx,
-    )
-    from core.data_fetcher import DataFetcher
+    from backtest.engine import ENGINE_VERSION, BacktestEngine
     from selection.selector import StockSelector
 
     formula = args.formula
@@ -101,10 +107,13 @@ def do_prep(args):
     else:
         defaults = ConfigLoader.load_defaults()
         sel_tpl = defaults.get("selection", {})
+        uni = sel_tpl.get("universe", {"type": "50", "exclude_st": True})
+        if getattr(args, "universe_type", None):  # 2026-09-06: 公式农场批量可加池, 默认不变
+            uni = dict(uni, type=str(args.universe_type))
         sel_cfg = {
             "formula_name": formula,
             "formula_arg": args.formula_arg if args.formula_arg is not None else "",
-            "universe": sel_tpl.get("universe", {"type": "50", "exclude_st": True}),
+            "universe": uni,
             "period": "1d",
             "dividend_type": 1,
         }
@@ -130,41 +139,26 @@ def do_prep(args):
     }
     engine = BacktestEngine(bt_cfg)
 
-    # 3. 5m 稀疏窗口取数 (复刻 engine.run() 数据准备, 一次做完)
+    # 3. 矩阵准备 (2026-09-19 架构修订批次 3.1: 收编到 engine 公开接缝
+    #    prepare_matrices —— 本段原是 engine.run() 准备段的手工复刻,
+    #    引擎一改即静默漂移, 详见架构审查 P1-7。口径变化提示: 接缝会把
+    #    窗口终点截断到 args.end (2026-07-21 引擎口径), 旧复刻段不截断
+    #    → meta 加 prep_seam 标记, 旧缓存加载时告警)
     t0 = time.time()
-    kline, window_mask = DataFetcher.get_kline_windowed(
-        selections, period="5m", window_trading_days=win_td,
-        dividend_type="front", fill_data=False, use_cache=True,
-    )
-    logger.info("[prep:%s] 窗口取数完成 %.1fs", formula, time.time() - t0)
+    prep = engine.prepare_matrices(selections, args.start, args.end, win_td)
+    if prep is None:
+        # 池内取数全空 (多为瞬时, 补数据后即有) → 打标返回, 批量层下轮重试
+        logger.warning("[prep:%s] 窗口取数为空, 本轮跳过(下轮重试)", formula)
+        print(json.dumps({"status": "no_kline", "formula": formula}))
+        return
+    logger.info("[prep:%s] 窗口取数+矩阵准备完成 %.1fs", formula, time.time() - t0)
 
-    close = engine._ensure_index(kline["Close"])
-    high_df = engine._ensure_index(kline["High"])
-    low_df = engine._ensure_index(kline["Low"])
-    open_df = engine._ensure_index(kline["Open"])
-
-    # 5m 非标准时刻 bar 过滤 (审计 C1, 001399/300227 实盘事件)
-    close, high_df, low_df, open_df = BacktestEngine._drop_nonstandard_5m_bars(
-        close, high_df, low_df, open_df)
-
-    entries = engine._build_entry_signals(selections, close)
-    cols = sorted(close.columns.intersection(entries.columns))
-    cols = sorted(set(cols) & set(high_df.columns) & set(low_df.columns))
-
-    close_raw = close.reindex(index=close.index, columns=cols)
-    close = close_raw.ffill()
-    entries = entries.reindex(index=close.index, columns=cols, fill_value=False)
-    entries = engine._filter_limit_up(entries, close)
-    idx = close.index
-
-    high_np = high_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    low_np = low_df.reindex(index=idx, columns=cols).ffill().values.astype(np.float64)
-    open_np = open_df.reindex(index=idx, columns=cols).values.astype(np.float64)
-
-    tradable_np, _ = _build_tradable_from_raw(close_raw, close)
-    wm = window_mask.reindex(index=idx, columns=cols, fill_value=False).values.astype(bool)
-    tradable_np = tradable_np & wm
-    last_tradable_idx = recompute_last_tradable_idx(tradable_np)
+    close = prep["close"]
+    idx, cols = prep["idx"], prep["cols"]
+    high_np, low_np, open_np = prep["high"], prep["low"], prep["open"]
+    tradable_np, last_tradable_idx = prep["tradable"], prep["last_tradable_idx"]
+    # 涨停预过滤是 sweep 特有步骤 (stop 无关, 只滤一次), 不在接缝内
+    entries = engine._filter_limit_up(prep["entries"], close)
 
     np.save(os.path.join(cache_dir, "close.npy"), close.values.astype(np.float64))
     np.save(os.path.join(cache_dir, "high.npy"), high_np)
@@ -179,6 +173,7 @@ def do_prep(args):
         "start": args.start, "end": args.end, "formula": formula,
         "window_td": win_td, "capital": capital, "max_buy": max_buy,
         "engine_version": ENGINE_VERSION,
+        "prep_seam": PREP_SEAM,
         "n_signals": int(entries.values.sum()), "shape": [int(len(idx)), int(len(cols))],
     }
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -198,6 +193,7 @@ def _load_cache(formula, window_td=WINDOW_TD):
     cache_dir = _cache_dir(formula, window_td)
     with open(os.path.join(cache_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
+    check_prep_caliber(meta, where="gs_5m_sweep")
     idx = pd.DatetimeIndex(pd.to_datetime(meta["index"]))
     cols = meta["columns"]
     ld = lambda n, mmap=None: np.load(os.path.join(cache_dir, n), mmap_mode=mmap)
@@ -217,6 +213,7 @@ def do_run(args):
     import logging
     logging.getLogger().setLevel(logging.WARNING)
     from backtest.engine import ENGINE_VERSION, BacktestEngine
+    from backtest.prepared import PreparedMatrix
 
     formula = args.formula
     meta, mats = _load_cache(formula, args.window_td)
@@ -267,16 +264,15 @@ def do_run(args):
             ladder_ratios = np.array([r for _, r in levels], dtype=np.float64)
             t0 = time.time()
             try:
+                prepared = PreparedMatrix(
+                    close=mats["close_df"], entries=mats["entries_df"],
+                    high_np=mats["high_np"], low_np=mats["low_np"],
+                    open_np=mats["open_np"], tradable_np=mats["tradable_np"],
+                    last_tradable_idx=mats["last_tradable_idx"])
                 res = engine.run_cached(
-                    mats["close_df"], mats["entries_df"],
-                    mats["high_np"], mats["low_np"],
-                    combo_stop_config(c, PRIORITY), selections,
+                    prepared, combo_stop_config(c, PRIORITY),
                     ladder_profits, ladder_ratios, len(levels),
-                    filter_limit_up=False,
-                    open_np=mats["open_np"],
-                    tradable_np=mats["tradable_np"],
-                    last_tradable_idx=mats["last_tradable_idx"],
-                )
+                    filter_limit_up=False)
                 m = res["metrics"]
                 row = {
                     "key": key, "cost": c["cost"], "act": c["act"], "dd": c["dd"],
@@ -331,15 +327,18 @@ def do_report(args):
     df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["key"], keep="last")
     n_err = int(df["error"].fillna("").ne("").sum())
     df = df[df["annret"].notna()]
-    tgt = df[(df["annret"] > TARGET_ANN) & (df["maxdd"].abs() <= TARGET_MAXDD)
-             & (df["trades"] >= MIN_TRADES)]
+    n_pass = int(df.apply(farm_rules.is_pass, axis=1).sum())
+    n_thin = int(sum(1 for _, r in df.iterrows()
+                     if farm_rules.verdict(r["annret"], r["maxdd"],
+                                           r["trades"])["code"] == farm_rules.THIN))
     print(f"[{formula}] 总组合:{len(df)} 失败:{n_err} "
-          f"达标(年化>{TARGET_ANN*100:.0f}% 回撤≤{TARGET_MAXDD*100:.0f}% 交易≥{MIN_TRADES}):{len(tgt)}")
+          f"达标:{n_pass} 样本不足:{n_thin} | {farm_rules.describe()}")
     cols = ["cost", "act", "dd", "ladder", "time_days", "cond_days", "cond_profit",
             "annret", "maxdd", "calmar", "sharpe", "winrate", "trades"]
-    if len(tgt):
+    passed = df[df.apply(farm_rules.is_pass, axis=1)]       # 2026-09-11: 原来是 tgt (已并入 n_pass)
+    if len(passed):
         print("\n=== 达标 Top (按 Calmar) ===")
-        print(tgt.sort_values("calmar", ascending=False).head(15)[cols].to_string(index=False))
+        print(passed.sort_values("calmar", ascending=False).head(15)[cols].to_string(index=False))
     print("\n=== 全体 Top 5 (按年化, 不看约束) ===")
     print(df.sort_values("annret", ascending=False).head(5)[cols].to_string(index=False))
     df.to_csv(os.path.join(fdir, "report_merged.csv"), index=False)
@@ -364,6 +363,8 @@ def main():
     ap.add_argument("--priority", default="trailing_first",
                     choices=["trailing_first", "stop_first"],
                     help="trailing_first=移动止盈优先(默认), stop_first=止损优先")
+    ap.add_argument("--universe-type", default=None,
+                    help="股票池 type 覆盖(默认取 config; 23=沪深300 50=全A), 公式农场批量加速用")
     args = ap.parse_args()
 
     global BASE, PRIORITY

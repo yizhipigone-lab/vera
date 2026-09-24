@@ -32,7 +32,7 @@ def log(msg):
 
 gw = RealGateway(
     ACCOUNT, mini_qmt_path=QMT_PATH,
-    on_disconnected=lambda: events.append(("on_disconnected", time.time())),
+    on_disconnected=lambda reason=None: events.append(("on_disconnected", reason, time.time())),
 )
 
 # 1. 等 QMT 上线
@@ -54,8 +54,8 @@ log("已连接 ✓  —— 现在请断开 miniQMT (关客户端或断网)")
 t0 = time.time()
 while time.time() < DEADLINE:
     if events:
-        dt = events[0][1] - t0
-        log(f"*** on_disconnected 触发! 延迟 {dt:.1f}s ***")
+        dt = events[0][2] - t0
+        log(f"*** on_disconnected 触发! 延迟 {dt:.1f}s, reason={events[0][1]} ***")
         break
     time.sleep(2)
 else:

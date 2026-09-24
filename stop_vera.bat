@@ -1,40 +1,49 @@
 @echo off
-chcp 65001 >nul
 rem ============================================================
-rem  VERA ä¸€é”®åœæ­¢(å›žæµ‹ Web + å®žç›˜äº¤æ˜“)
-rem  ä¼˜å…ˆæŒ‰çª—å£æ ‡é¢˜å…³, å…œåº•æŒ‰ç«¯å£æ€ PID(æ ¡éªŒæ˜¯ python æ‰æ€)
-rem  è¯´æ˜Ž:äº¤æ˜“ç³»ç»ŸæŒ‰"å´©æºƒå®‰å…¨"è®¾è®¡(é‡å¯å…ˆå¯¹è´¦, SQLite WAL,
-rem  æ€¥åœä¸‰é‡æ€), å¼ºåˆ¶ç»“æŸä¸ä¼šé€ æˆè´¦æœ¬ä¸ä¸€è‡´
+rem  VERA Ò»¼üÍ£Ö¹(»Ø²â Web + ÊµÅÌ½»Ò×)
+rem  ÓÅÏÈ°´´°¿Ú±êÌâ¹Ø, ¶µµ×°´¶Ë¿ÚÉ± PID(Ð£ÑéÊÇ python ²ÅÉ±)
+rem  ËµÃ÷:½»Ò×ÏµÍ³°´"±ÀÀ£°²È«"Éè¼Æ(ÖØÆôÏÈ¶ÔÕË, SQLite WAL,
+rem  ¼±Í£ÈýÖØÌ¬), Ç¿ÖÆ½áÊø²»»áÔì³ÉÕË±¾²»Ò»ÖÂ
+rem  ±àÂë:±¾ÎÄ¼þ GBK + CRLF(2026-09-16 ¸Ä, Ô­ÒòÍ¬ start_vera.bat)
 rem ============================================================
 
-echo åœæ­¢ VERA-Web-8080 ...
+echo Í£Ö¹ VERA-Web-8080 ...
 taskkill /FI "WINDOWTITLE eq VERA-Web-8080*" /T /F >nul 2>&1
 
-echo åœæ­¢ VERA-Trade-8081 ...
+echo Í£Ö¹ VERA-Trade-8081 ...
 taskkill /FI "WINDOWTITLE eq VERA-Trade-8081*" /T /F >nul 2>&1
 
-rem ---- å…œåº•: æŒ‰ç«¯å£æ‰¾ PID(çª—å£æ ‡é¢˜è¢«æ”¹è¿‡æ—¶ä»æœ‰æ•‘, åªæ€ python) ----
+echo Í£Ö¹ VERA-Scheduler ...
+taskkill /FI "WINDOWTITLE eq VERA-Scheduler*" /T /F >nul 2>&1
+
+rem ---- ¶µµ×: °´¶Ë¿ÚÕÒ PID(´°¿Ú±êÌâ±»¸Ä¹ýÊ±ÈÔÓÐ¾È, Ö»É± python) ----
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":8080 .*LISTENING"') do (
-    echo ç«¯å£ 8080 è¢« PID=%%a å ç”¨, æ ¡éªŒè¿›ç¨‹å ...
+    echo ¶Ë¿Ú 8080 ±» PID=%%a Õ¼ÓÃ, Ð£Ñé½ø³ÌÃû ...
     call :KillIfPython %%a
 )
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":8081 .*LISTENING"') do (
-    echo ç«¯å£ 8081 è¢« PID=%%a å ç”¨, æ ¡éªŒè¿›ç¨‹å ...
+    echo ¶Ë¿Ú 8081 ±» PID=%%a Õ¼ÓÃ, Ð£Ñé½ø³ÌÃû ...
     call :KillIfPython %%a
 )
 
+rem ---- 2026-09-20: Ð´"ÈË¹¤Í£Ö¹"±ê¼Ç ----
+rem  Ã»ÓÐËü, 8080 Ò³ÃæÔÚÄãÃ¿´ÎÕý³£Í£»úÊ±¶¼»áº°"µ÷¶ÈÆ÷ÒÉËÆÍ£»ú"(¼Ù¾¯±¨)¡£
+rem  Â·¾¶ÐëÓë scheduler/health.py µÄ STOP_MARKER_PATH Ò»ÖÂ(ÓÐ²âÊÔËø)¡£
+if not exist "%~dp0data" mkdir "%~dp0data" >nul 2>&1
+> "%~dp0data\.vera_stopped" echo Í£Ö¹ÓÚ %date% %time%
+
 echo.
-echo å·²åœæ­¢ã€‚æ³¨æ„:æœ¬è„šæœ¬ä¸ç¢° miniQMT å®¢æˆ·ç«¯æœ¬èº«ã€‚
+echo ÒÑÍ£Ö¹¡£×¢Òâ:±¾½Å±¾²»Åö miniQMT ¿Í»§¶Ë±¾Éí¡£
 pause
 exit /b 0
 
 :KillIfPython
-rem å‚æ•° %1 = PID; æ˜ åƒåæ˜¯ python.exe æ‰æ€, å¦åˆ™è·³è¿‡é˜²è¯¯æ€
+rem ²ÎÊý %1 = PID; Ó³ÏñÃûÊÇ python.exe ²ÅÉ±, ·ñÔòÌø¹ý·ÀÎóÉ±
 tasklist /FI "PID eq %1" /FO CSV /NH | findstr /I "python.exe" >nul
 if %errorlevel%==0 (
     taskkill /F /PID %1 >nul 2>&1
-    echo   å·²åœæ­¢ PID=%1
+    echo   ÒÑÍ£Ö¹ PID=%1
 ) else (
-    echo   è·³è¿‡ PID=%1 ^(ä¸æ˜¯ python.exe, é˜²è¯¯æ€^)
+    echo   Ìø¹ý PID=%1 ^(²»ÊÇ python.exe, ·ÀÎóÉ±^)
 )
 goto :eof
