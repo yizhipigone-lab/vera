@@ -139,3 +139,101 @@ def test_entry_and_closed_historical_no_pnl_keeps_none(tmp_path):
     assert s["realized_pnl_pct"] is None
     assert s["closed_qty"] == 100
     assert s["cost_avg"] is None
+
+
+# ---------- entry_and_closed: 轮次切分 (2026-09-24 518880 两轮合并事件) ----------
+
+
+def _ts(y, m, d, hh=14, mm=54):
+    return datetime.datetime(y, m, d, hh, mm).timestamp()
+
+
+def test_entry_and_closed_splits_round_trips(tmp_path, monkeypatch):
+    """518880 事件 (2026-09-24): 8/19 买入一轮 8/21 已平 (另有 9/2 遗产
+    仓尾货 200 股), 9/23 又买入两笔 40900 股、9/24 全卖。旧口径把两轮
+    揉成一行 (入场 8/19、持仓 26 天、盈亏相加), 新口径按轮切开:
+    summary/最近一条 closed = 最新一轮 (9/23→9/24, 持仓 1 天)。"""
+    import trade.analysis as an
+    from trade.analysis import entry_and_closed
+    monkeypatch.setattr(an, "_trading_days", lambda: [
+        "20260819", "20260820", "20260821",
+        "20260902", "20260923", "20260924"])
+    store = _mk_store(tmp_path)
+    code = "518880.SH"
+    # 第一轮: 8/19 买 5600, 8/21 卖 5600 (盈 1120), 9/2 卖遗产尾货 200 (亏 40)
+    store.save_trade(_rec("R1-B1", code, DIRECTION_BUY, 9.10, 5600,
+                          _ts(2026, 8, 19)))
+    store.save_trade(_rec("R1-S1", code, DIRECTION_SELL, 9.30, 5600,
+                          _ts(2026, 8, 21), pnl=1120.0))
+    store.save_trade(_rec("R1-S2", code, DIRECTION_SELL, 8.90, 200,
+                          _ts(2026, 9, 2), pnl=-40.0))
+    # 第二轮: 9/23 买两笔 40900, 9/24 分两笔全卖 (各亏 4499)
+    store.save_trade(_rec("R2-B1", code, DIRECTION_BUY, 8.898, 40900,
+                          _ts(2026, 9, 23)))
+    store.save_trade(_rec("R2-B2", code, DIRECTION_BUY, 8.898, 40900,
+                          _ts(2026, 9, 23, 14, 55)))
+    store.save_trade(_rec("R2-S1", code, DIRECTION_SELL, 8.788, 40900,
+                          _ts(2026, 9, 24), pnl=-4499.0))
+    store.save_trade(_rec("R2-S2", code, DIRECTION_SELL, 8.788, 40900,
+                          _ts(2026, 9, 24, 14, 55), pnl=-4499.0))
+    entry_map, closed, summary = entry_and_closed(store)
+    s = summary[code]
+    # summary = 最新一轮: 9/23 进 9/24 出, 81,800 股, 成本 8.898, 亏 8998
+    assert s["is_closed"]
+    assert s["entry_ts"] == _ts(2026, 9, 23)
+    assert s["exit_ts"] == _ts(2026, 9, 24, 14, 55)
+    assert s["closed_qty"] == 81800
+    assert s["cost_avg"] == pytest.approx(8.898, abs=1e-3)
+    assert s["realized_pnl"] == pytest.approx(-8998.0, abs=0.01)
+    # 最新一轮已平 → 不给持仓入场时间 (防幽灵行错挂老头)
+    assert code not in entry_map
+    # closed 列表两轮各一条, 最新在前
+    rows = [c for c in closed if c["code"] == code]
+    assert len(rows) == 2
+    assert rows[0]["qty"] == 81800
+    assert rows[0]["hold_days"] == 1          # 9/23→9/24, T+1 起算 1 天
+    assert rows[0]["realized_pnl"] == pytest.approx(-8998.0, abs=0.01)
+    assert rows[1]["qty"] == 5800             # 第一轮 5600 + 遗产尾货 200
+    assert rows[1]["hold_days"] == 3          # 8/19→9/2: 8/20、8/21、9/2
+    assert rows[1]["realized_pnl"] == pytest.approx(1080.0, abs=0.01)
+
+
+def test_entry_and_closed_open_cycle_entry_after_rebuy(tmp_path):
+    """清仓后重新买入且仍持有: 入场时间 = 新一轮首笔买入, 不是历史第一笔;
+    未闭环的轮 realized_pnl 维持 None。"""
+    from trade.analysis import entry_and_closed
+    store = _mk_store(tmp_path)
+    t1, t2, t3 = _ts(2026, 9, 1), _ts(2026, 9, 2), _ts(2026, 9, 23)
+    store.save_trade(_rec("O-B1", "600519.SH", DIRECTION_BUY, 10.0, 100, t1))
+    store.save_trade(_rec("O-S1", "600519.SH", DIRECTION_SELL, 11.0, 100, t2,
+                          pnl=100.0))
+    store.save_trade(_rec("O-B2", "600519.SH", DIRECTION_BUY, 10.0, 200, t3))
+    entry_map, closed, summary = entry_and_closed(store)
+    assert entry_map["600519.SH"] == t3
+    s = summary["600519.SH"]
+    assert not s["is_closed"]
+    assert s["entry_ts"] == t3
+    assert s["realized_pnl"] is None
+    rows = [c for c in closed if c["code"] == "600519.SH"]
+    assert len(rows) == 1                     # 只有第一轮进已平仓列表
+    assert rows[0]["qty"] == 100
+
+
+def test_entry_and_closed_add_buys_do_not_split_cycle(tmp_path):
+    """同一轮内多次买入不拆轮: 买 → 买 → 卖光 = 一条已平仓记录,
+    入场 = 本轮首笔买入, 成本 = 加权均价。"""
+    from trade.analysis import entry_and_closed
+    store = _mk_store(tmp_path)
+    t1, t2, t3 = _ts(2026, 9, 1), _ts(2026, 9, 2), _ts(2026, 9, 3)
+    store.save_trade(_rec("A-B1", "000001.SZ", DIRECTION_BUY, 10.0, 100, t1))
+    store.save_trade(_rec("A-B2", "000001.SZ", DIRECTION_BUY, 11.0, 100, t2))
+    store.save_trade(_rec("A-S1", "000001.SZ", DIRECTION_SELL, 12.0, 200, t3,
+                          pnl=300.0))
+    _, closed, summary = entry_and_closed(store)
+    rows = [c for c in closed if c["code"] == "000001.SZ"]
+    assert len(rows) == 1
+    assert rows[0]["entry_ts"] == t1
+    assert rows[0]["qty"] == 200
+    # 成本基数 = 卖出额 2400 - 盈亏 300 = 2100 → 均价 10.5
+    assert rows[0]["buy_avg"] == pytest.approx(10.5)
+    assert summary["000001.SZ"]["is_closed"]

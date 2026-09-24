@@ -115,24 +115,67 @@ def deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def entry_and_closed(store) -> tuple[dict, list, dict]:
-    """从 trades 表算 entry_map / closed / summary 三件套。
+def _cycle_closed(cyc: dict) -> bool:
+    """一轮已闭环 = 有卖出且累计卖出量 >= 累计买入量。"""
+    return cyc["sell_qty"] > 0 and cyc["sell_qty"] >= cyc["buy_qty"]
 
-    - entry_map: 首笔买入时间 (持仓票入场时间用)
-    - closed: 已平仓列表 (前 20, 兼容保留)
-    - summary: {code: 买卖汇总} —— 平仓票真实盈亏/均价/出场时间
+
+def _new_cycle(entry_ts: float | None) -> dict:
+    return {"entry_ts": entry_ts, "exit_ts": None,
+            "buy_qty": 0, "buy_amount": 0.0,
+            "sell_qty": 0, "sell_amount": 0.0, "sell_pnl": 0.0,
+            "pnl_qty": 0, "pnl_turnover": 0.0}
+
+
+def _summarize_cycle(cyc: dict) -> dict:
+    """一轮买卖 → 汇总字段 (与 view_calc/前端契约一致)。
 
     is_closed = 累计卖出量 > 0 且 >= 累计买入量。
     realized_pnl = Σ 卖方 pnl_amount (账本成本法, 与 deals/飞书同源)。
+    成本基数 = 带 pnl 卖出行的 (卖出额 - 盈亏), 遗产仓 (表内无买入)
+    也能反推出成本均价 (159290 事件口径, 逐轮适用)。"""
+    buy_qty = cyc["buy_qty"]
+    buy_avg = (cyc["buy_amount"] / buy_qty) if buy_qty > 0 else None
+    sell_qty = cyc["sell_qty"]
+    sell_avg = (cyc["sell_amount"] / sell_qty) if sell_qty > 0 else None
+    sell_pnl = cyc["sell_pnl"]
+    pnl_qty = cyc["pnl_qty"]
+    cost_basis = (cyc["pnl_turnover"] - sell_pnl) if pnl_qty > 0 else 0.0
+    cost_avg = (cost_basis / pnl_qty
+                if pnl_qty > 0 and cost_basis > 0 else None)
+    is_closed = _cycle_closed(cyc)
+    return {
+        "buy_qty": buy_qty,
+        "buy_avg": buy_avg,
+        "sell_qty": sell_qty,
+        "sell_avg": sell_avg,
+        "entry_ts": cyc["entry_ts"],
+        "exit_ts": cyc["exit_ts"],
+        "realized_pnl": (round(sell_pnl, 2) if is_closed else None),
+        "realized_pnl_pct": (round(sell_pnl / cost_basis * 100, 2)
+                             if is_closed and cost_basis > 0 and sell_pnl
+                             else None),
+        "is_closed": is_closed,
+        # 被平仓口径的数量/成本 (无 pnl 可考时回退买入口径; 纯遗产轮回退卖出口径)
+        "closed_qty": (pnl_qty if pnl_qty > 0
+                       else (buy_qty if buy_qty > 0 else sell_qty)),
+        "cost_avg": cost_avg,
+    }
 
-    2026-08-27 (159290 事件) 已实现盈亏% 分母修正:
-    遗产仓 (买入早于系统上线, 成本来自 QMT 灌仓) 的买入额不在 trades
-    表内, 旧口径 pnl ÷ 表内买入额会把分母缩成零头 (159290: -46,579.53
-    ÷ 222.6 = -20,925%)。修正为 pnl ÷ 被卖股票的买入成本基数
-    (= Σ卖出额 - Σ盈亏, 只取带 pnl 的卖出行)。账本移动加权成本守恒
-    (全平仓时 Σ已卖成本 = Σ表内买入额), 全程表内的普通平仓数值不变。
-    closed_qty / cost_avg 同理取被平仓口径, 让已平仓行的
-    数量/成本/盈亏三个数字讲同一个故事。
+
+def entry_and_closed(store) -> tuple[dict, list, dict]:
+    """从 trades 表算 entry_map / closed / summary 三件套, 按轮次切分。
+
+    轮 = 从开仓到清仓的一段完整旅程: 买入时若上一轮已闭环 (卖出量≥买入量)
+    则开新一轮, 入场时间 = 本轮首笔买入; 卖出总是归入最近一轮 (含闭环后
+    才到的遗产仓尾货); 首笔就是卖出 (系统上线前的遗产仓) 开"遗产轮",
+    入场时间 None。summary[code] = 最近一轮; closed = 每轮一条, 最新在前;
+    entry_map[code] = 当前未闭环轮的首笔买入 (已闭环不给, 防幽灵行错挂老头)。
+
+    2026-09-24 (518880 两轮合并事件): 旧口径 GROUP BY 全历史一锅端,
+    8/19 已平的老轮与 9/23 新买入揉成一行 —— 入场 8/19、持仓 26 天、
+    盈亏两轮相加 (-7187.50), 全部错位。按轮切开后最新一轮如实显示
+    9/23→9/24、持仓 1 天、-8998.00。
     """
     entry_map: dict = {}
     summary: dict = {}
@@ -141,70 +184,52 @@ def entry_and_closed(store) -> tuple[dict, list, dict]:
     except Exception:
         return entry_map, [], summary
     try:
-        cur = ro.execute(
-            "SELECT code, direction, MIN(ts), MAX(ts), SUM(qty), SUM(amount), "
-            "SUM(pnl_amount), "
-            "SUM(CASE WHEN pnl_amount <> 0 THEN qty ELSE 0 END), "
-            "SUM(CASE WHEN pnl_amount <> 0 THEN amount ELSE 0 END) "
-            "FROM trades GROUP BY code, direction")
-        per_code: dict = {}
-        for (code, direction, min_ts, max_ts, qty, amount, pnl_amt,
-             pnl_qty, pnl_turnover) in cur.fetchall():
-            d = per_code.setdefault(code, {})
-            d[direction] = {"min_ts": min_ts, "max_ts": max_ts,
-                            "qty": qty or 0, "amount": amount or 0.0,
-                            "pnl": pnl_amt or 0.0,
-                            "pnl_qty": pnl_qty or 0,
-                            "pnl_turnover": pnl_turnover or 0.0}
-        for code, d in per_code.items():
-            buy = d.get(DIRECTION_BUY)
-            sell = d.get(DIRECTION_SELL)
-            buy_qty = buy["qty"] if buy else 0
-            buy_amount = buy["amount"] if buy else 0.0
-            buy_avg = (buy_amount / buy_qty) if buy_qty > 0 else None
-            sell_qty = sell["qty"] if sell else 0
-            sell_amount = sell["amount"] if sell else 0.0
-            sell_pnl = sell["pnl"] if sell else 0.0
-            # 被平仓口径: 带 pnl 的卖出行 (历史无 pnl 行成本不可考, 剔除)
-            pnl_qty = sell["pnl_qty"] if sell else 0
-            cost_basis = (sell["pnl_turnover"] - sell_pnl
-                          if sell and pnl_qty > 0 else 0.0)
-            cost_avg = (cost_basis / pnl_qty
-                        if pnl_qty > 0 and cost_basis > 0 else None)
-            is_closed = bool(sell and sell_qty > 0 and sell_qty >= buy_qty)
-            entry_ts = buy["min_ts"] if buy else None
-            if buy:
-                entry_map[code] = entry_ts
-            summary[code] = {
-                "buy_qty": buy_qty,
-                "buy_avg": buy_avg,
-                "sell_qty": sell_qty,
-                "sell_avg": (sell_amount / sell_qty) if sell_qty > 0 else None,
-                "entry_ts": entry_ts,
-                "exit_ts": sell["max_ts"] if sell else None,
-                "realized_pnl": (round(sell_pnl, 2) if is_closed else None),
-                "realized_pnl_pct": (round(sell_pnl / cost_basis * 100, 2)
-                                     if is_closed and cost_basis > 0 and sell_pnl
-                                     else None),
-                "is_closed": is_closed,
-                # 被平仓口径的数量/成本 (无 pnl 可考时回退表内买入口径)
-                "closed_qty": pnl_qty if pnl_qty > 0 else buy_qty,
-                "cost_avg": cost_avg,
-            }
-        closed = [{
-            "code": code, "name": name_of(code),
-            "entry_ts": summary[code]["entry_ts"],
-            "exit_ts": summary[code]["exit_ts"],
-            "qty": summary[code]["closed_qty"],
-            "buy_avg": (summary[code]["cost_avg"]
-                        if summary[code]["cost_avg"] is not None
-                        else summary[code]["buy_avg"]),
-            "sell_avg": summary[code]["sell_avg"],
-            "realized_pnl": summary[code]["realized_pnl"],
-            "realized_pnl_pct": summary[code]["realized_pnl_pct"],
-            "hold_days": hold_days(summary[code]["entry_ts"],
-                                   summary[code]["exit_ts"]),
-        } for code in summary if summary[code]["is_closed"]]
+        rows = ro.execute(
+            "SELECT code, direction, qty, amount, pnl_amount, ts "
+            "FROM trades ORDER BY code, ts, rowid").fetchall()
+        cycles: dict[str, list[dict]] = {}
+        for code, direction, qty, amount, pnl_amt, ts in rows:
+            cycs = cycles.setdefault(code, [])
+            if direction == DIRECTION_BUY:
+                if not cycs or _cycle_closed(cycs[-1]):
+                    cycs.append(_new_cycle(ts))
+                c = cycs[-1]
+                c["buy_qty"] += qty or 0
+                c["buy_amount"] += amount or 0.0
+            else:
+                if not cycs:
+                    cycs.append(_new_cycle(None))   # 遗产轮 (入场不可考)
+                c = cycs[-1]
+                c["sell_qty"] += qty or 0
+                c["sell_amount"] += amount or 0.0
+                c["sell_pnl"] += pnl_amt or 0.0
+                if pnl_amt:
+                    c["pnl_qty"] += qty or 0
+                    c["pnl_turnover"] += amount or 0.0
+                c["exit_ts"] = ts   # 卖出即刷新本轮出场时间
+        closed = []
+        for code, cycs in cycles.items():
+            for cyc in cycs:
+                s = _summarize_cycle(cyc)
+                if not s["is_closed"]:
+                    continue
+                closed.append({
+                    "code": code, "name": name_of(code),
+                    "entry_ts": s["entry_ts"],
+                    "exit_ts": s["exit_ts"],
+                    "qty": s["closed_qty"],
+                    "buy_avg": (s["cost_avg"] if s["cost_avg"] is not None
+                                else s["buy_avg"]),
+                    "sell_avg": s["sell_avg"],
+                    "realized_pnl": s["realized_pnl"],
+                    "realized_pnl_pct": s["realized_pnl_pct"],
+                    "hold_days": hold_days(s["entry_ts"], s["exit_ts"]),
+                })
+            last = _summarize_cycle(cycs[-1])
+            summary[code] = last
+            # 持仓票入场时间 = 当前未闭环轮的首笔买入
+            if not last["is_closed"] and last["entry_ts"] is not None:
+                entry_map[code] = last["entry_ts"]
         closed.sort(key=lambda x: x["exit_ts"] or 0, reverse=True)
         return entry_map, closed[:20], summary
     finally:
