@@ -237,3 +237,37 @@ def test_entry_and_closed_add_buys_do_not_split_cycle(tmp_path):
     # 成本基数 = 卖出额 2400 - 盈亏 300 = 2100 → 均价 10.5
     assert rows[0]["buy_avg"] == pytest.approx(10.5)
     assert summary["000001.SZ"]["is_closed"]
+
+
+# ---------- episode_entry_ts: 当轮持仓首笔买入 (2026-09-25 时间止损口径对齐) ----------
+
+
+def test_episode_entry_after_close_and_rebuy():
+    """清仓后重新买入: 当轮起点 = 新一轮首笔买入, 不是历史第一笔。
+    (518880 事件延伸: 旧 MIN(ts) 口径会让时间止损按老买入日提前误卖)"""
+    from trade.analysis import episode_entry_ts
+    t1, t2, t3 = _ts(2026, 8, 19), _ts(2026, 8, 21), _ts(2026, 9, 23)
+    trades_desc = [(t3, DIRECTION_BUY, 200),
+                   (t2, DIRECTION_SELL, 100),
+                   (t1, DIRECTION_BUY, 100)]
+    assert episode_entry_ts(trades_desc, 200) == t3
+
+
+def test_episode_entry_partial_sell_keeps_first_buy():
+    """同轮内部分卖出: 当轮起点仍是最早那笔买入。"""
+    from trade.analysis import episode_entry_ts
+    t1, t2, t3 = _ts(2026, 9, 1), _ts(2026, 9, 2), _ts(2026, 9, 3)
+    trades_desc = [(t3, DIRECTION_BUY, 500),
+                   (t2, DIRECTION_SELL, 800),
+                   (t1, DIRECTION_BUY, 1000)]
+    assert episode_entry_ts(trades_desc, 700) == t1
+
+
+def test_episode_entry_legacy_fallback_and_empty():
+    """倒推不完 (遗产仓, 表内买入盖不住现持仓) → 回退最早一笔;
+    无成交记录 → None。"""
+    from trade.analysis import episode_entry_ts
+    t1, t2 = _ts(2026, 9, 1), _ts(2026, 9, 2)
+    trades_desc = [(t2, DIRECTION_BUY, 100), (t1, DIRECTION_BUY, 100)]
+    assert episode_entry_ts(trades_desc, 5000) == t1   # 盖不住, 回退最早
+    assert episode_entry_ts([], 100) is None

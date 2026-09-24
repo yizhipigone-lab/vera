@@ -4,7 +4,8 @@ api.py 路由闭包里埋的计算函数搬到这里, 变模块级纯函数, 可
 路由只留薄转发 (读快照 + 发命令)。
 
 - calc_drawdowns: 净值序列 → 逐日回撤
-- entry_and_closed: trades 表 → 持仓入场/已平仓/买卖汇总三件套
+- entry_and_closed: trades 表 → 持仓入场/已平仓/买卖汇总三件套 (按轮次切分)
+- episode_entry_ts: 当轮持仓首笔买入 (成交倒推; 峰值与 hold_days 共用)
 - hold_days: 持仓天数 (T+1 起算)
 - name_of: 股票代码 → 简称 (惰性加载)
 - rows_to_dicts: sqlite 游标 → dict 列表
@@ -13,7 +14,8 @@ api.py 路由闭包里埋的计算函数搬到这里, 变模块级纯函数, 可
 - build_summary_view: 累计 KPI 视图 (2026-09-15 自 analysis_api 路由下沉,
   夏普/索提诺/卡玛/回撤修复改调 backtest.metrics 单一实现 —— 与回测页同口径)
 
-公开函数 9 个 (超铁律 8 一条: 两个视图构建函数与同城计算内聚, 记录在案)。
+公开函数 10 个 (超铁律 8 两条: 两个视图构建函数与同城计算内聚;
+episode_entry_ts 是峰值/持仓天数两条链的共用口径, 记录在案)。
 """
 from __future__ import annotations
 
@@ -254,6 +256,33 @@ def _trading_days() -> list:
         except Exception:
             _TRADING_DAYS = []
     return _TRADING_DAYS
+
+
+def episode_entry_ts(trades_desc: list, held_volume: float):
+    """当轮持仓的首笔买入 ts (从最新成交往回倒推)。
+
+    trades_desc: [(ts, direction, qty), ...] 按时间**新→旧**;
+    held_volume: 当前持仓量 (book 口径)。卖单加回、买单扣减,
+    持仓量归零处的那笔买入即本轮起点; 倒推不完 (表外遗产仓)
+    回退最早一笔; 无成交记录 → None。
+
+    2026-09-25 自 trade_main._episode_entry_ts 下沉纯函数化 (518880
+    事件延伸, 用户拍板口径对齐): 移动止盈峰值与监控器 hold_days
+    共用这一个实现 —— 此前 hold_days 用"有史以来首笔买入" MIN(ts),
+    清仓后重新买入的票会被时间止损按老买入日提前误卖。
+    """
+    if not trades_desc:
+        return None
+    remaining = float(held_volume or 0.0)
+    for ts, direction, qty in trades_desc:
+        qty = float(qty or 0)
+        if direction == DIRECTION_BUY:
+            remaining -= qty
+            if remaining <= 0.0:
+                return ts
+        else:
+            remaining += qty
+    return trades_desc[-1][0]  # 倒推不完, 回退最早一笔
 
 
 def hold_days(entry_ts: float | None, end_ts: float | None = None):

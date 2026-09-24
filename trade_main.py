@@ -378,21 +378,20 @@ class TradeApp:
             # 2026-09-19 批次 4.2: 等撤单 ack 期间就地消费回报类事件
             engine=self._engine,
         )
-        # 2026-08-01 P0-1: hold_days 接线 —— 从 trades 表取首笔买入时间,
-        # 经交易日历算持仓天数, 救活 Monitor 的三条时间类卖出规则
-        # (time_stop/cond_time/first_day, 此前默认 lambda:0 永不会触发)。
+        # 2026-08-01 P0-1: hold_days 接线 —— 经交易日历算持仓天数,
+        # 救活 Monitor 的三条时间类卖出规则 (此前默认 lambda:0 永不触发)。
+        # 2026-09-25 (518880 事件延伸, 用户拍板): 口径从"有史以来首笔
+        # 买入" MIN(ts) 改为当轮首笔买入 (与移动止盈峰值同一实现) ——
+        # 清仓后重新买入的票按新一轮算天数, 不再被老买入日提前误卖。
+        # 原 2026-08-06 "多算天数只会让时间止损提前, 方向安全, 不动"
+        # 的拍板作废。
         def _hold_days_for_code(code: str) -> int:
             try:
-                ro = self.store.open_readonly()
-                cur = ro.execute(
-                    "SELECT MIN(ts) FROM trades WHERE code=? AND direction=?",
-                    (code, DIRECTION_BUY))
-                row = cur.fetchone()
-                ro.close()
-                if not row or not row[0]:
+                entry_ts = _episode_entry_ts(code)
+                if not entry_ts:
                     return 0
                 from trade.analysis import hold_days as _calc_hold_days
-                days = _calc_hold_days(row[0])
+                days = _calc_hold_days(entry_ts)
                 return days if days is not None else 0
             except Exception:
                 return 0
@@ -403,15 +402,16 @@ class TradeApp:
         _peak_cache: dict = {}
 
         def _episode_entry_ts(code: str):
-            """当轮持仓的首笔买入 ts (2026-08-06 审计 P1 修复)。
+            """当轮持仓的首笔买入 ts (2026-08-06 审计 P1 修复;
+            2026-09-25 纯计算下沉 trade.analysis.episode_entry_ts,
+            与 hold_days 共用同一口径, 此处只取数 + 装配)。
 
             旧口径 MIN(ts) 取的是"有史以来"第一笔买入: 同票上一轮清仓后
             再次买入时, 历史峰值会包含空仓期间的高点, 可能导致买入后
             立刻误触发移动止盈。现按当前持仓量从最新成交往回推:
             卖单加回、买单扣减, 持仓量归零处的那笔买入即本轮起点。
             数据不全 (倒推不完) 时回退最早一笔买入 (保守: 峰值取大不取小,
-            保护更紧)。hold_days 仍用旧口径 —— 多算天数只会让时间止损
-            提前, 方向安全, 不动。"""
+            保护更紧)。"""
             try:
                 ro = self.store.open_readonly()
                 cur = ro.execute(
@@ -421,19 +421,10 @@ class TradeApp:
                 ro.close()
             except Exception:
                 return None
-            if not rows:
-                return None
             pos = self.book.snapshot()["positions"].get(code)
             remaining = float(pos.volume) if pos is not None else 0.0
-            for ts, direction, qty in rows:
-                qty = float(qty or 0)
-                if direction == DIRECTION_BUY:
-                    remaining -= qty
-                    if remaining <= 0.0:
-                        return ts
-                else:
-                    remaining += qty
-            return rows[-1][0]  # 倒推不完, 回退最早一笔买入
+            from trade.analysis import episode_entry_ts as _episode_calc
+            return _episode_calc(rows, remaining)
 
         def _peak_for_code(code: str):
             today = time.strftime("%Y%m%d", time.localtime(clock()))
